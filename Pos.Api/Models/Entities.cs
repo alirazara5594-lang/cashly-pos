@@ -1,0 +1,319 @@
+using System;
+using System.Collections.Generic;
+
+namespace Pos.Api.Models;
+
+public enum BusinessType
+{
+    Restaurant = 1,
+    Retail = 2,
+    CashAndCarry = 3,
+    Hybrid = 4
+}
+
+public enum SubscriptionTier
+{
+    Starter = 1,
+    Standard = 2,
+    Professional = 3
+}
+
+public enum TerminalType
+{
+    Counter = 1,
+    OrderTab = 2,
+    KitchenDisplay = 3
+}
+
+public enum OrderType
+{
+    DineIn = 1,
+    Takeaway = 2,
+    Delivery = 3,
+    CallOrder = 4
+}
+
+public enum OrderStatus
+{
+    New = 1,
+    InKitchen = 2,
+    ReadyForDispatch = 3,
+    OutForDelivery = 4,
+    Completed = 5,
+    Cancelled = 6
+}
+
+public enum PaymentMethod
+{
+    Cash = 1,
+    Card = 2,
+    JazzCash = 3,
+    EasyPaisa = 4,
+    Raast = 5,
+    CustomerKhata = 6,
+    Split = 7
+}
+
+public enum KitchenStation
+{
+    MainKitchen = 1,
+    BeverageBar = 2,
+    Grill = 3
+}
+
+public class Tenant
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = string.Empty;
+    public BusinessType BusinessType { get; set; } = BusinessType.Restaurant;
+    public SubscriptionTier Tier { get; set; } = SubscriptionTier.Professional;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<Branch> Branches { get; set; } = new List<Branch>();
+    public ICollection<AddOnSubscription> AddOns { get; set; } = new List<AddOnSubscription>();
+}
+
+public class Branch
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Tenant? Tenant { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
+    public string City { get; set; } = "Islamabad";
+    public string Phone { get; set; } = string.Empty;
+    public bool IsHeadOffice { get; set; } = false;
+
+    // Quotas (Starter: 1, Standard: 3, Pro: 5 base + add-ons)
+    public int AllowedCounters { get; set; } = 5;
+    public int AllowedOrderTabs { get; set; } = 15;
+
+    public ICollection<Terminal> Terminals { get; set; } = new List<Terminal>();
+    public ICollection<DiningTable> Tables { get; set; } = new List<DiningTable>();
+    public ICollection<BranchStock> Stocks { get; set; } = new List<BranchStock>();
+}
+
+public class Terminal
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string TerminalName { get; set; } = string.Empty;
+    public TerminalType TerminalType { get; set; } = TerminalType.Counter;
+    public string DeviceToken { get; set; } = Guid.NewGuid().ToString("N");
+    public bool IsActive { get; set; } = true;
+    public DateTime LastSeenAt { get; set; } = DateTime.UtcNow;
+}
+
+public class AddOnSubscription
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Tenant? Tenant { get; set; }
+    public string AddOnKey { get; set; } = string.Empty; // e.g. "EXTRA_COUNTER", "EXTRA_TAB", "FBR_TAX"
+    public int Quantity { get; set; } = 1;
+    public decimal PricePKR { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public class Category
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Icon { get; set; } = "utensils";
+    public int SortOrder { get; set; }
+    public ICollection<Product> Products { get; set; } = new List<Product>();
+}
+
+public class Product
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid CategoryId { get; set; }
+    public Category? Category { get; set; }
+    public string SKU { get; set; } = string.Empty;
+    public string Barcode { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string? UrduName { get; set; }
+    public string Description { get; set; } = string.Empty;
+    public decimal CostPricePKR { get; set; }
+    public decimal SellingPricePKR { get; set; }
+    public string Unit { get; set; } = "Piece"; // Piece, Pack, Kg, Carton
+    public string? ImageUrl { get; set; }
+    public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
+    public bool IsActive { get; set; } = true;
+
+    public ICollection<ProductModifier> Modifiers { get; set; } = new List<ProductModifier>();
+    public ICollection<ProductRecipeItem> RecipeItems { get; set; } = new List<ProductRecipeItem>();
+}
+
+public class ProductModifier
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProductId { get; set; }
+    public Product? Product { get; set; }
+    public string Name { get; set; } = string.Empty; // e.g. "Extra Cheese", "Spicy Dip"
+    public decimal PricePKR { get; set; }
+    public Guid? IngredientId { get; set; } // If modifier consumes raw ingredient (e.g. Extra Cheese Slice)
+    public decimal? IngredientQty { get; set; }
+}
+
+public class Ingredient
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public string Name { get; set; } = string.Empty; // e.g. "Burger Buns", "Chicken Patty", "Cheese Slice"
+    public string Category { get; set; } = "General"; // Buns, Meat/Patty, Dairy, Sauces, Produce, Packaging
+    public string Unit { get; set; } = "Piece"; // Piece, Gram, Kg, Litre, Slice, Can
+    public decimal CostPerUnitPKR { get; set; }
+    public decimal CurrentStock { get; set; }
+    public decimal MinAlertLevel { get; set; } = 20;
+    public string? SupplierName { get; set; }
+}
+
+public class ProductRecipeItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid ProductId { get; set; }
+    public Product? Product { get; set; }
+    public Guid IngredientId { get; set; }
+    public Ingredient? Ingredient { get; set; }
+    public decimal QuantityRequired { get; set; } // e.g. 1 bun, 1 patty, 25 grams sauce
+    public string Unit { get; set; } = "Piece";
+}
+
+public class BranchStock
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public Guid ProductId { get; set; }
+    public Product? Product { get; set; }
+    public decimal QuantityOnHand { get; set; }
+    public decimal MinAlertLevel { get; set; } = 10;
+    public string? BatchNumber { get; set; }
+    public DateTime? ExpiryDate { get; set; }
+}
+
+
+public class DiningTable
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string TableNumber { get; set; } = string.Empty;
+    public string Section { get; set; } = "Main Hall"; // Main Hall, Terrace, Family Lounge
+    public int Capacity { get; set; } = 4;
+    public bool IsOccupied { get; set; } = false;
+    public Guid? CurrentOrderId { get; set; }
+}
+
+public class Order
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string OrderNumber { get; set; } = string.Empty;
+    public OrderType OrderType { get; set; } = OrderType.DineIn;
+    public OrderStatus Status { get; set; } = OrderStatus.New;
+    public string? TableNumber { get; set; }
+    
+    // Customer / Delivery info
+    public string? CustomerName { get; set; }
+    public string? CustomerPhone { get; set; }
+    public string? DeliveryAddress { get; set; }
+    public Guid? AssignedRiderId { get; set; }
+    public Rider? AssignedRider { get; set; }
+
+    // Pricing in PKR
+    public decimal SubTotalPKR { get; set; }
+    public decimal DiscountPKR { get; set; }
+    public decimal TaxPKR { get; set; }
+    public decimal TotalPKR { get; set; }
+    public PaymentMethod PaymentMethod { get; set; } = PaymentMethod.Cash;
+    public decimal AmountPaidPKR { get; set; }
+    public decimal ChangeDuePKR { get; set; }
+    public bool IsPaid { get; set; } = false;
+
+    public string? CashierName { get; set; }
+    public string? CreatedByRole { get; set; } // Cashier, WaiterTab, OnlineWeb, CallCenter
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
+    public ICollection<KitchenTicket> KitchenTickets { get; set; } = new List<KitchenTicket>();
+}
+
+public class OrderItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OrderId { get; set; }
+    public Order? Order { get; set; }
+    public Guid ProductId { get; set; }
+    public Product? Product { get; set; }
+    public string ProductName { get; set; } = string.Empty;
+    public int Quantity { get; set; }
+    public decimal UnitPricePKR { get; set; }
+    public decimal TotalPricePKR { get; set; }
+    public string? ModifiersSummary { get; set; }
+    public string? SpecialNotes { get; set; }
+    public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
+}
+
+public class KitchenTicket
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid OrderId { get; set; }
+    public Order? Order { get; set; }
+    public Guid BranchId { get; set; }
+    public string TicketNumber { get; set; } = string.Empty;
+    public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
+    public string Status { get; set; } = "Pending"; // Pending, Cooking, Ready
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class Rider
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string VehicleNumber { get; set; } = string.Empty;
+    public bool IsAvailable { get; set; } = true;
+}
+
+public class RiderSettlement
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public Guid RiderId { get; set; }
+    public Rider? Rider { get; set; }
+    public DateTime ShiftDate { get; set; } = DateTime.UtcNow;
+    public int TotalOrdersDelivered { get; set; }
+    public decimal TotalCODExpectedPKR { get; set; }
+    public decimal TotalCashCollectedPKR { get; set; }
+    public decimal ShortageSurplusPKR { get; set; }
+    public string SettledBy { get; set; } = string.Empty;
+    public DateTime SettledAt { get; set; } = DateTime.UtcNow;
+}
+
+public class CashShift
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid BranchId { get; set; }
+    public string TerminalName { get; set; } = string.Empty;
+    public string CashierName { get; set; } = string.Empty;
+    public DateTime OpenedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedAt { get; set; }
+    public decimal OpeningFloatPKR { get; set; }
+    public decimal CashSalesPKR { get; set; }
+    public decimal ExpectedCashPKR { get; set; }
+    public decimal ActualCashCountedPKR { get; set; }
+    public decimal VariancePKR { get; set; }
+    public bool IsClosed { get; set; } = false;
+}
