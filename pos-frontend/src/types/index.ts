@@ -245,5 +245,79 @@ export interface AppUser {
   };
 }
 
+export type TransferStatus = 'Requested' | 'InTransit' | 'Received' | 'Cancelled';
 
+export interface StockTransferItem {
+  id: string;
+  transferOrderId: string;
+  ingredientId: string;
+  ingredientName: string;
+  unit: string;
+  quantityRequested: number;
+  quantityDispatched: number;
+  quantityReceived: number;
+  unitCostPKR: number;
+}
 
+export interface StockTransferOrder {
+  id: string;
+  tenantId: string;
+  transferNumber: string;
+  sourceBranchId: string;
+  sourceBranch?: Branch;
+  destinationBranchId: string;
+  destinationBranch?: Branch;
+  status: TransferStatus;
+  requestedAt: string;
+  dispatchedAt?: string;
+  receivedAt?: string;
+  dispatchedBy?: string;
+  receivedBy?: string;
+  vehicleOrDriver?: string;
+  notes?: string;
+  totalEstimatedCostPKR: number;
+  items: StockTransferItem[];
+}
+
+export type POStatus = 'Draft' | 'Ordered' | 'Received' | 'Cancelled';
+
+export interface PurchaseOrderItem {
+  id: string;
+  purchaseOrderId: string;
+  ingredientId: string;
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+  unitCostPKR: number;
+  totalPKR: number;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  tenantId: string;
+  branchId: string;
+  branch?: Branch;
+  poNumber: string;
+  supplierName: string;
+  status: POStatus;
+  totalCostPKR: number;
+  createdAt: string;
+  receivedAt?: string;
+  receivedBy?: string;
+  notes?: string;
+  items: PurchaseOrderItem[];
+}
+
+export interface RiderSettlementRecord {
+  id: string;
+  branchId: string;
+  riderId: string;
+  rider?: Rider;
+  shiftDate: string;
+  totalOrdersDelivered: number;
+  totalCODExpectedPKR: number;
+  totalCashCollectedPKR: number;
+  shortageSurplusPKR: number;
+  settledBy: string;
+  settledAt: string;
+}

@@ -91,6 +91,82 @@ using (var scope = app.Services.CreateScope())
                 ""CanVoidOrders"" boolean NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ""Riders"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""BranchId"" uuid NOT NULL,
+                ""Name"" text NOT NULL,
+                ""Phone"" text NOT NULL,
+                ""VehicleNumber"" text NOT NULL,
+                ""IsAvailable"" boolean NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ""RiderSettlements"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""BranchId"" uuid NOT NULL,
+                ""RiderId"" uuid NOT NULL,
+                ""ShiftDate"" timestamp with time zone NOT NULL,
+                ""TotalOrdersDelivered"" integer NOT NULL,
+                ""TotalCODExpectedPKR"" numeric(18,2) NOT NULL,
+                ""TotalCashCollectedPKR"" numeric(18,2) NOT NULL,
+                ""ShortageSurplusPKR"" numeric(18,2) NOT NULL,
+                ""SettledBy"" text NOT NULL,
+                ""SettledAt"" timestamp with time zone NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ""StockTransferOrders"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""TransferNumber"" text NOT NULL,
+                ""SourceBranchId"" uuid NOT NULL,
+                ""DestinationBranchId"" uuid NOT NULL,
+                ""Status"" integer NOT NULL,
+                ""RequestedAt"" timestamp with time zone NOT NULL,
+                ""DispatchedAt"" timestamp with time zone,
+                ""ReceivedAt"" timestamp with time zone,
+                ""DispatchedBy"" text,
+                ""ReceivedBy"" text,
+                ""VehicleOrDriver"" text,
+                ""Notes"" text,
+                ""TotalEstimatedCostPKR"" numeric(18,2) NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ""StockTransferItems"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TransferOrderId"" uuid NOT NULL,
+                ""IngredientId"" uuid NOT NULL,
+                ""IngredientName"" text NOT NULL,
+                ""Unit"" text NOT NULL,
+                ""QuantityRequested"" numeric(18,2) NOT NULL,
+                ""QuantityDispatched"" numeric(18,2) NOT NULL,
+                ""QuantityReceived"" numeric(18,2) NOT NULL,
+                ""UnitCostPKR"" numeric(18,2) NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ""PurchaseOrders"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""PONumber"" text NOT NULL,
+                ""SupplierName"" text NOT NULL,
+                ""Status"" integer NOT NULL,
+                ""TotalCostPKR"" numeric(18,2) NOT NULL,
+                ""CreatedAt"" timestamp with time zone NOT NULL,
+                ""ReceivedAt"" timestamp with time zone,
+                ""ReceivedBy"" text,
+                ""Notes"" text
+            );
+
+            CREATE TABLE IF NOT EXISTS ""PurchaseOrderItems"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""PurchaseOrderId"" uuid NOT NULL,
+                ""IngredientId"" uuid NOT NULL,
+                ""IngredientName"" text NOT NULL,
+                ""Quantity"" numeric(18,2) NOT NULL,
+                ""Unit"" text NOT NULL,
+                ""UnitCostPKR"" numeric(18,2) NOT NULL,
+                ""TotalPKR"" numeric(18,2) NOT NULL
+            );
+
             -- Ensure columns exist on ProductModifiers
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientId"" uuid;
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientQty"" numeric(18,2);
@@ -642,6 +718,18 @@ app.MapPost("/api/riders/settle", async (AppDbContext db, [Microsoft.AspNetCore.
         variancePKR = variance,
         isReconciled = variance == 0
     });
+});
+
+app.MapGet("/api/delivery/settlements", async (AppDbContext db, Guid branchId) =>
+{
+    var settlements = await db.RiderSettlements
+        .Include(s => s.Rider)
+        .Where(s => s.BranchId == branchId)
+        .OrderByDescending(s => s.SettledAt)
+        .Take(30)
+        .ToListAsync();
+
+    return Results.Ok(settlements);
 });
 
 // --- Phone Call Order Lookup ---
@@ -1445,6 +1533,285 @@ app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid branchI
     return Results.Ok(grouped);
 });
 
+// --- Supply Chain: Inter-Branch Commissary Transfers ---
+app.MapGet("/api/transfers", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+{
+    var query = db.StockTransferOrders
+        .Include(t => t.SourceBranch)
+        .Include(t => t.DestinationBranch)
+        .Include(t => t.Items)
+        .AsQueryable();
+
+    if (tenantId.HasValue) query = query.Where(t => t.TenantId == tenantId.Value);
+    if (branchId.HasValue)
+    {
+        query = query.Where(t => t.SourceBranchId == branchId.Value || t.DestinationBranchId == branchId.Value);
+    }
+
+    var list = await query.OrderByDescending(t => t.RequestedAt).ToListAsync();
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/transfers", async (AppDbContext db, CreateTransferOrderDto dto) =>
+{
+    var randomSeq = new Random().Next(1000, 9999);
+    var transferNumber = $"TR-{DateTime.UtcNow:MMdd}-{randomSeq}";
+
+    var order = new StockTransferOrder
+    {
+        TenantId = dto.TenantId,
+        TransferNumber = transferNumber,
+        SourceBranchId = dto.SourceBranchId,
+        DestinationBranchId = dto.DestinationBranchId,
+        Status = TransferStatus.Requested,
+        RequestedAt = DateTime.UtcNow,
+        VehicleOrDriver = dto.VehicleOrDriver,
+        Notes = dto.Notes
+    };
+
+    decimal totalEstCost = 0;
+    foreach (var item in dto.Items)
+    {
+        var ing = await db.Ingredients.FindAsync(item.IngredientId);
+        var unitCost = ing?.CostPerUnitPKR ?? 0;
+        var unitName = ing?.Unit ?? item.Unit ?? "Piece";
+        var ingName = ing?.Name ?? item.IngredientName;
+
+        totalEstCost += item.QuantityRequested * unitCost;
+
+        order.Items.Add(new StockTransferItem
+        {
+            TransferOrderId = order.Id,
+            IngredientId = item.IngredientId,
+            IngredientName = ingName,
+            Unit = unitName,
+            QuantityRequested = item.QuantityRequested,
+            QuantityDispatched = 0,
+            QuantityReceived = 0,
+            UnitCostPKR = unitCost
+        });
+    }
+
+    order.TotalEstimatedCostPKR = totalEstCost;
+    db.StockTransferOrders.Add(order);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(order);
+});
+
+app.MapPost("/api/transfers/{id}/dispatch", async (AppDbContext db, Guid id, DispatchTransferDto dto) =>
+{
+    var order = await db.StockTransferOrders
+        .Include(t => t.Items)
+        .FirstOrDefaultAsync(t => t.Id == id);
+
+    if (order == null) return Results.NotFound("Transfer order not found");
+    if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch order in {order.Status} state");
+
+    // Deduct raw ingredients from Source Branch (Central Commissary)
+    foreach (var item in order.Items)
+    {
+        var sourceIng = await db.Ingredients
+            .FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
+
+        if (sourceIng != null)
+        {
+            sourceIng.CurrentStock = Math.Max(0, sourceIng.CurrentStock - item.QuantityRequested);
+        }
+        item.QuantityDispatched = item.QuantityRequested;
+    }
+
+    order.Status = TransferStatus.InTransit;
+    order.DispatchedAt = DateTime.UtcNow;
+    order.DispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
+    if (!string.IsNullOrEmpty(dto.VehicleOrDriver)) order.VehicleOrDriver = dto.VehicleOrDriver;
+    if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = dto.Notes;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(order);
+});
+
+app.MapPost("/api/transfers/{id}/receive", async (AppDbContext db, Guid id, ReceiveTransferDto dto) =>
+{
+    var order = await db.StockTransferOrders
+        .Include(t => t.Items)
+        .FirstOrDefaultAsync(t => t.Id == id);
+
+    if (order == null) return Results.NotFound("Transfer order not found");
+    if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive order in {order.Status} state");
+
+    // Credit raw ingredients to Destination Branch (Store/Outlet)
+    foreach (var item in order.Items)
+    {
+        var qtyToReceive = item.QuantityDispatched > 0 ? item.QuantityDispatched : item.QuantityRequested;
+        item.QuantityReceived = qtyToReceive;
+
+        var destIng = await db.Ingredients
+            .FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
+
+        if (destIng != null)
+        {
+            destIng.CurrentStock += qtyToReceive;
+            if (item.UnitCostPKR > 0) destIng.CostPerUnitPKR = item.UnitCostPKR;
+        }
+        else
+        {
+            // Auto-create ingredient in branch if not yet present
+            db.Ingredients.Add(new Ingredient
+            {
+                TenantId = order.TenantId,
+                BranchId = order.DestinationBranchId,
+                Name = item.IngredientName,
+                Category = "Commissary Transferred",
+                Unit = item.Unit,
+                CostPerUnitPKR = item.UnitCostPKR,
+                CurrentStock = qtyToReceive,
+                MinAlertLevel = 10,
+                SupplierName = "Central Commissary"
+            });
+        }
+    }
+
+    order.Status = TransferStatus.Received;
+    order.ReceivedAt = DateTime.UtcNow;
+    order.ReceivedBy = dto.ReceivedBy ?? "Branch Manager";
+    if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(order);
+});
+
+app.MapPost("/api/transfers/{id}/cancel", async (AppDbContext db, Guid id) =>
+{
+    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
+    if (order == null) return Results.NotFound("Transfer order not found");
+
+    if (order.Status == TransferStatus.InTransit)
+    {
+        // Revert deducted stock back to source branch
+        foreach (var item in order.Items)
+        {
+            var sourceIng = await db.Ingredients
+                .FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
+            if (sourceIng != null)
+            {
+                sourceIng.CurrentStock += item.QuantityDispatched;
+            }
+        }
+    }
+
+    order.Status = TransferStatus.Cancelled;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { success = true, status = "Cancelled" });
+});
+
+// --- Supply Chain: Vendor Purchase Orders (Procurement) ---
+app.MapGet("/api/procurement/purchase-orders", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+{
+    var query = db.PurchaseOrders
+        .Include(p => p.Branch)
+        .Include(p => p.Items)
+        .AsQueryable();
+
+    if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
+    if (branchId.HasValue) query = query.Where(p => p.BranchId == branchId.Value);
+
+    var list = await query.OrderByDescending(p => p.CreatedAt).ToListAsync();
+    return Results.Ok(list);
+});
+
+app.MapPost("/api/procurement/purchase-orders", async (AppDbContext db, CreatePODto dto) =>
+{
+    var randomSeq = new Random().Next(100, 999);
+    var poNumber = $"PO-{DateTime.UtcNow:MMdd}-{randomSeq}";
+
+    var po = new PurchaseOrder
+    {
+        TenantId = dto.TenantId,
+        BranchId = dto.BranchId,
+        PONumber = poNumber,
+        SupplierName = dto.SupplierName,
+        Status = POStatus.Ordered,
+        CreatedAt = DateTime.UtcNow,
+        Notes = dto.Notes
+    };
+
+    decimal totalCost = 0;
+    foreach (var item in dto.Items)
+    {
+        var lineTotal = item.Quantity * item.UnitCostPKR;
+        totalCost += lineTotal;
+
+        po.Items.Add(new PurchaseOrderItem
+        {
+            PurchaseOrderId = po.Id,
+            IngredientId = item.IngredientId,
+            IngredientName = item.IngredientName,
+            Quantity = item.Quantity,
+            Unit = item.Unit ?? "Piece",
+            UnitCostPKR = item.UnitCostPKR,
+            TotalPKR = lineTotal
+        });
+    }
+
+    po.TotalCostPKR = totalCost;
+    db.PurchaseOrders.Add(po);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(po);
+});
+
+app.MapPost("/api/procurement/purchase-orders/{id}/receive", async (AppDbContext db, Guid id, ReceivePODto dto) =>
+{
+    var po = await db.PurchaseOrders.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == id);
+    if (po == null) return Results.NotFound("Purchase order not found");
+    if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
+
+    // Automatically increase ingredient stock and update cost price
+    foreach (var item in po.Items)
+    {
+        var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == po.BranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
+        if (ing != null)
+        {
+            ing.CurrentStock += item.Quantity;
+            if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
+            if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
+        }
+        else
+        {
+            db.Ingredients.Add(new Ingredient
+            {
+                TenantId = po.TenantId,
+                BranchId = po.BranchId,
+                Name = item.IngredientName,
+                Category = "Direct Purchased",
+                Unit = item.Unit,
+                CostPerUnitPKR = item.UnitCostPKR,
+                CurrentStock = item.Quantity,
+                MinAlertLevel = 10,
+                SupplierName = po.SupplierName
+            });
+        }
+    }
+
+    po.Status = POStatus.Received;
+    po.ReceivedAt = DateTime.UtcNow;
+    po.ReceivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
+    if (!string.IsNullOrEmpty(dto.Notes)) po.Notes = (po.Notes != null ? po.Notes + " • " : "") + dto.Notes;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(po);
+});
+
+app.MapPost("/api/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, Guid id) =>
+{
+    var po = await db.PurchaseOrders.FindAsync(id);
+    if (po == null) return Results.NotFound("Purchase order not found");
+    po.Status = POStatus.Cancelled;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { success = true, status = "Cancelled" });
+});
+
 app.Run();
 
 
@@ -1591,6 +1958,15 @@ public record UpdateUserDto(
     bool? CanGiveDiscounts,
     bool? CanVoidOrders
 );
+
+public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
+public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
+public record CreateTransferItemDto(Guid IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit);
+public record DispatchTransferDto(string? DispatchedBy, string? VehicleOrDriver, string? Notes);
+public record ReceiveTransferDto(string? ReceivedBy, string? Notes);
+public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items);
+public record CreatePOItemDto(Guid IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR);
+public record ReceivePODto(string? ReceivedBy, string? Notes);
 
 
 

@@ -27,6 +27,10 @@ public class AppDbContext : DbContext
     public DbSet<RiderSettlement> RiderSettlements => Set<RiderSettlement>();
     public DbSet<CashShift> CashShifts => Set<CashShift>();
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<StockTransferOrder> StockTransferOrders => Set<StockTransferOrder>();
+    public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
+    public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
+    public DbSet<PurchaseOrderItem> PurchaseOrderItems => Set<PurchaseOrderItem>();
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

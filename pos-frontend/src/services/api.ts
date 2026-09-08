@@ -16,9 +16,11 @@ import type {
   ItemPerformanceReport,
   RawIngredient,
   ProductRecipeItem,
-  AppUser
+  AppUser,
+  StockTransferOrder,
+  PurchaseOrder,
+  RiderSettlementRecord
 } from '../types';
-
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
 
@@ -325,6 +327,86 @@ export const posApi = {
   },
   deleteUser: async (id: string) => {
     const res = await api.delete(`/api/users/${id}`);
+    return res.data;
+  },
+
+  // Inter-Branch Stock Transfers (Central Commissary <-> Outlets)
+  getTransferOrders: async (tenantId?: string, branchId?: string) => {
+    const res = await api.get<StockTransferOrder[]>('/api/transfers', { params: { tenantId, branchId } });
+    return res.data;
+  },
+  createTransferOrder: async (data: {
+    tenantId: string;
+    sourceBranchId: string;
+    destinationBranchId: string;
+    vehicleOrDriver?: string;
+    notes?: string;
+    items: {
+      ingredientId: string;
+      ingredientName?: string;
+      quantityRequested: number;
+      unit?: string;
+    }[];
+  }) => {
+    const res = await api.post<StockTransferOrder>('/api/transfers', data);
+    return res.data;
+  },
+  dispatchTransferOrder: async (id: string, data: {
+    dispatchedBy?: string;
+    vehicleOrDriver?: string;
+    notes?: string;
+  }) => {
+    const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/dispatch`, data);
+    return res.data;
+  },
+  receiveTransferOrder: async (id: string, data: {
+    receivedBy?: string;
+    notes?: string;
+  }) => {
+    const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/receive`, data);
+    return res.data;
+  },
+  cancelTransferOrder: async (id: string) => {
+    const res = await api.post(`/api/transfers/${id}/cancel`);
+    return res.data;
+  },
+
+  // Vendor Purchase Orders (Procurement)
+  getPurchaseOrders: async (tenantId?: string, branchId?: string) => {
+    const res = await api.get<PurchaseOrder[]>('/api/procurement/purchase-orders', { params: { tenantId, branchId } });
+    return res.data;
+  },
+  createPurchaseOrder: async (data: {
+    tenantId: string;
+    branchId: string;
+    supplierName: string;
+    notes?: string;
+    items: {
+      ingredientId: string;
+      ingredientName: string;
+      quantity: number;
+      unit?: string;
+      unitCostPKR: number;
+    }[];
+  }) => {
+    const res = await api.post<PurchaseOrder>('/api/procurement/purchase-orders', data);
+    return res.data;
+  },
+  receivePurchaseOrder: async (id: string, data: {
+    receivedBy?: string;
+    notes?: string;
+  }) => {
+    const res = await api.post<PurchaseOrder>(`/api/procurement/purchase-orders/${id}/receive`, data);
+    return res.data;
+  },
+  cancelPurchaseOrder: async (id: string) => {
+    const res = await api.post(`/api/procurement/purchase-orders/${id}/cancel`);
+    return res.data;
+  },
+
+  // Rider Settlement History
+  getDeliverySettlements: async (branchId: string) => {
+    const res = await api.get<RiderSettlementRecord[]>('/api/delivery/settlements', { params: { branchId } });
     return res.data;
   }
 };

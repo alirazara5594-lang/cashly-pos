@@ -347,3 +347,88 @@ public class AppUser
     public bool CanVoidOrders { get; set; } = false;
 }
 
+public enum TransferStatus
+{
+    Requested = 1,
+    InTransit = 2,
+    Received = 3,
+    Cancelled = 4
+}
+
+public class StockTransferOrder
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string TransferNumber { get; set; } = string.Empty; // e.g. "TR-1001"
+    public Guid SourceBranchId { get; set; } // Central Commissary / Warehouse
+    public Branch? SourceBranch { get; set; }
+    public Guid DestinationBranchId { get; set; } // Receiving Outlet
+    public Branch? DestinationBranch { get; set; }
+    public TransferStatus Status { get; set; } = TransferStatus.Requested;
+    public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? DispatchedAt { get; set; }
+    public DateTime? ReceivedAt { get; set; }
+    public string? DispatchedBy { get; set; }
+    public string? ReceivedBy { get; set; }
+    public string? VehicleOrDriver { get; set; }
+    public string? Notes { get; set; }
+    public decimal TotalEstimatedCostPKR { get; set; }
+
+    public ICollection<StockTransferItem> Items { get; set; } = new List<StockTransferItem>();
+}
+
+public class StockTransferItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TransferOrderId { get; set; }
+    public StockTransferOrder? TransferOrder { get; set; }
+    public Guid IngredientId { get; set; }
+    public Ingredient? Ingredient { get; set; }
+    public string IngredientName { get; set; } = string.Empty;
+    public string Unit { get; set; } = "Piece";
+    public decimal QuantityRequested { get; set; }
+    public decimal QuantityDispatched { get; set; }
+    public decimal QuantityReceived { get; set; }
+    public decimal UnitCostPKR { get; set; }
+}
+
+public enum POStatus
+{
+    Draft = 1,
+    Ordered = 2,
+    Received = 3,
+    Cancelled = 4
+}
+
+public class PurchaseOrder
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string PONumber { get; set; } = string.Empty; // e.g. "PO-501"
+    public string SupplierName { get; set; } = string.Empty;
+    public POStatus Status { get; set; } = POStatus.Ordered;
+    public decimal TotalCostPKR { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ReceivedAt { get; set; }
+    public string? ReceivedBy { get; set; }
+    public string? Notes { get; set; }
+
+    public ICollection<PurchaseOrderItem> Items { get; set; } = new List<PurchaseOrderItem>();
+}
+
+public class PurchaseOrderItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid PurchaseOrderId { get; set; }
+    public PurchaseOrder? PurchaseOrder { get; set; }
+    public Guid IngredientId { get; set; }
+    public Ingredient? Ingredient { get; set; }
+    public string IngredientName { get; set; } = string.Empty;
+    public decimal Quantity { get; set; }
+    public string Unit { get; set; } = "Piece";
+    public decimal UnitCostPKR { get; set; }
+    public decimal TotalPKR { get; set; }
+}
+

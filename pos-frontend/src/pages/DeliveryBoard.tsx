@@ -7,12 +7,13 @@ import {
   DollarSign, 
   RefreshCw,
   X,
-  Check
+  Check,
+  FileText
 } from 'lucide-react';
 import { posApi } from '../services/api';
 
 import { usePosStore } from '../store/posStore';
-import type { Order, Rider } from '../types';
+import type { Order, Rider, RiderSettlementRecord } from '../types';
 
 export const DeliveryBoard: React.FC = () => {
   const { selectedBranch } = usePosStore();
@@ -40,6 +41,10 @@ export const DeliveryBoard: React.FC = () => {
   const [isSettling, setIsSettling] = useState(false);
   const [settlementSuccessMsg, setSettlementSuccessMsg] = useState<string | null>(null);
 
+  // Settlement Log Modal
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [settlements, setSettlements] = useState<RiderSettlementRecord[]>([]);
+
   const fetchBoard = async () => {
     if (!selectedBranch?.id) return;
     try {
@@ -47,6 +52,16 @@ export const DeliveryBoard: React.FC = () => {
       setBoard(data);
       const riderList = await posApi.getRiders(selectedBranch.id);
       setRiders(riderList);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchSettlements = async () => {
+    if (!selectedBranch?.id) return;
+    try {
+      const data = await posApi.getDeliverySettlements(selectedBranch.id);
+      setSettlements(data);
     } catch (err) {
       console.error(err);
     }
@@ -152,6 +167,18 @@ export const DeliveryBoard: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View Settlement Logs */}
+          <button
+            onClick={() => {
+              fetchSettlements();
+              setIsHistoryOpen(true);
+            }}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 font-bold text-xs transition"
+          >
+            <FileText className="w-4 h-4 text-cyan-400" />
+            <span>Settlement History</span>
+          </button>
+
           {/* Settle Rider COD Action Button */}
           <button
             onClick={() => handleOpenSettlement()}
@@ -476,6 +503,66 @@ export const DeliveryBoard: React.FC = () => {
                   {isSettling ? 'Reconciling...' : 'Confirm Reconciliation & Close Rider Shift'}
                 </button>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Rider COD Settlement History Modal */}
+      {isHistoryOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2 text-cyan-400 font-bold text-sm">
+                <FileText className="w-5 h-5" />
+                <span>Rider End-of-Shift COD Settlement Audit Trail</span>
+              </div>
+              <button onClick={() => setIsHistoryOpen(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {settlements.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No past rider settlement records found for this branch.
+              </div>
+            ) : (
+              <div className="max-h-80 overflow-y-auto pr-1">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+                    <tr>
+                      <th className="p-2.5">Date / Time</th>
+                      <th className="p-2.5">Rider</th>
+                      <th className="p-2.5 text-center">Delivered</th>
+                      <th className="p-2.5 text-right">Expected (₨)</th>
+                      <th className="p-2.5 text-right">Collected (₨)</th>
+                      <th className="p-2.5 text-right">Variance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-medium">
+                    {settlements.map(st => (
+                      <tr key={st.id} className="hover:bg-slate-800/40">
+                        <td className="p-2.5 text-slate-400 font-sans">
+                          {new Date(st.settledAt).toLocaleDateString()} {new Date(st.settledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="p-2.5 text-white font-bold">{st.rider?.name || 'Rider'}</td>
+                        <td className="p-2.5 text-center text-slate-300">{st.totalOrdersDelivered}</td>
+                        <td className="p-2.5 text-right font-mono text-slate-300">₨{st.totalCODExpectedPKR.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono font-bold text-white">₨{st.totalCashCollectedPKR.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono font-bold">
+                          {st.shortageSurplusPKR === 0 ? (
+                            <span className="text-emerald-400">₨0</span>
+                          ) : st.shortageSurplusPKR > 0 ? (
+                            <span className="text-blue-400">+₨{st.shortageSurplusPKR}</span>
+                          ) : (
+                            <span className="text-rose-400">-₨{Math.abs(st.shortageSurplusPKR)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>

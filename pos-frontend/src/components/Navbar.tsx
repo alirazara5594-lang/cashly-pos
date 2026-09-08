@@ -16,7 +16,8 @@ import {
   BookOpen,
   Boxes,
   FileText,
-  Users
+  Users,
+  Truck
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
@@ -63,21 +64,22 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCallOrder }) => {
     setIsSyncing(false);
   };
 
+  // If restaurant is single branch with no Head Office, hide dropdown arrow
+  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
+
   const navLinks = [
     { path: '/', label: 'POS Register', icon: Store },
     { path: '/kitchen', label: 'Kitchen KDS', icon: ChefHat },
     { path: '/order-tab', label: 'Order Tab', icon: Tablet },
     { path: '/delivery', label: 'Delivery', icon: Bike },
     { path: '/inventory', label: 'Inventory', icon: Boxes },
+    { path: '/transfers', label: isMultiBranchChain ? 'Supply Chain' : 'Procurement', icon: Truck },
     { path: '/reports', label: 'Reports', icon: FileText },
     { path: '/users', label: 'Staff & Roles', icon: Users },
     { path: '/menu', label: 'Menu & Tax', icon: BookOpen },
     { path: '/director', label: 'Dashboard', icon: BarChart3 },
     { path: '/super-admin', label: 'Super Admin', icon: ShieldCheck },
   ];
-
-  // If restaurant is single branch with no Head Office, hide dropdown arrow
-  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 text-slate-100 sticky top-0 z-50">
