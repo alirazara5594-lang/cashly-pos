@@ -9,17 +9,25 @@ import {
   PackageCheck, 
   X
 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { StockTransferOrder, PurchaseOrder, RawIngredient } from '../types';
 
 export const SupplyChainManagement: React.FC = () => {
   const { selectedTenant, selectedBranch } = usePosStore();
+  const location = useLocation();
   
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const [activeTab, setActiveTab] = useState<'transfers' | 'procurement'>(
-    isMultiBranchChain ? 'transfers' : 'procurement'
+    location.state?.tab || (isMultiBranchChain ? 'transfers' : 'procurement')
   );
+
+  useEffect(() => {
+    if (location.state?.tab) {
+      setActiveTab(location.state.tab);
+    }
+  }, [location.state]);
 
   const [transfers, setTransfers] = useState<StockTransferOrder[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);

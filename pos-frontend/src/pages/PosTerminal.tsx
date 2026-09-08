@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { 
   Search, 
   Barcode, 
@@ -418,26 +419,44 @@ export const PosTerminal: React.FC = () => {
             ))}
           </div>
 
-          {/* Dine-In Table Picker */}
+          {/* Dine-In Table Picker (Organized by Floors / Sections) */}
           {orderType === 'DineIn' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400 font-medium">Table:</span>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400 font-medium">Dining Table & Floor:</span>
+                <Link to="/floors" className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold">
+                  + Manage Floors
+                </Link>
+              </div>
+
               <select
                 value={selectedTable}
                 onChange={(e) => setSelectedTable(e.target.value)}
-                className="flex-1 px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-bold text-emerald-400 focus:outline-none"
+                className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-bold text-emerald-400 focus:outline-none"
               >
                 {tables.length > 0 ? (
-                  tables.map(t => (
-                    <option key={t.id} value={t.tableNumber}>
-                      {t.tableNumber} - {t.section} {t.isOccupied ? '(Occupied)' : '(Vacant)'}
-                    </option>
+                  // Group tables by their section/floor
+                  Array.from(new Set(tables.map(t => t.section || 'Main Hall'))).map(floorName => (
+                    <optgroup key={floorName} label={`📍 ${floorName}`}>
+                      {tables
+                        .filter(t => (t.section || 'Main Hall') === floorName)
+                        .map(t => (
+                          <option key={t.id} value={t.tableNumber}>
+                            {t.tableNumber} ({t.capacity} Seats) {t.isOccupied ? '🔴 Occupied' : '🟢 Vacant'}
+                          </option>
+                        ))}
+                    </optgroup>
                   ))
                 ) : (
                   <>
-                    <option value="T-1">T-1 (Indoor)</option>
-                    <option value="T-2">T-2 (Terrace)</option>
-                    <option value="T-3">T-3 (Family)</option>
+                    <optgroup label="Ground Floor">
+                      <option value="T-1">T-1 (4 Seats) 🟢 Vacant</option>
+                      <option value="T-2">T-2 (4 Seats) 🟢 Vacant</option>
+                    </optgroup>
+                    <optgroup label="1st Floor (Family)">
+                      <option value="T-3">T-3 (6 Seats) 🟢 Vacant</option>
+                      <option value="T-4">T-4 (8 Seats) 🟢 Vacant</option>
+                    </optgroup>
                   </>
                 )}
               </select>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChefHat, Clock, CheckCircle2, RefreshCw, Flame, Coffee, Utensils } from 'lucide-react';
+import { ChefHat, Clock, CheckCircle2, RefreshCw, Flame, Coffee, Utensils, Wheat } from 'lucide-react';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { KitchenTicket } from '../types';
@@ -96,8 +96,8 @@ export const KitchenDisplay: React.FC = () => {
         </div>
       </div>
 
-      {/* Tickets Grid */}
-      <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      {/* Tickets Grid - items-start & content-start ensures cards hug their own natural height without stretching */}
+      <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start content-start">
         {tickets.length === 0 ? (
           <div className="col-span-full h-96 flex flex-col items-center justify-center text-slate-600 space-y-2">
             <CheckCircle2 className="w-12 h-12 stroke-[1.5] text-emerald-500/40" />
@@ -113,7 +113,7 @@ export const KitchenDisplay: React.FC = () => {
             return (
               <div
                 key={ticket.id}
-                className={`rounded-2xl border flex flex-col justify-between overflow-hidden shadow-xl transition ${
+                className={`rounded-2xl border flex flex-col overflow-hidden shadow-xl transition min-h-[140px] ${
                   ticket.status === 'Ready'
                     ? 'bg-emerald-950/20 border-emerald-800/80 shadow-emerald-500/5'
                     : isLate
@@ -154,42 +154,74 @@ export const KitchenDisplay: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Items List */}
-                <div className="p-3.5 space-y-2 flex-1">
-                  {ticket.order?.items.map((item, idx) => (
-                    <div key={idx} className="flex items-start justify-between gap-2 border-b border-slate-800/60 pb-2">
-                      <div className="flex items-start gap-2">
-                        <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-black text-xs">
-                          {item.quantity}x
-                        </span>
-                        <div>
-                          <div className="font-bold text-xs text-white leading-tight">{item.productName}</div>
-                          {item.modifiersSummary && (
-                            <div className="text-[10px] text-amber-300 italic mt-0.5">
-                              +{item.modifiersSummary}
+                {/* Items List - Card height remains normal by default, and increases when ingredients are present */}
+                <div className="p-3 space-y-2.5">
+                  {ticket.order?.items.map((item, idx) => {
+                    const recipeItems = item.product?.recipeItems || [];
+                    const hasIngredients = recipeItems.length > 0;
+
+                    return (
+                      <div key={idx} className="border-b border-slate-800/60 pb-2.5 last:border-b-0 last:pb-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2">
+                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-black text-xs shrink-0 mt-0.5">
+                              {item.quantity}x
+                            </span>
+                            <div>
+                              <div className="font-bold text-xs text-white leading-tight">{item.productName}</div>
+                              {item.modifiersSummary && (
+                                <div className="text-[10px] text-amber-300 italic mt-0.5">
+                                  +{item.modifiersSummary}
+                                </div>
+                              )}
+                              {item.specialNotes && (
+                                <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
+                                  Note: "{item.specialNotes}"
+                                </div>
+                              )}
                             </div>
-                          )}
-                          {item.specialNotes && (
-                            <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
-                              Note: "{item.specialNotes}"
-                            </div>
-                          )}
+                          </div>
                         </div>
+
+                        {/* Ingredients / Recipe BOM List - Increases KOT card height with ingredients */}
+                        {hasIngredients && (
+                          <div className="mt-2 pl-2.5 ml-2 border-l-2 border-amber-500/50 space-y-1">
+                            <div className="text-[10px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1">
+                              <Wheat className="w-3 h-3 text-amber-400" />
+                              <span>Ingredients ({recipeItems.length})</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {recipeItems.map((r, rIdx) => {
+                                const ingName = r.ingredient?.name || r.ingredientName || 'Ingredient';
+                                const totalQty = Math.round((r.quantityRequired * item.quantity) * 100) / 100;
+                                return (
+                                  <span
+                                    key={rIdx}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 text-[10px] border border-slate-700/80 font-medium"
+                                  >
+                                    <span className="text-amber-400 font-bold font-mono">{totalQty} {r.unit}</span>
+                                    <span className="truncate max-w-[120px]">{ingName}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* Footer Action */}
-                <div className="p-3 bg-slate-850/80 border-t border-slate-800 flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-400 uppercase font-bold tracking-wider">
-                    Station: <span className="text-slate-200">{ticket.station}</span>
+                <div className="p-2.5 bg-slate-850/80 border-t border-slate-800 flex items-center justify-between gap-2 mt-auto">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                    Station: <span className="text-slate-200 font-semibold">{ticket.station}</span>
                   </span>
 
                   {ticket.status !== 'Ready' ? (
                     <button
                       onClick={() => handleUpdateStatus(ticket.id, 'Ready')}
-                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs shadow-lg shadow-emerald-600/20 transition flex items-center gap-1.5"
+                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs shadow-lg shadow-emerald-600/20 transition flex items-center gap-1.5"
                     >
                       <CheckCircle2 className="w-4 h-4" />
                       <span>Mark Ready</span>
@@ -197,7 +229,7 @@ export const KitchenDisplay: React.FC = () => {
                   ) : (
                     <button
                       onClick={() => handleUpdateStatus(ticket.id, 'Completed')}
-                      className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-xs transition"
+                      className="px-3.5 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-xs transition"
                     >
                       Archive Ticket
                     </button>

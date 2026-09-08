@@ -44,7 +44,10 @@ interface PosState {
   taxMode: 'Exclusive' | 'Inclusive';
   paymentMethod: PaymentMethod;
   isMenuEditLocked: boolean; // Super Admin managed menu lock
+  theme: 'light' | 'dark';
 
+  setTheme: (theme: 'light' | 'dark') => void;
+  toggleTheme: () => void;
   setPaymentMethod: (method: PaymentMethod) => void;
   setTaxSettings: (settings: { cashRate?: number; cardRate?: number; mode?: 'Exclusive' | 'Inclusive' }) => void;
   setIsMenuEditLocked: (locked: boolean) => void;
@@ -110,6 +113,17 @@ export const usePosStore = create<PosState>((set, get) => ({
   taxMode: 'Exclusive',
   paymentMethod: 'Cash',
   isMenuEditLocked: true,
+  theme: (localStorage.getItem('cashly_pos_theme') as 'light' | 'dark') || 'light',
+
+  setTheme: (theme) => {
+    localStorage.setItem('cashly_pos_theme', theme);
+    set({ theme });
+  },
+  toggleTheme: () => {
+    const next = get().theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('cashly_pos_theme', next);
+    set({ theme: next });
+  },
 
   parkedBills: [],
 

@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
+import { TopHeader } from './components/TopHeader';
 import { CallOrderModal } from './components/CallOrderModal';
 import { PosTerminal } from './pages/PosTerminal';
 import { KitchenDisplay } from './pages/KitchenDisplay';
@@ -14,12 +15,15 @@ import { InventoryManagement } from './pages/InventoryManagement';
 import { SupplyChainManagement } from './pages/SupplyChainManagement';
 import { ReportsManagement } from './pages/ReportsManagement';
 import { UserManagement } from './pages/UserManagement';
+import { FloorManagement } from './pages/FloorManagement';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 
 export function App() {
-  const { setTenants } = usePosStore();
+  const { setTenants, theme } = usePosStore();
   const [isCallOrderOpen, setIsCallOrderOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -36,26 +40,46 @@ export function App() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-emerald-500 selection:text-slate-950 font-sans">
-        <Navbar onOpenCallOrder={() => setIsCallOrderOpen(true)} />
+      <div className={`min-h-screen flex selection:bg-emerald-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
+        theme === 'light' ? 'theme-light bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'
+      }`}>
+        {/* Left Side Navigation Sidebar with grouped submodules */}
+        <Sidebar 
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          isMobileOpen={isMobileSidebarOpen}
+          onCloseMobile={() => setIsMobileSidebarOpen(false)}
+        />
 
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <Routes>
-            <Route path="/" element={<PosTerminal />} />
-            <Route path="/kitchen" element={<KitchenDisplay />} />
-            <Route path="/order-tab" element={<OrderTab />} />
-            <Route path="/delivery" element={<DeliveryBoard />} />
-            <Route path="/inventory" element={<InventoryManagement />} />
-            <Route path="/transfers" element={<SupplyChainManagement />} />
-            <Route path="/reports" element={<ReportsManagement />} />
-            <Route path="/users" element={<UserManagement />} />
-            <Route path="/menu" element={<MenuManagement />} />
-            <Route path="/director" element={<DirectorDashboard />} />
-            <Route path="/super-admin" element={<SuperAdmin />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
+        {/* Main Content Area (Offset by left sidebar width) */}
+        <div className={`flex-1 flex flex-col min-h-screen transition-all duration-300 ${
+          isSidebarCollapsed ? 'lg:pl-18' : 'lg:pl-64'
+        }`}>
+          {/* Top Header Bar */}
+          <TopHeader 
+            onOpenCallOrder={() => setIsCallOrderOpen(true)}
+            onToggleSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+            isSidebarOpen={isMobileSidebarOpen}
+          />
 
+          <main className="flex-1 flex flex-col overflow-hidden">
+            <Routes>
+              <Route path="/" element={<PosTerminal />} />
+              <Route path="/floors" element={<FloorManagement />} />
+              <Route path="/kitchen" element={<KitchenDisplay />} />
+              <Route path="/order-tab" element={<OrderTab />} />
+              <Route path="/delivery" element={<DeliveryBoard />} />
+              <Route path="/inventory" element={<InventoryManagement />} />
+              <Route path="/transfers" element={<SupplyChainManagement />} />
+              <Route path="/reports" element={<ReportsManagement />} />
+              <Route path="/users" element={<UserManagement />} />
+              <Route path="/menu" element={<MenuManagement />} />
+              <Route path="/director" element={<DirectorDashboard />} />
+              <Route path="/super-admin" element={<SuperAdmin />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </main>
+        </div>
 
         <CallOrderModal
           isOpen={isCallOrderOpen}

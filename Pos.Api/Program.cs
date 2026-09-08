@@ -416,9 +416,72 @@ app.MapGet("/api/tables", async (AppDbContext db, Guid branchId) =>
 {
     var tables = await db.DiningTables
         .Where(t => t.BranchId == branchId)
-        .OrderBy(t => t.TableNumber)
+        .OrderBy(t => t.Section)
+        .ThenBy(t => t.TableNumber)
         .ToListAsync();
     return Results.Ok(tables);
+});
+
+app.MapPost("/api/tables", async (AppDbContext db, CreateTableDto dto) =>
+{
+    var branch = await db.Branches.FindAsync(dto.BranchId);
+    if (branch == null) return Results.NotFound(new { message = "Branch not found" });
+
+    var existing = await db.DiningTables
+        .FirstOrDefaultAsync(t => t.BranchId == dto.BranchId && t.TableNumber.ToLower() == dto.TableNumber.ToLower());
+    if (existing != null)
+    {
+        return Results.BadRequest(new { message = $"Table '{dto.TableNumber}' already exists in this branch" });
+    }
+
+    var table = new DiningTable
+    {
+        BranchId = dto.BranchId,
+        TableNumber = dto.TableNumber.Trim().ToUpper(),
+        Section = string.IsNullOrWhiteSpace(dto.Section) ? "Main Hall" : dto.Section.Trim(),
+        Capacity = dto.Capacity > 0 ? dto.Capacity : 4,
+        IsOccupied = false
+    };
+
+    db.DiningTables.Add(table);
+    await db.SaveChangesAsync();
+    return Results.Created($"/api/tables/{table.Id}", table);
+});
+
+app.MapPut("/api/tables/{id:guid}", async (AppDbContext db, Guid id, UpdateTableDto dto) =>
+{
+    var table = await db.DiningTables.FindAsync(id);
+    if (table == null) return Results.NotFound(new { message = "Table not found" });
+
+    if (!string.IsNullOrWhiteSpace(dto.TableNumber))
+    {
+        table.TableNumber = dto.TableNumber.Trim().ToUpper();
+    }
+    if (!string.IsNullOrWhiteSpace(dto.Section))
+    {
+        table.Section = dto.Section.Trim();
+    }
+    if (dto.Capacity.HasValue && dto.Capacity.Value > 0)
+    {
+        table.Capacity = dto.Capacity.Value;
+    }
+    if (dto.IsOccupied.HasValue)
+    {
+        table.IsOccupied = dto.IsOccupied.Value;
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(table);
+});
+
+app.MapDelete("/api/tables/{id:guid}", async (AppDbContext db, Guid id) =>
+{
+    var table = await db.DiningTables.FindAsync(id);
+    if (table == null) return Results.NotFound(new { message = "Table not found" });
+
+    db.DiningTables.Remove(table);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Table deleted successfully" });
 });
 
 // --- Mode 1 Parallel Order Dispatch ---
@@ -577,6 +640,9 @@ app.MapGet("/api/kitchen/tickets", async (AppDbContext db, Guid branchId, Kitche
     var query = db.KitchenTickets
         .Include(k => k.Order)
             .ThenInclude(o => o!.Items)
+                .ThenInclude(i => i.Product)
+                    .ThenInclude(p => p!.RecipeItems)
+                        .ThenInclude(r => r.Ingredient)
         .Where(k => k.BranchId == branchId && k.Status != "Completed")
         .OrderBy(k => k.CreatedAt)
         .AsQueryable();
@@ -1967,6 +2033,9 @@ public record ReceiveTransferDto(string? ReceivedBy, string? Notes);
 public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items);
 public record CreatePOItemDto(Guid IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR);
 public record ReceivePODto(string? ReceivedBy, string? Notes);
+public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
+public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
+
 
 
 

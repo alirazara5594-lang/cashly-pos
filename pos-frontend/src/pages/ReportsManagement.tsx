@@ -9,14 +9,24 @@ import {
   RefreshCw,
   Building2
 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { ZReportSummary, CategorySalesReport, ItemPerformanceReport } from '../types';
 
 export const ReportsManagement: React.FC = () => {
   const { selectedBranch } = usePosStore();
+  const location = useLocation();
 
-  const [activeTab, setActiveTab] = useState<'zreport' | 'categories' | 'products'>('zreport');
+  const [activeTab, setActiveTab] = useState<'zreport' | 'categories' | 'products'>(
+    location.state?.tab || 'zreport'
+  );
+
+  useEffect(() => {
+    if (location.state?.tab) {
+      setActiveTab(location.state.tab);
+    }
+  }, [location.state]);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedDaysRange, setSelectedDaysRange] = useState<number>(7);
   const [loading, setLoading] = useState(false);
@@ -166,36 +176,46 @@ export const ReportsManagement: React.FC = () => {
           <div className="space-y-6">
             {zReport ? (
               <>
-                {/* 4 Summary Cards */}
+                {/* 4 Summary Cards - Clean Normal Height */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Gross Sales Turnover</div>
-                    <div className="text-2xl font-black text-emerald-400 mt-1">₨{zReport.totalSalesPKR.toLocaleString()}</div>
-                    <div className="text-[11px] text-slate-500 mt-1">{zReport.totalOrders} paid orders settled</div>
+                    <div>
+                      <div className="text-xl font-black text-emerald-400 leading-tight">₨{zReport.totalSalesPKR.toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">{zReport.totalOrders} paid orders settled</div>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
                       <span>Cash In Drawer</span>
                       <Banknote className="w-4 h-4 text-emerald-400" />
                     </div>
-                    <div className="text-2xl font-black text-white mt-1">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
-                    <div className="text-[11px] text-slate-400 mt-1">Float: ₨{zReport.openingFloatPKR.toLocaleString()} + Cash: ₨{zReport.cashSalesPKR.toLocaleString()}</div>
+                    <div>
+                      <div className="text-xl font-black text-white leading-tight">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={`Float: ₨${zReport.openingFloatPKR.toLocaleString()} + Cash: ₨${zReport.cashSalesPKR.toLocaleString()}`}>
+                        Float: ₨{zReport.openingFloatPKR.toLocaleString()} + Cash: ₨{zReport.cashSalesPKR.toLocaleString()}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
                       <span>Card / Digital</span>
                       <CreditCard className="w-4 h-4 text-sky-400" />
                     </div>
-                    <div className="text-2xl font-black text-sky-400 mt-1">₨{(zReport.cardSalesPKR + zReport.digitalSalesPKR).toLocaleString()}</div>
-                    <div className="text-[11px] text-slate-400 mt-1">Card: ₨{zReport.cardSalesPKR.toLocaleString()} | Wallet: ₨{zReport.digitalSalesPKR.toLocaleString()}</div>
+                    <div>
+                      <div className="text-xl font-black text-sky-400 leading-tight">₨{(zReport.cardSalesPKR + zReport.digitalSalesPKR).toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 truncate">Card: ₨{zReport.cardSalesPKR.toLocaleString()} | Wallet: ₨{zReport.digitalSalesPKR.toLocaleString()}</div>
+                    </div>
                   </div>
 
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Tax Collected</div>
-                    <div className="text-2xl font-black text-amber-400 mt-1">₨{zReport.totalTaxPKR.toLocaleString()}</div>
-                    <div className="text-[11px] text-amber-500/80 mt-1">Cash (16%) & Card (8%) Split</div>
+                    <div>
+                      <div className="text-xl font-black text-amber-400 leading-tight">₨{zReport.totalTaxPKR.toLocaleString()}</div>
+                      <div className="text-[10px] text-amber-500/80 mt-0.5">Cash (16%) &amp; Card (8%) Split</div>
+                    </div>
                   </div>
                 </div>
 

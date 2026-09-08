@@ -12,6 +12,7 @@ export const OrderTab: React.FC = () => {
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const [tables, setTables] = useState<any[]>([]);
   const [activeTable, setActiveTable] = useState<string>('T-1');
+  const [selectedFloor, setSelectedFloor] = useState<string>('all');
 
   // Tab Cart
   const [tabCart, setTabCart] = useState<CartItem[]>([]);
@@ -122,25 +123,63 @@ export const OrderTab: React.FC = () => {
     <div className="flex-1 flex flex-col md:flex-row h-[calc(100vh-53px)] overflow-hidden bg-slate-950 text-slate-100">
       {/* Left Menu Section */}
       <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-800">
-        {/* Table Selector Strip */}
-        <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Tablet className="w-5 h-5 text-purple-400" />
-            <span className="font-bold text-xs uppercase tracking-wider text-slate-300">Select Dining Table:</span>
+        {/* Table & Floor Selector Strip */}
+        <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Tablet className="w-5 h-5 text-purple-400" />
+              <span className="font-bold text-xs uppercase tracking-wider text-slate-300">Select Dining Table:</span>
+            </div>
+
+            {/* Floor filter pill buttons */}
+            {tables.length > 0 && (
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[50vw]">
+                <button
+                  onClick={() => setSelectedFloor('all')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
+                    selectedFloor === 'all'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  All Floors
+                </button>
+                {Array.from(new Set(tables.map(t => t.section || 'Main Hall'))).map(fl => (
+                  <button
+                    key={fl}
+                    onClick={() => setSelectedFloor(fl)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition whitespace-nowrap ${
+                      selectedFloor === fl
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {fl}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            {(tables.length > 0 ? tables : [{ tableNumber: 'T-1' }, { tableNumber: 'T-2' }, { tableNumber: 'T-3' }, { tableNumber: 'T-4' }]).map((t: any) => (
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+            {(tables.length > 0 
+              ? (selectedFloor === 'all' ? tables : tables.filter(t => (t.section || 'Main Hall') === selectedFloor))
+              : [{ tableNumber: 'T-1' }, { tableNumber: 'T-2' }, { tableNumber: 'T-3' }, { tableNumber: 'T-4' }]
+            ).map((t: any) => (
               <button
                 key={t.tableNumber}
                 onClick={() => setActiveTable(t.tableNumber)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0 ${
                   activeTable === t.tableNumber
                     ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                    : t.isOccupied
+                    ? 'bg-rose-950/60 border border-rose-800 text-rose-300 hover:bg-rose-900/60'
                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}
               >
                 <span>{t.tableNumber}</span>
+                {t.section && <span className="text-[9px] opacity-70">({t.section})</span>}
+                {t.isOccupied && <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />}
               </button>
             ))}
           </div>

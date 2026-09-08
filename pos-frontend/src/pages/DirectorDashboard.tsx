@@ -98,72 +98,72 @@ export const DirectorDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Top 4 KPI Metric Cards */}
+      {/* Top 4 KPI Metric Cards - Clean Normal Height */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Metric 1: Today's Revenue */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl">
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Today's Gross Sales</span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Today's Gross Sales</span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-white">
+          <div>
+            <div className="text-xl font-black text-white leading-tight">
               ₨{(kpis?.todaySalesPKR || 0).toLocaleString()}
             </div>
-            <div className="text-[11px] text-emerald-400 flex items-center gap-1 mt-1 font-semibold">
-              <ArrowUpRight className="w-3.5 h-3.5" /> +14.8% vs yesterday
+            <div className="text-[10px] text-emerald-400 flex items-center gap-1 mt-0.5 font-semibold">
+              <ArrowUpRight className="w-3 h-3" /> +14.8% vs yesterday
             </div>
           </div>
         </div>
 
         {/* Metric 2: Total Orders */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl">
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Orders Processed</span>
-            <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Orders Processed</span>
+            <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
               <ShoppingBag className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-white">{kpis?.totalOrders || 0}</div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              <strong className="text-emerald-400">{kpis?.completedOrders || 0} completed</strong> • {kpis?.activeOrders || 0} in progress
+          <div>
+            <div className="text-xl font-black text-white leading-tight">{kpis?.totalOrders || 0}</div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              <strong className="text-emerald-400">{kpis?.completedOrders || 0} completed</strong> • {kpis?.activeOrders || 0} active
             </div>
           </div>
         </div>
 
         {/* Metric 3: Average Basket Value */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl">
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Avg Ticket / Basket</span>
-            <div className="w-8 h-8 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Avg Ticket / Basket</span>
+            <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center">
               <BarChart3 className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-white">
+          <div>
+            <div className="text-xl font-black text-white leading-tight">
               ₨{(kpis?.avgBasketPKR || 0).toLocaleString()}
             </div>
-            <div className="text-[11px] text-purple-300 mt-1">
+            <div className="text-[10px] text-purple-300 mt-0.5">
               High average spending per receipt
             </div>
           </div>
         </div>
 
         {/* Metric 4: Cash Drawer Status */}
-        <div className="p-5 rounded-2xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl">
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Live Cash Drawer Float</span>
-            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Live Cash Drawer Float</span>
+            <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
               <Wallet className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-emerald-400">₨58,500</div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Active Shift: <strong>Hamza POS</strong> (Counter 1)
+          <div>
+            <div className="text-xl font-black text-emerald-400 leading-tight">₨58,500</div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              Active Shift: <strong>Hamza POS</strong>
             </div>
           </div>
         </div>

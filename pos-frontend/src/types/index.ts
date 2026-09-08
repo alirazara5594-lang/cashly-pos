@@ -31,6 +31,7 @@ export interface Product {
   station: KitchenStation;
   isActive: boolean;
   modifiers?: ProductModifier[];
+  recipeItems?: ProductRecipeItem[];
 }
 
 export interface Category {
@@ -51,6 +52,7 @@ export interface CartItem {
   modifiersSummary?: string;
   specialNotes?: string;
   station: KitchenStation;
+  product?: Product;
 }
 
 
@@ -90,6 +92,16 @@ export interface KitchenTicket {
   status: string;
   createdAt: string;
   order?: Order;
+}
+
+export interface DiningTable {
+  id: string;
+  branchId: string;
+  tableNumber: string;
+  section: string; // e.g. "Ground Floor", "1st Floor (Family)", "Rooftop / Terrace", "Outdoor Lawn"
+  capacity: number;
+  isOccupied: boolean;
+  currentOrderId?: string;
 }
 
 export interface Rider {
@@ -216,12 +228,18 @@ export interface ProductRecipeItem {
   id: string;
   productId: string;
   ingredientId: string;
-  ingredientName: string;
-  ingredientCategory: string;
+  ingredientName?: string;
+  ingredientCategory?: string;
   quantityRequired: number;
   unit: string;
-  costPerUnitPKR: number;
-  estimatedCostPKR: number;
+  costPerUnitPKR?: number;
+  estimatedCostPKR?: number;
+  ingredient?: {
+    id: string;
+    name: string;
+    category?: string;
+    unit: string;
+  };
 }
 
 export type UserRole = 'OwnerAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter';

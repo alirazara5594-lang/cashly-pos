@@ -12,14 +12,24 @@ import {
   Wheat,
   Plus
 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { BranchStockItem, RawIngredient } from '../types';
 
 export const InventoryManagement: React.FC = () => {
   const { selectedBranch, selectedTenant } = usePosStore();
+  const location = useLocation();
 
-  const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>('ingredients');
+  const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>(
+    location.state?.tab || 'ingredients'
+  );
+
+  useEffect(() => {
+    if (location.state?.tab) {
+      setActiveTab(location.state.tab);
+    }
+  }, [location.state]);
 
   // Finished Product Stocks
   const [stocks, setStocks] = useState<BranchStockItem[]>([]);

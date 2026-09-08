@@ -19,7 +19,8 @@ import type {
   AppUser,
   StockTransferOrder,
   PurchaseOrder,
-  RiderSettlementRecord
+  RiderSettlementRecord,
+  DiningTable
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -78,9 +79,21 @@ export const posApi = {
 
 
 
-  // Tables
+  // Dining Tables & Floor Sections
   getTables: async (branchId: string) => {
-    const res = await api.get('/api/tables', { params: { branchId } });
+    const res = await api.get<DiningTable[]>('/api/tables', { params: { branchId } });
+    return res.data;
+  },
+  createTable: async (data: { branchId: string; tableNumber: string; section?: string; capacity: number }) => {
+    const res = await api.post<DiningTable>('/api/tables', data);
+    return res.data;
+  },
+  updateTable: async (id: string, data: { tableNumber?: string; section?: string; capacity?: number; isOccupied?: boolean }) => {
+    const res = await api.put<DiningTable>(`/api/tables/${id}`, data);
+    return res.data;
+  },
+  deleteTable: async (id: string) => {
+    const res = await api.delete(`/api/tables/${id}`);
     return res.data;
   },
 
