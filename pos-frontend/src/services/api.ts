@@ -15,7 +15,8 @@ import type {
   CategorySalesReport,
   ItemPerformanceReport,
   RawIngredient,
-  ProductRecipeItem
+  ProductRecipeItem,
+  AppUser
 } from '../types';
 
 
@@ -295,7 +296,38 @@ export const posApi = {
   }[]) => {
     const res = await api.post(`/api/recipes/${productId}`, items);
     return res.data;
+  },
+
+  // Users & Role Permissions
+  getUsers: async (tenantId: string, branchId?: string) => {
+    const res = await api.get<AppUser[]>('/api/users', { params: { tenantId, branchId } });
+    return res.data;
+  },
+  createUser: async (data: {
+    tenantId: string;
+    branchId?: string;
+    fullName: string;
+    username: string;
+    pinCode?: string;
+    role: number;
+    canViewFinancialReports: boolean;
+    canManageInventory: boolean;
+    canManageMenuAndTax: boolean;
+    canGiveDiscounts: boolean;
+    canVoidOrders: boolean;
+  }) => {
+    const res = await api.post<AppUser>('/api/users', data);
+    return res.data;
+  },
+  updateUser: async (id: string, data: any) => {
+    const res = await api.put<AppUser>(`/api/users/${id}`, data);
+    return res.data;
+  },
+  deleteUser: async (id: string) => {
+    const res = await api.delete(`/api/users/${id}`);
+    return res.data;
   }
 };
+
 
 

@@ -317,3 +317,33 @@ public class CashShift
     public decimal VariancePKR { get; set; }
     public bool IsClosed { get; set; } = false;
 }
+
+public enum UserRole
+{
+    OwnerAdmin = 1,
+    BranchManager = 2,
+    Cashier = 3,
+    KitchenChef = 4,
+    Waiter = 5
+}
+
+public class AppUser
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? BranchId { get; set; } // null = all branches (Owner/Head Office)
+    public string FullName { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string PinCode { get; set; } = "1234";
+    public UserRole Role { get; set; } = UserRole.Cashier;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // Permissions flags
+    public bool CanViewFinancialReports { get; set; } = false;
+    public bool CanManageInventory { get; set; } = false;
+    public bool CanManageMenuAndTax { get; set; } = false;
+    public bool CanGiveDiscounts { get; set; } = false;
+    public bool CanVoidOrders { get; set; } = false;
+}
+

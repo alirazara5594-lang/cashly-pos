@@ -178,7 +178,7 @@ export const DirectorDashboard: React.FC = () => {
               <span>Branch Revenue & Counter Utilization</span>
             </h2>
             <p className="text-xs text-slate-400">
-              Live breakdown of all branches connected to {selectedTenant?.name || 'Cheezious'}
+              Live breakdown of all branches connected to {selectedTenant?.name || 'Restaurant HQ'}
             </p>
           </div>
           <span className="text-xs font-mono text-emerald-400 font-bold">Currency: PKR ₨</span>
@@ -198,9 +198,9 @@ export const DirectorDashboard: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {(kpis?.branchComparison || [
-                { branchId: '1', branchName: 'Cheezious F-7 Markaz', city: 'Islamabad', activeCounters: 5, ordersCount: 42, todaySalesPKR: 114500 },
-                { branchId: '2', branchName: 'Cheezious Gulberg III', city: 'Lahore', activeCounters: 5, ordersCount: 38, todaySalesPKR: 98200 },
-                { branchId: '3', branchName: 'Madina Mart G-9', city: 'Islamabad', activeCounters: 3, ordersCount: 29, todaySalesPKR: 64100 },
+                { branchId: '1', branchName: 'Downtown Branch', city: 'Islamabad', activeCounters: 5, ordersCount: 42, todaySalesPKR: 114500 },
+                { branchId: '2', branchName: 'Uptown Branch', city: 'Lahore', activeCounters: 5, ordersCount: 38, todaySalesPKR: 98200 },
+                { branchId: '3', branchName: 'Express Outlet', city: 'Rawalpindi', activeCounters: 3, ordersCount: 29, todaySalesPKR: 64100 },
               ]).map((branch, idx) => (
                 <tr key={idx} className="hover:bg-slate-850/50 transition">
                   <td className="py-3 font-bold text-white flex items-center gap-2">
@@ -236,7 +236,7 @@ export const DirectorDashboard: React.FC = () => {
             {[
               { name: 'Crown Crust Pizza (Large)', count: 24, revenue: '₨42,000' },
               { name: 'Zinger Supreme Burger', count: 35, revenue: '₨24,150' },
-              { name: 'Cheezious Mega Family Feast', count: 6, revenue: '₨23,100' },
+              { name: 'Grand Family Feast', count: 6, revenue: '₨23,100' },
               { name: 'Cheesy Loaded Fries', count: 28, revenue: '₨13,720' },
             ].map((item, idx) => (
               <div key={idx} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">

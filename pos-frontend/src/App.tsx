@@ -12,6 +12,7 @@ import { DirectorDashboard } from './pages/DirectorDashboard';
 import { SuperAdmin } from './pages/SuperAdmin';
 import { InventoryManagement } from './pages/InventoryManagement';
 import { ReportsManagement } from './pages/ReportsManagement';
+import { UserManagement } from './pages/UserManagement';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 
@@ -45,6 +46,7 @@ export function App() {
             <Route path="/delivery" element={<DeliveryBoard />} />
             <Route path="/inventory" element={<InventoryManagement />} />
             <Route path="/reports" element={<ReportsManagement />} />
+            <Route path="/users" element={<UserManagement />} />
             <Route path="/menu" element={<MenuManagement />} />
             <Route path="/director" element={<DirectorDashboard />} />
             <Route path="/super-admin" element={<SuperAdmin />} />

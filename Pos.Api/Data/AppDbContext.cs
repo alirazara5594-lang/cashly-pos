@@ -26,6 +26,8 @@ public class AppDbContext : DbContext
     public DbSet<Rider> Riders => Set<Rider>();
     public DbSet<RiderSettlement> RiderSettlements => Set<RiderSettlement>();
     public DbSet<CashShift> CashShifts => Set<CashShift>();
+    public DbSet<AppUser> Users => Set<AppUser>();
+
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

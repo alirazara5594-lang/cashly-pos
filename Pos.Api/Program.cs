@@ -73,7 +73,98 @@ using (var scope = app.Services.CreateScope())
                 ""QuantityRequired"" numeric(18,2) NOT NULL,
                 ""Unit"" text NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS ""Users"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid,
+                ""FullName"" text NOT NULL,
+                ""Username"" text NOT NULL,
+                ""PinCode"" text NOT NULL,
+                ""Role"" integer NOT NULL,
+                ""IsActive"" boolean NOT NULL,
+                ""CreatedAt"" timestamp with time zone NOT NULL,
+                ""CanViewFinancialReports"" boolean NOT NULL,
+                ""CanManageInventory"" boolean NOT NULL,
+                ""CanManageMenuAndTax"" boolean NOT NULL,
+                ""CanGiveDiscounts"" boolean NOT NULL,
+                ""CanVoidOrders"" boolean NOT NULL
+            );
+
+            -- Ensure columns exist on ProductModifiers
+            ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientId"" uuid;
+            ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientQty"" numeric(18,2);
+
+            -- Rename any previous Cheezious / Madina brand references to generic restaurant chains
+            UPDATE ""Tenants"" SET ""Name"" = 'Royal Grill & Kitchen (Multi-Branch Chain)', ""BusinessType"" = 0 
+            WHERE ""Id"" = '11111111-1111-1111-1111-111111111111' OR ""Name"" ILIKE '%Cheezious%';
+
+            UPDATE ""Tenants"" SET ""Name"" = 'Spice Bistro (Single Location)', ""BusinessType"" = 0 
+            WHERE ""Id"" = '22222222-2222-2222-2222-222222222222' OR ""Name"" ILIKE '%Madina%' OR ""Name"" ILIKE '%Cash & Carry%';
+
+            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill Head Office & Commissary', ""Code"" = 'RG-HO' WHERE ""Id"" = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill - Downtown Branch', ""Code"" = 'RG-DT' WHERE ""Id"" = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill - Uptown Branch', ""Code"" = 'RG-UT' WHERE ""Id"" = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+            UPDATE ""Branches"" SET ""Name"" = 'Spice Bistro - Main Dining', ""Code"" = 'SB-01' WHERE ""Id"" = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+
+            -- Purge any grocery/retail products
+            DELETE FROM ""BranchStocks"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
+            DELETE FROM ""ProductRecipeItems"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
+            DELETE FROM ""ProductModifiers"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
+            DELETE FROM ""OrderItems"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
+            DELETE FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01');
+            DELETE FROM ""Categories"" WHERE ""Name"" = 'Pantry & Groceries';
+
+            UPDATE ""Products"" SET ""Name"" = REPLACE(""Name"", 'Cheezious', 'Royal') WHERE ""Name"" LIKE '%Cheezious%';
+            UPDATE ""Products"" SET ""SKU"" = REPLACE(""SKU"", 'CHZ-', 'RG-') WHERE ""SKU"" LIKE 'CHZ-%';
+            UPDATE ""OrderItems"" SET ""ProductName"" = REPLACE(""ProductName"", 'Cheezious', 'Royal') WHERE ""ProductName"" LIKE '%Cheezious%';
         ");
+
+        var singleTenantId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var singleBranchId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        if (!await db.Products.AnyAsync(p => p.TenantId == singleTenantId))
+        {
+            var singleCat = new Category { Id = Guid.NewGuid(), TenantId = singleTenantId, Name = "Wraps & Grills", Icon = "sandwich", SortOrder = 1 };
+            db.Categories.Add(singleCat);
+            var sp1 = new Product
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleTenantId,
+                CategoryId = singleCat.Id,
+                SKU = "SB-WRP-01",
+                Barcode = "896101112233",
+                Name = "Crispy Chicken Wrap",
+                UrduName = "کرسپی چکن ریپ",
+                Description = "Crispy spiced chicken rolled in tortilla with garlic sauce and greens",
+                CostPricePKR = 280,
+                SellingPricePKR = 620,
+                Unit = "Piece",
+                Station = KitchenStation.Grill,
+                ImageUrl = "https://images.unsplash.com/photo-1626700051175-6818013e1d4f?w=400"
+            };
+            var sp2 = new Product
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleTenantId,
+                CategoryId = singleCat.Id,
+                SKU = "SB-BBQ-01",
+                Barcode = "896101112244",
+                Name = "Smoky BBQ Platter",
+                UrduName = "اسمونکی بی بی کیو پلیٹر",
+                Description = "Flame-grilled succulent chicken skewers with mint chutney and fresh paratha",
+                CostPricePKR = 520,
+                SellingPricePKR = 1150,
+                Unit = "Platter",
+                Station = KitchenStation.Grill,
+                ImageUrl = "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400"
+            };
+            db.Products.AddRange(sp1, sp2);
+            db.BranchStocks.AddRange(
+                new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranchId, ProductId = sp1.Id, QuantityOnHand = 75 },
+                new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranchId, ProductId = sp2.Id, QuantityOnHand = 60 }
+            );
+            await db.SaveChangesAsync();
+        }
 
         await DbSeeder.SeedAsync(db);
     }
@@ -1031,8 +1122,184 @@ app.MapPost("/api/recipes/{productId}", async (AppDbContext db, Guid productId, 
     });
 });
 
+// --- USERS & PERMISSIONS ENDPOINTS ---
+
+// 1. Get users for tenant/branch (with auto-seed of restaurant staff if empty)
+app.MapGet("/api/users", async (AppDbContext db, Guid tenantId, Guid? branchId) =>
+{
+    var query = db.Users.Where(u => u.TenantId == tenantId);
+    if (branchId.HasValue)
+    {
+        query = query.Where(u => u.BranchId == null || u.BranchId == branchId.Value);
+    }
+
+    var users = await query.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync();
+
+    if (!users.Any())
+    {
+        var seedUsers = new List<AppUser>
+        {
+            new()
+            {
+                TenantId = tenantId,
+                BranchId = null, // Executive / Owner has access to all branches
+                FullName = "Director / Restaurant Owner",
+                Username = "owner_admin",
+                PinCode = "9999",
+                Role = UserRole.OwnerAdmin,
+                IsActive = true,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = true,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new()
+            {
+                TenantId = tenantId,
+                BranchId = branchId,
+                FullName = "Branch Operations Manager",
+                Username = "branch_mgr",
+                PinCode = "5555",
+                Role = UserRole.BranchManager,
+                IsActive = true,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new()
+            {
+                TenantId = tenantId,
+                BranchId = branchId,
+                FullName = "Main Counter Cashier",
+                Username = "cashier_1",
+                PinCode = "1234",
+                Role = UserRole.Cashier,
+                IsActive = true,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+            new()
+            {
+                TenantId = tenantId,
+                BranchId = branchId,
+                FullName = "Head Chef (Kitchen Lead)",
+                Username = "chef_lead",
+                PinCode = "4321",
+                Role = UserRole.KitchenChef,
+                IsActive = true,
+                CanViewFinancialReports = false,
+                CanManageInventory = true, // Kitchen ingredients
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+            new()
+            {
+                TenantId = tenantId,
+                BranchId = branchId,
+                FullName = "Dining Hall Captain (Waiter)",
+                Username = "waiter_tab1",
+                PinCode = "1111",
+                Role = UserRole.Waiter,
+                IsActive = true,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            }
+        };
+
+        db.Users.AddRange(seedUsers);
+        await db.SaveChangesAsync();
+        users = seedUsers;
+    }
+
+    return Results.Ok(users.Select(u => new
+    {
+        id = u.Id,
+        tenantId = u.TenantId,
+        branchId = u.BranchId,
+        fullName = u.FullName,
+        username = u.Username,
+        pinCode = u.PinCode,
+        role = u.Role.ToString(),
+        isActive = u.IsActive,
+        createdAt = u.CreatedAt,
+        permissions = new
+        {
+            canViewFinancialReports = u.CanViewFinancialReports,
+            canManageInventory = u.CanManageInventory,
+            canManageMenuAndTax = u.CanManageMenuAndTax,
+            canGiveDiscounts = u.CanGiveDiscounts,
+            canVoidOrders = u.CanVoidOrders
+        }
+    }));
+});
+
+// 2. Create User
+app.MapPost("/api/users", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
+{
+    var user = new AppUser
+    {
+        TenantId = dto.TenantId,
+        BranchId = dto.BranchId,
+        FullName = dto.FullName,
+        Username = dto.Username.ToLower().Trim(),
+        PinCode = dto.PinCode ?? "1234",
+        Role = dto.Role,
+        IsActive = true,
+        CanViewFinancialReports = dto.CanViewFinancialReports,
+        CanManageInventory = dto.CanManageInventory,
+        CanManageMenuAndTax = dto.CanManageMenuAndTax,
+        CanGiveDiscounts = dto.CanGiveDiscounts,
+        CanVoidOrders = dto.CanVoidOrders
+    };
+
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+    return Results.Ok(user);
+});
+
+// 3. Update User Permissions / Role
+app.MapPut("/api/users/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
+{
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
+    if (user == null) return Results.NotFound();
+
+    if (!string.IsNullOrEmpty(dto.FullName)) user.FullName = dto.FullName;
+    if (dto.Role.HasValue) user.Role = dto.Role.Value;
+    if (!string.IsNullOrEmpty(dto.PinCode)) user.PinCode = dto.PinCode;
+    if (dto.IsActive.HasValue) user.IsActive = dto.IsActive.Value;
+    if (dto.CanViewFinancialReports.HasValue) user.CanViewFinancialReports = dto.CanViewFinancialReports.Value;
+    if (dto.CanManageInventory.HasValue) user.CanManageInventory = dto.CanManageInventory.Value;
+    if (dto.CanManageMenuAndTax.HasValue) user.CanManageMenuAndTax = dto.CanManageMenuAndTax.Value;
+    if (dto.CanGiveDiscounts.HasValue) user.CanGiveDiscounts = dto.CanGiveDiscounts.Value;
+    if (dto.CanVoidOrders.HasValue) user.CanVoidOrders = dto.CanVoidOrders.Value;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(user);
+});
+
+// 4. Delete / Deactivate User
+app.MapDelete("/api/users/{id}", async (AppDbContext db, Guid id) =>
+{
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
+    if (user == null) return Results.NotFound();
+
+    db.Users.Remove(user);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "User deleted successfully", id });
+});
 
 // --- REPORTS & AUDIT ENGINE ENDPOINTS ---
+
 
 // 1. Z-Report: Daily Register Close & Cash Reconciliation
 app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid branchId, DateTime? date) =>
@@ -1298,5 +1565,32 @@ public record RecipeItemInputDto(
     decimal QuantityRequired,
     string? Unit
 );
+
+public record CreateUserDto(
+    Guid TenantId,
+    Guid? BranchId,
+    string FullName,
+    string Username,
+    string? PinCode,
+    UserRole Role,
+    bool CanViewFinancialReports,
+    bool CanManageInventory,
+    bool CanManageMenuAndTax,
+    bool CanGiveDiscounts,
+    bool CanVoidOrders
+);
+
+public record UpdateUserDto(
+    string? FullName,
+    UserRole? Role,
+    string? PinCode,
+    bool? IsActive,
+    bool? CanViewFinancialReports,
+    bool? CanManageInventory,
+    bool? CanManageMenuAndTax,
+    bool? CanGiveDiscounts,
+    bool? CanVoidOrders
+);
+
 
 

@@ -10,12 +10,14 @@ import {
   Check, 
   X,
   Percent,
-  RefreshCw
+  RefreshCw,
+  Wheat
 } from 'lucide-react';
 
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
-import type { Product, Category, KitchenStation } from '../types';
+import type { Product, Category, KitchenStation, RawIngredient, ProductRecipeItem } from '../types';
+
 
 export const MenuManagement: React.FC = () => {
   const { 
@@ -43,6 +45,15 @@ export const MenuManagement: React.FC = () => {
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [isEditProductOpen, setIsEditProductOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  // Recipe (BOM) Modal states
+  const [recipeProduct, setRecipeProduct] = useState<Product | null>(null);
+  const [recipeItems, setRecipeItems] = useState<ProductRecipeItem[]>([]);
+  const [availableIngredients, setAvailableIngredients] = useState<RawIngredient[]>([]);
+  const [selectedIngId, setSelectedIngId] = useState('');
+  const [selectedIngQty, setSelectedIngQty] = useState<number>(1);
+  const [isSavingRecipe, setIsSavingRecipe] = useState(false);
+
 
   // New Product Form
   const [newProdName, setNewProdName] = useState('');
@@ -146,6 +157,78 @@ export const MenuManagement: React.FC = () => {
       console.error(err);
     }
   };
+
+  const handleOpenRecipe = async (product: Product) => {
+    setRecipeProduct(product);
+    try {
+      const branchId = selectedTenant?.branches?.[0]?.id || 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const [rec, ings] = await Promise.all([
+        posApi.getProductRecipe(product.id),
+        posApi.getRawIngredients(branchId)
+      ]);
+      setRecipeItems(rec);
+      setAvailableIngredients(ings);
+      if (ings.length > 0) {
+        setSelectedIngId(ings[0].id);
+      }
+    } catch (err) {
+      console.error('Failed to load recipe', err);
+    }
+  };
+
+  const handleAddRecipeItem = () => {
+    if (!selectedIngId || selectedIngQty <= 0) return;
+    const ing = availableIngredients.find(i => i.id === selectedIngId);
+    if (!ing) return;
+
+    const existingIdx = recipeItems.findIndex(r => r.ingredientId === selectedIngId);
+    if (existingIdx > -1) {
+      const updated = [...recipeItems];
+      updated[existingIdx].quantityRequired += selectedIngQty;
+      updated[existingIdx].estimatedCostPKR = Math.round(updated[existingIdx].quantityRequired * ing.costPerUnitPKR);
+      setRecipeItems(updated);
+    } else {
+      setRecipeItems([...recipeItems, {
+        id: `temp-${Date.now()}`,
+        productId: recipeProduct?.id || '',
+        ingredientId: ing.id,
+        ingredientName: ing.name,
+        ingredientCategory: ing.category,
+        quantityRequired: selectedIngQty,
+        unit: ing.unit,
+        costPerUnitPKR: ing.costPerUnitPKR,
+        estimatedCostPKR: Math.round(selectedIngQty * ing.costPerUnitPKR)
+      }]);
+    }
+    setSelectedIngQty(1);
+  };
+
+  const handleRemoveRecipeItem = (ingredientId: string) => {
+    setRecipeItems(recipeItems.filter(r => r.ingredientId !== ingredientId));
+  };
+
+  const handleSaveRecipe = async () => {
+    if (!recipeProduct) return;
+    setIsSavingRecipe(true);
+    try {
+      await posApi.saveProductRecipe(
+        recipeProduct.id,
+        recipeItems.map(r => ({
+          ingredientId: r.ingredientId,
+          quantityRequired: r.quantityRequired,
+          unit: r.unit
+        }))
+      );
+      setRecipeProduct(null);
+      await fetchCatalog();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save recipe');
+    } finally {
+      setIsSavingRecipe(false);
+    }
+  };
+
 
   const filteredProducts = products.filter(p => {
     const matchesCat = selectedCategory === 'all' || p.categoryId === selectedCategory;
@@ -444,6 +527,15 @@ export const MenuManagement: React.FC = () => {
                   <td className="py-3 text-right">
                     <div className="flex items-center justify-end gap-1.5">
                       <button
+                        onClick={() => handleOpenRecipe(p)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-600/40 text-[10px] font-bold transition"
+                        title="Configure Recipe / Raw Ingredients (BOM)"
+                      >
+                        <Wheat className="w-3 h-3" />
+                        <span>Recipe</span>
+                      </button>
+
+                      <button
                         onClick={() => {
                           setEditingProduct(p);
                           setIsEditProductOpen(true);
@@ -702,6 +794,124 @@ export const MenuManagement: React.FC = () => {
             >
               Update Product
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Recipe (Bill of Materials) Configuration Modal */}
+      {recipeProduct && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Wheat className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-white text-base">Recipe & Raw Materials (BOM)</h3>
+                  <div className="text-xs text-slate-400">Configure ingredient deduction for: <span className="text-amber-400 font-bold">{recipeProduct.name}</span></div>
+                </div>
+              </div>
+              <button onClick={() => setRecipeProduct(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+            </div>
+
+            {/* Current Recipe Ingredients List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Required Ingredients per Sale:</div>
+              {recipeItems.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                  No ingredients configured for this item yet. Add buns, meat, sauces, cheese, fries, etc. below.
+                </div>
+              ) : (
+                recipeItems.map(item => (
+                  <div key={item.ingredientId} className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-bold text-white text-xs">{item.ingredientName}</div>
+                      <div className="text-[10px] text-slate-400">{item.ingredientCategory} • ₨{item.costPerUnitPKR} / {item.unit}</div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-950/60 text-amber-300 border border-amber-800 text-xs font-mono font-bold">
+                        {item.quantityRequired} {item.unit}
+                      </span>
+                      <span className="text-xs font-mono text-emerald-400 font-semibold min-w-[60px] text-right">
+                        ₨{item.estimatedCostPKR}
+                      </span>
+                      <button
+                        onClick={() => handleRemoveRecipeItem(item.ingredientId)}
+                        className="p-1 text-slate-500 hover:text-rose-400 transition"
+                        title="Remove from recipe"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Calculated Raw Cost Summary */}
+            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+              <span className="text-xs text-slate-400 font-medium">Calculated Ingredient Cost per Portion:</span>
+              <span className="text-base font-black text-emerald-400 font-mono">
+                ₨{recipeItems.reduce((s, i) => s + (i.estimatedCostPKR || 0), 0).toLocaleString()}
+              </span>
+            </div>
+
+            {/* Add Ingredient to Recipe Row */}
+            <div className="p-3 rounded-xl bg-slate-850 border border-slate-800 space-y-2">
+              <div className="text-xs font-bold text-slate-300">Add Ingredient to Recipe:</div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="sm:col-span-2">
+                  <select
+                    value={selectedIngId}
+                    onChange={(e) => setSelectedIngId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-semibold text-white focus:outline-none"
+                  >
+                    {availableIngredients.map(i => (
+                      <option key={i.id} value={i.id}>
+                        {i.name} ({i.unit} - ₨{i.costPerUnitPKR})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min="0.001"
+                    step="0.01"
+                    placeholder="Qty"
+                    value={selectedIngQty}
+                    onChange={(e) => setSelectedIngQty(Number(e.target.value))}
+                    className="w-20 px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-bold text-white text-center focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddRecipeItem}
+                    className="flex-1 py-1.5 bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs rounded-lg transition"
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Action Buttons */}
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRecipeProduct(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingRecipe}
+                onClick={handleSaveRecipe}
+                className="px-5 py-2 rounded-xl bg-emerald-600 text-slate-950 font-black text-xs hover:bg-emerald-500 transition shadow-lg shadow-emerald-600/30 disabled:opacity-50"
+              >
+                {isSavingRecipe ? 'Saving Recipe...' : 'Save Recipe & Recalculate Cost'}
+              </button>
+            </div>
           </div>
         </div>
       )}

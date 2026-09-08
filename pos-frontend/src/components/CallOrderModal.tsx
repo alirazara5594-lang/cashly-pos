@@ -138,7 +138,7 @@ export const CallOrderModal: React.FC<CallOrderModalProps> = ({ isOpen, onClose 
 
             <div className="p-2.5 rounded-lg bg-slate-800/50 border border-slate-700 text-xs text-slate-400 flex items-center justify-between">
               <span>Fulfillment Branch:</span>
-              <span className="font-bold text-emerald-400">{selectedBranch?.name || 'Cheezious F-7 Markaz'}</span>
+              <span className="font-bold text-emerald-400">{selectedBranch?.name || 'Main Branch'}</span>
             </div>
           </div>
         </div>

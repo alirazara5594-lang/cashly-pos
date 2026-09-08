@@ -19,33 +19,33 @@ public static class DbSeeder
         }
 
         // 1. Seed Tenants
-        var cheezious = new Tenant
+        var chainRestaurant = new Tenant
         {
             Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            Name = "Cheezious Fast Food",
+            Name = "Royal Grill & Kitchen (Multi-Branch Chain)",
             BusinessType = BusinessType.Restaurant,
             Tier = SubscriptionTier.Professional,
             IsActive = true
         };
 
-        var retailMart = new Tenant
+        var singleRestaurant = new Tenant
         {
             Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
-            Name = "Madina Cash & Carry",
-            BusinessType = BusinessType.CashAndCarry,
+            Name = "Spice Bistro (Single Location)",
+            BusinessType = BusinessType.Restaurant,
             Tier = SubscriptionTier.Standard,
             IsActive = true
         };
 
-        db.Tenants.AddRange(cheezious, retailMart);
+        db.Tenants.AddRange(chainRestaurant, singleRestaurant);
 
         // 2. Seed Branches
-        var cheeziousHO = new Branch
+        var chainHO = new Branch
         {
             Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            TenantId = cheezious.Id,
-            Name = "Cheezious Head Office",
-            Code = "CHZ-HO",
+            TenantId = chainRestaurant.Id,
+            Name = "Royal Grill Head Office & Commissary",
+            Code = "RG-HO",
             Address = "Blue Area, Jinnah Avenue",
             City = "Islamabad",
             Phone = "051-111-443-443",
@@ -54,13 +54,13 @@ public static class DbSeeder
             AllowedOrderTabs = 25
         };
 
-        var cheeziousF7 = new Branch
+        var chainDowntown = new Branch
         {
             Id = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-            TenantId = cheezious.Id,
-            Name = "Cheezious F-7 Markaz",
-            Code = "CHZ-F7",
-            Address = "Shop 12-14, F-7 Markaz",
+            TenantId = chainRestaurant.Id,
+            Name = "Royal Grill - Downtown Branch",
+            Code = "RG-DT",
+            Address = "Sector F-7 Markaz",
             City = "Islamabad",
             Phone = "051-2651122",
             IsHeadOffice = false,
@@ -68,12 +68,12 @@ public static class DbSeeder
             AllowedOrderTabs = 15
         };
 
-        var cheeziousGulberg = new Branch
+        var chainUptown = new Branch
         {
             Id = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
-            TenantId = cheezious.Id,
-            Name = "Cheezious Gulberg III",
-            Code = "CHZ-LHR",
+            TenantId = chainRestaurant.Id,
+            Name = "Royal Grill - Uptown Branch",
+            Code = "RG-UT",
             Address = "Main Boulevard, Gulberg III",
             City = "Lahore",
             Phone = "042-3578912",
@@ -82,37 +82,37 @@ public static class DbSeeder
             AllowedOrderTabs = 15
         };
 
-        var martG9 = new Branch
+        var singleBranch = new Branch
         {
             Id = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
-            TenantId = retailMart.Id,
-            Name = "Madina Mart G-9",
-            Code = "MCC-G9",
-            Address = "G-9 Markaz, Karachi Company",
+            TenantId = singleRestaurant.Id,
+            Name = "Spice Bistro - Main Dining",
+            Code = "SB-01",
+            Address = "F-11 Markaz",
             City = "Islamabad",
             Phone = "051-2287654",
-            IsHeadOffice = false,
+            IsHeadOffice = false, // Independent single restaurant without Head Office or central warehouse
             AllowedCounters = 3,
             AllowedOrderTabs = 6
         };
 
-        db.Branches.AddRange(cheeziousHO, cheeziousF7, cheeziousGulberg, martG9);
+        db.Branches.AddRange(chainHO, chainDowntown, chainUptown, singleBranch);
 
         // 3. Seed Terminals
         db.Terminals.AddRange(
-            new Terminal { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, TerminalName = "Counter 1 - Fast Checkout", TerminalType = TerminalType.Counter },
-            new Terminal { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, TerminalName = "Counter 2 - Takeaway/Call", TerminalType = TerminalType.Counter },
-            new Terminal { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, TerminalName = "Order Tab 1 - Ground Hall", TerminalType = TerminalType.OrderTab },
-            new Terminal { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, TerminalName = "Order Tab 2 - Terrace Lounge", TerminalType = TerminalType.OrderTab },
-            new Terminal { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, TerminalName = "Kitchen Screen - Main Line", TerminalType = TerminalType.KitchenDisplay },
-            new Terminal { Id = Guid.NewGuid(), BranchId = martG9.Id, TerminalName = "Express Register 1", TerminalType = TerminalType.Counter },
-            new Terminal { Id = Guid.NewGuid(), BranchId = martG9.Id, TerminalName = "Bulk Register 2", TerminalType = TerminalType.Counter }
+            new Terminal { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, TerminalName = "Counter 1 - Fast Checkout", TerminalType = TerminalType.Counter },
+            new Terminal { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, TerminalName = "Counter 2 - Takeaway/Call", TerminalType = TerminalType.Counter },
+            new Terminal { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, TerminalName = "Order Tab 1 - Ground Hall", TerminalType = TerminalType.OrderTab },
+            new Terminal { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, TerminalName = "Order Tab 2 - Terrace Lounge", TerminalType = TerminalType.OrderTab },
+            new Terminal { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, TerminalName = "Kitchen Screen - Main Line", TerminalType = TerminalType.KitchenDisplay },
+            new Terminal { Id = Guid.NewGuid(), BranchId = singleBranch.Id, TerminalName = "Counter POS 1", TerminalType = TerminalType.Counter },
+            new Terminal { Id = Guid.NewGuid(), BranchId = singleBranch.Id, TerminalName = "Kitchen Screen", TerminalType = TerminalType.KitchenDisplay }
         );
 
         // 4. Seed Riders
-        var riderTariq = new Rider { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, Name = "Tariq Khan", Phone = "0301-5551234", VehicleNumber = "ICT-LE-4590", IsAvailable = true };
-        var riderBilal = new Rider { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, Name = "Bilal Ahmed", Phone = "0333-8889922", VehicleNumber = "RWP-7721", IsAvailable = true };
-        var riderUsman = new Rider { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, Name = "Usman Ali", Phone = "0345-1237890", VehicleNumber = "ICT-MN-1102", IsAvailable = true };
+        var riderTariq = new Rider { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, Name = "Tariq Khan", Phone = "0301-5551234", VehicleNumber = "ICT-LE-4590", IsAvailable = true };
+        var riderBilal = new Rider { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, Name = "Bilal Ahmed", Phone = "0333-8889922", VehicleNumber = "RWP-7721", IsAvailable = true };
+        var riderUsman = new Rider { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, Name = "Usman Ali", Phone = "0345-1237890", VehicleNumber = "ICT-MN-1102", IsAvailable = true };
         db.Riders.AddRange(riderTariq, riderBilal, riderUsman);
 
         // 5. Seed Tables
@@ -121,31 +121,45 @@ public static class DbSeeder
             db.DiningTables.Add(new DiningTable
             {
                 Id = Guid.NewGuid(),
-                BranchId = cheeziousF7.Id,
+                BranchId = chainDowntown.Id,
                 TableNumber = $"T-{i}",
-                Section = i <= 4 ? "Indoor Hall" : "Terrace Family Lounge",
+                Section = i <= 4 ? "Indoor Dining" : "Family Lounge",
                 Capacity = i % 2 == 0 ? 6 : 4,
                 IsOccupied = i == 2 || i == 5
             });
         }
 
-        // 6. Seed Categories
-        var catPizza = new Category { Id = Guid.NewGuid(), TenantId = cheezious.Id, Name = "Pizzas & Calzones", Icon = "pizza", SortOrder = 1 };
-        var catBurgers = new Category { Id = Guid.NewGuid(), TenantId = cheezious.Id, Name = "Burgers & Sandwiches", Icon = "burger", SortOrder = 2 };
-        var catSides = new Category { Id = Guid.NewGuid(), TenantId = cheezious.Id, Name = "Sides & Appetizers", Icon = "french-fries", SortOrder = 3 };
-        var catBeverages = new Category { Id = Guid.NewGuid(), TenantId = cheezious.Id, Name = "Beverages & Shakes", Icon = "coffee", SortOrder = 4 };
-        var catDeals = new Category { Id = Guid.NewGuid(), TenantId = cheezious.Id, Name = "Exclusive Deals", Icon = "gift", SortOrder = 5 };
-        var catGrocery = new Category { Id = Guid.NewGuid(), TenantId = retailMart.Id, Name = "Pantry & Groceries", Icon = "shopping-bag", SortOrder = 1 };
+        // Seed Dining Tables for Single Independent Restaurant
+        for (int i = 1; i <= 6; i++)
+        {
+            db.DiningTables.Add(new DiningTable
+            {
+                Id = Guid.NewGuid(),
+                BranchId = singleBranch.Id,
+                TableNumber = $"Table-{i}",
+                Section = "Main Dining Room",
+                Capacity = 4,
+                IsOccupied = i == 1
+            });
+        }
 
-        db.Categories.AddRange(catPizza, catBurgers, catSides, catBeverages, catDeals, catGrocery);
+        // 6. Seed Categories
+        var catPizza = new Category { Id = Guid.NewGuid(), TenantId = chainRestaurant.Id, Name = "Pizzas & Calzones", Icon = "pizza", SortOrder = 1 };
+        var catBurgers = new Category { Id = Guid.NewGuid(), TenantId = chainRestaurant.Id, Name = "Burgers & Sandwiches", Icon = "burger", SortOrder = 2 };
+        var catSides = new Category { Id = Guid.NewGuid(), TenantId = chainRestaurant.Id, Name = "Sides & Appetizers", Icon = "french-fries", SortOrder = 3 };
+        var catBeverages = new Category { Id = Guid.NewGuid(), TenantId = chainRestaurant.Id, Name = "Beverages & Shakes", Icon = "coffee", SortOrder = 4 };
+        var catDeals = new Category { Id = Guid.NewGuid(), TenantId = chainRestaurant.Id, Name = "Exclusive Deals", Icon = "gift", SortOrder = 5 };
+        var catSingleWraps = new Category { Id = Guid.NewGuid(), TenantId = singleRestaurant.Id, Name = "Wraps & Grills", Icon = "sandwich", SortOrder = 1 };
+
+        db.Categories.AddRange(catPizza, catBurgers, catSides, catBeverages, catDeals, catSingleWraps);
 
         // 7. Seed Products
         var p1 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catPizza.Id,
-            SKU = "CHZ-PIZ-01",
+            SKU = "RG-PIZ-01",
             Barcode = "8964000101",
             Name = "Crown Crust Pizza (Large)",
             UrduName = "کراؤن کرسٹ پیزا",
@@ -160,9 +174,9 @@ public static class DbSeeder
         var p2 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catPizza.Id,
-            SKU = "CHZ-PIZ-02",
+            SKU = "RG-PIZ-02",
             Barcode = "8964000102",
             Name = "Bihari Kebab Pizza (Regular)",
             UrduName = "بہاری کباب پیزا",
@@ -177,9 +191,9 @@ public static class DbSeeder
         var p3 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catBurgers.Id,
-            SKU = "CHZ-BGR-01",
+            SKU = "RG-BGR-01",
             Barcode = "8964000201",
             Name = "Zinger Supreme Burger",
             UrduName = "زنگر سپریم برگر",
@@ -194,12 +208,12 @@ public static class DbSeeder
         var p4 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catSides.Id,
-            SKU = "CHZ-SDE-01",
+            SKU = "RG-SDE-01",
             Barcode = "8964000301",
             Name = "Cheesy Loaded Fries",
-            UrduName = "چیزی لودڈ فرائیز",
+            UrduName = "چیزی لوڈڈ فرائیز",
             Description = "Crisp golden fries topped with melted mozzarella, jalapenos, and chipotle",
             CostPricePKR = 210,
             SellingPricePKR = 490,
@@ -211,9 +225,9 @@ public static class DbSeeder
         var p5 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catBeverages.Id,
-            SKU = "CHZ-BEV-01",
+            SKU = "RG-BEV-01",
             Barcode = "8964000401",
             Name = "Fresh Mint Margarita",
             UrduName = "منٹ مارگریٹا",
@@ -228,12 +242,12 @@ public static class DbSeeder
         var p6 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
+            TenantId = chainRestaurant.Id,
             CategoryId = catDeals.Id,
-            SKU = "CHZ-DEL-01",
+            SKU = "RG-DEL-01",
             Barcode = "8964000501",
-            Name = "Cheezious Mega Family Feast",
-            UrduName = "میگا فیملی فیسٹ",
+            Name = "Grand Family Feast",
+            UrduName = "گرینڈ فیملی فیسٹ",
             Description = "2 Large Pizzas + 1 Zinger Burger + 1.5L Drink + Loaded Fries",
             CostPricePKR = 1950,
             SellingPricePKR = 3850,
@@ -242,39 +256,39 @@ public static class DbSeeder
             ImageUrl = "https://images.unsplash.com/photo-1550547660-d9450f859349?w=400"
         };
 
-        // Retail Mart Products
+        // Single Independent Restaurant Products
         var p7 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = retailMart.Id,
-            CategoryId = catGrocery.Id,
-            SKU = "MCC-OIL-01",
+            TenantId = singleRestaurant.Id,
+            CategoryId = catSingleWraps.Id,
+            SKU = "SB-WRP-01",
             Barcode = "896101112233",
-            Name = "Habib Cooking Oil (5 Litre Tin)",
-            UrduName = "حبیب کوکنگ آئل 5 لیٹر",
-            Description = "100% pure refined cooking oil with Vitamin A & D",
-            CostPricePKR = 2450,
-            SellingPricePKR = 2650,
-            Unit = "Can",
-            Station = KitchenStation.MainKitchen,
-            ImageUrl = "https://images.unsplash.com/photo-1474979266404-7eaacbcd87c5?w=400"
+            Name = "Crispy Chicken Wrap",
+            UrduName = "کرسپی چکن ریپ",
+            Description = "Crispy spiced chicken rolled in tortilla with garlic sauce and greens",
+            CostPricePKR = 280,
+            SellingPricePKR = 620,
+            Unit = "Piece",
+            Station = KitchenStation.Grill,
+            ImageUrl = "https://images.unsplash.com/photo-1626700051175-6818013e1d4f?w=400"
         };
 
         var p8 = new Product
         {
             Id = Guid.NewGuid(),
-            TenantId = retailMart.Id,
-            CategoryId = catGrocery.Id,
-            SKU = "MCC-RCE-01",
+            TenantId = singleRestaurant.Id,
+            CategoryId = catSingleWraps.Id,
+            SKU = "SB-BBQ-01",
             Barcode = "896101112244",
-            Name = "Super Kernel Basmati Rice (5 Kg)",
-            UrduName = "سپر کرنل باسمتی چاول 5 کلو",
-            Description = "Aged aromatic long grain basmati rice",
-            CostPricePKR = 1650,
-            SellingPricePKR = 1850,
-            Unit = "Bag",
-            Station = KitchenStation.MainKitchen,
-            ImageUrl = "https://images.unsplash.com/photo-1586201375761-83865001e31c?w=400"
+            Name = "Smoky BBQ Platter",
+            UrduName = "اسمونکی بی بی کیو پلیٹر",
+            Description = "Flame-grilled succulent chicken skewers with mint chutney and fresh paratha",
+            CostPricePKR = 520,
+            SellingPricePKR = 1150,
+            Unit = "Platter",
+            Station = KitchenStation.Grill,
+            ImageUrl = "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400"
         };
 
         db.Products.AddRange(p1, p2, p3, p4, p5, p6, p7, p8);
@@ -284,26 +298,27 @@ public static class DbSeeder
             new ProductModifier { Id = Guid.NewGuid(), ProductId = p1.Id, Name = "Extra Cheese Layer", PricePKR = 250 },
             new ProductModifier { Id = Guid.NewGuid(), ProductId = p1.Id, Name = "Dip Sauce (Garlic Mayo)", PricePKR = 100 },
             new ProductModifier { Id = Guid.NewGuid(), ProductId = p3.Id, Name = "Add Cheese Slice", PricePKR = 80 },
-            new ProductModifier { Id = Guid.NewGuid(), ProductId = p3.Id, Name = "Double Patty", PricePKR = 250 }
+            new ProductModifier { Id = Guid.NewGuid(), ProductId = p3.Id, Name = "Double Patty", PricePKR = 250 },
+            new ProductModifier { Id = Guid.NewGuid(), ProductId = p7.Id, Name = "Add Jalapeno & Cheese", PricePKR = 90 }
         );
 
         // 9. Stock Levels
         db.BranchStocks.AddRange(
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p1.Id, QuantityOnHand = 120 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p2.Id, QuantityOnHand = 95 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p3.Id, QuantityOnHand = 250 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p4.Id, QuantityOnHand = 180 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p5.Id, QuantityOnHand = 300 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = cheeziousF7.Id, ProductId = p6.Id, QuantityOnHand = 50 },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = martG9.Id, ProductId = p7.Id, QuantityOnHand = 45, BatchNumber = "B-8890", ExpiryDate = DateTime.UtcNow.AddMonths(18) },
-            new BranchStock { Id = Guid.NewGuid(), BranchId = martG9.Id, ProductId = p8.Id, QuantityOnHand = 80, BatchNumber = "B-7721", ExpiryDate = DateTime.UtcNow.AddMonths(12) }
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p1.Id, QuantityOnHand = 120 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p2.Id, QuantityOnHand = 95 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p3.Id, QuantityOnHand = 250 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p4.Id, QuantityOnHand = 180 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p5.Id, QuantityOnHand = 300 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = chainDowntown.Id, ProductId = p6.Id, QuantityOnHand = 50 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranch.Id, ProductId = p7.Id, QuantityOnHand = 75 },
+            new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranch.Id, ProductId = p8.Id, QuantityOnHand = 60 }
         );
 
         // 10. Sample Active Shift
         var shift = new CashShift
         {
             Id = Guid.NewGuid(),
-            BranchId = cheeziousF7.Id,
+            BranchId = chainDowntown.Id,
             TerminalName = "Counter 1 - Fast Checkout",
             CashierName = "Hamza POS",
             OpenedAt = DateTime.UtcNow.AddHours(-4),
@@ -320,8 +335,8 @@ public static class DbSeeder
         var order1 = new Order
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
-            BranchId = cheeziousF7.Id,
+            TenantId = chainRestaurant.Id,
+            BranchId = chainDowntown.Id,
             OrderNumber = "ORD-101",
             OrderType = OrderType.DineIn,
             Status = OrderStatus.InKitchen,
@@ -366,8 +381,8 @@ public static class DbSeeder
         var order2 = new Order
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
-            BranchId = cheeziousF7.Id,
+            TenantId = chainRestaurant.Id,
+            BranchId = chainDowntown.Id,
             OrderNumber = "ORD-102",
             OrderType = OrderType.Delivery,
             Status = OrderStatus.OutForDelivery,
@@ -392,7 +407,7 @@ public static class DbSeeder
             Id = Guid.NewGuid(),
             OrderId = order2.Id,
             ProductId = p6.Id,
-            ProductName = "Cheezious Mega Family Feast",
+            ProductName = "Grand Family Feast",
             Quantity = 1,
             UnitPricePKR = 3850,
             TotalPricePKR = 3850,
@@ -402,8 +417,8 @@ public static class DbSeeder
         var order3 = new Order
         {
             Id = Guid.NewGuid(),
-            TenantId = cheezious.Id,
-            BranchId = cheeziousF7.Id,
+            TenantId = chainRestaurant.Id,
+            BranchId = chainDowntown.Id,
             OrderNumber = "ORD-103",
             OrderType = OrderType.Takeaway,
             Status = OrderStatus.ReadyForDispatch,
@@ -441,7 +456,7 @@ public static class DbSeeder
             {
                 Id = Guid.NewGuid(),
                 OrderId = order1.Id,
-                BranchId = cheeziousF7.Id,
+                BranchId = chainDowntown.Id,
                 TicketNumber = "KOT-101",
                 Station = KitchenStation.MainKitchen,
                 Status = "Cooking",
@@ -451,7 +466,7 @@ public static class DbSeeder
             {
                 Id = Guid.NewGuid(),
                 OrderId = order3.Id,
-                BranchId = cheeziousF7.Id,
+                BranchId = chainDowntown.Id,
                 TicketNumber = "KOT-103",
                 Station = KitchenStation.MainKitchen,
                 Status = "Ready",

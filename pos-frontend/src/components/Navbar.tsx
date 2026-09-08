@@ -15,7 +15,8 @@ import {
   ChevronDown,
   BookOpen,
   Boxes,
-  FileText
+  FileText,
+  Users
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
@@ -69,15 +70,19 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCallOrder }) => {
     { path: '/delivery', label: 'Delivery', icon: Bike },
     { path: '/inventory', label: 'Inventory', icon: Boxes },
     { path: '/reports', label: 'Reports', icon: FileText },
+    { path: '/users', label: 'Staff & Roles', icon: Users },
     { path: '/menu', label: 'Menu & Tax', icon: BookOpen },
-    { path: '/director', label: 'Director', icon: BarChart3 },
+    { path: '/director', label: 'Dashboard', icon: BarChart3 },
     { path: '/super-admin', label: 'Super Admin', icon: ShieldCheck },
   ];
+
+  // If restaurant is single branch with no Head Office, hide dropdown arrow
+  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
 
   return (
     <header className="bg-slate-900 border-b border-slate-800 text-slate-100 sticky top-0 z-50">
       <div className="px-4 py-2 flex items-center justify-between gap-4">
-        {/* Logo & Tenant / Branch Switcher */}
+        {/* Logo & Restaurant / Branch Info */}
         <div className="flex items-center gap-4">
           <Link to="/" className="flex items-center gap-2 font-bold text-xl tracking-tight text-white hover:opacity-90">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-emerald-500/20">
@@ -86,16 +91,19 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCallOrder }) => {
             <span>Cashly <span className="text-emerald-400 font-semibold text-sm px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60">POS</span></span>
           </Link>
 
-          {/* Tenant & Branch Selector */}
+          {/* Restaurant & Branch Switcher (Active if Multi-Branch Chain) */}
           <div className="relative">
             <button 
-              onClick={() => setShowTenantDropdown(!showTenantDropdown)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700/80 border border-slate-700 text-xs font-medium transition"
+              onClick={() => isMultiBranchChain && setShowTenantDropdown(!showTenantDropdown)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs font-medium transition ${
+                isMultiBranchChain ? 'hover:bg-slate-700/80 cursor-pointer' : 'cursor-default'
+              }`}
+              title={isMultiBranchChain ? 'Click to switch restaurant branch' : 'Single Restaurant Location'}
             >
               <Layers className="w-3.5 h-3.5 text-emerald-400" />
               <div className="text-left">
                 <div className="text-white font-semibold flex items-center gap-1.5">
-                  {selectedTenant?.name || 'Cheezious Fast Food'}
+                  {selectedTenant?.name || 'Restaurant'}
                   <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold uppercase tracking-wider ${
                     activePackage === 'Professional' ? 'bg-purple-900/80 text-purple-300 border border-purple-700' :
                     activePackage === 'Standard' ? 'bg-blue-900/80 text-blue-300 border border-blue-700' :
@@ -104,9 +112,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCallOrder }) => {
                     {activePackage}
                   </span>
                 </div>
-                <div className="text-slate-400 text-[11px]">{selectedBranch?.name || 'F-7 Markaz'}</div>
+                <div className="text-slate-400 text-[11px]">
+                  {selectedBranch?.isHeadOffice ? 'Head Office' : selectedBranch?.name || 'Main Hall'}
+                  {!isMultiBranchChain && ' (Single Location)'}
+                </div>
               </div>
-              <ChevronDown className="w-3 h-3 text-slate-400 ml-1" />
+              {isMultiBranchChain && <ChevronDown className="w-3 h-3 text-slate-400 ml-1" />}
             </button>
 
             {showTenantDropdown && (

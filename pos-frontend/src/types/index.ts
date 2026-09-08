@@ -224,4 +224,26 @@ export interface ProductRecipeItem {
   estimatedCostPKR: number;
 }
 
+export type UserRole = 'OwnerAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter';
+
+export interface AppUser {
+  id: string;
+  tenantId: string;
+  branchId?: string;
+  fullName: string;
+  username: string;
+  pinCode: string;
+  role: UserRole;
+  isActive: boolean;
+  createdAt: string;
+  permissions: {
+    canViewFinancialReports: boolean;
+    canManageInventory: boolean;
+    canManageMenuAndTax: boolean;
+    canGiveDiscounts: boolean;
+    canVoidOrders: boolean;
+  };
+}
+
+
 

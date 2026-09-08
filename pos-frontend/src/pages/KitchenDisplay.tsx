@@ -59,7 +59,7 @@ export const KitchenDisplay: React.FC = () => {
               </span>
             </h1>
             <p className="text-xs text-slate-400">
-              Direct live dispatch from Waiter Tabs and POS Counters • Branch: {selectedBranch?.name || 'Cheezious F-7'}
+              Direct live dispatch from Waiter Tabs and POS Counters • Branch: {selectedBranch?.name || 'Main Kitchen Branch'}
             </p>
           </div>
         </div>
