@@ -1456,14 +1456,18 @@ app.MapDelete("/api/users/{id}", async (AppDbContext db, Guid id) =>
 
 
 // 1. Z-Report: Daily Register Close & Cash Reconciliation
-app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid branchId, DateTime? date) =>
+app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime? date) =>
 {
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
+        ? branchId.Value
+        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+
     var targetDate = (date ?? DateTime.UtcNow).Date;
     var nextDate = targetDate.AddDays(1);
 
     var orders = await db.Orders
         .Include(o => o.Items)
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= targetDate && o.CreatedAt < nextDate && o.IsPaid)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= targetDate && o.CreatedAt < nextDate && o.IsPaid)
         .ToListAsync();
 
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
@@ -1480,7 +1484,7 @@ app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid branchId, DateTi
     var totalTax = orders.Sum(o => o.TaxPKR);
 
     var shift = await db.CashShifts
-        .Where(s => s.BranchId == branchId && s.OpenedAt >= targetDate && s.OpenedAt < nextDate)
+        .Where(s => s.BranchId == targetBranchId && s.OpenedAt >= targetDate && s.OpenedAt < nextDate)
         .OrderByDescending(s => s.OpenedAt)
         .FirstOrDefaultAsync();
 
@@ -1515,13 +1519,17 @@ app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid branchId, DateTi
 });
 
 // 2. Sales by Category
-app.MapGet("/api/reports/sales-by-category", async (AppDbContext db, Guid branchId, int? days) =>
+app.MapGet("/api/reports/sales-by-category", async (AppDbContext db, Guid? branchId, int? days) =>
 {
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
+        ? branchId.Value
+        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+
     var numDays = days ?? 7;
     var since = DateTime.UtcNow.Date.AddDays(-numDays);
 
     var items = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= since && o.IsPaid)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items)
         .Include(i => i.Product)
         .ThenInclude(p => p!.Category)
@@ -1552,13 +1560,17 @@ app.MapGet("/api/reports/sales-by-category", async (AppDbContext db, Guid branch
 });
 
 // 3. Top Products / Item Performance with gross margins
-app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid branchId, int? days) =>
+app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid? branchId, int? days) =>
 {
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
+        ? branchId.Value
+        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+
     var numDays = days ?? 7;
     var since = DateTime.UtcNow.Date.AddDays(-numDays);
 
     var items = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= since && o.IsPaid)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items)
         .Include(i => i.Product)
         .ThenInclude(p => p!.Category)
@@ -1600,13 +1612,17 @@ app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid branchI
 });
 
 // 4. Detailed Tax Audit & Provincial/FBR Compliance (16% Cash vs 8% Card)
-app.MapGet("/api/reports/tax-audit", async (AppDbContext db, Guid branchId, int? days, DateTime? startDate, DateTime? endDate) =>
+app.MapGet("/api/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
 {
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
+        ? branchId.Value
+        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+
     var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
     var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
 
     var orders = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
         .OrderByDescending(o => o.CreatedAt)
         .ToListAsync();
 
@@ -1664,13 +1680,17 @@ app.MapGet("/api/reports/tax-audit", async (AppDbContext db, Guid branchId, int?
 });
 
 // 5. Payment Methods & Tender Mix Breakdown
-app.MapGet("/api/reports/payment-methods", async (AppDbContext db, Guid branchId, int? days) =>
+app.MapGet("/api/reports/payment-methods", async (AppDbContext db, Guid? branchId, int? days) =>
 {
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
+        ? branchId.Value
+        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+
     var numDays = days ?? 7;
     var since = DateTime.UtcNow.Date.AddDays(-numDays);
 
     var orders = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= since && o.IsPaid)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
         .ToListAsync();
 
     var grandTotal = orders.Sum(o => o.TotalPKR);
@@ -1702,13 +1722,17 @@ app.MapGet("/api/reports/payment-methods", async (AppDbContext db, Guid branchId
 });
 
 // 6. Multi-Branch Consolidated Financials (Head Office View)
-app.MapGet("/api/reports/consolidated", async (AppDbContext db, Guid tenantId, int? days) =>
+app.MapGet("/api/reports/consolidated", async (AppDbContext db, Guid? tenantId, int? days) =>
 {
+    var targetTenantId = tenantId.HasValue && tenantId.Value != Guid.Empty
+        ? tenantId.Value
+        : await db.Tenants.Select(t => t.Id).FirstOrDefaultAsync();
+
     var numDays = days ?? 7;
     var since = DateTime.UtcNow.Date.AddDays(-numDays);
 
     var branches = await db.Branches
-        .Where(b => b.TenantId == tenantId)
+        .Where(b => b.TenantId == targetTenantId)
         .ToListAsync();
 
     var branchIds = branches.Select(b => b.Id).ToList();

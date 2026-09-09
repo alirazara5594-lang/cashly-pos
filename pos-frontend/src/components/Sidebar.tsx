@@ -15,14 +15,16 @@ import {
   ChevronDown, 
   ChevronRight,
   ChevronLeft,
-  DollarSign,
   PieChart,
   Percent,
   Wheat,
   Building2,
   Armchair,
   ShoppingBag,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Receipt,
+  CreditCard,
+  TrendingUp
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -136,9 +138,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           path: '/reports',
           icon: FileText,
           subItems: [
-            { label: 'Daily End-of-Day Z-Report', path: '/reports', state: { tab: 'zreport' }, icon: DollarSign },
-            { label: 'Category Sales Mix', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
-            { label: 'Product Performance', path: '/reports', state: { tab: 'products' }, icon: BarChart3 }
+            { label: 'Daily End-of-Day Z-Report', path: '/reports', state: { tab: 'zreport' }, icon: Receipt },
+            { label: 'Tax Audit & FBR Register', path: '/reports', state: { tab: 'tax' }, icon: Percent },
+            { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
+            { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
+            { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: CreditCard },
+            ...(isMultiBranchChain ? [
+              { label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }
+            ] : [])
           ]
         },
         {
@@ -280,7 +287,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         {item.subItems!.map((sub, subIdx) => {
                           const SubIcon = sub.icon || ChevronRight;
                           const isSubActive = location.pathname === sub.path && (
-                            !sub.state?.tab || location.search.includes(sub.state.tab)
+                            (!sub.state?.tab && !location.state?.tab) ||
+                            (sub.state?.tab && location.state?.tab === sub.state.tab) ||
+                            (sub.state?.tab && location.search.includes(sub.state.tab))
                           );
 
                           return (

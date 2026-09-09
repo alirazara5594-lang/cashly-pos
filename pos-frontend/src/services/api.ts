@@ -20,7 +20,10 @@ import type {
   StockTransferOrder,
   PurchaseOrder,
   RiderSettlementRecord,
-  DiningTable
+  DiningTable,
+  TaxAuditReport,
+  PaymentMethodsReport,
+  ConsolidatedFinancialReport
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -268,6 +271,18 @@ export const posApi = {
   },
   getItemPerformanceReport: async (branchId: string, days?: number) => {
     const res = await api.get<ItemPerformanceReport[]>('/api/reports/item-performance', { params: { branchId, days } });
+    return res.data;
+  },
+  getTaxAuditReport: async (branchId: string, days?: number, startDate?: string, endDate?: string) => {
+    const res = await api.get<TaxAuditReport>('/api/reports/tax-audit', { params: { branchId, days, startDate, endDate } });
+    return res.data;
+  },
+  getPaymentMethodsReport: async (branchId: string, days?: number) => {
+    const res = await api.get<PaymentMethodsReport>('/api/reports/payment-methods', { params: { branchId, days } });
+    return res.data;
+  },
+  getConsolidatedFinancials: async (tenantId: string, days?: number) => {
+    const res = await api.get<ConsolidatedFinancialReport>('/api/reports/consolidated', { params: { tenantId, days } });
     return res.data;
   },
 
