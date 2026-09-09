@@ -174,8 +174,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             path: '/director',
             icon: BarChart3
           }
-        ])
-      ]
+        ]
+      : [])
     },
 
     // ═══════════════════════════════════════
