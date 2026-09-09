@@ -24,7 +24,8 @@ import {
   ArrowRightLeft,
   Receipt,
   CreditCard,
-  TrendingUp
+  TrendingUp,
+  Send
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -61,124 +62,149 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile
 }) => {
   const location = useLocation();
-  const { selectedTenant } = usePosStore();
+  const { selectedTenant, selectedBranch } = usePosStore();
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
+  const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
+  // Single restaurant = owner has full access (no HQ concept)
+  const hasFullAccess = isHeadOffice || !isMultiBranchChain;
 
-  // Manage open state of expandable menus
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
     pos: true,
-    inventory: true,
-    supplyChain: true,
+    inventory: false,
+    supplyChain: false,
     reports: false,
     management: false
   });
 
   const toggleMenu = (id: string) => {
-    setOpenMenus(prev => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
+    setOpenMenus(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   const navSections: NavSection[] = [
-    {
-      title: 'Operations & Dining',
-      items: [
-        {
-          id: 'pos',
-          label: 'POS & Orders',
-          path: '/',
-          icon: Store,
-          subItems: [
-            { label: 'POS Terminal (Register)', path: '/', icon: Store },
-            { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
-            { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat },
-            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
-            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
-          ]
-        }
-      ]
-    },
+    // ═══════════════════════════════════════
+    // SECTION 1: POS & OPERATIONS (Branch only)
+    // ═══════════════════════════════════════
+    ...(!hasFullAccess ? [
+      {
+        title: 'Operations & Dining',
+        items: [
+          {
+            id: 'pos',
+            label: 'POS & Orders',
+            path: '/',
+            icon: Store,
+            subItems: [
+              { label: 'POS Terminal (Register)', path: '/', icon: Store },
+              { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat },
+              { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
+              { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+            ]
+          }
+        ]
+      }
+    ] : []),
+
+    // ═══════════════════════════════════════
+    // SECTION 2: INVENTORY (Branch: view only, HQ: full)
+    // ═══════════════════════════════════════
     {
       title: 'Inventory & Logistics',
       items: [
-        {
-          id: 'inventory',
-          label: 'Stock Management',
-          path: '/inventory',
-          icon: Boxes,
-          subItems: [
-            { label: 'Raw Ingredients & BOM', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
-            { label: 'Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
-          ]
-        },
-        {
-          id: 'supplyChain',
-          label: isMultiBranchChain ? 'Supply Chain' : 'Procurement',
-          path: '/transfers',
-          icon: Truck,
-          badge: isMultiBranchChain ? 'Commissary' : 'PO',
-          subItems: isMultiBranchChain
-            ? [
-                { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
-                { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
-              ]
-            : [
-                { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
-              ]
-        }
+        // Branch: View stock + request to HQ
+        ...(!hasFullAccess ? [
+          {
+            id: 'inventory',
+            label: 'Stock Management',
+            path: '/inventory',
+            icon: Boxes,
+            subItems: [
+              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
+              { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
+            ]
+          }
+        ] : [
+          // HQ: Full inventory + supply chain + procurement
+          {
+            id: 'inventory',
+            label: 'Stock Management',
+            path: '/inventory',
+            icon: Boxes,
+            subItems: [
+              { label: 'Raw Ingredients & BOM', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+              { label: 'Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
+            ]
+          },
+          {
+            id: 'supplyChain',
+            label: 'Supply Chain',
+            path: '/transfers',
+            icon: Truck,
+            badge: 'Commissary',
+            subItems: [
+              { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
+              { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
+            ]
+          }
+        ])
       ]
     },
-    {
-      title: 'Reporting & Analytics',
-      items: [
-        {
-          id: 'reports',
-          label: 'Financial Reports',
-          path: '/reports',
-          icon: FileText,
-          subItems: [
-            { label: 'Daily End-of-Day Z-Report', path: '/reports', state: { tab: 'zreport' }, icon: Receipt },
-            { label: 'Tax Audit & FBR Register', path: '/reports', state: { tab: 'tax' }, icon: Percent },
-            { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
-            { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
-            { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: CreditCard },
-            ...(isMultiBranchChain ? [
+
+    // ═══════════════════════════════════════
+    // SECTION 3: REPORTS (HQ only)
+    // ═══════════════════════════════════════
+    ...(hasFullAccess ? [
+      {
+            id: 'reports',
+            label: 'Financial Reports',
+            path: '/reports',
+            icon: FileText,
+            subItems: [
+              { label: 'Daily End-of-Day Z-Report', path: '/reports', state: { tab: 'zreport' }, icon: Receipt },
+              { label: 'Tax Audit & FBR Register', path: '/reports', state: { tab: 'tax' }, icon: Percent },
+              { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
+              { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
+              { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: CreditCard },
               { label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }
-            ] : [])
-          ]
-        },
-        {
-          id: 'director',
-          label: 'Executive Dashboard',
-          path: '/director',
-          icon: BarChart3
-        }
+            ]
+          },
+          {
+            id: 'director',
+            label: 'Executive Dashboard',
+            path: '/director',
+            icon: BarChart3
+          }
+        ])
       ]
     },
-    {
-      title: 'Store Administration',
-      items: [
-        {
-          id: 'management',
-          label: 'Menu & Settings',
-          path: '/menu',
-          icon: BookOpen,
-          subItems: [
-            { label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen },
-            { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
-            { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
-            { label: 'Staff & Pin Access', path: '/users', icon: Users },
-            { label: 'Super Admin Quotas', path: '/super-admin', icon: ShieldCheck }
-          ]
-        }
-      ]
-    }
+
+    // ═══════════════════════════════════════
+    // SECTION 4: ADMIN (HQ only)
+    // ═══════════════════════════════════════
+    ...(hasFullAccess ? [
+      {
+        title: 'Head Office Administration',
+        items: [
+          {
+            id: 'management',
+            label: 'Menu & Settings',
+            path: '/menu',
+            icon: BookOpen,
+            subItems: [
+              { label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen },
+              { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
+              { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
+              { label: 'Staff & Pin Access', path: '/users', icon: Users },
+              { label: 'Super Admin Quotas', path: '/super-admin', icon: ShieldCheck }
+            ]
+          }
+        ]
+      }
+    ] : [])
   ];
 
   return (
     <>
-      {/* Mobile Backdrop */}
       {isMobileOpen && (
         <div 
           onClick={onCloseMobile}
@@ -186,7 +212,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         />
       )}
 
-      {/* Sidebar Container - Stays dark slate in both light and dark modes */}
       <aside
         className={`app-sidebar fixed top-0 bottom-0 left-0 z-50 flex flex-col bg-slate-900 border-r border-slate-800 transition-all duration-300 ${
           isCollapsed ? 'w-18' : 'w-64'
@@ -205,7 +230,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="font-black text-base text-white tracking-tight leading-none">
                   Cashly <span className="text-emerald-400 font-semibold text-xs px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60">POS</span>
                 </span>
-                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">Enterprise Restaurant</span>
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">
+                  {hasFullAccess ? (isMultiBranchChain ? 'Head Office' : 'Owner') : 'Branch'}
+                </span>
               </div>
             )}
           </Link>
@@ -281,7 +308,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       </Link>
                     )}
 
-                    {/* Submenu Dropdown Items */}
                     {hasSub && isOpen && !isCollapsed && (
                       <div className="pl-6 pr-1 py-1 space-y-1 border-l-2 border-slate-800 ml-3.5 mt-1">
                         {item.subItems!.map((sub, subIdx) => {
@@ -318,17 +344,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ))}
         </div>
 
-        {/* Sidebar Footer info */}
+        {/* Sidebar Footer */}
         {!isCollapsed && (
           <div className="p-3 border-t border-slate-800 bg-slate-950/40 text-[11px]">
             <div className="flex items-center gap-2 text-slate-400">
-              <Building2 className="w-3.5 h-3.5 text-emerald-400" />
+              {isHeadOffice ? (
+                <Building2 className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Store className="w-3.5 h-3.5 text-emerald-400" />
+              )}
               <span className="truncate font-semibold text-slate-300">
-                {selectedTenant?.name || 'Restaurant HQ'}
+                {selectedBranch?.name || selectedTenant?.name || 'Restaurant'}
               </span>
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Dynamics &amp; Simphony POS Architecture
+              {isHeadOffice ? 'Head Office & Commissary' : `Branch • ${selectedBranch?.city || ''}`}
             </div>
           </div>
         )}
