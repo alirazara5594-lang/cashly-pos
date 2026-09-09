@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Tablet, Send, Plus, Minus, Trash2, CheckCircle2, Utensils } from 'lucide-react';
 import { posApi } from '../services/api';
-
 import { usePosStore } from '../store/posStore';
 import type { Product, Category, CartItem } from '../types';
 
@@ -14,7 +13,7 @@ export const OrderTab: React.FC = () => {
   const [activeTable, setActiveTable] = useState<string>('T-1');
   const [selectedFloor, setSelectedFloor] = useState<string>('all');
 
-  // Tab Cart
+  // Tab Cart - uses local state for waiter mode isolation
   const [tabCart, setTabCart] = useState<CartItem[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -27,7 +26,6 @@ export const OrderTab: React.FC = () => {
         const prods = await posApi.getProducts({ tenantId: selectedTenant?.id });
         setCategories(cats);
         setProducts(prods);
-
         if (selectedBranch?.id) {
           const tbls = await posApi.getTables(selectedBranch.id);
           setTables(tbls);
@@ -91,7 +89,7 @@ export const OrderTab: React.FC = () => {
         paymentMethod: 'Cash',
         amountPaidPKR: 0,
         changeDuePKR: 0,
-        isPaid: false, // Unpaid - settled later at counter!
+        isPaid: false,
         cashierName: 'Floor Waiter (Tab)',
         createdByRole: 'WaiterTab',
         items: tabCart.map(i => ({
@@ -130,16 +128,12 @@ export const OrderTab: React.FC = () => {
               <Tablet className="w-5 h-5 text-purple-400" />
               <span className="font-bold text-xs uppercase tracking-wider text-slate-300">Select Dining Table:</span>
             </div>
-
-            {/* Floor filter pill buttons */}
             {tables.length > 0 && (
               <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[50vw]">
                 <button
                   onClick={() => setSelectedFloor('all')}
                   className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
-                    selectedFloor === 'all'
-                      ? 'bg-purple-600 text-white'
-                      : 'bg-slate-800 text-slate-400 hover:text-white'
+                    selectedFloor === 'all' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
                   }`}
                 >
                   All Floors
@@ -149,9 +143,7 @@ export const OrderTab: React.FC = () => {
                     key={fl}
                     onClick={() => setSelectedFloor(fl)}
                     className={`px-2 py-0.5 rounded text-[10px] font-bold transition whitespace-nowrap ${
-                      selectedFloor === fl
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:text-white'
+                      selectedFloor === fl ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
                     }`}
                   >
                     {fl}
@@ -190,9 +182,7 @@ export const OrderTab: React.FC = () => {
           <button
             onClick={() => setSelectedCategoryId('all')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-              selectedCategoryId === 'all'
-                ? 'bg-purple-600 text-white'
-                : 'bg-slate-800 text-slate-400 hover:text-white'
+              selectedCategoryId === 'all' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
             }`}
           >
             All Items
@@ -202,9 +192,7 @@ export const OrderTab: React.FC = () => {
               key={c.id}
               onClick={() => setSelectedCategoryId(c.id)}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                selectedCategoryId === c.id
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-slate-800 text-slate-400 hover:text-white'
+                selectedCategoryId === c.id ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
               }`}
             >
               {c.name}
@@ -247,7 +235,6 @@ export const OrderTab: React.FC = () => {
           </span>
         </div>
 
-        {/* Success Alert Banner */}
         {showSuccess && (
           <div className="m-3 p-3 rounded-xl bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2 animate-bounce">
             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -255,7 +242,6 @@ export const OrderTab: React.FC = () => {
           </div>
         )}
 
-        {/* Selected Items */}
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {tabCart.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-600 space-y-1">
@@ -269,7 +255,6 @@ export const OrderTab: React.FC = () => {
                   <div className="font-bold text-xs text-white truncate">{item.productName}</div>
                   <div className="text-[10px] text-emerald-400">₨{item.unitPricePKR}</div>
                 </div>
-
                 <div className="flex items-center gap-1.5 bg-slate-900 px-1.5 py-0.5 rounded-lg border border-slate-800">
                   <button onClick={() => updateTabQty(item.productId, -1)} className="text-slate-400 p-0.5">
                     <Minus className="w-3 h-3" />
@@ -279,7 +264,6 @@ export const OrderTab: React.FC = () => {
                     <Plus className="w-3 h-3" />
                   </button>
                 </div>
-
                 <div className="text-right min-w-[50px]">
                   <div className="font-bold text-xs text-white">₨{item.totalPricePKR}</div>
                   <button onClick={() => removeFromTab(item.productId)} className="text-slate-500 hover:text-rose-400">
@@ -291,7 +275,6 @@ export const OrderTab: React.FC = () => {
           )}
         </div>
 
-        {/* Special Instructions & Send Button */}
         <div className="p-3 bg-slate-900 border-t border-slate-800 space-y-3">
           <div>
             <label className="block text-[11px] font-semibold text-slate-400 mb-1">Kitchen Instructions</label>
@@ -303,12 +286,10 @@ export const OrderTab: React.FC = () => {
               className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white focus:outline-none"
             />
           </div>
-
           <div className="flex justify-between items-center text-xs">
             <span className="text-slate-400">Items Total:</span>
             <span className="text-base font-black text-emerald-400">₨{totalTabPKR.toLocaleString()}</span>
           </div>
-
           <button
             onClick={handleSendOrderMode1}
             disabled={tabCart.length === 0 || isSending}

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace Pos.Api.Models;
 
@@ -173,6 +174,8 @@ public class Ingredient
     public decimal CurrentStock { get; set; }
     public decimal MinAlertLevel { get; set; } = 20;
     public string? SupplierName { get; set; }
+    [Timestamp]
+    public byte[]? RowVersion { get; set; }
 }
 
 public class ProductRecipeItem
@@ -197,6 +200,8 @@ public class BranchStock
     public decimal MinAlertLevel { get; set; } = 10;
     public string? BatchNumber { get; set; }
     public DateTime? ExpiryDate { get; set; }
+    [Timestamp]
+    public byte[]? RowVersion { get; set; }
 }
 
 
@@ -334,7 +339,7 @@ public class AppUser
     public Guid? BranchId { get; set; } // null = all branches (Owner/Head Office)
     public string FullName { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
-    public string PinCode { get; set; } = "1234";
+    public string PinCodeHash { get; set; } = string.Empty;
     public UserRole Role { get; set; } = UserRole.Cashier;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

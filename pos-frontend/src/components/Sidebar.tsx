@@ -167,7 +167,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           subItems: [
             { label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen },
             { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
-            { label: 'Tax Settings (16% / 8%)', path: '/menu', icon: Percent },
+            { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
             { label: 'Staff & Pin Access', path: '/users', icon: Users },
             { label: 'Super Admin Quotas', path: '/super-admin', icon: ShieldCheck }
           ]

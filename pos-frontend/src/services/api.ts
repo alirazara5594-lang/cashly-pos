@@ -35,7 +35,42 @@ export const api = axios.create({
   },
 });
 
+// JWT Auth interceptor
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('cashly_pos_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('cashly_pos_token');
+      localStorage.removeItem('cashly_pos_user');
+      window.location.href = '/';
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const posApi = {
+  // Auth
+  login: async (username: string, pinCode: string) => {
+    const res = await api.post<{ token: string; user: any }>('/api/auth/login', { username, pinCode });
+    if (res.data.token) {
+      localStorage.setItem('cashly_pos_token', res.data.token);
+      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+    }
+    return res.data;
+  },
+  logout: () => {
+    localStorage.removeItem('cashly_pos_token');
+    localStorage.removeItem('cashly_pos_user');
+  },
+
   // Tenancy
   getTenants: async () => {
     const res = await api.get<Tenant[]>('/api/tenants');
@@ -79,8 +114,6 @@ export const posApi = {
     const res = await api.delete(`/api/catalog/categories/${id}`);
     return res.data;
   },
-
-
 
   // Dining Tables & Floor Sections
   getTables: async (branchId: string) => {
@@ -134,6 +167,11 @@ export const posApi = {
 
   getOrders: async (branchId: string, status?: string) => {
     const res = await api.get<Order[]>('/api/orders', { params: { branchId, status } });
+    return res.data;
+  },
+
+  voidOrder: async (orderId: string, reason?: string) => {
+    const res = await api.post(`/api/orders/${orderId}/void`, { reason });
     return res.data;
   },
 
@@ -233,6 +271,20 @@ export const posApi = {
     return res.data;
   },
 
+  // Cash Shifts
+  getCashShifts: async (branchId: string) => {
+    const res = await api.get<any[]>('/api/cash-shifts', { params: { branchId } });
+    return res.data;
+  },
+  openCashShift: async (data: { branchId: string; terminalName: string; cashierName: string; openingFloatPKR: number }) => {
+    const res = await api.post('/api/cash-shifts/open', data);
+    return res.data;
+  },
+  closeCashShift: async (shiftId: string, data: { actualCashCounted: number; notes?: string }) => {
+    const res = await api.post(`/api/cash-shifts/${shiftId}/close`, data);
+    return res.data;
+  },
+
   // Inventory Management
   getInventory: async (branchId: string) => {
     const res = await api.get<BranchStockItem[]>('/api/inventory', { params: { branchId } });
@@ -253,7 +305,7 @@ export const posApi = {
   adjustStock: async (data: {
     branchId: string;
     productId: string;
-    adjustmentQty: number; // positive or negative
+    adjustmentQty: number;
     reason: string;
   }) => {
     const res = await api.post('/api/inventory/adjust', data);
@@ -358,7 +410,7 @@ export const posApi = {
     return res.data;
   },
 
-  // Inter-Branch Stock Transfers (Central Commissary <-> Outlets)
+  // Inter-Branch Stock Transfers
   getTransferOrders: async (tenantId?: string, branchId?: string) => {
     const res = await api.get<StockTransferOrder[]>('/api/transfers', { params: { tenantId, branchId } });
     return res.data;
@@ -369,28 +421,16 @@ export const posApi = {
     destinationBranchId: string;
     vehicleOrDriver?: string;
     notes?: string;
-    items: {
-      ingredientId: string;
-      ingredientName?: string;
-      quantityRequested: number;
-      unit?: string;
-    }[];
+    items: { ingredientId: string; ingredientName?: string; quantityRequested: number; unit?: string; }[];
   }) => {
     const res = await api.post<StockTransferOrder>('/api/transfers', data);
     return res.data;
   },
-  dispatchTransferOrder: async (id: string, data: {
-    dispatchedBy?: string;
-    vehicleOrDriver?: string;
-    notes?: string;
-  }) => {
+  dispatchTransferOrder: async (id: string, data: { dispatchedBy?: string; vehicleOrDriver?: string; notes?: string; }) => {
     const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/dispatch`, data);
     return res.data;
   },
-  receiveTransferOrder: async (id: string, data: {
-    receivedBy?: string;
-    notes?: string;
-  }) => {
+  receiveTransferOrder: async (id: string, data: { receivedBy?: string; notes?: string; }) => {
     const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/receive`, data);
     return res.data;
   },
@@ -399,7 +439,7 @@ export const posApi = {
     return res.data;
   },
 
-  // Vendor Purchase Orders (Procurement)
+  // Vendor Purchase Orders
   getPurchaseOrders: async (tenantId?: string, branchId?: string) => {
     const res = await api.get<PurchaseOrder[]>('/api/procurement/purchase-orders', { params: { tenantId, branchId } });
     return res.data;
@@ -409,21 +449,12 @@ export const posApi = {
     branchId: string;
     supplierName: string;
     notes?: string;
-    items: {
-      ingredientId: string;
-      ingredientName: string;
-      quantity: number;
-      unit?: string;
-      unitCostPKR: number;
-    }[];
+    items: { ingredientId: string; ingredientName: string; quantity: number; unit?: string; unitCostPKR: number; }[];
   }) => {
     const res = await api.post<PurchaseOrder>('/api/procurement/purchase-orders', data);
     return res.data;
   },
-  receivePurchaseOrder: async (id: string, data: {
-    receivedBy?: string;
-    notes?: string;
-  }) => {
+  receivePurchaseOrder: async (id: string, data: { receivedBy?: string; notes?: string; }) => {
     const res = await api.post<PurchaseOrder>(`/api/procurement/purchase-orders/${id}/receive`, data);
     return res.data;
   },
@@ -438,6 +469,3 @@ export const posApi = {
     return res.data;
   }
 };
-
-
-

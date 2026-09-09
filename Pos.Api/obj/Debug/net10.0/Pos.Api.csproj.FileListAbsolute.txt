@@ -121,3 +121,12 @@ D:\Project\cashly-pos\Pos.Api\obj\Debug\net10.0\Pos.Api.pdb
 D:\Project\cashly-pos\Pos.Api\obj\Debug\net10.0\Pos.Api.genruntimeconfig.cache
 D:\Project\cashly-pos\Pos.Api\obj\Debug\net10.0\ref\Pos.Api.dll
 D:\Project\cashly-pos\Pos.Api\obj\Debug\net10.0\Pos.Api.sourcelink.json
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\BCrypt.Net-Next.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.AspNetCore.Authentication.JwtBearer.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Abstractions.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.JsonWebTokens.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Logging.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Protocols.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Protocols.OpenIdConnect.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\Microsoft.IdentityModel.Tokens.dll
+D:\Project\cashly-pos\Pos.Api\bin\Debug\net10.0\System.IdentityModel.Tokens.Jwt.dll

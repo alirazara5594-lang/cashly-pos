@@ -1,5 +1,4 @@
-import { useEffect } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
@@ -18,6 +17,7 @@ import { UserManagement } from './pages/UserManagement';
 import { FloorManagement } from './pages/FloorManagement';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export function App() {
   const { setTenants, theme } = usePosStore();
@@ -39,7 +39,8 @@ export function App() {
   }, [setTenants]);
 
   return (
-    <BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
       <div className={`min-h-screen flex selection:bg-emerald-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
         theme === 'light' ? 'theme-light bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'
       }`}>
@@ -86,7 +87,8 @@ export function App() {
           onClose={() => setIsCallOrderOpen(false)}
         />
       </div>
-    </BrowserRouter>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

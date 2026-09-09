@@ -1,57 +1,116 @@
 using System;
 using System.Linq;
+using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Pos.Api.Data;
 using Pos.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure JSON serialization to handle enums as strings and ignore circular references
+// --- Configuration ---
+var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!";
+var dbConnection = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? Environment.GetEnvironmentVariable("DATABASE_URL")
+    ?? "Host=localhost;Port=5432;Database=cashly_pos_db;Username=postgres;Password=12345678";
+
+// --- JWT Authentication ---
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+            ClockSkew = TimeSpan.FromMinutes(5)
+        };
+    });
+builder.Services.AddAuthorization();
+
+// --- JSON serialization ---
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     options.SerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
 });
 
-// Add CORS for React Vite frontend
+// --- CORS (restricted origins) ---
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins("http://localhost:5173", "http://localhost:5174", "http://localhost:3000")
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        policy.WithOrigins(
+                "http://localhost:5173",
+                "http://localhost:5174",
+                "http://localhost:3000",
+                "https://cashly-pos.vercel.app"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod();
     });
 });
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(dbConnection));
 
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+// --- Global Exception Handler ---
+app.UseExceptionHandler(error =>
+{
+    error.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        var exception = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
+        var response = new
+        {
+            error = "An unexpected error occurred",
+            message = app.Environment.IsDevelopment() ? exception?.Message : "Internal server error",
+            statusCode = 500
+        };
+        await context.Response.WriteAsJsonAsync(response);
+    });
+});
+
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 
-// Auto-migrate & seed database
+// --- Database Migration & Seeding ---
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     try
     {
-        await db.Database.EnsureCreatedAsync();
+        // Use migrations in production, EnsureCreated for dev
+        if (app.Environment.IsDevelopment())
+        {
+            await db.Database.EnsureCreatedAsync();
+        }
+        else
+        {
+            await db.Database.MigrateAsync();
+        }
 
-        // Ensure Ingredients & ProductRecipeItems tables exist in Postgres
+        // Ensure tables exist via raw SQL (EF Core may not know about them)
         await db.Database.ExecuteSqlRawAsync(@"
             CREATE TABLE IF NOT EXISTS ""Ingredients"" (
                 ""Id"" uuid PRIMARY KEY,
@@ -63,9 +122,9 @@ using (var scope = app.Services.CreateScope())
                 ""CostPerUnitPKR"" numeric(18,2) NOT NULL,
                 ""CurrentStock"" numeric(18,2) NOT NULL,
                 ""MinAlertLevel"" numeric(18,2) NOT NULL,
-                ""SupplierName"" text
+                ""SupplierName"" text,
+                ""RowVersion"" bytea
             );
-
             CREATE TABLE IF NOT EXISTS ""ProductRecipeItems"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""ProductId"" uuid NOT NULL,
@@ -73,14 +132,13 @@ using (var scope = app.Services.CreateScope())
                 ""QuantityRequired"" numeric(18,2) NOT NULL,
                 ""Unit"" text NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""Users"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
                 ""BranchId"" uuid,
                 ""FullName"" text NOT NULL,
                 ""Username"" text NOT NULL,
-                ""PinCode"" text NOT NULL,
+                ""PinCodeHash"" text NOT NULL,
                 ""Role"" integer NOT NULL,
                 ""IsActive"" boolean NOT NULL,
                 ""CreatedAt"" timestamp with time zone NOT NULL,
@@ -90,7 +148,6 @@ using (var scope = app.Services.CreateScope())
                 ""CanGiveDiscounts"" boolean NOT NULL,
                 ""CanVoidOrders"" boolean NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""Riders"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""BranchId"" uuid NOT NULL,
@@ -99,7 +156,6 @@ using (var scope = app.Services.CreateScope())
                 ""VehicleNumber"" text NOT NULL,
                 ""IsAvailable"" boolean NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""RiderSettlements"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""BranchId"" uuid NOT NULL,
@@ -112,7 +168,6 @@ using (var scope = app.Services.CreateScope())
                 ""SettledBy"" text NOT NULL,
                 ""SettledAt"" timestamp with time zone NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""StockTransferOrders"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
@@ -129,7 +184,6 @@ using (var scope = app.Services.CreateScope())
                 ""Notes"" text,
                 ""TotalEstimatedCostPKR"" numeric(18,2) NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""StockTransferItems"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TransferOrderId"" uuid NOT NULL,
@@ -141,7 +195,6 @@ using (var scope = app.Services.CreateScope())
                 ""QuantityReceived"" numeric(18,2) NOT NULL,
                 ""UnitCostPKR"" numeric(18,2) NOT NULL
             );
-
             CREATE TABLE IF NOT EXISTS ""PurchaseOrders"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
@@ -155,7 +208,6 @@ using (var scope = app.Services.CreateScope())
                 ""ReceivedBy"" text,
                 ""Notes"" text
             );
-
             CREATE TABLE IF NOT EXISTS ""PurchaseOrderItems"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""PurchaseOrderId"" uuid NOT NULL,
@@ -166,36 +218,11 @@ using (var scope = app.Services.CreateScope())
                 ""UnitCostPKR"" numeric(18,2) NOT NULL,
                 ""TotalPKR"" numeric(18,2) NOT NULL
             );
-
-            -- Ensure columns exist on ProductModifiers
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientId"" uuid;
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientQty"" numeric(18,2);
-
-            -- Rename any previous Cheezious / Madina brand references to generic restaurant chains
-            UPDATE ""Tenants"" SET ""Name"" = 'Royal Grill & Kitchen (Multi-Branch Chain)', ""BusinessType"" = 0 
-            WHERE ""Id"" = '11111111-1111-1111-1111-111111111111' OR ""Name"" ILIKE '%Cheezious%';
-
-            UPDATE ""Tenants"" SET ""Name"" = 'Spice Bistro (Single Location)', ""BusinessType"" = 0 
-            WHERE ""Id"" = '22222222-2222-2222-2222-222222222222' OR ""Name"" ILIKE '%Madina%' OR ""Name"" ILIKE '%Cash & Carry%';
-
-            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill Head Office & Commissary', ""Code"" = 'RG-HO' WHERE ""Id"" = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill - Downtown Branch', ""Code"" = 'RG-DT' WHERE ""Id"" = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-            UPDATE ""Branches"" SET ""Name"" = 'Royal Grill - Uptown Branch', ""Code"" = 'RG-UT' WHERE ""Id"" = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
-            UPDATE ""Branches"" SET ""Name"" = 'Spice Bistro - Main Dining', ""Code"" = 'SB-01' WHERE ""Id"" = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
-
-            -- Purge any grocery/retail products
-            DELETE FROM ""BranchStocks"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
-            DELETE FROM ""ProductRecipeItems"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
-            DELETE FROM ""ProductModifiers"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
-            DELETE FROM ""OrderItems"" WHERE ""ProductId"" IN (SELECT ""Id"" FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01'));
-            DELETE FROM ""Products"" WHERE ""SKU"" IN ('MCC-OIL-01', 'MCC-RCE-01');
-            DELETE FROM ""Categories"" WHERE ""Name"" = 'Pantry & Groceries';
-
-            UPDATE ""Products"" SET ""Name"" = REPLACE(""Name"", 'Cheezious', 'Royal') WHERE ""Name"" LIKE '%Cheezious%';
-            UPDATE ""Products"" SET ""SKU"" = REPLACE(""SKU"", 'CHZ-', 'RG-') WHERE ""SKU"" LIKE 'CHZ-%';
-            UPDATE ""OrderItems"" SET ""ProductName"" = REPLACE(""ProductName"", 'Cheezious', 'Royal') WHERE ""ProductName"" LIKE '%Cheezious%';
         ");
 
+        // Seed data
         var singleTenantId = Guid.Parse("22222222-2222-2222-2222-222222222222");
         var singleBranchId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
         if (!await db.Products.AnyAsync(p => p.TenantId == singleTenantId))
@@ -250,52 +277,206 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// --- Helper: Generate unique order number ---
+static async Task<string> GenerateOrderNumberAsync(AppDbContext db, string prefix = "ORD")
+{
+    var today = DateTime.UtcNow;
+    var dateStr = today.ToString("yyMMdd");
+    var lastOrder = await db.Orders
+        .Where(o => o.OrderNumber.StartsWith($"{prefix}-{dateStr}"))
+        .OrderByDescending(o => o.OrderNumber)
+        .Select(o => o.OrderNumber)
+        .FirstOrDefaultAsync();
+
+    int seq = 1;
+    if (lastOrder != null)
+    {
+        var parts = lastOrder.Split('-');
+        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
+        {
+            seq = lastSeq + 1;
+        }
+    }
+    return $"{prefix}-{dateStr}-{seq:D4}";
+}
+
+// --- Helper: Generate unique transfer number ---
+static async Task<string> GenerateTransferNumberAsync(AppDbContext db)
+{
+    var today = DateTime.UtcNow;
+    var dateStr = today.ToString("MMdd");
+    var last = await db.StockTransferOrders
+        .Where(t => t.TransferNumber.StartsWith($"TR-{dateStr}"))
+        .OrderByDescending(t => t.TransferNumber)
+        .Select(t => t.TransferNumber)
+        .FirstOrDefaultAsync();
+
+    int seq = 1;
+    if (last != null)
+    {
+        var parts = last.Split('-');
+        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
+        {
+            seq = lastSeq + 1;
+        }
+    }
+    return $"TR-{dateStr}-{seq:D4}";
+}
+
+// --- Helper: Generate unique PO number ---
+static async Task<string> GeneratePONumberAsync(AppDbContext db)
+{
+    var today = DateTime.UtcNow;
+    var dateStr = today.ToString("MMdd");
+    var last = await db.PurchaseOrders
+        .Where(p => p.PONumber.StartsWith($"PO-{dateStr}"))
+        .OrderByDescending(p => p.PONumber)
+        .Select(p => p.PONumber)
+        .FirstOrDefaultAsync();
+
+    int seq = 1;
+    if (last != null)
+    {
+        var parts = last.Split('-');
+        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
+        {
+            seq = lastSeq + 1;
+        }
+    }
+    return $"PO-{dateStr}-{seq:D4}";
+}
+
+// ============================================================
+// PUBLIC ENDPOINTS (no auth required)
+// ============================================================
+
 // --- Health / Status ---
 app.MapGet("/", () => Results.Ok(new
 {
     system = "Cashly POS - Enterprise API",
-    version = "2.0.0",
+    version = "3.0.0",
     currency = "PKR",
     status = "Online",
-    features = new[] { "Mode 1 Dispatch", "COD Rider Settlement", "Call Center Orders", "Offline Sync", "Director KPIs" }
+    features = new[] { "JWT Auth", "Mode 1 Dispatch", "COD Rider Settlement", "Call Center Orders", "Offline Sync", "Director KPIs", "Void Orders", "Cash Shifts" }
 }));
 
-// --- Tenancy & Hierarchy Endpoints ---
-app.MapGet("/api/tenants", async (AppDbContext db) =>
+// --- Auth: PIN Login ---
+app.MapPost("/api/auth/login", async (AppDbContext db, LoginDto dto) =>
+{
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Username == dto.Username.ToLower().Trim() && u.IsActive);
+    if (user == null || !BCrypt.Net.BCrypt.Verify(dto.PinCode, user.PinCodeHash))
+    {
+        return Results.Unauthorized();
+    }
+
+    var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
+    var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
+    var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
+    {
+        Expires = DateTime.UtcNow.AddHours(12),
+        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+        Claims = new Dictionary<string, object>
+        {
+            { "userId", user.Id.ToString() },
+            { "tenantId", user.TenantId.ToString() },
+            { "branchId", user.BranchId?.ToString() ?? "" },
+            { "role", user.Role.ToString() },
+            { "permissions", System.Text.Json.JsonSerializer.Serialize(new
+            {
+                user.CanViewFinancialReports,
+                user.CanManageInventory,
+                user.CanManageMenuAndTax,
+                user.CanGiveDiscounts,
+                user.CanVoidOrders
+            })}
+        }
+    };
+    var token = tokenHandler.CreateToken(tokenDescriptor);
+
+    return Results.Ok(new
+    {
+        token = tokenHandler.WriteToken(token),
+        user = new
+        {
+            id = user.Id,
+            fullName = user.FullName,
+            username = user.Username,
+            role = user.Role.ToString(),
+            tenantId = user.TenantId,
+            branchId = user.BranchId,
+            permissions = new
+            {
+                user.CanViewFinancialReports,
+                user.CanManageInventory,
+                user.CanManageMenuAndTax,
+                user.CanGiveDiscounts,
+                user.CanVoidOrders
+            }
+        }
+    });
+});
+
+// ============================================================
+// PROTECTED ENDPOINTS (require JWT)
+// ============================================================
+var api = app.MapGroup("/api").RequireAuthorization();
+
+// --- Tenancy & Hierarchy ---
+api.MapGet("/tenants", async (AppDbContext db) =>
 {
     var tenants = await db.Tenants
-        .Include(t => t.Branches)
-            .ThenInclude(b => b.Terminals)
+        .Include(t => t.Branches).ThenInclude(b => b.Terminals)
         .Include(t => t.AddOns)
         .ToListAsync();
     return Results.Ok(tenants);
 });
 
-app.MapGet("/api/branches", async (AppDbContext db, Guid? tenantId) =>
+api.MapGet("/branches", async (AppDbContext db, Guid? tenantId) =>
 {
     var query = db.Branches.Include(b => b.Terminals).AsQueryable();
     if (tenantId.HasValue) query = query.Where(b => b.TenantId == tenantId.Value);
-    var branches = await query.ToListAsync();
-    return Results.Ok(branches);
+    return Results.Ok(await query.ToListAsync());
 });
 
-// --- Catalog & Inventory Endpoints ---
-app.MapGet("/api/catalog/categories", async (AppDbContext db, Guid? tenantId) =>
+// --- Catalog ---
+api.MapGet("/catalog/categories", async (AppDbContext db, Guid? tenantId) =>
 {
     var query = db.Categories.OrderBy(c => c.SortOrder).AsQueryable();
     if (tenantId.HasValue) query = query.Where(c => c.TenantId == tenantId.Value);
-    var categories = await query.ToListAsync();
-    return Results.Ok(categories);
+    return Results.Ok(await query.ToListAsync());
 });
 
-app.MapGet("/api/catalog/products", async (AppDbContext db, Guid? tenantId, Guid? categoryId, string? search, string? barcode) =>
+api.MapPost("/catalog/categories", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
 {
-    var query = db.Products
-        .Include(p => p.Modifiers)
-        .Include(p => p.Category)
-        .Where(p => p.IsActive)
-        .AsQueryable();
+    var cat = new Category { TenantId = dto.TenantId, Name = dto.Name, Icon = dto.Icon ?? "utensils", SortOrder = dto.SortOrder };
+    db.Categories.Add(cat);
+    await db.SaveChangesAsync();
+    return Results.Ok(cat);
+});
 
+api.MapPut("/catalog/categories/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
+{
+    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
+    if (cat == null) return Results.NotFound();
+    cat.Name = dto.Name;
+    cat.Icon = dto.Icon ?? cat.Icon;
+    cat.SortOrder = dto.SortOrder;
+    await db.SaveChangesAsync();
+    return Results.Ok(cat);
+});
+
+api.MapDelete("/catalog/categories/{id}", async (AppDbContext db, Guid id) =>
+{
+    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
+    if (cat == null) return Results.NotFound();
+    db.Categories.Remove(cat);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Category deleted successfully" });
+});
+
+api.MapGet("/catalog/products", async (AppDbContext db, Guid? tenantId, Guid? categoryId, string? search, string? barcode) =>
+{
+    var query = db.Products.Include(p => p.Modifiers).Include(p => p.Category).Where(p => p.IsActive).AsQueryable();
     if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
     if (categoryId.HasValue) query = query.Where(p => p.CategoryId == categoryId.Value);
     if (!string.IsNullOrWhiteSpace(barcode)) query = query.Where(p => p.Barcode == barcode.Trim());
@@ -304,52 +485,33 @@ app.MapGet("/api/catalog/products", async (AppDbContext db, Guid? tenantId, Guid
         var s = search.Trim().ToLower();
         query = query.Where(p => p.Name.ToLower().Contains(s) || (p.UrduName != null && p.UrduName.Contains(s)) || p.Barcode.Contains(s) || p.SKU.ToLower().Contains(s));
     }
-
-    var products = await query.ToListAsync();
-    return Results.Ok(products);
+    return Results.Ok(await query.ToListAsync());
 });
 
-app.MapPost("/api/catalog/products", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
+api.MapPost("/catalog/products", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
 {
     var product = new Product
     {
-        TenantId = dto.TenantId,
-        CategoryId = dto.CategoryId,
-        Name = dto.Name,
-        UrduName = dto.UrduName,
+        TenantId = dto.TenantId, CategoryId = dto.CategoryId, Name = dto.Name, UrduName = dto.UrduName,
         SKU = string.IsNullOrWhiteSpace(dto.SKU) ? $"SKU-{Random.Shared.Next(1000, 9999)}" : dto.SKU,
         Barcode = string.IsNullOrWhiteSpace(dto.Barcode) ? $"{Random.Shared.NextInt64(1000000000, 9999999999)}" : dto.Barcode,
-        Description = dto.Description ?? string.Empty,
-        CostPricePKR = dto.CostPricePKR,
-        SellingPricePKR = dto.SellingPricePKR,
-        Unit = dto.Unit ?? "Piece",
-        Station = dto.Station,
-        ImageUrl = dto.ImageUrl,
-        IsActive = true
+        Description = dto.Description ?? string.Empty, CostPricePKR = dto.CostPricePKR, SellingPricePKR = dto.SellingPricePKR,
+        Unit = dto.Unit ?? "Piece", Station = dto.Station, ImageUrl = dto.ImageUrl, IsActive = true
     };
-
     if (dto.Modifiers != null)
     {
         foreach (var mod in dto.Modifiers)
-        {
-            product.Modifiers.Add(new ProductModifier
-            {
-                Name = mod.Name,
-                PricePKR = mod.PricePKR
-            });
-        }
+            product.Modifiers.Add(new ProductModifier { Name = mod.Name, PricePKR = mod.PricePKR });
     }
-
     db.Products.Add(product);
     await db.SaveChangesAsync();
     return Results.Ok(product);
 });
 
-app.MapPut("/api/catalog/products/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
+api.MapPut("/catalog/products/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
 {
     var product = await db.Products.Include(p => p.Modifiers).FirstOrDefaultAsync(p => p.Id == id);
     if (product == null) return Results.NotFound();
-
     product.Name = dto.Name ?? product.Name;
     product.UrduName = dto.UrduName ?? product.UrduName;
     product.SellingPricePKR = dto.SellingPricePKR;
@@ -357,163 +519,83 @@ app.MapPut("/api/catalog/products/{id}", async (AppDbContext db, Guid id, [Micro
     product.Barcode = dto.Barcode ?? product.Barcode;
     product.CategoryId = dto.CategoryId;
     product.Station = dto.Station;
-
     await db.SaveChangesAsync();
     return Results.Ok(product);
 });
 
-app.MapDelete("/api/catalog/products/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/catalog/products/{id}", async (AppDbContext db, Guid id) =>
 {
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
     if (product == null) return Results.NotFound();
-
     db.Products.Remove(product);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Product deleted successfully" });
 });
 
-app.MapPost("/api/catalog/categories", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
-{
-    var cat = new Category
-    {
-        TenantId = dto.TenantId,
-        Name = dto.Name,
-        Icon = dto.Icon ?? "utensils",
-        SortOrder = dto.SortOrder
-    };
-    db.Categories.Add(cat);
-    await db.SaveChangesAsync();
-    return Results.Ok(cat);
-});
-
-app.MapPut("/api/catalog/categories/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
-{
-    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
-    if (cat == null) return Results.NotFound();
-
-    cat.Name = dto.Name;
-    cat.Icon = dto.Icon ?? cat.Icon;
-    cat.SortOrder = dto.SortOrder;
-
-    await db.SaveChangesAsync();
-    return Results.Ok(cat);
-});
-
-app.MapDelete("/api/catalog/categories/{id}", async (AppDbContext db, Guid id) =>
-{
-    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
-    if (cat == null) return Results.NotFound();
-
-    db.Categories.Remove(cat);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Category deleted successfully" });
-});
-
-
-
 // --- Dining Tables ---
-app.MapGet("/api/tables", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/tables", async (AppDbContext db, Guid branchId) =>
 {
-    var tables = await db.DiningTables
-        .Where(t => t.BranchId == branchId)
-        .OrderBy(t => t.Section)
-        .ThenBy(t => t.TableNumber)
-        .ToListAsync();
+    var tables = await db.DiningTables.Where(t => t.BranchId == branchId).OrderBy(t => t.Section).ThenBy(t => t.TableNumber).ToListAsync();
     return Results.Ok(tables);
 });
 
-app.MapPost("/api/tables", async (AppDbContext db, CreateTableDto dto) =>
+api.MapPost("/tables", async (AppDbContext db, CreateTableDto dto) =>
 {
     var branch = await db.Branches.FindAsync(dto.BranchId);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
-
-    var existing = await db.DiningTables
-        .FirstOrDefaultAsync(t => t.BranchId == dto.BranchId && t.TableNumber.ToLower() == dto.TableNumber.ToLower());
-    if (existing != null)
-    {
-        return Results.BadRequest(new { message = $"Table '{dto.TableNumber}' already exists in this branch" });
-    }
-
+    var existing = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == dto.BranchId && t.TableNumber.ToLower() == dto.TableNumber.ToLower());
+    if (existing != null) return Results.BadRequest(new { message = $"Table '{dto.TableNumber}' already exists in this branch" });
     var table = new DiningTable
     {
-        BranchId = dto.BranchId,
-        TableNumber = dto.TableNumber.Trim().ToUpper(),
+        BranchId = dto.BranchId, TableNumber = dto.TableNumber.Trim().ToUpper(),
         Section = string.IsNullOrWhiteSpace(dto.Section) ? "Main Hall" : dto.Section.Trim(),
-        Capacity = dto.Capacity > 0 ? dto.Capacity : 4,
-        IsOccupied = false
+        Capacity = dto.Capacity > 0 ? dto.Capacity : 4, IsOccupied = false
     };
-
     db.DiningTables.Add(table);
     await db.SaveChangesAsync();
     return Results.Created($"/api/tables/{table.Id}", table);
 });
 
-app.MapPut("/api/tables/{id:guid}", async (AppDbContext db, Guid id, UpdateTableDto dto) =>
+api.MapPut("/tables/{id:guid}", async (AppDbContext db, Guid id, UpdateTableDto dto) =>
 {
     var table = await db.DiningTables.FindAsync(id);
     if (table == null) return Results.NotFound(new { message = "Table not found" });
-
-    if (!string.IsNullOrWhiteSpace(dto.TableNumber))
-    {
-        table.TableNumber = dto.TableNumber.Trim().ToUpper();
-    }
-    if (!string.IsNullOrWhiteSpace(dto.Section))
-    {
-        table.Section = dto.Section.Trim();
-    }
-    if (dto.Capacity.HasValue && dto.Capacity.Value > 0)
-    {
-        table.Capacity = dto.Capacity.Value;
-    }
-    if (dto.IsOccupied.HasValue)
-    {
-        table.IsOccupied = dto.IsOccupied.Value;
-    }
-
+    if (!string.IsNullOrWhiteSpace(dto.TableNumber)) table.TableNumber = dto.TableNumber.Trim().ToUpper();
+    if (!string.IsNullOrWhiteSpace(dto.Section)) table.Section = dto.Section.Trim();
+    if (dto.Capacity.HasValue && dto.Capacity.Value > 0) table.Capacity = dto.Capacity.Value;
+    if (dto.IsOccupied.HasValue) table.IsOccupied = dto.IsOccupied.Value;
     await db.SaveChangesAsync();
     return Results.Ok(table);
 });
 
-app.MapDelete("/api/tables/{id:guid}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/tables/{id:guid}", async (AppDbContext db, Guid id) =>
 {
     var table = await db.DiningTables.FindAsync(id);
     if (table == null) return Results.NotFound(new { message = "Table not found" });
-
     db.DiningTables.Remove(table);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Table deleted successfully" });
 });
 
-// --- Mode 1 Parallel Order Dispatch ---
-app.MapPost("/api/orders", async (AppDbContext db, CreateOrderDto dto) =>
+// --- Orders (Mode 1 Parallel Dispatch) ---
+api.MapPost("/orders", async (AppDbContext db, CreateOrderDto dto) =>
 {
     var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
 
-    var orderNumber = $"ORD-{DateTime.UtcNow:HHmmss}-{Random.Shared.Next(100, 999)}";
+    var orderNumber = await GenerateOrderNumberAsync(db);
     var order = new Order
     {
-        TenantId = branch.TenantId,
-        BranchId = branch.Id,
-        OrderNumber = orderNumber,
+        TenantId = branch.TenantId, BranchId = branch.Id, OrderNumber = orderNumber,
         OrderType = dto.OrderType,
         Status = dto.OrderType == OrderType.DineIn ? OrderStatus.InKitchen :
                  (dto.OrderType == OrderType.Delivery || dto.OrderType == OrderType.CallOrder) ? OrderStatus.InKitchen :
                  OrderStatus.ReadyForDispatch,
-        TableNumber = dto.TableNumber,
-        CustomerName = dto.CustomerName,
-        CustomerPhone = dto.CustomerPhone,
-        DeliveryAddress = dto.DeliveryAddress,
-        SubTotalPKR = dto.SubTotalPKR,
-        DiscountPKR = dto.DiscountPKR,
-        TaxPKR = dto.TaxPKR,
-        TotalPKR = dto.TotalPKR,
-        PaymentMethod = dto.PaymentMethod,
-        AmountPaidPKR = dto.AmountPaidPKR,
-        ChangeDuePKR = dto.ChangeDuePKR,
-        IsPaid = dto.IsPaid,
-        CashierName = dto.CashierName ?? "Counter 1 Cashier",
-        CreatedByRole = dto.CreatedByRole ?? "Cashier",
+        TableNumber = dto.TableNumber, CustomerName = dto.CustomerName, CustomerPhone = dto.CustomerPhone,
+        DeliveryAddress = dto.DeliveryAddress, SubTotalPKR = dto.SubTotalPKR, DiscountPKR = dto.DiscountPKR,
+        TaxPKR = dto.TaxPKR, TotalPKR = dto.TotalPKR, PaymentMethod = dto.PaymentMethod,
+        AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = dto.IsPaid,
+        CashierName = dto.CashierName ?? "Counter 1 Cashier", CreatedByRole = dto.CreatedByRole ?? "Cashier",
         CreatedAt = DateTime.UtcNow
     };
 
@@ -521,48 +603,34 @@ app.MapPost("/api/orders", async (AppDbContext db, CreateOrderDto dto) =>
     {
         order.Items.Add(new OrderItem
         {
-            OrderId = order.Id,
-            ProductId = item.ProductId,
-            ProductName = item.ProductName,
-            Quantity = item.Quantity,
-            UnitPricePKR = item.UnitPricePKR,
+            OrderId = order.Id, ProductId = item.ProductId, ProductName = item.ProductName,
+            Quantity = item.Quantity, UnitPricePKR = item.UnitPricePKR,
             TotalPricePKR = item.UnitPricePKR * item.Quantity,
-            ModifiersSummary = item.ModifiersSummary,
-            SpecialNotes = item.SpecialNotes,
-            Station = item.Station
+            ModifiersSummary = item.ModifiersSummary, SpecialNotes = item.SpecialNotes, Station = item.Station
         });
     }
 
-    // MODE 1 BEST PRACTICE: Parallel Dispatch
-    // 1. Immediately create Kitchen Order Tickets (KOT) for each kitchen station
+    // KOTs per station
     var stationGroups = order.Items.GroupBy(i => i.Station);
     int ticketIndex = 1;
     foreach (var group in stationGroups)
     {
-        var kot = new KitchenTicket
+        order.KitchenTickets.Add(new KitchenTicket
         {
-            OrderId = order.Id,
-            BranchId = branch.Id,
+            OrderId = order.Id, BranchId = branch.Id,
             TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
-            Station = group.Key,
-            Status = "Cooking",
-            CreatedAt = DateTime.UtcNow
-        };
-        order.KitchenTickets.Add(kot);
+            Station = group.Key, Status = "Cooking", CreatedAt = DateTime.UtcNow
+        });
     }
 
-    // 2. If table is assigned, mark occupied
+    // Mark table occupied
     if (!string.IsNullOrEmpty(dto.TableNumber))
     {
         var table = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == branch.Id && t.TableNumber == dto.TableNumber);
-        if (table != null)
-        {
-            table.IsOccupied = true;
-            table.CurrentOrderId = order.Id;
-        }
+        if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
     }
 
-    // 3. If paid in cash, update active shift cash sales
+    // Update cash shift
     if (dto.IsPaid && dto.PaymentMethod == PaymentMethod.Cash)
     {
         var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
@@ -573,29 +641,44 @@ app.MapPost("/api/orders", async (AppDbContext db, CreateOrderDto dto) =>
         }
     }
 
-    // 4. Deduct sold quantities from BranchStock AND Raw Ingredients (Recipe BOM) in real-time
+    // Batch load stock data to avoid N+1
+    var productIds = dto.Items.Select(i => i.ProductId).Distinct().ToList();
+    var stockDict = await db.BranchStocks.Where(s => s.BranchId == branch.Id && productIds.Contains(s.ProductId))
+        .ToDictionaryAsync(s => s.ProductId);
+    var recipeDict = await db.ProductRecipeItems.Include(r => r.Ingredient)
+        .Where(r => productIds.Contains(r.ProductId))
+        .GroupBy(r => r.ProductId)
+        .ToDictionaryAsync(g => g.Key, g => g.ToList());
+    var ingredientIds = recipeDict.Values.SelectMany(r => r).Select(r => r.IngredientId).Distinct().ToList();
+    var ingredientDict = await db.Ingredients.Where(i => i.BranchId == branch.Id && ingredientIds.Contains(i.Id))
+        .ToDictionaryAsync(i => i.Id);
+
     foreach (var item in dto.Items)
     {
-        // A. Finished product stock (if tracked)
-        var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == branch.Id && s.ProductId == item.ProductId);
-        if (stock != null)
+        // A. Finished product stock - validate instead of silently zeroing
+        if (stockDict.TryGetValue(item.ProductId, out var stock))
         {
-            stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand - item.Quantity);
+            if (stock.QuantityOnHand < item.Quantity)
+            {
+                return Results.Conflict(new { message = $"Insufficient stock for {item.ProductName}. Available: {stock.QuantityOnHand}, Requested: {item.Quantity}" });
+            }
+            stock.QuantityOnHand -= item.Quantity;
         }
 
-        // B. Recipe raw ingredients (buns, patties, sauces, cheese, fries, etc.)
-        var recipeItems = await db.ProductRecipeItems
-            .Include(r => r.Ingredient)
-            .Where(r => r.ProductId == item.ProductId)
-            .ToListAsync();
-
-        foreach (var recipe in recipeItems)
+        // B. Recipe raw ingredients
+        if (recipeDict.TryGetValue(item.ProductId, out var recipeItems))
         {
-            var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == recipe.IngredientId && i.BranchId == branch.Id);
-            if (ingredient != null)
+            foreach (var recipe in recipeItems)
             {
-                var totalIngredientQty = recipe.QuantityRequired * item.Quantity;
-                ingredient.CurrentStock = Math.Max(0, ingredient.CurrentStock - totalIngredientQty);
+                if (ingredientDict.TryGetValue(recipe.IngredientId, out var ingredient))
+                {
+                    var totalIngredientQty = recipe.QuantityRequired * item.Quantity;
+                    if (ingredient.CurrentStock < totalIngredientQty)
+                    {
+                        return Results.Conflict(new { message = $"Insufficient ingredient {ingredient.Name}. Available: {ingredient.CurrentStock}, Need: {totalIngredientQty}" });
+                    }
+                    ingredient.CurrentStock -= totalIngredientQty;
+                }
             }
         }
     }
@@ -603,300 +686,224 @@ app.MapPost("/api/orders", async (AppDbContext db, CreateOrderDto dto) =>
     db.Orders.Add(order);
     await db.SaveChangesAsync();
 
-
-
     return Results.Ok(new
     {
         message = "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
-        orderId = order.Id,
-        orderNumber = order.OrderNumber,
+        orderId = order.Id, orderNumber = order.OrderNumber,
         kitchenTicketsCount = order.KitchenTickets.Count,
-        status = order.Status.ToString(),
-        totalPKR = order.TotalPKR
+        status = order.Status.ToString(), totalPKR = order.TotalPKR
     });
 });
 
-app.MapGet("/api/orders", async (AppDbContext db, Guid branchId, OrderStatus? status, int limit = 30) =>
+api.MapGet("/orders", async (AppDbContext db, Guid branchId, OrderStatus? status, int limit = 30) =>
 {
-    var query = db.Orders
-        .Include(o => o.Items)
-        .Include(o => o.AssignedRider)
-        .Where(o => o.BranchId == branchId)
-        .OrderByDescending(o => o.CreatedAt)
-        .AsQueryable();
+    var query = db.Orders.Include(o => o.Items).Include(o => o.AssignedRider)
+        .Where(o => o.BranchId == branchId).OrderByDescending(o => o.CreatedAt).AsQueryable();
+    if (status.HasValue) query = query.Where(o => o.Status == status.Value);
+    return Results.Ok(await query.Take(limit).ToListAsync());
+});
 
-    if (status.HasValue)
+// --- Void Order ---
+api.MapPost("/orders/{id}/void", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
+{
+    var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+    if (order == null) return Results.NotFound();
+    if (order.Status == OrderStatus.Cancelled) return Results.BadRequest(new { message = "Order already cancelled" });
+
+    order.Status = OrderStatus.Cancelled;
+
+    // Restore stock
+    var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
+    var stockDict = await db.BranchStocks.Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
+        .ToDictionaryAsync(s => s.ProductId);
+
+    foreach (var item in order.Items)
     {
-        query = query.Where(o => o.Status == status.Value);
+        if (stockDict.TryGetValue(item.ProductId, out var stock))
+            stock.QuantityOnHand += item.Quantity;
     }
 
-    var orders = await query.Take(limit).ToListAsync();
-    return Results.Ok(orders);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Order voided and stock restored", orderId = order.Id });
 });
 
-// --- Mode 1 Kitchen KDS Endpoints ---
-app.MapGet("/api/kitchen/tickets", async (AppDbContext db, Guid branchId, KitchenStation? station) =>
+// --- Kitchen Display ---
+api.MapGet("/kitchen/tickets", async (AppDbContext db, Guid branchId, KitchenStation? station) =>
 {
     var query = db.KitchenTickets
-        .Include(k => k.Order)
-            .ThenInclude(o => o!.Items)
-                .ThenInclude(i => i.Product)
-                    .ThenInclude(p => p!.RecipeItems)
-                        .ThenInclude(r => r.Ingredient)
+        .Include(k => k.Order).ThenInclude(o => o!.Items)
         .Where(k => k.BranchId == branchId && k.Status != "Completed")
-        .OrderBy(k => k.CreatedAt)
-        .AsQueryable();
-
+        .OrderBy(k => k.CreatedAt).AsQueryable();
     if (station.HasValue) query = query.Where(k => k.Station == station.Value);
-    var tickets = await query.ToListAsync();
-    return Results.Ok(tickets);
+    return Results.Ok(await query.ToListAsync());
 });
 
-app.MapPost("/api/kitchen/tickets/{id}/status", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
+api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
 {
     var ticket = await db.KitchenTickets.Include(k => k.Order).FirstOrDefaultAsync(k => k.Id == id);
     if (ticket == null) return Results.NotFound();
-
     ticket.Status = dto.Status;
     if (dto.Status == "Ready" && ticket.Order != null)
-    {
         ticket.Order.Status = OrderStatus.ReadyForDispatch;
-    }
     await db.SaveChangesAsync();
     return Results.Ok(ticket);
 });
 
-// --- Delivery Dispatch Board & Rider Assignment ---
-app.MapGet("/api/delivery/board", async (AppDbContext db, Guid branchId) =>
+// --- Delivery ---
+api.MapGet("/delivery/board", async (AppDbContext db, Guid branchId) =>
 {
-    var orders = await db.Orders
-        .Include(o => o.Items)
-        .Include(o => o.AssignedRider)
+    var orders = await db.Orders.Include(o => o.Items).Include(o => o.AssignedRider)
         .Where(o => o.BranchId == branchId && (o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder))
-        .OrderByDescending(o => o.CreatedAt)
-        .ToListAsync();
-
-    var board = new
+        .OrderByDescending(o => o.CreatedAt).ToListAsync();
+    return Results.Ok(new
     {
         inKitchen = orders.Where(o => o.Status == OrderStatus.InKitchen || o.Status == OrderStatus.New),
         readyForDispatch = orders.Where(o => o.Status == OrderStatus.ReadyForDispatch),
         outForDelivery = orders.Where(o => o.Status == OrderStatus.OutForDelivery),
         completed = orders.Where(o => o.Status == OrderStatus.Completed).Take(10)
-    };
-
-    return Results.Ok(board);
+    });
 });
 
-app.MapPost("/api/delivery/assign-rider", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] AssignRiderDto dto) =>
+api.MapPost("/delivery/assign-rider", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] AssignRiderDto dto) =>
 {
     var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == dto.OrderId);
     if (order == null) return Results.NotFound(new { message = "Order not found" });
-
     var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId);
     if (rider == null) return Results.NotFound(new { message = "Rider not found" });
-
     order.AssignedRiderId = rider.Id;
     order.Status = OrderStatus.OutForDelivery;
     rider.IsAvailable = false;
-
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = $"Order assigned to {rider.Name} and is now Out for Delivery", order });
+    return Results.Ok(new { message = $"Order assigned to {rider.Name}", order });
 });
 
-app.MapPost("/api/delivery/mark-delivered", async (AppDbContext db, Guid orderId) =>
+api.MapPost("/delivery/mark-delivered", async (AppDbContext db, Guid orderId) =>
 {
     var order = await db.Orders.Include(o => o.AssignedRider).FirstOrDefaultAsync(o => o.Id == orderId);
     if (order == null) return Results.NotFound();
-
     order.Status = OrderStatus.Completed;
     order.IsPaid = true;
-    if (order.AssignedRider != null)
-    {
-        order.AssignedRider.IsAvailable = true;
-    }
+    if (order.AssignedRider != null) order.AssignedRider.IsAvailable = true;
     await db.SaveChangesAsync();
     return Results.Ok(order);
 });
 
-// --- Riders & COD Cash Reconciliation ---
-app.MapGet("/api/riders", async (AppDbContext db, Guid branchId) =>
-{
-    var riders = await db.Riders.Where(r => r.BranchId == branchId).ToListAsync();
-    return Results.Ok(riders);
-});
+// --- Riders ---
+api.MapGet("/riders", async (AppDbContext db, Guid branchId) =>
+    Results.Ok(await db.Riders.Where(r => r.BranchId == branchId).ToListAsync()));
 
-app.MapGet("/api/riders/{id}/pending-cod", async (AppDbContext db, Guid id) =>
+api.MapGet("/riders/{id}/pending-cod", async (AppDbContext db, Guid id) =>
 {
     var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == id);
     if (rider == null) return Results.NotFound();
-
     var activeOrders = await db.Orders
         .Where(o => o.AssignedRiderId == id && o.PaymentMethod == PaymentMethod.Cash && o.CreatedAt.Date == DateTime.UtcNow.Date)
         .ToListAsync();
-
-    var totalCOD = activeOrders.Sum(o => o.TotalPKR);
-    var completedCount = activeOrders.Count(o => o.Status == OrderStatus.Completed);
-    var pendingCount = activeOrders.Count(o => o.Status == OrderStatus.OutForDelivery);
-
     return Results.Ok(new
     {
-        riderId = rider.Id,
-        riderName = rider.Name,
-        phone = rider.Phone,
-        vehicle = rider.VehicleNumber,
+        riderId = rider.Id, riderName = rider.Name, phone = rider.Phone, vehicle = rider.VehicleNumber,
         totalOrders = activeOrders.Count,
-        completedOrders = completedCount,
-        pendingOrders = pendingCount,
-        expectedCODPKR = totalCOD,
+        completedOrders = activeOrders.Count(o => o.Status == OrderStatus.Completed),
+        pendingOrders = activeOrders.Count(o => o.Status == OrderStatus.OutForDelivery),
+        expectedCODPKR = activeOrders.Sum(o => o.TotalPKR),
         orders = activeOrders.Select(o => new { o.Id, o.OrderNumber, o.TotalPKR, o.Status, o.CustomerName, o.DeliveryAddress })
     });
 });
 
-app.MapPost("/api/riders/settle", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] SettleRiderDto dto) =>
+api.MapPost("/riders/settle", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] SettleRiderDto dto) =>
 {
     var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId);
     if (rider == null) return Results.NotFound();
-
     var variance = dto.CashCollectedPKR - dto.ExpectedCODPKR;
     var settlement = new RiderSettlement
     {
-        BranchId = rider.BranchId,
-        RiderId = rider.Id,
-        ShiftDate = DateTime.UtcNow,
-        TotalOrdersDelivered = dto.TotalOrdersDelivered,
-        TotalCODExpectedPKR = dto.ExpectedCODPKR,
-        TotalCashCollectedPKR = dto.CashCollectedPKR,
-        ShortageSurplusPKR = variance,
-        SettledBy = dto.SettledBy ?? "Manager",
-        SettledAt = DateTime.UtcNow
+        BranchId = rider.BranchId, RiderId = rider.Id, ShiftDate = DateTime.UtcNow,
+        TotalOrdersDelivered = dto.TotalOrdersDelivered, TotalCODExpectedPKR = dto.ExpectedCODPKR,
+        TotalCashCollectedPKR = dto.CashCollectedPKR, ShortageSurplusPKR = variance,
+        SettledBy = dto.SettledBy ?? "Manager", SettledAt = DateTime.UtcNow
     };
-
     rider.IsAvailable = true;
     db.RiderSettlements.Add(settlement);
     await db.SaveChangesAsync();
-
-    return Results.Ok(new
-    {
-        message = "Rider COD successfully settled and reconciled!",
-        settlementId = settlement.Id,
-        expected = dto.ExpectedCODPKR,
-        collected = dto.CashCollectedPKR,
-        variancePKR = variance,
-        isReconciled = variance == 0
-    });
+    return Results.Ok(new { message = "Rider COD settled", settlementId = settlement.Id, variancePKR = variance, isReconciled = variance == 0 });
 });
 
-app.MapGet("/api/delivery/settlements", async (AppDbContext db, Guid branchId) =>
-{
-    var settlements = await db.RiderSettlements
-        .Include(s => s.Rider)
-        .Where(s => s.BranchId == branchId)
-        .OrderByDescending(s => s.SettledAt)
-        .Take(30)
-        .ToListAsync();
+api.MapGet("/delivery/settlements", async (AppDbContext db, Guid branchId) =>
+    Results.Ok(await db.RiderSettlements.Include(s => s.Rider).Where(s => s.BranchId == branchId)
+        .OrderByDescending(s => s.SettledAt).Take(30).ToListAsync()));
 
-    return Results.Ok(settlements);
-});
-
-// --- Phone Call Order Lookup ---
-app.MapGet("/api/call-order/lookup", async (AppDbContext db, string phone) =>
+// --- Call Order Lookup ---
+api.MapGet("/call-order/lookup", async (AppDbContext db, string phone) =>
 {
     var cleanPhone = phone.Trim();
-    var pastOrders = await db.Orders
-        .Include(o => o.Items)
+    var pastOrders = await db.Orders.Include(o => o.Items)
         .Where(o => o.CustomerPhone != null && o.CustomerPhone.Contains(cleanPhone))
-        .OrderByDescending(o => o.CreatedAt)
-        .Take(5)
-        .ToListAsync();
-
+        .OrderByDescending(o => o.CreatedAt).Take(5).ToListAsync();
     var customer = pastOrders.FirstOrDefault();
-    if (customer == null)
-    {
-        return Results.Ok(new { found = false, phone = cleanPhone });
-    }
-
+    if (customer == null) return Results.Ok(new { found = false, phone = cleanPhone });
     return Results.Ok(new
     {
-        found = true,
-        name = customer.CustomerName,
-        phone = customer.CustomerPhone,
-        lastAddress = customer.DeliveryAddress,
-        totalPastOrders = pastOrders.Count,
+        found = true, name = customer.CustomerName, phone = customer.CustomerPhone,
+        lastAddress = customer.DeliveryAddress, totalPastOrders = pastOrders.Count,
         favoriteItems = pastOrders.SelectMany(o => o.Items).GroupBy(i => i.ProductName)
-            .OrderByDescending(g => g.Count())
-            .Take(3)
-            .Select(g => g.Key),
+            .OrderByDescending(g => g.Count()).Take(3).Select(g => g.Key),
         recentOrders = pastOrders.Select(o => new { o.OrderNumber, o.TotalPKR, o.CreatedAt, o.Status })
     });
 });
 
-// --- Director & Executive Real-Time Dashboard KPIs ---
-app.MapGet("/api/director/kpis", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+// --- Director KPIs (fixed N+1) ---
+api.MapGet("/director/kpis", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
 {
-    var ordersQuery = db.Orders.AsQueryable();
+    var today = DateTime.UtcNow.Date;
+    var ordersQuery = db.Orders.Where(o => o.CreatedAt >= today);
     if (tenantId.HasValue) ordersQuery = ordersQuery.Where(o => o.TenantId == tenantId.Value);
     if (branchId.HasValue) ordersQuery = ordersQuery.Where(o => o.BranchId == branchId.Value);
 
-    var today = DateTime.UtcNow.Date;
-    var todayOrders = await ordersQuery.Where(o => o.CreatedAt >= today).ToListAsync();
-
-    var grossSalesPKR = todayOrders.Sum(o => o.TotalPKR);
-    var totalOrdersCount = todayOrders.Count;
-    var avgBasketPKR = totalOrdersCount > 0 ? grossSalesPKR / totalOrdersCount : 0;
-    var completedOrders = todayOrders.Count(o => o.Status == OrderStatus.Completed);
-    var activeOrders = todayOrders.Count(o => o.Status != OrderStatus.Completed && o.Status != OrderStatus.Cancelled);
-
-    // Multi-branch comparison
+    var todayOrders = await ordersQuery.ToListAsync();
     var branches = await db.Branches.Where(b => !b.IsHeadOffice).ToListAsync();
+    var branchIds = branches.Select(b => b.Id).ToList();
+
+    // Batch load branch data to avoid N+1
+    var branchOrderData = await db.Orders
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= today)
+        .GroupBy(o => o.BranchId)
+        .Select(g => new { branchId = g.Key, sales = g.Sum(o => o.TotalPKR), count = g.Count() })
+        .ToDictionaryAsync(x => x.branchId);
+
     var branchSales = branches.Select(b => new
     {
-        branchId = b.Id,
-        branchName = b.Name,
-        city = b.City,
-        todaySalesPKR = db.Orders.Where(o => o.BranchId == b.Id && o.CreatedAt >= today).Sum(o => (decimal?)o.TotalPKR) ?? 0,
-        ordersCount = db.Orders.Count(o => o.BranchId == b.Id && o.CreatedAt >= today),
+        branchId = b.Id, branchName = b.Name, city = b.City,
+        todaySalesPKR = branchOrderData.TryGetValue(b.Id, out var data) ? data.sales : 0m,
+        ordersCount = branchOrderData.TryGetValue(b.Id, out var d) ? d.count : 0,
         activeCounters = b.AllowedCounters
     });
 
     return Results.Ok(new
     {
         currency = "PKR",
-        todaySalesPKR = grossSalesPKR,
-        totalOrders = totalOrdersCount,
-        avgBasketPKR = Math.Round(avgBasketPKR, 0),
-        activeOrders,
-        completedOrders,
+        todaySalesPKR = todayOrders.Sum(o => o.TotalPKR),
+        totalOrders = todayOrders.Count,
+        avgBasketPKR = todayOrders.Count > 0 ? Math.Round(todayOrders.Sum(o => o.TotalPKR) / todayOrders.Count, 0) : 0,
+        activeOrders = todayOrders.Count(o => o.Status != OrderStatus.Completed && o.Status != OrderStatus.Cancelled),
+        completedOrders = todayOrders.Count(o => o.Status == OrderStatus.Completed),
         branchComparison = branchSales
     });
 });
 
-// --- Super Admin Licensing & Quotas Switchboard ---
-app.MapPost("/api/super-admin/update-limits", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
+// --- Super Admin ---
+api.MapPost("/super-admin/update-limits", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
 {
     var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
     if (branch == null) return Results.NotFound();
-
     branch.AllowedCounters = dto.AllowedCounters;
     branch.AllowedOrderTabs = dto.AllowedOrderTabs;
-
-    if (dto.Tier.HasValue && branch.Tenant != null)
-    {
-        branch.Tenant.Tier = dto.Tier.Value;
-    }
-
+    if (dto.Tier.HasValue && branch.Tenant != null) branch.Tenant.Tier = dto.Tier.Value;
     await db.SaveChangesAsync();
-    return Results.Ok(new
-    {
-        message = "Limits and licensing successfully updated by Super Admin",
-        branchId = branch.Id,
-        allowedCounters = branch.AllowedCounters,
-        allowedOrderTabs = branch.AllowedOrderTabs,
-        tier = branch.Tenant?.Tier.ToString()
-    });
+    return Results.Ok(new { message = "Limits updated", branchId = branch.Id, allowedCounters = branch.AllowedCounters, allowedOrderTabs = branch.AllowedOrderTabs, tier = branch.Tenant?.Tier.ToString() });
 });
 
-// --- Offline Batch Sync Endpoint ---
-app.MapPost("/api/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] List<CreateOrderDto> offlineOrders) =>
+// --- Offline Batch Sync (fixed order numbers) ---
+api.MapPost("/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] List<CreateOrderDto> offlineOrders) =>
 {
     int syncedCount = 0;
     foreach (var dto in offlineOrders)
@@ -906,146 +913,115 @@ app.MapPost("/api/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNet
 
         var order = new Order
         {
-            TenantId = branch.TenantId,
-            BranchId = branch.Id,
-            OrderNumber = $"OFFLINE-{DateTime.UtcNow:mmss}-{Random.Shared.Next(100, 999)}",
-            OrderType = dto.OrderType,
-            Status = OrderStatus.Completed,
-            TableNumber = dto.TableNumber,
-            CustomerName = dto.CustomerName,
-            CustomerPhone = dto.CustomerPhone,
-            DeliveryAddress = dto.DeliveryAddress,
-            SubTotalPKR = dto.SubTotalPKR,
-            DiscountPKR = dto.DiscountPKR,
-            TaxPKR = dto.TaxPKR,
-            TotalPKR = dto.TotalPKR,
-            PaymentMethod = dto.PaymentMethod,
-            AmountPaidPKR = dto.AmountPaidPKR,
-            ChangeDuePKR = dto.ChangeDuePKR,
-            IsPaid = true,
-            CashierName = dto.CashierName ?? "Offline Cashier",
-            CreatedByRole = "OfflineSync",
-            CreatedAt = DateTime.UtcNow
+            TenantId = branch.TenantId, BranchId = branch.Id,
+            OrderNumber = await GenerateOrderNumberAsync(db, "OFFLINE"),
+            OrderType = dto.OrderType, Status = OrderStatus.Completed,
+            TableNumber = dto.TableNumber, CustomerName = dto.CustomerName, CustomerPhone = dto.CustomerPhone,
+            DeliveryAddress = dto.DeliveryAddress, SubTotalPKR = dto.SubTotalPKR, DiscountPKR = dto.DiscountPKR,
+            TaxPKR = dto.TaxPKR, TotalPKR = dto.TotalPKR, PaymentMethod = dto.PaymentMethod,
+            AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = true,
+            CashierName = dto.CashierName ?? "Offline Cashier", CreatedByRole = "OfflineSync", CreatedAt = DateTime.UtcNow
         };
 
         foreach (var item in dto.Items)
         {
             order.Items.Add(new OrderItem
             {
-                OrderId = order.Id,
-                ProductId = item.ProductId,
-                ProductName = item.ProductName,
-                Quantity = item.Quantity,
-                UnitPricePKR = item.UnitPricePKR,
-                TotalPricePKR = item.UnitPricePKR * item.Quantity,
-                Station = item.Station
+                OrderId = order.Id, ProductId = item.ProductId, ProductName = item.ProductName,
+                Quantity = item.Quantity, UnitPricePKR = item.UnitPricePKR,
+                TotalPricePKR = item.UnitPricePKR * item.Quantity, Station = item.Station
             });
         }
 
-        // Deduct branch stock for synced item
         foreach (var item in dto.Items)
         {
             var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == branch.Id && s.ProductId == item.ProductId);
-            if (stock != null)
-            {
-                stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand - item.Quantity);
-            }
+            if (stock != null) stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand - item.Quantity);
         }
 
         db.Orders.Add(order);
         syncedCount++;
     }
-
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = $"Successfully synced {syncedCount} offline orders to cloud database", syncedCount });
+    return Results.Ok(new { message = $"Synced {syncedCount} offline orders", syncedCount });
 });
 
-// --- INVENTORY MANAGEMENT ENDPOINTS ---
-
-// 1. Get branch inventory with low stock indicators
-app.MapGet("/api/inventory", async (AppDbContext db, Guid branchId) =>
+// --- Cash Shifts ---
+api.MapGet("/cash-shifts", async (AppDbContext db, Guid branchId) =>
 {
-    var stocks = await db.BranchStocks
-        .Include(s => s.Product)
-        .ThenInclude(p => p!.Category)
-        .Where(s => s.BranchId == branchId)
-        .OrderBy(s => s.Product!.Name)
-        .ToListAsync();
+    var shifts = await db.CashShifts.Where(s => s.BranchId == branchId).OrderByDescending(s => s.OpenedAt).Take(20).ToListAsync();
+    return Results.Ok(shifts);
+});
 
-    // If branch doesn't have stocks initialized for some products, auto-initialize
+api.MapPost("/cash-shifts/open", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] OpenCashShiftDto dto) =>
+{
+    var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && !s.IsClosed);
+    if (activeShift != null) return Results.BadRequest(new { message = "An active shift already exists. Close it first." });
+
+    var shift = new CashShift
+    {
+        BranchId = dto.BranchId, TerminalName = dto.TerminalName, CashierName = dto.CashierName,
+        OpeningFloatPKR = dto.OpeningFloatPKR, OpenedAt = DateTime.UtcNow, IsClosed = false
+    };
+    db.CashShifts.Add(shift);
+    await db.SaveChangesAsync();
+    return Results.Ok(shift);
+});
+
+api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CloseCashShiftDto dto) =>
+{
+    var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.Id == id);
+    if (shift == null) return Results.NotFound();
+    if (shift.IsClosed) return Results.BadRequest(new { message = "Shift already closed" });
+
+    shift.ActualCashCountedPKR = dto.ActualCashCounted;
+    shift.ExpectedCashPKR = shift.OpeningFloatPKR + shift.CashSalesPKR;
+    shift.VariancePKR = dto.ActualCashCounted - shift.ExpectedCashPKR;
+    shift.ClosedAt = DateTime.UtcNow;
+    shift.IsClosed = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(shift);
+});
+
+// --- Inventory ---
+api.MapGet("/inventory", async (AppDbContext db, Guid branchId) =>
+{
+    var stocks = await db.BranchStocks.Include(s => s.Product).ThenInclude(p => p!.Category)
+        .Where(s => s.BranchId == branchId).OrderBy(s => s.Product!.Name).ToListAsync();
+
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId);
     if (branch != null)
     {
         var existingProductIds = stocks.Select(s => s.ProductId).ToHashSet();
-        var missingProducts = await db.Products
-            .Where(p => p.TenantId == branch.TenantId && !existingProductIds.Contains(p.Id))
-            .ToListAsync();
-
+        var missingProducts = await db.Products.Where(p => p.TenantId == branch.TenantId && !existingProductIds.Contains(p.Id)).ToListAsync();
         if (missingProducts.Any())
         {
             foreach (var p in missingProducts)
-            {
-                var newStock = new BranchStock
-                {
-                    BranchId = branchId,
-                    ProductId = p.Id,
-                    QuantityOnHand = 50,
-                    MinAlertLevel = 10
-                };
-                db.BranchStocks.Add(newStock);
-            }
+                db.BranchStocks.Add(new BranchStock { BranchId = branchId, ProductId = p.Id, QuantityOnHand = 50, MinAlertLevel = 10 });
             await db.SaveChangesAsync();
-
-            // reload
-            stocks = await db.BranchStocks
-                .Include(s => s.Product)
-                .ThenInclude(p => p!.Category)
-                .Where(s => s.BranchId == branchId)
-                .OrderBy(s => s.Product!.Name)
-                .ToListAsync();
+            stocks = await db.BranchStocks.Include(s => s.Product).ThenInclude(p => p!.Category)
+                .Where(s => s.BranchId == branchId).OrderBy(s => s.Product!.Name).ToListAsync();
         }
     }
 
-    var result = stocks.Select(s => new
+    return Results.Ok(stocks.Select(s => new
     {
-        id = s.Id,
-        branchId = s.BranchId,
-        productId = s.ProductId,
-        productName = s.Product?.Name ?? "Item",
-        sku = s.Product?.SKU ?? "",
-        barcode = s.Product?.Barcode ?? "",
-        categoryName = s.Product?.Category?.Name ?? "General",
-        unit = s.Product?.Unit ?? "Piece",
-        costPricePKR = s.Product?.CostPricePKR ?? 0,
-        sellingPricePKR = s.Product?.SellingPricePKR ?? 0,
-        quantityOnHand = s.QuantityOnHand,
-        minAlertLevel = s.MinAlertLevel,
-        batchNumber = s.BatchNumber,
-        expiryDate = s.ExpiryDate?.ToString("yyyy-MM-dd"),
-        isLowStock = s.QuantityOnHand <= s.MinAlertLevel
-    });
-
-    return Results.Ok(result);
+        id = s.Id, branchId = s.BranchId, productId = s.ProductId,
+        productName = s.Product?.Name ?? "Item", sku = s.Product?.SKU ?? "",
+        barcode = s.Product?.Barcode ?? "", categoryName = s.Product?.Category?.Name ?? "General",
+        unit = s.Product?.Unit ?? "Piece", costPricePKR = s.Product?.CostPricePKR ?? 0,
+        sellingPricePKR = s.Product?.SellingPricePKR ?? 0, quantityOnHand = s.QuantityOnHand,
+        minAlertLevel = s.MinAlertLevel, batchNumber = s.BatchNumber,
+        expiryDate = s.ExpiryDate?.ToString("yyyy-MM-dd"), isLowStock = s.QuantityOnHand <= s.MinAlertLevel
+    }));
 });
 
-// 2. Stock-In (Goods Received Note / Supplier replenishment)
-app.MapPost("/api/inventory/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
+api.MapPost("/inventory/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
 {
-    var stock = await db.BranchStocks
-        .Include(s => s.Product)
-        .FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && s.ProductId == dto.ProductId);
-
+    var stock = await db.BranchStocks.Include(s => s.Product).FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && s.ProductId == dto.ProductId);
     if (stock == null)
     {
-        stock = new BranchStock
-        {
-            BranchId = dto.BranchId,
-            ProductId = dto.ProductId,
-            QuantityOnHand = dto.Quantity,
-            MinAlertLevel = 10,
-            BatchNumber = dto.BatchNumber,
-            ExpiryDate = dto.ExpiryDate
-        };
+        stock = new BranchStock { BranchId = dto.BranchId, ProductId = dto.ProductId, QuantityOnHand = dto.Quantity, MinAlertLevel = 10, BatchNumber = dto.BatchNumber, ExpiryDate = dto.ExpiryDate };
         db.BranchStocks.Add(stock);
     }
     else
@@ -1054,52 +1030,25 @@ app.MapPost("/api/inventory/stock-in", async (AppDbContext db, [Microsoft.AspNet
         if (!string.IsNullOrEmpty(dto.BatchNumber)) stock.BatchNumber = dto.BatchNumber;
         if (dto.ExpiryDate.HasValue) stock.ExpiryDate = dto.ExpiryDate.Value;
     }
-
-    // Optionally update cost price if new purchase price is recorded
     if (dto.CostPricePKR.HasValue && dto.CostPricePKR.Value > 0 && stock.Product != null)
-    {
         stock.Product.CostPricePKR = dto.CostPricePKR.Value;
-    }
-
     await db.SaveChangesAsync();
-
-    return Results.Ok(new
-    {
-        message = $"Successfully received {dto.Quantity} units into branch inventory",
-        productId = dto.ProductId,
-        newQuantityOnHand = stock.QuantityOnHand
-    });
+    return Results.Ok(new { message = $"Received {dto.Quantity} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand });
 });
 
-// 3. Stock Adjustment (Wastage, damage, physical stock audit correction)
-app.MapPost("/api/inventory/adjust", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockAdjustmentDto dto) =>
+api.MapPost("/inventory/adjust", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockAdjustmentDto dto) =>
 {
     var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && s.ProductId == dto.ProductId);
     if (stock == null) return Results.NotFound();
-
     stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand + dto.AdjustmentQty);
     await db.SaveChangesAsync();
-
-    return Results.Ok(new
-    {
-        message = $"Stock adjusted for reason: {dto.Reason}",
-        productId = dto.ProductId,
-        newQuantityOnHand = stock.QuantityOnHand
-    });
+    return Results.Ok(new { message = $"Stock adjusted: {dto.Reason}", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand });
 });
 
-// --- RAW INGREDIENTS & RECIPE BOM (Burger Buns, Patties, Sauces, Cheese, Fries) ---
-
-// 4. Get raw ingredients for branch (with auto-seeder if empty)
-app.MapGet("/api/inventory/ingredients", async (AppDbContext db, Guid branchId) =>
+// --- Raw Ingredients ---
+api.MapGet("/inventory/ingredients", async (AppDbContext db, Guid branchId) =>
 {
-    var ingredients = await db.Ingredients
-        .Where(i => i.BranchId == branchId)
-        .OrderBy(i => i.Category)
-        .ThenBy(i => i.Name)
-        .ToListAsync();
-
-    // Auto-seed realistic ingredients if branch is new
+    var ingredients = await db.Ingredients.Where(i => i.BranchId == branchId).OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
     if (!ingredients.Any())
     {
         var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId);
@@ -1119,257 +1068,96 @@ app.MapGet("/api/inventory/ingredients", async (AppDbContext db, Guid branchId) 
                 new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Cola Beverage Can (250ml)", Category = "Beverages", Unit = "Can", CostPerUnitPKR = 75, CurrentStock = 600, MinAlertLevel = 100, SupplierName = "Coca-Cola / Pepsi Bottling" },
                 new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Branded Burger Box & Wrapper", Category = "Packaging", Unit = "Piece", CostPerUnitPKR = 18, CurrentStock = 850, MinAlertLevel = 150, SupplierName = "Custom Print Packaging" },
             };
-
             db.Ingredients.AddRange(seedIngredients);
             await db.SaveChangesAsync();
             ingredients = seedIngredients;
-
-            // Auto-link first products to ingredients
-            var products = await db.Products.Where(p => p.TenantId == branch.TenantId).ToListAsync();
-            var bun = seedIngredients.First(i => i.Name.Contains("Buns"));
-            var patty = seedIngredients.First(i => i.Name.Contains("Patty"));
-            var cheese = seedIngredients.First(i => i.Name.Contains("Cheese Slices"));
-            var sauce = seedIngredients.First(i => i.Name.Contains("Sauce"));
-            var box = seedIngredients.First(i => i.Name.Contains("Box"));
-
-            var burgerProduct = products.FirstOrDefault(p => p.Name.ToLower().Contains("burger"));
-            if (burgerProduct != null && !await db.ProductRecipeItems.AnyAsync(r => r.ProductId == burgerProduct.Id))
-            {
-                db.ProductRecipeItems.AddRange(
-                    new ProductRecipeItem { ProductId = burgerProduct.Id, IngredientId = bun.Id, QuantityRequired = 1, Unit = "Piece" },
-                    new ProductRecipeItem { ProductId = burgerProduct.Id, IngredientId = patty.Id, QuantityRequired = 1, Unit = "Piece" },
-                    new ProductRecipeItem { ProductId = burgerProduct.Id, IngredientId = cheese.Id, QuantityRequired = 1, Unit = "Slice" },
-                    new ProductRecipeItem { ProductId = burgerProduct.Id, IngredientId = sauce.Id, QuantityRequired = 0.025m, Unit = "Litre" }, // 25ml
-                    new ProductRecipeItem { ProductId = burgerProduct.Id, IngredientId = box.Id, QuantityRequired = 1, Unit = "Piece" }
-                );
-                await db.SaveChangesAsync();
-            }
         }
     }
-
-    var result = ingredients.Select(i => new
+    return Results.Ok(ingredients.Select(i => new
     {
-        id = i.Id,
-        branchId = i.BranchId,
-        name = i.Name,
-        category = i.Category,
-        unit = i.Unit,
-        costPerUnitPKR = i.CostPerUnitPKR,
-        currentStock = i.CurrentStock,
-        minAlertLevel = i.MinAlertLevel,
-        supplierName = i.SupplierName,
-        isLowStock = i.CurrentStock <= i.MinAlertLevel,
+        id = i.Id, branchId = i.BranchId, name = i.Name, category = i.Category, unit = i.Unit,
+        costPerUnitPKR = i.CostPerUnitPKR, currentStock = i.CurrentStock, minAlertLevel = i.MinAlertLevel,
+        supplierName = i.SupplierName, isLowStock = i.CurrentStock <= i.MinAlertLevel,
         totalValuationPKR = Math.Round(i.CurrentStock * i.CostPerUnitPKR, 2)
-    });
-
-    return Results.Ok(result);
+    }));
 });
 
-// 5. Restock / Inward raw ingredient (e.g. Received 200 buns, 20kg chicken, 10kg cheese)
-app.MapPost("/api/inventory/ingredients/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] IngredientStockInDto dto) =>
+api.MapPost("/inventory/ingredients/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] IngredientStockInDto dto) =>
 {
     var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == dto.IngredientId && i.BranchId == dto.BranchId);
     if (ingredient == null) return Results.NotFound();
-
     ingredient.CurrentStock += dto.QuantityReceived;
-    if (dto.NewCostPerUnitPKR.HasValue && dto.NewCostPerUnitPKR.Value > 0)
-    {
-        ingredient.CostPerUnitPKR = dto.NewCostPerUnitPKR.Value;
-    }
-    if (!string.IsNullOrEmpty(dto.SupplierName))
-    {
-        ingredient.SupplierName = dto.SupplierName;
-    }
-
+    if (dto.NewCostPerUnitPKR.HasValue && dto.NewCostPerUnitPKR.Value > 0) ingredient.CostPerUnitPKR = dto.NewCostPerUnitPKR.Value;
+    if (!string.IsNullOrEmpty(dto.SupplierName)) ingredient.SupplierName = dto.SupplierName;
     await db.SaveChangesAsync();
-    return Results.Ok(new
-    {
-        message = $"Added +{dto.QuantityReceived} {ingredient.Unit} to {ingredient.Name}",
-        ingredientId = ingredient.Id,
-        newStock = ingredient.CurrentStock
-    });
+    return Results.Ok(new { message = $"Added +{dto.QuantityReceived} {ingredient.Unit} to {ingredient.Name}", ingredientId = ingredient.Id, newStock = ingredient.CurrentStock });
 });
 
-// 6. Create or Add New Raw Ingredient
-app.MapPost("/api/inventory/ingredients", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateIngredientDto dto) =>
+api.MapPost("/inventory/ingredients", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateIngredientDto dto) =>
 {
     var ingredient = new Ingredient
     {
-        BranchId = dto.BranchId,
-        TenantId = dto.TenantId,
-        Name = dto.Name,
-        Category = dto.Category ?? "General",
-        Unit = dto.Unit ?? "Piece",
-        CostPerUnitPKR = dto.CostPerUnitPKR,
-        CurrentStock = dto.InitialStock,
-        MinAlertLevel = dto.MinAlertLevel,
-        SupplierName = dto.SupplierName
+        BranchId = dto.BranchId, TenantId = dto.TenantId, Name = dto.Name,
+        Category = dto.Category ?? "General", Unit = dto.Unit ?? "Piece",
+        CostPerUnitPKR = dto.CostPerUnitPKR, CurrentStock = dto.InitialStock,
+        MinAlertLevel = dto.MinAlertLevel, SupplierName = dto.SupplierName
     };
-
     db.Ingredients.Add(ingredient);
     await db.SaveChangesAsync();
     return Results.Ok(ingredient);
 });
 
-// 7. Get Recipe (BOM) for a Product
-app.MapGet("/api/recipes/{productId}", async (AppDbContext db, Guid productId) =>
+// --- Recipes ---
+api.MapGet("/recipes/{productId}", async (AppDbContext db, Guid productId) =>
 {
-    var recipe = await db.ProductRecipeItems
-        .Include(r => r.Ingredient)
-        .Where(r => r.ProductId == productId)
-        .ToListAsync();
-
-    var result = recipe.Select(r => new
+    var recipe = await db.ProductRecipeItems.Include(r => r.Ingredient).Where(r => r.ProductId == productId).ToListAsync();
+    return Results.Ok(recipe.Select(r => new
     {
-        id = r.Id,
-        productId = r.ProductId,
-        ingredientId = r.IngredientId,
-        ingredientName = r.Ingredient?.Name ?? "Ingredient",
-        ingredientCategory = r.Ingredient?.Category ?? "General",
-        quantityRequired = r.QuantityRequired,
-        unit = r.Unit,
-        costPerUnitPKR = r.Ingredient?.CostPerUnitPKR ?? 0,
+        id = r.Id, productId = r.ProductId, ingredientId = r.IngredientId,
+        ingredientName = r.Ingredient?.Name ?? "Ingredient", ingredientCategory = r.Ingredient?.Category ?? "General",
+        quantityRequired = r.QuantityRequired, unit = r.Unit, costPerUnitPKR = r.Ingredient?.CostPerUnitPKR ?? 0,
         estimatedCostPKR = Math.Round(r.QuantityRequired * (r.Ingredient?.CostPerUnitPKR ?? 0), 2)
-    });
-
-    return Results.Ok(result);
+    }));
 });
 
-// 8. Save / Update Product Recipe (Link burger to bun, patty, sauce, etc.)
-app.MapPost("/api/recipes/{productId}", async (AppDbContext db, Guid productId, [Microsoft.AspNetCore.Mvc.FromBody] List<RecipeItemInputDto> items) =>
+api.MapPost("/recipes/{productId}", async (AppDbContext db, Guid productId, [Microsoft.AspNetCore.Mvc.FromBody] List<RecipeItemInputDto> items) =>
 {
     var existing = await db.ProductRecipeItems.Where(r => r.ProductId == productId).ToListAsync();
     db.ProductRecipeItems.RemoveRange(existing);
-
     decimal calculatedCost = 0;
     foreach (var item in items)
     {
         var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == item.IngredientId);
-        var recipeItem = new ProductRecipeItem
+        db.ProductRecipeItems.Add(new ProductRecipeItem
         {
-            ProductId = productId,
-            IngredientId = item.IngredientId,
-            QuantityRequired = item.QuantityRequired,
-            Unit = item.Unit ?? ingredient?.Unit ?? "Piece"
-        };
-        db.ProductRecipeItems.Add(recipeItem);
-
-        if (ingredient != null)
-        {
-            calculatedCost += recipeItem.QuantityRequired * ingredient.CostPerUnitPKR;
-        }
+            ProductId = productId, IngredientId = item.IngredientId,
+            QuantityRequired = item.QuantityRequired, Unit = item.Unit ?? ingredient?.Unit ?? "Piece"
+        });
+        if (ingredient != null) calculatedCost += item.QuantityRequired * ingredient.CostPerUnitPKR;
     }
-
-    // Auto update product cost price based on sum of raw materials!
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId);
-    if (product != null && calculatedCost > 0)
-    {
-        product.CostPricePKR = Math.Round(calculatedCost, 2);
-    }
-
+    if (product != null && calculatedCost > 0) product.CostPricePKR = Math.Round(calculatedCost, 2);
     await db.SaveChangesAsync();
-    return Results.Ok(new
-    {
-        message = $"Recipe updated with {items.Count} raw ingredients. Calculated product cost: ₨{Math.Round(calculatedCost, 2)}",
-        productId,
-        calculatedCostPKR = Math.Round(calculatedCost, 2)
-    });
+    return Results.Ok(new { message = $"Recipe updated with {items.Count} ingredients. Cost: ₨{Math.Round(calculatedCost, 2)}", productId, calculatedCostPKR = Math.Round(calculatedCost, 2) });
 });
 
-// --- USERS & PERMISSIONS ENDPOINTS ---
-
-// 1. Get users for tenant/branch (with auto-seed of restaurant staff if empty)
-app.MapGet("/api/users", async (AppDbContext db, Guid tenantId, Guid? branchId) =>
+// --- Users (with PIN hashing) ---
+api.MapGet("/users", async (AppDbContext db, Guid tenantId, Guid? branchId) =>
 {
     var query = db.Users.Where(u => u.TenantId == tenantId);
-    if (branchId.HasValue)
-    {
-        query = query.Where(u => u.BranchId == null || u.BranchId == branchId.Value);
-    }
-
+    if (branchId.HasValue) query = query.Where(u => u.BranchId == null || u.BranchId == branchId.Value);
     var users = await query.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync();
 
     if (!users.Any())
     {
         var seedUsers = new List<AppUser>
         {
-            new()
-            {
-                TenantId = tenantId,
-                BranchId = null, // Executive / Owner has access to all branches
-                FullName = "Director / Restaurant Owner",
-                Username = "owner_admin",
-                PinCode = "9999",
-                Role = UserRole.OwnerAdmin,
-                IsActive = true,
-                CanViewFinancialReports = true,
-                CanManageInventory = true,
-                CanManageMenuAndTax = true,
-                CanGiveDiscounts = true,
-                CanVoidOrders = true
-            },
-            new()
-            {
-                TenantId = tenantId,
-                BranchId = branchId,
-                FullName = "Branch Operations Manager",
-                Username = "branch_mgr",
-                PinCode = "5555",
-                Role = UserRole.BranchManager,
-                IsActive = true,
-                CanViewFinancialReports = true,
-                CanManageInventory = true,
-                CanManageMenuAndTax = false,
-                CanGiveDiscounts = true,
-                CanVoidOrders = true
-            },
-            new()
-            {
-                TenantId = tenantId,
-                BranchId = branchId,
-                FullName = "Main Counter Cashier",
-                Username = "cashier_1",
-                PinCode = "1234",
-                Role = UserRole.Cashier,
-                IsActive = true,
-                CanViewFinancialReports = false,
-                CanManageInventory = false,
-                CanManageMenuAndTax = false,
-                CanGiveDiscounts = false,
-                CanVoidOrders = false
-            },
-            new()
-            {
-                TenantId = tenantId,
-                BranchId = branchId,
-                FullName = "Head Chef (Kitchen Lead)",
-                Username = "chef_lead",
-                PinCode = "4321",
-                Role = UserRole.KitchenChef,
-                IsActive = true,
-                CanViewFinancialReports = false,
-                CanManageInventory = true, // Kitchen ingredients
-                CanManageMenuAndTax = false,
-                CanGiveDiscounts = false,
-                CanVoidOrders = false
-            },
-            new()
-            {
-                TenantId = tenantId,
-                BranchId = branchId,
-                FullName = "Dining Hall Captain (Waiter)",
-                Username = "waiter_tab1",
-                PinCode = "1111",
-                Role = UserRole.Waiter,
-                IsActive = true,
-                CanViewFinancialReports = false,
-                CanManageInventory = false,
-                CanManageMenuAndTax = false,
-                CanGiveDiscounts = false,
-                CanVoidOrders = false
-            }
+            new() { TenantId = tenantId, BranchId = null, FullName = "Director / Restaurant Owner", Username = "owner_admin", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("9999"), Role = UserRole.OwnerAdmin, IsActive = true, CanViewFinancialReports = true, CanManageInventory = true, CanManageMenuAndTax = true, CanGiveDiscounts = true, CanVoidOrders = true },
+            new() { TenantId = tenantId, BranchId = branchId, FullName = "Branch Operations Manager", Username = "branch_mgr", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("5555"), Role = UserRole.BranchManager, IsActive = true, CanViewFinancialReports = true, CanManageInventory = true, CanManageMenuAndTax = false, CanGiveDiscounts = true, CanVoidOrders = true },
+            new() { TenantId = tenantId, BranchId = branchId, FullName = "Main Counter Cashier", Username = "cashier_1", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"), Role = UserRole.Cashier, IsActive = true, CanViewFinancialReports = false, CanManageInventory = false, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false },
+            new() { TenantId = tenantId, BranchId = branchId, FullName = "Head Chef (Kitchen Lead)", Username = "chef_lead", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("4321"), Role = UserRole.KitchenChef, IsActive = true, CanViewFinancialReports = false, CanManageInventory = true, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false },
+            new() { TenantId = tenantId, BranchId = branchId, FullName = "Dining Hall Captain (Waiter)", Username = "waiter_tab1", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1111"), Role = UserRole.Waiter, IsActive = true, CanViewFinancialReports = false, CanManageInventory = false, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false }
         };
-
         db.Users.AddRange(seedUsers);
         await db.SaveChangesAsync();
         users = seedUsers;
@@ -1377,692 +1165,313 @@ app.MapGet("/api/users", async (AppDbContext db, Guid tenantId, Guid? branchId) 
 
     return Results.Ok(users.Select(u => new
     {
-        id = u.Id,
-        tenantId = u.TenantId,
-        branchId = u.BranchId,
-        fullName = u.FullName,
-        username = u.Username,
-        pinCode = u.PinCode,
-        role = u.Role.ToString(),
-        isActive = u.IsActive,
-        createdAt = u.CreatedAt,
-        permissions = new
-        {
-            canViewFinancialReports = u.CanViewFinancialReports,
-            canManageInventory = u.CanManageInventory,
-            canManageMenuAndTax = u.CanManageMenuAndTax,
-            canGiveDiscounts = u.CanGiveDiscounts,
-            canVoidOrders = u.CanVoidOrders
-        }
+        id = u.Id, tenantId = u.TenantId, branchId = u.BranchId, fullName = u.FullName, username = u.Username,
+        role = u.Role.ToString(), isActive = u.IsActive, createdAt = u.CreatedAt,
+        permissions = new { u.CanViewFinancialReports, u.CanManageInventory, u.CanManageMenuAndTax, u.CanGiveDiscounts, u.CanVoidOrders }
     }));
 });
 
-// 2. Create User
-app.MapPost("/api/users", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
+api.MapPost("/users", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
 {
     var user = new AppUser
     {
-        TenantId = dto.TenantId,
-        BranchId = dto.BranchId,
-        FullName = dto.FullName,
+        TenantId = dto.TenantId, BranchId = dto.BranchId, FullName = dto.FullName,
         Username = dto.Username.ToLower().Trim(),
-        PinCode = dto.PinCode ?? "1234",
-        Role = dto.Role,
-        IsActive = true,
-        CanViewFinancialReports = dto.CanViewFinancialReports,
-        CanManageInventory = dto.CanManageInventory,
-        CanManageMenuAndTax = dto.CanManageMenuAndTax,
-        CanGiveDiscounts = dto.CanGiveDiscounts,
-        CanVoidOrders = dto.CanVoidOrders
+        PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode ?? "1234"),
+        Role = dto.Role, IsActive = true,
+        CanViewFinancialReports = dto.CanViewFinancialReports, CanManageInventory = dto.CanManageInventory,
+        CanManageMenuAndTax = dto.CanManageMenuAndTax, CanGiveDiscounts = dto.CanGiveDiscounts, CanVoidOrders = dto.CanVoidOrders
     };
-
     db.Users.Add(user);
     await db.SaveChangesAsync();
-    return Results.Ok(user);
+    return Results.Ok(new { user.Id, user.Username, user.Role });
 });
 
-// 3. Update User Permissions / Role
-app.MapPut("/api/users/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
+api.MapPut("/users/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
 {
     var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
     if (user == null) return Results.NotFound();
-
     if (!string.IsNullOrEmpty(dto.FullName)) user.FullName = dto.FullName;
     if (dto.Role.HasValue) user.Role = dto.Role.Value;
-    if (!string.IsNullOrEmpty(dto.PinCode)) user.PinCode = dto.PinCode;
+    if (!string.IsNullOrEmpty(dto.PinCode)) user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode);
     if (dto.IsActive.HasValue) user.IsActive = dto.IsActive.Value;
     if (dto.CanViewFinancialReports.HasValue) user.CanViewFinancialReports = dto.CanViewFinancialReports.Value;
     if (dto.CanManageInventory.HasValue) user.CanManageInventory = dto.CanManageInventory.Value;
     if (dto.CanManageMenuAndTax.HasValue) user.CanManageMenuAndTax = dto.CanManageMenuAndTax.Value;
     if (dto.CanGiveDiscounts.HasValue) user.CanGiveDiscounts = dto.CanGiveDiscounts.Value;
     if (dto.CanVoidOrders.HasValue) user.CanVoidOrders = dto.CanVoidOrders.Value;
-
     await db.SaveChangesAsync();
     return Results.Ok(user);
 });
 
-// 4. Delete / Deactivate User
-app.MapDelete("/api/users/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/users/{id}", async (AppDbContext db, Guid id) =>
 {
     var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
     if (user == null) return Results.NotFound();
-
     db.Users.Remove(user);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "User deleted successfully", id });
 });
 
-// --- REPORTS & AUDIT ENGINE ENDPOINTS ---
-
-
-// 1. Z-Report: Daily Register Close & Cash Reconciliation
-app.MapGet("/api/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime? date) =>
+// --- Reports ---
+api.MapGet("/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime? date) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
-        ? branchId.Value
-        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
-
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
     var targetDate = (date ?? DateTime.UtcNow).Date;
     var nextDate = targetDate.AddDays(1);
-
-    var orders = await db.Orders
-        .Include(o => o.Items)
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= targetDate && o.CreatedAt < nextDate && o.IsPaid)
-        .ToListAsync();
-
+    var orders = await db.Orders.Include(o => o.Items)
+        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= targetDate && o.CreatedAt < nextDate && o.IsPaid).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Card).ToList();
     var digitalOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).ToList();
-
-    var cashSales = cashOrders.Sum(o => o.TotalPKR);
-    var cardSales = cardOrders.Sum(o => o.TotalPKR);
-    var digitalSales = digitalOrders.Sum(o => o.TotalPKR);
-
-    // Cash tax is 16%, Card tax is 8%
-    var cashTax = cashOrders.Sum(o => o.TaxPKR);
-    var cardTax = cardOrders.Sum(o => o.TaxPKR);
-    var totalTax = orders.Sum(o => o.TaxPKR);
-
-    var shift = await db.CashShifts
-        .Where(s => s.BranchId == targetBranchId && s.OpenedAt >= targetDate && s.OpenedAt < nextDate)
-        .OrderByDescending(s => s.OpenedAt)
-        .FirstOrDefaultAsync();
-
+    var shift = await db.CashShifts.Where(s => s.BranchId == targetBranchId && s.OpenedAt >= targetDate && s.OpenedAt < nextDate)
+        .OrderByDescending(s => s.OpenedAt).FirstOrDefaultAsync();
     var openingFloat = shift?.OpeningFloatPKR ?? 10000;
+    var cashSales = cashOrders.Sum(o => o.TotalPKR);
     var expectedCash = openingFloat + cashSales;
     var actualCash = shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : expectedCash;
-    var variance = actualCash - expectedCash;
-
-    var dineInSales = orders.Where(o => o.OrderType == OrderType.DineIn).Sum(o => o.TotalPKR);
-    var takeawaySales = orders.Where(o => o.OrderType == OrderType.Takeaway).Sum(o => o.TotalPKR);
-    var deliverySales = orders.Where(o => o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder).Sum(o => o.TotalPKR);
-
     return Results.Ok(new
     {
-        period = targetDate.ToString("yyyy-MM-dd"),
-        totalSalesPKR = orders.Sum(o => o.TotalPKR),
-        totalOrders = orders.Count,
-        cashSalesPKR = cashSales,
-        cardSalesPKR = cardSales,
-        digitalSalesPKR = digitalSales,
-        cashTaxPKR = cashTax,
-        cardTaxPKR = cardTax,
-        totalTaxPKR = totalTax,
-        openingFloatPKR = openingFloat,
-        expectedCashInDrawerPKR = expectedCash,
-        actualCashInDrawerPKR = actualCash,
-        variancePKR = variance,
-        dineInSalesPKR = dineInSales,
-        takeawaySalesPKR = takeawaySales,
-        deliverySalesPKR = deliverySales
+        period = targetDate.ToString("yyyy-MM-dd"), totalSalesPKR = orders.Sum(o => o.TotalPKR), totalOrders = orders.Count,
+        cashSalesPKR = cashSales, cardSalesPKR = cardOrders.Sum(o => o.TotalPKR), digitalSalesPKR = digitalOrders.Sum(o => o.TotalPKR),
+        cashTaxPKR = cashOrders.Sum(o => o.TaxPKR), cardTaxPKR = cardOrders.Sum(o => o.TaxPKR), totalTaxPKR = orders.Sum(o => o.TaxPKR),
+        openingFloatPKR = openingFloat, expectedCashInDrawerPKR = expectedCash, actualCashInDrawerPKR = actualCash, variancePKR = actualCash - expectedCash,
+        dineInSalesPKR = orders.Where(o => o.OrderType == OrderType.DineIn).Sum(o => o.TotalPKR),
+        takeawaySalesPKR = orders.Where(o => o.OrderType == OrderType.Takeaway).Sum(o => o.TotalPKR),
+        deliverySalesPKR = orders.Where(o => o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder).Sum(o => o.TotalPKR)
     });
 });
 
-// 2. Sales by Category
-app.MapGet("/api/reports/sales-by-category", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/sales-by-category", async (AppDbContext db, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
-        ? branchId.Value
-        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
-
-    var numDays = days ?? 7;
-    var since = DateTime.UtcNow.Date.AddDays(-numDays);
-
-    var items = await db.Orders
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
-        .SelectMany(o => o.Items)
-        .Include(i => i.Product)
-        .ThenInclude(p => p!.Category)
-        .ToListAsync();
-
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
+    var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
+        .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     var totalRevenue = items.Sum(i => i.TotalPricePKR);
-
-    var grouped = items
-        .GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
-        .Select(g =>
-        {
-            var gross = g.Sum(x => x.TotalPricePKR);
-            return new
-            {
-                categoryId = g.Key.Id.ToString(),
-                categoryName = g.Key.Name,
-                quantitySold = g.Sum(x => x.Quantity),
-                grossSalesPKR = gross,
-                netSalesPKR = Math.Round(gross / 1.16m, 2),
-                taxPKR = Math.Round(gross - (gross / 1.16m), 2),
-                percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0
-            };
-        })
-        .OrderByDescending(x => x.grossSalesPKR)
-        .ToList();
-
-    return Results.Ok(grouped);
+    return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
+        .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / 1.16m, 2), taxPKR = Math.Round(gross - (gross / 1.16m), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
+        .OrderByDescending(x => x.grossSalesPKR).ToList());
 });
 
-// 3. Top Products / Item Performance with gross margins
-app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/item-performance", async (AppDbContext db, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
-        ? branchId.Value
-        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
-
-    var numDays = days ?? 7;
-    var since = DateTime.UtcNow.Date.AddDays(-numDays);
-
-    var items = await db.Orders
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
-        .SelectMany(o => o.Items)
-        .Include(i => i.Product)
-        .ThenInclude(p => p!.Category)
-        .ToListAsync();
-
-    var grouped = items
-        .GroupBy(i => new
-        {
-            ProductId = i.ProductId,
-            ProductName = i.ProductName,
-            CategoryName = i.Product?.Category?.Name ?? "General",
-            CostPrice = i.Product?.CostPricePKR ?? 0
-        })
-        .Select(g =>
-        {
-            var qty = g.Sum(x => x.Quantity);
-            var rev = g.Sum(x => x.TotalPricePKR);
-            var cost = g.Key.CostPrice * qty;
-            var grossProfit = rev - cost;
-            var margin = rev > 0 ? Math.Round((grossProfit / rev) * 100, 1) : 0;
-
-            return new
-            {
-                productId = g.Key.ProductId.ToString(),
-                productName = g.Key.ProductName,
-                categoryName = g.Key.CategoryName,
-                quantitySold = qty,
-                revenuePKR = rev,
-                costPKR = cost,
-                grossProfitPKR = grossProfit,
-                marginPercent = margin
-            };
-        })
-        .OrderByDescending(x => x.revenuePKR)
-        .Take(25)
-        .ToList();
-
-    return Results.Ok(grouped);
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
+    var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
+        .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
+    return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", CostPrice = i.Product?.CostPricePKR ?? 0 })
+        .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.CostPrice * qty; var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
+        .OrderByDescending(x => x.revenuePKR).Take(25).ToList());
 });
 
-// 4. Detailed Tax Audit & Provincial/FBR Compliance (16% Cash vs 8% Card)
-app.MapGet("/api/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
+api.MapGet("/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
-        ? branchId.Value
-        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
-
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
     var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
     var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
-
-    var orders = await db.Orders
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
-        .OrderByDescending(o => o.CreatedAt)
-        .ToListAsync();
-
+    var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
+        .OrderByDescending(o => o.CreatedAt).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod != PaymentMethod.Cash).ToList();
-
-    var cashGross = cashOrders.Sum(o => o.TotalPKR);
-    var cashTax = cashOrders.Sum(o => o.TaxPKR);
-    var cashNet = cashGross - cashTax;
-
-    var cardGross = cardOrders.Sum(o => o.TotalPKR);
-    var cardTax = cardOrders.Sum(o => o.TaxPKR);
-    var cardNet = cardGross - cardTax;
-
-    var invoices = orders.Select(o => new
-    {
-        orderId = o.Id,
-        orderNumber = o.OrderNumber,
-        createdAt = o.CreatedAt,
-        orderType = o.OrderType.ToString(),
-        paymentMethod = o.PaymentMethod.ToString(),
-        cashierName = o.CashierName ?? "Counter Staff",
-        netAmountPKR = o.SubTotalPKR,
-        taxRatePercent = o.PaymentMethod == PaymentMethod.Cash ? 16 : 8,
-        taxAmountPKR = o.TaxPKR,
-        totalAmountPKR = o.TotalPKR
-    }).ToList();
-
     return Results.Ok(new
     {
-        startDate = start.ToString("yyyy-MM-dd"),
-        endDate = end.ToString("yyyy-MM-dd"),
-        totalInvoices = orders.Count,
-        totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR),
-        totalNetSalesPKR = cashNet + cardNet,
-        totalTaxCollectedPKR = cashTax + cardTax,
-        cashSegment = new
-        {
-            taxRatePercent = 16,
-            invoiceCount = cashOrders.Count,
-            grossSalesPKR = cashGross,
-            netTaxableSalesPKR = cashNet,
-            taxCollectedPKR = cashTax
-        },
-        cardSegment = new
-        {
-            taxRatePercent = 8,
-            invoiceCount = cardOrders.Count,
-            grossSalesPKR = cardGross,
-            netTaxableSalesPKR = cardNet,
-            taxCollectedPKR = cardTax
-        },
-        invoices
+        startDate = start.ToString("yyyy-MM-dd"), endDate = end.ToString("yyyy-MM-dd"), totalInvoices = orders.Count,
+        totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR), totalNetSalesPKR = (cashOrders.Sum(o => o.TotalPKR) - cashOrders.Sum(o => o.TaxPKR)) + (cardOrders.Sum(o => o.TotalPKR) - cardOrders.Sum(o => o.TaxPKR)),
+        totalTaxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) + cardOrders.Sum(o => o.TaxPKR),
+        cashSegment = new { taxRatePercent = 16, invoiceCount = cashOrders.Count, grossSalesPKR = cashOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) },
+        cardSegment = new { taxRatePercent = 8, invoiceCount = cardOrders.Count, grossSalesPKR = cardOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cardOrders.Sum(o => o.TaxPKR) }
     });
 });
 
-// 5. Payment Methods & Tender Mix Breakdown
-app.MapGet("/api/reports/payment-methods", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/payment-methods", async (AppDbContext db, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty
-        ? branchId.Value
-        : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
-
-    var numDays = days ?? 7;
-    var since = DateTime.UtcNow.Date.AddDays(-numDays);
-
-    var orders = await db.Orders
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
-        .ToListAsync();
-
+    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
+    var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid).ToListAsync();
     var grandTotal = orders.Sum(o => o.TotalPKR);
-
-    var grouped = orders
-        .GroupBy(o => o.PaymentMethod)
-        .Select(g =>
-        {
-            var total = g.Sum(x => x.TotalPKR);
-            var count = g.Count();
-            return new
-            {
-                method = g.Key.ToString(),
-                transactionCount = count,
-                totalAmountPKR = total,
-                percentageOfTotal = grandTotal > 0 ? Math.Round((total / grandTotal) * 100, 1) : 0,
-                avgTicketPKR = count > 0 ? Math.Round(total / count, 2) : 0
-            };
-        })
-        .OrderByDescending(x => x.totalAmountPKR)
-        .ToList();
-
     return Results.Ok(new
     {
-        totalRevenuePKR = grandTotal,
-        totalTransactions = orders.Count,
-        tenders = grouped
+        totalRevenuePKR = grandTotal, totalTransactions = orders.Count,
+        tenders = orders.GroupBy(o => o.PaymentMethod).Select(g => { var total = g.Sum(x => x.TotalPKR); var count = g.Count(); return new { method = g.Key.ToString(), transactionCount = count, totalAmountPKR = total, percentageOfTotal = grandTotal > 0 ? Math.Round((total / grandTotal) * 100, 1) : 0, avgTicketPKR = count > 0 ? Math.Round(total / count, 2) : 0 }; }).OrderByDescending(x => x.totalAmountPKR).ToList()
     });
 });
 
-// 6. Multi-Branch Consolidated Financials (Head Office View)
-app.MapGet("/api/reports/consolidated", async (AppDbContext db, Guid? tenantId, int? days) =>
+api.MapGet("/reports/consolidated", async (AppDbContext db, Guid? tenantId, int? days) =>
 {
-    var targetTenantId = tenantId.HasValue && tenantId.Value != Guid.Empty
-        ? tenantId.Value
-        : await db.Tenants.Select(t => t.Id).FirstOrDefaultAsync();
-
-    var numDays = days ?? 7;
-    var since = DateTime.UtcNow.Date.AddDays(-numDays);
-
-    var branches = await db.Branches
-        .Where(b => b.TenantId == targetTenantId)
-        .ToListAsync();
-
+    var targetTenantId = tenantId.HasValue && tenantId.Value != Guid.Empty ? tenantId.Value : await db.Tenants.Select(t => t.Id).FirstOrDefaultAsync();
+    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
+    var branches = await db.Branches.Where(b => b.TenantId == targetTenantId).ToListAsync();
     var branchIds = branches.Select(b => b.Id).ToList();
-
-    var orders = await db.Orders
-        .Include(o => o.Items)
-            .ThenInclude(i => i.Product)
-        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
-        .ToListAsync();
-
+    var orders = await db.Orders.Include(o => o.Items).ThenInclude(i => i.Product)
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid).ToListAsync();
     var branchSummaries = branches.Select(b =>
     {
         var bOrders = orders.Where(o => o.BranchId == b.Id).ToList();
         var bGross = bOrders.Sum(o => o.TotalPKR);
-        var bCash = bOrders.Where(o => o.PaymentMethod == PaymentMethod.Cash).Sum(o => o.TotalPKR);
-        var bCard = bOrders.Where(o => o.PaymentMethod == PaymentMethod.Card).Sum(o => o.TotalPKR);
-        var bDigital = bOrders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).Sum(o => o.TotalPKR);
-        var bTax = bOrders.Sum(o => o.TaxPKR);
-        
         var bCost = bOrders.SelectMany(o => o.Items).Sum(i => (i.Product?.CostPricePKR ?? (i.UnitPricePKR * 0.45m)) * i.Quantity);
-        var bProfit = bGross - bTax - bCost;
-        var bMargin = bGross > 0 ? Math.Round((bProfit / bGross) * 100, 1) : 0;
-
-        return new
-        {
-            branchId = b.Id,
-            branchName = b.Name,
-            branchCode = b.Code,
-            city = b.City,
-            isHeadOffice = b.IsHeadOffice,
-            orderCount = bOrders.Count,
-            grossSalesPKR = bGross,
-            cashSalesPKR = bCash,
-            cardSalesPKR = bCard,
-            digitalSalesPKR = bDigital,
-            taxCollectedPKR = bTax,
-            estimatedCostPKR = Math.Round(bCost, 2),
-            netProfitPKR = Math.Round(bProfit, 2),
-            profitMarginPercent = bMargin
-        };
+        var bProfit = bGross - bOrders.Sum(o => o.TaxPKR) - bCost;
+        return new { branchId = b.Id, branchName = b.Name, branchCode = b.Code, city = b.City, isHeadOffice = b.IsHeadOffice, orderCount = bOrders.Count, grossSalesPKR = bGross, taxCollectedPKR = bOrders.Sum(o => o.TaxPKR), estimatedCostPKR = Math.Round(bCost, 2), netProfitPKR = Math.Round(bProfit, 2), profitMarginPercent = bGross > 0 ? Math.Round((bProfit / bGross) * 100, 1) : 0 };
     }).OrderByDescending(x => x.grossSalesPKR).ToList();
-
     var chainGross = branchSummaries.Sum(x => x.grossSalesPKR);
-    var chainTax = branchSummaries.Sum(x => x.taxCollectedPKR);
-    var chainCost = branchSummaries.Sum(x => x.estimatedCostPKR);
     var chainProfit = branchSummaries.Sum(x => x.netProfitPKR);
-
     return Results.Ok(new
     {
-        daysAnalyzed = numDays,
-        chainGrossSalesPKR = chainGross,
-        chainTaxCollectedPKR = chainTax,
-        chainCostPKR = chainCost,
-        chainNetProfitPKR = chainProfit,
-        chainProfitMargin = chainGross > 0 ? Math.Round((chainProfit / chainGross) * 100, 1) : 0,
-        branches = branchSummaries
+        daysAnalyzed = days ?? 7, chainGrossSalesPKR = chainGross, chainTaxCollectedPKR = branchSummaries.Sum(x => x.taxCollectedPKR),
+        chainCostPKR = branchSummaries.Sum(x => x.estimatedCostPKR), chainNetProfitPKR = chainProfit,
+        chainProfitMargin = chainGross > 0 ? Math.Round((chainProfit / chainGross) * 100, 1) : 0, branches = branchSummaries
     });
 });
 
-// --- Supply Chain: Inter-Branch Commissary Transfers ---
-app.MapGet("/api/transfers", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+// --- Supply Chain ---
+api.MapGet("/transfers", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
 {
-    var query = db.StockTransferOrders
-        .Include(t => t.SourceBranch)
-        .Include(t => t.DestinationBranch)
-        .Include(t => t.Items)
-        .AsQueryable();
-
+    var query = db.StockTransferOrders.Include(t => t.SourceBranch).Include(t => t.DestinationBranch).Include(t => t.Items).AsQueryable();
     if (tenantId.HasValue) query = query.Where(t => t.TenantId == tenantId.Value);
-    if (branchId.HasValue)
-    {
-        query = query.Where(t => t.SourceBranchId == branchId.Value || t.DestinationBranchId == branchId.Value);
-    }
-
-    var list = await query.OrderByDescending(t => t.RequestedAt).ToListAsync();
-    return Results.Ok(list);
+    if (branchId.HasValue) query = query.Where(t => t.SourceBranchId == branchId.Value || t.DestinationBranchId == branchId.Value);
+    return Results.Ok(await query.OrderByDescending(t => t.RequestedAt).ToListAsync());
 });
 
-app.MapPost("/api/transfers", async (AppDbContext db, CreateTransferOrderDto dto) =>
+api.MapPost("/transfers", async (AppDbContext db, CreateTransferOrderDto dto) =>
 {
-    var randomSeq = new Random().Next(1000, 9999);
-    var transferNumber = $"TR-{DateTime.UtcNow:MMdd}-{randomSeq}";
-
+    var transferNumber = await GenerateTransferNumberAsync(db);
     var order = new StockTransferOrder
     {
-        TenantId = dto.TenantId,
-        TransferNumber = transferNumber,
-        SourceBranchId = dto.SourceBranchId,
-        DestinationBranchId = dto.DestinationBranchId,
-        Status = TransferStatus.Requested,
-        RequestedAt = DateTime.UtcNow,
-        VehicleOrDriver = dto.VehicleOrDriver,
-        Notes = dto.Notes
+        TenantId = dto.TenantId, TransferNumber = transferNumber, SourceBranchId = dto.SourceBranchId,
+        DestinationBranchId = dto.DestinationBranchId, Status = TransferStatus.Requested,
+        RequestedAt = DateTime.UtcNow, VehicleOrDriver = dto.VehicleOrDriver, Notes = dto.Notes
     };
-
     decimal totalEstCost = 0;
     foreach (var item in dto.Items)
     {
         var ing = await db.Ingredients.FindAsync(item.IngredientId);
         var unitCost = ing?.CostPerUnitPKR ?? 0;
-        var unitName = ing?.Unit ?? item.Unit ?? "Piece";
-        var ingName = ing?.Name ?? item.IngredientName;
-
         totalEstCost += item.QuantityRequested * unitCost;
-
         order.Items.Add(new StockTransferItem
         {
-            TransferOrderId = order.Id,
-            IngredientId = item.IngredientId,
-            IngredientName = ingName,
-            Unit = unitName,
-            QuantityRequested = item.QuantityRequested,
-            QuantityDispatched = 0,
-            QuantityReceived = 0,
-            UnitCostPKR = unitCost
+            TransferOrderId = order.Id, IngredientId = item.IngredientId, IngredientName = ing?.Name ?? item.IngredientName ?? "Unknown",
+            Unit = ing?.Unit ?? item.Unit ?? "Piece", QuantityRequested = item.QuantityRequested,
+            QuantityDispatched = 0, QuantityReceived = 0, UnitCostPKR = unitCost
         });
     }
-
     order.TotalEstimatedCostPKR = totalEstCost;
     db.StockTransferOrders.Add(order);
     await db.SaveChangesAsync();
-
     return Results.Ok(order);
 });
 
-app.MapPost("/api/transfers/{id}/dispatch", async (AppDbContext db, Guid id, DispatchTransferDto dto) =>
+api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, Guid id, DispatchTransferDto dto) =>
 {
-    var order = await db.StockTransferOrders
-        .Include(t => t.Items)
-        .FirstOrDefaultAsync(t => t.Id == id);
-
+    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
     if (order == null) return Results.NotFound("Transfer order not found");
-    if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch order in {order.Status} state");
-
-    // Deduct raw ingredients from Source Branch (Central Commissary)
+    if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch in {order.Status} state");
     foreach (var item in order.Items)
     {
-        var sourceIng = await db.Ingredients
-            .FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-
-        if (sourceIng != null)
-        {
-            sourceIng.CurrentStock = Math.Max(0, sourceIng.CurrentStock - item.QuantityRequested);
-        }
+        var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
+        if (sourceIng != null) sourceIng.CurrentStock = Math.Max(0, sourceIng.CurrentStock - item.QuantityRequested);
         item.QuantityDispatched = item.QuantityRequested;
     }
-
     order.Status = TransferStatus.InTransit;
     order.DispatchedAt = DateTime.UtcNow;
     order.DispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
     if (!string.IsNullOrEmpty(dto.VehicleOrDriver)) order.VehicleOrDriver = dto.VehicleOrDriver;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = dto.Notes;
-
     await db.SaveChangesAsync();
     return Results.Ok(order);
 });
 
-app.MapPost("/api/transfers/{id}/receive", async (AppDbContext db, Guid id, ReceiveTransferDto dto) =>
+api.MapPost("/transfers/{id}/receive", async (AppDbContext db, Guid id, ReceiveTransferDto dto) =>
 {
-    var order = await db.StockTransferOrders
-        .Include(t => t.Items)
-        .FirstOrDefaultAsync(t => t.Id == id);
-
+    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
     if (order == null) return Results.NotFound("Transfer order not found");
-    if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive order in {order.Status} state");
-
-    // Credit raw ingredients to Destination Branch (Store/Outlet)
+    if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive in {order.Status} state");
     foreach (var item in order.Items)
     {
         var qtyToReceive = item.QuantityDispatched > 0 ? item.QuantityDispatched : item.QuantityRequested;
         item.QuantityReceived = qtyToReceive;
-
-        var destIng = await db.Ingredients
-            .FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
-
-        if (destIng != null)
-        {
-            destIng.CurrentStock += qtyToReceive;
-            if (item.UnitCostPKR > 0) destIng.CostPerUnitPKR = item.UnitCostPKR;
-        }
-        else
-        {
-            // Auto-create ingredient in branch if not yet present
-            db.Ingredients.Add(new Ingredient
-            {
-                TenantId = order.TenantId,
-                BranchId = order.DestinationBranchId,
-                Name = item.IngredientName,
-                Category = "Commissary Transferred",
-                Unit = item.Unit,
-                CostPerUnitPKR = item.UnitCostPKR,
-                CurrentStock = qtyToReceive,
-                MinAlertLevel = 10,
-                SupplierName = "Central Commissary"
-            });
-        }
+        var destIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
+        if (destIng != null) { destIng.CurrentStock += qtyToReceive; if (item.UnitCostPKR > 0) destIng.CostPerUnitPKR = item.UnitCostPKR; }
+        else { db.Ingredients.Add(new Ingredient { TenantId = order.TenantId, BranchId = order.DestinationBranchId, Name = item.IngredientName, Category = "Commissary Transferred", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = qtyToReceive, MinAlertLevel = 10, SupplierName = "Central Commissary" }); }
     }
-
     order.Status = TransferStatus.Received;
     order.ReceivedAt = DateTime.UtcNow;
     order.ReceivedBy = dto.ReceivedBy ?? "Branch Manager";
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
-
     await db.SaveChangesAsync();
     return Results.Ok(order);
 });
 
-app.MapPost("/api/transfers/{id}/cancel", async (AppDbContext db, Guid id) =>
+api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, Guid id) =>
 {
     var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
     if (order == null) return Results.NotFound("Transfer order not found");
-
     if (order.Status == TransferStatus.InTransit)
     {
-        // Revert deducted stock back to source branch
         foreach (var item in order.Items)
         {
-            var sourceIng = await db.Ingredients
-                .FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-            if (sourceIng != null)
-            {
-                sourceIng.CurrentStock += item.QuantityDispatched;
-            }
+            var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
+            if (sourceIng != null) sourceIng.CurrentStock += item.QuantityDispatched;
         }
     }
-
     order.Status = TransferStatus.Cancelled;
     await db.SaveChangesAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
 });
 
-// --- Supply Chain: Vendor Purchase Orders (Procurement) ---
-app.MapGet("/api/procurement/purchase-orders", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+// --- Procurement ---
+api.MapGet("/procurement/purchase-orders", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
 {
-    var query = db.PurchaseOrders
-        .Include(p => p.Branch)
-        .Include(p => p.Items)
-        .AsQueryable();
-
+    var query = db.PurchaseOrders.Include(p => p.Branch).Include(p => p.Items).AsQueryable();
     if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
     if (branchId.HasValue) query = query.Where(p => p.BranchId == branchId.Value);
-
-    var list = await query.OrderByDescending(p => p.CreatedAt).ToListAsync();
-    return Results.Ok(list);
+    return Results.Ok(await query.OrderByDescending(p => p.CreatedAt).ToListAsync());
 });
 
-app.MapPost("/api/procurement/purchase-orders", async (AppDbContext db, CreatePODto dto) =>
+api.MapPost("/procurement/purchase-orders", async (AppDbContext db, CreatePODto dto) =>
 {
-    var randomSeq = new Random().Next(100, 999);
-    var poNumber = $"PO-{DateTime.UtcNow:MMdd}-{randomSeq}";
-
+    var poNumber = await GeneratePONumberAsync(db);
     var po = new PurchaseOrder
     {
-        TenantId = dto.TenantId,
-        BranchId = dto.BranchId,
-        PONumber = poNumber,
-        SupplierName = dto.SupplierName,
-        Status = POStatus.Ordered,
-        CreatedAt = DateTime.UtcNow,
-        Notes = dto.Notes
+        TenantId = dto.TenantId, BranchId = dto.BranchId, PONumber = poNumber,
+        SupplierName = dto.SupplierName, Status = POStatus.Ordered, CreatedAt = DateTime.UtcNow, Notes = dto.Notes
     };
-
     decimal totalCost = 0;
     foreach (var item in dto.Items)
     {
         var lineTotal = item.Quantity * item.UnitCostPKR;
         totalCost += lineTotal;
-
         po.Items.Add(new PurchaseOrderItem
         {
-            PurchaseOrderId = po.Id,
-            IngredientId = item.IngredientId,
-            IngredientName = item.IngredientName,
-            Quantity = item.Quantity,
-            Unit = item.Unit ?? "Piece",
-            UnitCostPKR = item.UnitCostPKR,
-            TotalPKR = lineTotal
+            PurchaseOrderId = po.Id, IngredientId = item.IngredientId, IngredientName = item.IngredientName,
+            Quantity = item.Quantity, Unit = item.Unit ?? "Piece", UnitCostPKR = item.UnitCostPKR, TotalPKR = lineTotal
         });
     }
-
     po.TotalCostPKR = totalCost;
     db.PurchaseOrders.Add(po);
     await db.SaveChangesAsync();
-
     return Results.Ok(po);
 });
 
-app.MapPost("/api/procurement/purchase-orders/{id}/receive", async (AppDbContext db, Guid id, ReceivePODto dto) =>
+api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db, Guid id, ReceivePODto dto) =>
 {
     var po = await db.PurchaseOrders.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == id);
     if (po == null) return Results.NotFound("Purchase order not found");
     if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
-
-    // Automatically increase ingredient stock and update cost price
     foreach (var item in po.Items)
     {
         var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == po.BranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-        if (ing != null)
-        {
-            ing.CurrentStock += item.Quantity;
-            if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
-            if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
-        }
-        else
-        {
-            db.Ingredients.Add(new Ingredient
-            {
-                TenantId = po.TenantId,
-                BranchId = po.BranchId,
-                Name = item.IngredientName,
-                Category = "Direct Purchased",
-                Unit = item.Unit,
-                CostPerUnitPKR = item.UnitCostPKR,
-                CurrentStock = item.Quantity,
-                MinAlertLevel = 10,
-                SupplierName = po.SupplierName
-            });
-        }
+        if (ing != null) { ing.CurrentStock += item.Quantity; if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR; if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName; }
+        else { db.Ingredients.Add(new Ingredient { TenantId = po.TenantId, BranchId = po.BranchId, Name = item.IngredientName, Category = "Direct Purchased", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = item.Quantity, MinAlertLevel = 10, SupplierName = po.SupplierName }); }
     }
-
     po.Status = POStatus.Received;
     po.ReceivedAt = DateTime.UtcNow;
     po.ReceivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
     if (!string.IsNullOrEmpty(dto.Notes)) po.Notes = (po.Notes != null ? po.Notes + " • " : "") + dto.Notes;
-
     await db.SaveChangesAsync();
     return Results.Ok(po);
 });
 
-app.MapPost("/api/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, Guid id) =>
+api.MapPost("/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, Guid id) =>
 {
     var po = await db.PurchaseOrders.FindAsync(id);
     if (po == null) return Results.NotFound("Purchase order not found");
@@ -2075,149 +1484,23 @@ app.Run();
 
 
 // DTOs
-public record CreateOrderDto(
-    Guid BranchId,
-    OrderType OrderType,
-    string? TableNumber,
-    string? CustomerName,
-    string? CustomerPhone,
-    string? DeliveryAddress,
-    decimal SubTotalPKR,
-    decimal DiscountPKR,
-    decimal TaxPKR,
-    decimal TotalPKR,
-    PaymentMethod PaymentMethod,
-    decimal AmountPaidPKR,
-    decimal ChangeDuePKR,
-    bool IsPaid,
-    string? CashierName,
-    string? CreatedByRole,
-    List<CreateOrderItemDto> Items
-);
-
-public record CreateOrderItemDto(
-    Guid ProductId,
-    string ProductName,
-    int Quantity,
-    decimal UnitPricePKR,
-    string? ModifiersSummary,
-    string? SpecialNotes,
-    KitchenStation Station
-);
-
+public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items);
+public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station);
 public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
 public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
-
-
-public record CreateProductDto(
-    Guid TenantId,
-    Guid CategoryId,
-    string Name,
-    string? UrduName,
-    string? SKU,
-    string? Barcode,
-    string? Description,
-    decimal CostPricePKR,
-    decimal SellingPricePKR,
-    string? Unit,
-    KitchenStation Station,
-    string? ImageUrl,
-    List<CreateProductModifierDto>? Modifiers
-);
-
-public record UpdateProductDto(
-    Guid CategoryId,
-    string? Name,
-    string? UrduName,
-    string? Barcode,
-    decimal CostPricePKR,
-    decimal SellingPricePKR,
-    KitchenStation Station
-);
-
-public record CreateCategoryDto(
-    Guid TenantId,
-    string Name,
-    string? Icon,
-    int SortOrder
-);
-
-public record CreateProductModifierDto(
-    string Name,
-    decimal PricePKR
-);
-
-public record StockInDto(
-    Guid BranchId,
-    Guid ProductId,
-    decimal Quantity,
-    string? SupplierName,
-    decimal? CostPricePKR,
-    string? BatchNumber,
-    DateTime? ExpiryDate
-);
-
-public record StockAdjustmentDto(
-    Guid BranchId,
-    Guid ProductId,
-    decimal AdjustmentQty,
-    string Reason
-);
-
-public record IngredientStockInDto(
-    Guid BranchId,
-    Guid IngredientId,
-    decimal QuantityReceived,
-    decimal? NewCostPerUnitPKR,
-    string? SupplierName
-);
-
-public record CreateIngredientDto(
-    Guid BranchId,
-    Guid TenantId,
-    string Name,
-    string? Category,
-    string? Unit,
-    decimal CostPerUnitPKR,
-    decimal InitialStock,
-    decimal MinAlertLevel,
-    string? SupplierName
-);
-
-public record RecipeItemInputDto(
-    Guid IngredientId,
-    decimal QuantityRequired,
-    string? Unit
-);
-
-public record CreateUserDto(
-    Guid TenantId,
-    Guid? BranchId,
-    string FullName,
-    string Username,
-    string? PinCode,
-    UserRole Role,
-    bool CanViewFinancialReports,
-    bool CanManageInventory,
-    bool CanManageMenuAndTax,
-    bool CanGiveDiscounts,
-    bool CanVoidOrders
-);
-
-public record UpdateUserDto(
-    string? FullName,
-    UserRole? Role,
-    string? PinCode,
-    bool? IsActive,
-    bool? CanViewFinancialReports,
-    bool? CanManageInventory,
-    bool? CanManageMenuAndTax,
-    bool? CanGiveDiscounts,
-    bool? CanVoidOrders
-);
-
+public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers);
+public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station);
+public record CreateCategoryDto(Guid TenantId, string Name, string? Icon, int SortOrder);
+public record CreateProductModifierDto(string Name, decimal PricePKR);
+public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate);
+public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
+public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal QuantityReceived, decimal? NewCostPerUnitPKR, string? SupplierName);
+public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
+public record RecipeItemInputDto(Guid IngredientId, decimal QuantityRequired, string? Unit);
+public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders);
+public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 public record CreateTransferItemDto(Guid IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit);
@@ -2228,7 +1511,7 @@ public record CreatePOItemDto(Guid IngredientId, string IngredientName, decimal 
 public record ReceivePODto(string? ReceivedBy, string? Notes);
 public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
-
-
-
-
+public record LoginDto(string Username, string PinCode);
+public record VoidOrderDto(string? Reason);
+public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
+public record CloseCashShiftDto(decimal ActualCashCounted, string? Notes);
