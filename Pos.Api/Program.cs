@@ -1599,6 +1599,175 @@ app.MapGet("/api/reports/item-performance", async (AppDbContext db, Guid branchI
     return Results.Ok(grouped);
 });
 
+// 4. Detailed Tax Audit & Provincial/FBR Compliance (16% Cash vs 8% Card)
+app.MapGet("/api/reports/tax-audit", async (AppDbContext db, Guid branchId, int? days, DateTime? startDate, DateTime? endDate) =>
+{
+    var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
+    var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
+
+    var orders = await db.Orders
+        .Where(o => o.BranchId == branchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
+        .OrderByDescending(o => o.CreatedAt)
+        .ToListAsync();
+
+    var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
+    var cardOrders = orders.Where(o => o.PaymentMethod != PaymentMethod.Cash).ToList();
+
+    var cashGross = cashOrders.Sum(o => o.TotalPKR);
+    var cashTax = cashOrders.Sum(o => o.TaxPKR);
+    var cashNet = cashGross - cashTax;
+
+    var cardGross = cardOrders.Sum(o => o.TotalPKR);
+    var cardTax = cardOrders.Sum(o => o.TaxPKR);
+    var cardNet = cardGross - cardTax;
+
+    var invoices = orders.Select(o => new
+    {
+        orderId = o.Id,
+        orderNumber = o.OrderNumber,
+        createdAt = o.CreatedAt,
+        orderType = o.OrderType.ToString(),
+        paymentMethod = o.PaymentMethod.ToString(),
+        cashierName = o.CashierName ?? "Counter Staff",
+        netAmountPKR = o.SubTotalPKR,
+        taxRatePercent = o.PaymentMethod == PaymentMethod.Cash ? 16 : 8,
+        taxAmountPKR = o.TaxPKR,
+        totalAmountPKR = o.TotalPKR
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        startDate = start.ToString("yyyy-MM-dd"),
+        endDate = end.ToString("yyyy-MM-dd"),
+        totalInvoices = orders.Count,
+        totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR),
+        totalNetSalesPKR = cashNet + cardNet,
+        totalTaxCollectedPKR = cashTax + cardTax,
+        cashSegment = new
+        {
+            taxRatePercent = 16,
+            invoiceCount = cashOrders.Count,
+            grossSalesPKR = cashGross,
+            netTaxableSalesPKR = cashNet,
+            taxCollectedPKR = cashTax
+        },
+        cardSegment = new
+        {
+            taxRatePercent = 8,
+            invoiceCount = cardOrders.Count,
+            grossSalesPKR = cardGross,
+            netTaxableSalesPKR = cardNet,
+            taxCollectedPKR = cardTax
+        },
+        invoices
+    });
+});
+
+// 5. Payment Methods & Tender Mix Breakdown
+app.MapGet("/api/reports/payment-methods", async (AppDbContext db, Guid branchId, int? days) =>
+{
+    var numDays = days ?? 7;
+    var since = DateTime.UtcNow.Date.AddDays(-numDays);
+
+    var orders = await db.Orders
+        .Where(o => o.BranchId == branchId && o.CreatedAt >= since && o.IsPaid)
+        .ToListAsync();
+
+    var grandTotal = orders.Sum(o => o.TotalPKR);
+
+    var grouped = orders
+        .GroupBy(o => o.PaymentMethod)
+        .Select(g =>
+        {
+            var total = g.Sum(x => x.TotalPKR);
+            var count = g.Count();
+            return new
+            {
+                method = g.Key.ToString(),
+                transactionCount = count,
+                totalAmountPKR = total,
+                percentageOfTotal = grandTotal > 0 ? Math.Round((total / grandTotal) * 100, 1) : 0,
+                avgTicketPKR = count > 0 ? Math.Round(total / count, 2) : 0
+            };
+        })
+        .OrderByDescending(x => x.totalAmountPKR)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        totalRevenuePKR = grandTotal,
+        totalTransactions = orders.Count,
+        tenders = grouped
+    });
+});
+
+// 6. Multi-Branch Consolidated Financials (Head Office View)
+app.MapGet("/api/reports/consolidated", async (AppDbContext db, Guid tenantId, int? days) =>
+{
+    var numDays = days ?? 7;
+    var since = DateTime.UtcNow.Date.AddDays(-numDays);
+
+    var branches = await db.Branches
+        .Where(b => b.TenantId == tenantId)
+        .ToListAsync();
+
+    var branchIds = branches.Select(b => b.Id).ToList();
+
+    var orders = await db.Orders
+        .Include(o => o.Items)
+            .ThenInclude(i => i.Product)
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
+        .ToListAsync();
+
+    var branchSummaries = branches.Select(b =>
+    {
+        var bOrders = orders.Where(o => o.BranchId == b.Id).ToList();
+        var bGross = bOrders.Sum(o => o.TotalPKR);
+        var bCash = bOrders.Where(o => o.PaymentMethod == PaymentMethod.Cash).Sum(o => o.TotalPKR);
+        var bCard = bOrders.Where(o => o.PaymentMethod == PaymentMethod.Card).Sum(o => o.TotalPKR);
+        var bDigital = bOrders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).Sum(o => o.TotalPKR);
+        var bTax = bOrders.Sum(o => o.TaxPKR);
+        
+        var bCost = bOrders.SelectMany(o => o.Items).Sum(i => (i.Product?.CostPricePKR ?? (i.UnitPricePKR * 0.45m)) * i.Quantity);
+        var bProfit = bGross - bTax - bCost;
+        var bMargin = bGross > 0 ? Math.Round((bProfit / bGross) * 100, 1) : 0;
+
+        return new
+        {
+            branchId = b.Id,
+            branchName = b.Name,
+            branchCode = b.Code,
+            city = b.City,
+            isHeadOffice = b.IsHeadOffice,
+            orderCount = bOrders.Count,
+            grossSalesPKR = bGross,
+            cashSalesPKR = bCash,
+            cardSalesPKR = bCard,
+            digitalSalesPKR = bDigital,
+            taxCollectedPKR = bTax,
+            estimatedCostPKR = Math.Round(bCost, 2),
+            netProfitPKR = Math.Round(bProfit, 2),
+            profitMarginPercent = bMargin
+        };
+    }).OrderByDescending(x => x.grossSalesPKR).ToList();
+
+    var chainGross = branchSummaries.Sum(x => x.grossSalesPKR);
+    var chainTax = branchSummaries.Sum(x => x.taxCollectedPKR);
+    var chainCost = branchSummaries.Sum(x => x.estimatedCostPKR);
+    var chainProfit = branchSummaries.Sum(x => x.netProfitPKR);
+
+    return Results.Ok(new
+    {
+        daysAnalyzed = numDays,
+        chainGrossSalesPKR = chainGross,
+        chainTaxCollectedPKR = chainTax,
+        chainCostPKR = chainCost,
+        chainNetProfitPKR = chainProfit,
+        chainProfitMargin = chainGross > 0 ? Math.Round((chainProfit / chainGross) * 100, 1) : 0,
+        branches = branchSummaries
+    });
+});
+
 // --- Supply Chain: Inter-Branch Commissary Transfers ---
 app.MapGet("/api/transfers", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
 {

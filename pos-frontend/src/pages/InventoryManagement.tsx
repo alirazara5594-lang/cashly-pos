@@ -10,9 +10,10 @@ import {
   CheckCircle2, 
   Building2,
   Wheat,
-  Plus
+  Plus,
+  Truck
 } from 'lucide-react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { BranchStockItem, RawIngredient } from '../types';
@@ -20,6 +21,8 @@ import type { BranchStockItem, RawIngredient } from '../types';
 export const InventoryManagement: React.FC = () => {
   const { selectedBranch, selectedTenant } = usePosStore();
   const location = useLocation();
+  const navigate = useNavigate();
+  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
 
   const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>(
     location.state?.tab || 'ingredients'
@@ -343,6 +346,18 @@ export const InventoryManagement: React.FC = () => {
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add New Ingredient</span>
+              </button>
+            )}
+
+            {/* Request Stock from HQ Button (for multi-branch chain branch managers) */}
+            {isMultiBranchChain && (
+              <button
+                onClick={() => navigate('/transfers', { state: { tab: 'transfers', openRequisition: true } })}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-emerald-600/30"
+                title="Send Stock Requisition to Central Commissary"
+              >
+                <Truck className="w-3.5 h-3.5" />
+                <span>Request Stock from HQ</span>
               </button>
             )}
 

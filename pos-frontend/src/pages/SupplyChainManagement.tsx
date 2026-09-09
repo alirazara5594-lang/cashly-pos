@@ -95,11 +95,14 @@ export const SupplyChainManagement: React.FC = () => {
 
   const handleOpenNewTransfer = () => {
     const comm = selectedTenant?.branches?.find(b => b.isHeadOffice) || selectedTenant?.branches?.[0];
-    const dest = selectedTenant?.branches?.find(b => !b.isHeadOffice) || selectedTenant?.branches?.[1] || selectedTenant?.branches?.[0];
+    const dest = (!selectedBranch?.isHeadOffice && selectedBranch) 
+      ? selectedBranch 
+      : (selectedTenant?.branches?.find(b => !b.isHeadOffice) || selectedTenant?.branches?.[1] || selectedTenant?.branches?.[0]);
+
     setTransferSourceBranchId(comm?.id || '');
     setTransferDestBranchId(dest?.id || '');
-    setTransferVehicle('Suzuki Carry Van (Truck #KHI-9482)');
-    setTransferNotes('Daily commissary requisition for outlet kitchen');
+    setTransferVehicle('Cold-Chain Refrigerated Van #04');
+    setTransferNotes('Emergency/Daily stock replenishment requisition to HQ Commissary');
     if (ingredients.length > 0) {
       setTransferLines([
         {
@@ -114,6 +117,12 @@ export const SupplyChainManagement: React.FC = () => {
     }
     setIsNewTransferOpen(true);
   };
+
+  useEffect(() => {
+    if (location.state?.openRequisition) {
+      handleOpenNewTransfer();
+    }
+  }, [location.state?.openRequisition, ingredients.length]);
 
   const handleAddTransferLine = () => {
     if (ingredients.length === 0) return;

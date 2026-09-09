@@ -339,3 +339,78 @@ export interface RiderSettlementRecord {
   settledBy: string;
   settledAt: string;
 }
+
+export interface TaxAuditInvoice {
+  orderId: string;
+  orderNumber: string;
+  createdAt: string;
+  orderType: string;
+  paymentMethod: string;
+  cashierName: string;
+  netAmountPKR: number;
+  taxRatePercent: number; // 16 or 8
+  taxAmountPKR: number;
+  totalAmountPKR: number;
+}
+
+export interface TaxSegment {
+  taxRatePercent: number;
+  invoiceCount: number;
+  grossSalesPKR: number;
+  netTaxableSalesPKR: number;
+  taxCollectedPKR: number;
+}
+
+export interface TaxAuditReport {
+  startDate: string;
+  endDate: string;
+  totalInvoices: number;
+  totalGrossTurnoverPKR: number;
+  totalNetSalesPKR: number;
+  totalTaxCollectedPKR: number;
+  cashSegment: TaxSegment;
+  cardSegment: TaxSegment;
+  invoices: TaxAuditInvoice[];
+}
+
+export interface PaymentMethodStat {
+  method: string;
+  transactionCount: number;
+  totalAmountPKR: number;
+  percentageOfTotal: number;
+  avgTicketPKR: number;
+}
+
+export interface PaymentMethodsReport {
+  totalRevenuePKR: number;
+  totalTransactions: number;
+  tenders: PaymentMethodStat[];
+}
+
+export interface BranchFinancialSummary {
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  city: string;
+  isHeadOffice: boolean;
+  orderCount: number;
+  grossSalesPKR: number;
+  cashSalesPKR: number;
+  cardSalesPKR: number;
+  digitalSalesPKR: number;
+  taxCollectedPKR: number;
+  estimatedCostPKR: number;
+  netProfitPKR: number;
+  profitMarginPercent: number;
+}
+
+export interface ConsolidatedFinancialReport {
+  daysAnalyzed: number;
+  chainGrossSalesPKR: number;
+  chainTaxCollectedPKR: number;
+  chainCostPKR: number;
+  chainNetProfitPKR: number;
+  chainProfitMargin: number;
+  branches: BranchFinancialSummary[];
+}
+
