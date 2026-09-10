@@ -20,10 +20,12 @@ import { SettingsManagement } from './pages/SettingsManagement';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ToastProvider, useToast } from './components/Toast';
 
-function MainLayout() {
+function MainLayoutInner() {
   const location = useLocation();
-  const { setTenants, theme, setIsOnline, refreshOfflineCount, isInstalled, checkInstallationStatus } = usePosStore();
+  const { setTenants, theme, setIsOnline, refreshOfflineCount, isInstalled, checkInstallationStatus, autoSyncOnReconnect } = usePosStore();
+  const { addToast } = useToast();
   const [isCallOrderOpen, setIsCallOrderOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
@@ -47,13 +49,17 @@ function MainLayout() {
 
     initializeData();
 
-    const handleOnline = () => {
+    const handleOnline = async () => {
       setIsOnline(true);
-      refreshOfflineCount();
+      addToast('Internet connection restored', 'success');
+      const synced = await autoSyncOnReconnect();
+      if (synced > 0) {
+        addToast(`${synced} offline order${synced > 1 ? 's' : ''} synced successfully`, 'success', 6000);
+      }
     };
     const handleOffline = () => {
       setIsOnline(false);
-      refreshOfflineCount();
+      addToast('Working offline — orders will sync when internet returns', 'info', 4000);
     };
 
     window.addEventListener('online', handleOnline);
@@ -63,7 +69,7 @@ function MainLayout() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [setTenants, setIsOnline, refreshOfflineCount, checkInstallationStatus]);
+  }, [setTenants, setIsOnline, refreshOfflineCount, checkInstallationStatus, autoSyncOnReconnect, addToast]);
 
   // Full-screen dedicated view for Installation Wizard
   if (location.pathname === '/setup') {
@@ -131,7 +137,9 @@ export function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter>
-        <MainLayout />
+        <ToastProvider>
+          <MainLayoutInner />
+        </ToastProvider>
       </BrowserRouter>
     </ErrorBoundary>
   );

@@ -14,6 +14,27 @@ import type {
 import { offlineDb } from '../services/offlineDb';
 import { posApi } from '../services/api';
 
+// Retry with exponential backoff
+async function syncWithRetry(
+  fn: () => Promise<any>,
+  maxRetries = 3,
+  baseDelay = 2000
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const data = await fn();
+      return { success: true, data };
+    } catch (err: any) {
+      if (attempt === maxRetries) {
+        return { success: false, error: err?.message || 'Sync failed after retries' };
+      }
+      const delay = baseDelay * Math.pow(2, attempt);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  return { success: false, error: 'Unreachable' };
+}
+
 export interface ParkedBill {
   id: string;
   name: string;
@@ -46,6 +67,7 @@ interface PosState {
   isOnline: boolean;
   isSyncing: boolean;
   offlinePendingCount: number;
+  lastSyncResult: string;
 
   // Active Cart
   cart: CartItem[];
@@ -91,6 +113,7 @@ interface PosState {
   setIsOnline: (online: boolean) => void;
   setOfflinePendingCount: (count: number) => void;
   refreshOfflineCount: () => Promise<number>;
+  autoSyncOnReconnect: () => Promise<number>;
   
   // Cart Actions
   addToCart: (product: Product, modifiers?: any[], notes?: string) => void;
@@ -135,6 +158,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isSyncing: false,
   offlinePendingCount: 0,
+  lastSyncResult: '',
 
   cart: [],
   orderType: 'DineIn',
@@ -376,7 +400,7 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   refreshOfflineCount: async () => {
     try {
-      const unsynced = await offlineDb.offlineOrders.filter(o => !o.isSynced).toArray();
+      const unsynced = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
       const count = unsynced.length;
       set({ offlinePendingCount: count });
       return count;
@@ -385,33 +409,86 @@ export const usePosStore = create<PosState>((set, get) => ({
     }
   },
 
+  autoSyncOnReconnect: async () => {
+    const { isSyncing, isOnline } = get();
+    if (isSyncing || !isOnline) return 0;
+
+    const pendingCount = await get().refreshOfflineCount();
+    if (pendingCount === 0) return 0;
+
+    set({ isSyncing: true, lastSyncResult: 'Syncing offline orders...' });
+
+    try {
+      const offlineOrders = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
+      if (offlineOrders.length === 0) {
+        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: '' });
+        return 0;
+      }
+
+      const payload = offlineOrders.map(o => o.orderData);
+      const result = await syncWithRetry(() => posApi.syncBatchOrders(payload));
+
+      if (result.success) {
+        for (const order of offlineOrders) {
+          if (order.id) {
+            await offlineDb.offlineOrders.update(order.id, { isSynced: 1 as any });
+          }
+        }
+        const syncedCount = result.data?.count || offlineOrders.length;
+        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${syncedCount} orders` });
+        return syncedCount;
+      } else {
+        // Update retry count on failed orders
+        for (const order of offlineOrders) {
+          if (order.id) {
+            const retries = (order.syncRetries || 0) + 1;
+            await offlineDb.offlineOrders.update(order.id, {
+              syncRetries: retries,
+              lastSyncError: result.error
+            });
+          }
+        }
+        set({ isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
+        return 0;
+      }
+    } catch (err) {
+      console.error('Auto-sync failed:', err);
+      set({ isSyncing: false, lastSyncResult: 'Sync failed' });
+      return 0;
+    }
+  },
+
   syncPendingOrders: async () => {
-    const { isSyncing } = get();
-    if (isSyncing) return 0;
+    const { isSyncing, isOnline } = get();
+    if (isSyncing || !isOnline) return 0;
 
     set({ isSyncing: true });
     try {
-      const offlineOrders = await offlineDb.offlineOrders.filter(o => !o.isSynced).toArray();
+      const offlineOrders = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
       if (offlineOrders.length === 0) {
         set({ offlinePendingCount: 0, isSyncing: false });
         return 0;
       }
 
       const payload = offlineOrders.map(o => o.orderData);
-      const res = await posApi.syncBatchOrders(payload);
+      const result = await syncWithRetry(() => posApi.syncBatchOrders(payload));
 
-      // Mark local orders as synced
-      for (const order of offlineOrders) {
-        if (order.id) {
-          await offlineDb.offlineOrders.update(order.id, { isSynced: true });
+      if (result.success) {
+        for (const order of offlineOrders) {
+          if (order.id) {
+            await offlineDb.offlineOrders.update(order.id, { isSynced: 1 as any });
+          }
         }
+        const syncedCount = result.data?.count || offlineOrders.length;
+        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${syncedCount} orders` });
+        return syncedCount;
+      } else {
+        set({ isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
+        return 0;
       }
-
-      set({ offlinePendingCount: 0, isSyncing: false });
-      return res.count || offlineOrders.length;
     } catch (err) {
       console.error('Failed to sync offline orders:', err);
-      set({ isSyncing: false });
+      set({ isSyncing: false, lastSyncResult: 'Sync failed' });
       return 0;
     }
   },

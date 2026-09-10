@@ -21,7 +21,7 @@ import {
 
 import { usePosStore } from '../store/posStore';
 import { posApi } from '../services/api';
-import { offlineDb } from '../services/offlineDb';
+import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import type { Product, Category, PaymentMethod, OrderType, Order } from '../types';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 
@@ -83,32 +83,40 @@ export const PosTerminal: React.FC = () => {
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  // Load Catalog
+  // Load Catalog - Cache-first strategy
   useEffect(() => {
     const loadCatalog = async () => {
-      try {
-        if (isOnline) {
-          const cats = await posApi.getCategories(selectedTenant?.id);
-          const prods = await posApi.getProducts({ tenantId: selectedTenant?.id });
-          setCategories(cats);
-          setProducts(prods);
+      if (!selectedTenant?.id) return;
 
-          // Cache in IndexedDB for offline
-          await offlineDb.categories.clear();
-          await offlineDb.products.clear();
-          await offlineDb.categories.bulkPut(cats);
-          await offlineDb.products.bulkPut(prods);
-        } else {
-          // Load from IndexedDB
-          const cachedCats = await offlineDb.categories.toArray();
-          const cachedProds = await offlineDb.products.toArray();
-          setCategories(cachedCats);
-          setProducts(cachedProds);
+      try {
+        // Always load from cache first (instant, works offline)
+        const cached = await getCachedCatalog(selectedTenant.id);
+        if (cached.categories.length > 0) {
+          setCategories(cached.categories);
+          setProducts(cached.products);
         }
 
-        if (selectedBranch?.id && isOnline) {
-          const tbls = await posApi.getTables(selectedBranch.id);
-          setTables(tbls);
+        // Then refresh from API if online (and update cache)
+        if (isOnline) {
+          const [cats, prods] = await Promise.all([
+            posApi.getCategories(selectedTenant.id),
+            posApi.getProducts({ tenantId: selectedTenant.id })
+          ]);
+          setCategories(cats);
+          setProducts(prods);
+          await cacheCatalog(selectedTenant.id, cats, prods);
+        }
+
+        // Load dining tables
+        if (selectedBranch?.id) {
+          if (isOnline) {
+            const tbls = await posApi.getTables(selectedBranch.id);
+            setTables(tbls);
+            await cacheDiningTables(tbls);
+          } else {
+            const cachedTables = await getCachedDiningTables(selectedBranch.id);
+            setTables(cachedTables);
+          }
         }
       } catch (err) {
         console.error('Failed to load catalog:', err);
@@ -213,16 +221,19 @@ export const PosTerminal: React.FC = () => {
 
         setCompletedOrder(newOrder);
       } else {
-        // Offline Order Storage in IndexedDB
-        const offlineId = `OFFLINE-${Date.now()}`;
+        // Offline Order Storage with idempotency key
+        const offlineId = `OFFLINE-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
         await offlineDb.offlineOrders.add({
           localId: offlineId,
-          orderData: orderPayload,
+          orderData: { ...orderPayload, idempotencyKey },
           createdAt: new Date().toISOString(),
-          isSynced: false
+          isSynced: 0 as any,
+          syncRetries: 0
         });
 
-        const pendingCount = await offlineDb.offlineOrders.where('isSynced').equals(0 as any).count();
+        const pendingCount = await offlineDb.offlineOrders.where('isSynced').equals(0).count();
         setOfflinePendingCount(pendingCount);
 
         const newOrder: Order = {
