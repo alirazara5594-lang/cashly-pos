@@ -606,7 +606,15 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         }
     }
 
-    await db.SaveChangesAsync();
+    try
+    {
+        await db.SaveChangesAsync();
+    }
+    catch (Exception ex)
+    {
+        var innerMsg = ex.InnerException?.Message ?? ex.Message;
+        return Results.Problem($"Database save failed: {innerMsg}", statusCode: 500);
+    }
 
     return Results.Ok(new
     {
