@@ -2154,19 +2154,6 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, Guid id) =>
     return Results.Ok(new { message = "Stock request deleted" });
 });
 
-// TEMPORARY: Reset all user PINs to 1234
-api.MapPost("/admin/reset-all-pins", async (AppDbContext db) =>
-{
-    var users = await db.Users.ToListAsync();
-    var newHash = BCrypt.Net.BCrypt.HashPassword("1234");
-    foreach (var user in users)
-    {
-        user.PinCodeHash = newHash;
-    }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { message = $"Reset {users.Count} user PINs to 1234", count = users.Count });
-});
-
 app.Run();
 
 

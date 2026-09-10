@@ -226,7 +226,7 @@ export const SuperAdmin: React.FC = () => {
           {/* Counters Stepper */}
           <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center">
                 <Monitor className="w-5 h-5" />
               </div>
               <div>
@@ -242,7 +242,7 @@ export const SuperAdmin: React.FC = () => {
               >
                 <Minus className="w-4 h-4" />
               </button>
-              <span className="font-black text-lg text-cyan-400 min-w-[24px] text-center font-mono">
+              <span className="font-black text-lg text-blue-400 min-w-[24px] text-center font-mono">
                 {counters}
               </span>
               <button

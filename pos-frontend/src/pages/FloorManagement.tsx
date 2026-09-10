@@ -280,7 +280,7 @@ export const FloorManagement: React.FC = () => {
               <div className="my-2 text-center">
                 <div className="text-xl font-black text-white tracking-tight">{t.tableNumber}</div>
                 <div className="flex items-center justify-center gap-1 text-xs text-slate-400 mt-1">
-                  <Users className="w-3.5 h-3.5 text-cyan-400" />
+                  <Users className="w-3.5 h-3.5 text-blue-400" />
                   <span>{t.capacity} Seats</span>
                 </div>
               </div>
@@ -407,7 +407,7 @@ export const FloorManagement: React.FC = () => {
             className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl"
           >
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-              <div className="flex items-center gap-2 text-cyan-400 font-bold text-sm">
+              <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
                 <Edit3 className="w-5 h-5" />
                 <span>Edit Table {editingTable.tableNumber}</span>
               </div>
@@ -478,7 +478,7 @@ export const FloorManagement: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-black text-xs shadow-lg transition mt-2"
+              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-slate-950 font-black text-xs shadow-lg transition mt-2"
             >
               Save Table Changes
             </button>

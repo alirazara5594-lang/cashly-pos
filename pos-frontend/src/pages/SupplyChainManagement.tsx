@@ -414,7 +414,7 @@ export const SupplyChainManagement: React.FC = () => {
                           <td className="p-3 text-slate-300">
                             {tr.vehicleOrDriver ? (
                               <div className="flex items-center gap-1.5">
-                                <Truck className="w-3.5 h-3.5 text-cyan-400" />
+                                <Truck className="w-3.5 h-3.5 text-blue-400" />
                                 <span>{tr.vehicleOrDriver}</span>
                               </div>
                             ) : (

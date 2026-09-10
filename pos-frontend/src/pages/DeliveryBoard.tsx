@@ -153,7 +153,7 @@ export const DeliveryBoard: React.FC = () => {
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
             <Bike className="w-6 h-6" />
           </div>
           <div>
@@ -175,7 +175,7 @@ export const DeliveryBoard: React.FC = () => {
             }}
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 font-bold text-xs transition"
           >
-            <FileText className="w-4 h-4 text-cyan-400" />
+            <FileText className="w-4 h-4 text-blue-400" />
             <span>Settlement History</span>
           </button>
 
@@ -252,18 +252,18 @@ export const DeliveryBoard: React.FC = () => {
               <span className="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
               <span className="font-bold text-xs text-white">2. Ready for Dispatch</span>
             </div>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-cyan-400 font-mono font-bold">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-blue-400 font-mono font-bold">
               {board.readyForDispatch.length}
             </span>
           </div>
 
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
             {board.readyForDispatch.map(order => (
-              <div key={order.id} className="p-3 rounded-xl bg-slate-950 border border-cyan-900/40 space-y-2">
+              <div key={order.id} className="p-3 rounded-xl bg-slate-950 border border-blue-900/40 space-y-2">
                 <div className="flex justify-between items-start">
                   <div>
                     <span className="font-black text-xs text-white">{order.orderNumber}</span>
-                    <div className="text-[10px] text-cyan-400 font-semibold">Packed & Ready</div>
+                    <div className="text-[10px] text-blue-400 font-semibold">Packed & Ready</div>
                   </div>
                   <span className="text-xs font-black text-emerald-400">₨{order.totalPKR.toLocaleString()}</span>
                 </div>
@@ -283,7 +283,7 @@ export const DeliveryBoard: React.FC = () => {
                     setSelectedOrderForAssign(order);
                     setSelectedRiderId(riders.length > 0 ? riders[0].id : '');
                   }}
-                  className="w-full py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition shadow"
+                  className="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition shadow"
                 >
                   <Bike className="w-3.5 h-3.5" />
                   <span>Assign Rider</span>
@@ -392,7 +392,7 @@ export const DeliveryBoard: React.FC = () => {
                     onClick={() => setSelectedRiderId(r.id)}
                     className={`w-full p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition ${
                       selectedRiderId === r.id
-                        ? 'bg-cyan-600/20 border-cyan-500 text-cyan-300'
+                        ? 'bg-blue-600/20 border-blue-500 text-blue-300'
                         : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
                     }`}
                   >
@@ -411,7 +411,7 @@ export const DeliveryBoard: React.FC = () => {
             <button
               onClick={handleAssignRider}
               disabled={!selectedRiderId}
-              className="w-full py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-black text-xs shadow-lg transition disabled:opacity-40"
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-slate-950 font-black text-xs shadow-lg transition disabled:opacity-40"
             >
               Confirm Dispatch
             </button>
@@ -513,7 +513,7 @@ export const DeliveryBoard: React.FC = () => {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-5 space-y-4 shadow-2xl">
             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-              <div className="flex items-center gap-2 text-cyan-400 font-bold text-sm">
+              <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
                 <FileText className="w-5 h-5" />
                 <span>Rider End-of-Shift COD Settlement Audit Trail</span>
               </div>

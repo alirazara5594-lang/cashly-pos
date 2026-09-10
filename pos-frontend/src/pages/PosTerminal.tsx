@@ -602,7 +602,7 @@ export const PosTerminal: React.FC = () => {
               <span className="text-white font-medium">₨{tax.toLocaleString()}</span>
             </div>
             {taxMode === 'Inclusive' && (
-              <div className="text-[10px] text-cyan-400 italic">
+              <div className="text-[10px] text-blue-400 italic">
                 * Prices include {getEffectiveTaxRate()}% sales tax
               </div>
             )}

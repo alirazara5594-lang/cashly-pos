@@ -499,7 +499,7 @@ export const ReportsManagement: React.FC = () => {
 
                     <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
                       <span className="text-[10px] font-bold text-slate-400 uppercase">3. Expected in Drawer</span>
-                      <div className="text-base font-mono font-black text-cyan-400 mt-1">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
+                      <div className="text-base font-mono font-black text-blue-400 mt-1">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
                       <span className="text-[10px] text-slate-400">System calculated total</span>
                     </div>
 
@@ -539,7 +539,7 @@ export const ReportsManagement: React.FC = () => {
                         <div className="text-xs text-slate-400 font-semibold">Takeaway / Counter Pickup</div>
                         <div className="text-lg font-black text-white mt-1">₨{zReport.takeawaySalesPKR.toLocaleString()}</div>
                       </div>
-                      <div className="px-2.5 py-1 rounded-lg bg-slate-900 text-cyan-400 font-mono text-xs font-bold border border-slate-800">
+                      <div className="px-2.5 py-1 rounded-lg bg-slate-900 text-blue-400 font-mono text-xs font-bold border border-slate-800">
                         {zReport.totalSalesPKR > 0 ? Math.round((zReport.takeawaySalesPKR / zReport.totalSalesPKR) * 100) : 0}%
                       </div>
                     </div>
@@ -1052,7 +1052,7 @@ export const ReportsManagement: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Card / Digital Sales</div>
-                    <div className="text-2xl font-black text-cyan-400 mt-1">₨{cardSalesReport.totalCardSalesPKR.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-blue-400 mt-1">₨{cardSalesReport.totalCardSalesPKR.toLocaleString()}</div>
                   </div>
                   <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Digital Invoices</div>
@@ -1072,7 +1072,7 @@ export const ReportsManagement: React.FC = () => {
                     {cardSalesReport.byMethod.map((m: any) => (
                       <div key={m.method} className="p-4 rounded-xl bg-slate-900 border border-slate-800">
                         <div className="text-[10px] text-slate-400 uppercase font-semibold">{m.method}</div>
-                        <div className="text-sm font-black text-cyan-400 mt-0.5">₨{m.total.toLocaleString()}</div>
+                        <div className="text-sm font-black text-blue-400 mt-0.5">₨{m.total.toLocaleString()}</div>
                         <div className="text-[10px] text-slate-400">{m.count} invoices</div>
                       </div>
                     ))}
@@ -1083,7 +1083,7 @@ export const ReportsManagement: React.FC = () => {
                 <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
                   <div className="p-4 border-b border-slate-800">
                     <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      <CreditCard className="w-4 h-4 text-cyan-400" />
+                      <CreditCard className="w-4 h-4 text-blue-400" />
                       Card / Digital Invoices — {cardSalesReport.date}
                     </h3>
                   </div>
@@ -1104,13 +1104,13 @@ export const ReportsManagement: React.FC = () => {
                           <tr key={o.id} className="hover:bg-slate-850/50 transition">
                             <td className="p-3 font-mono font-bold text-white">{o.orderNumber}</td>
                             <td className="p-3">
-                              <span className="px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-400 text-[10px] font-bold border border-cyan-800">
+                              <span className="px-2 py-0.5 rounded bg-blue-950/60 text-blue-400 text-[10px] font-bold border border-blue-800">
                                 {o.paymentMethod}
                               </span>
                             </td>
                             <td className="p-3 text-slate-300">{o.tableNumber || '—'}</td>
                             <td className="p-3 text-slate-300">{o.cashierName}</td>
-                            <td className="p-3 text-right font-mono font-bold text-cyan-400">₨{o.totalPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono font-bold text-blue-400">₨{o.totalPKR.toLocaleString()}</td>
                             <td className="p-3 text-slate-400">{new Date(o.createdAt).toLocaleTimeString()}</td>
                           </tr>
                         ))}
@@ -1164,7 +1164,7 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Chain Operating Margin</div>
                     <div>
-                      <div className="text-xl font-black text-cyan-400 leading-tight">{consolidated.chainProfitMargin}%</div>
+                      <div className="text-xl font-black text-blue-400 leading-tight">{consolidated.chainProfitMargin}%</div>
                       <div className="text-[10px] text-slate-400 mt-0.5">Net: ₨{consolidated.chainNetProfitPKR.toLocaleString()}</div>
                     </div>
                   </div>
@@ -1212,7 +1212,7 @@ export const ReportsManagement: React.FC = () => {
                               <span className="text-emerald-400">₨{b.cashSalesPKR.toLocaleString()}</span> / <span className="text-sky-400">₨{b.cardSalesPKR.toLocaleString()}</span>
                             </td>
                             <td className="py-3.5 px-4 text-right font-mono text-amber-400">₨{b.taxCollectedPKR.toLocaleString()}</td>
-                            <td className="py-3.5 px-4 text-right font-mono font-black text-cyan-400">{b.profitMarginPercent}%</td>
+                            <td className="py-3.5 px-4 text-right font-mono font-black text-blue-400">{b.profitMarginPercent}%</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1382,7 +1382,7 @@ export const ReportsManagement: React.FC = () => {
                     </div>
                     <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
                       <div className="text-[10px] text-slate-400 uppercase">Cash Received</div>
-                      <div className="text-sm font-black text-cyan-400 font-mono">₨{cashTally.cashReceived.toLocaleString()}</div>
+                      <div className="text-sm font-black text-blue-400 font-mono">₨{cashTally.cashReceived.toLocaleString()}</div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
                       <div className="text-[10px] text-slate-400 uppercase">Cash Paid Out</div>
@@ -1431,7 +1431,7 @@ export const ReportsManagement: React.FC = () => {
                           <button
                             onClick={() => setEntryType('Received')}
                             className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition ${
-                              entryType === 'Received' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
+                              entryType === 'Received' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'
                             }`}
                           >
                             Cash Received
@@ -1483,7 +1483,7 @@ export const ReportsManagement: React.FC = () => {
                           <div key={e.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-950 border border-slate-800">
                             <div className="flex items-center gap-2">
                               <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                                e.entryType === 'PaidOut' ? 'bg-red-950 text-red-400 border border-red-800' : 'bg-cyan-950 text-cyan-400 border border-cyan-800'
+                                e.entryType === 'PaidOut' ? 'bg-red-950 text-red-400 border border-red-800' : 'bg-blue-950 text-blue-400 border border-blue-800'
                               }`}>
                                 {e.entryType === 'PaidOut' ? 'PAID OUT' : 'RECEIVED'}
                               </span>
@@ -1495,7 +1495,7 @@ export const ReportsManagement: React.FC = () => {
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              <span className={`text-xs font-mono font-bold ${e.entryType === 'PaidOut' ? 'text-red-400' : 'text-cyan-400'}`}>
+                              <span className={`text-xs font-mono font-bold ${e.entryType === 'PaidOut' ? 'text-red-400' : 'text-blue-400'}`}>
                                 {e.entryType === 'PaidOut' ? '-' : '+'}₨{e.amountPKR.toLocaleString()}
                               </span>
                               <button

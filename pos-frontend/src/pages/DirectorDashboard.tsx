@@ -122,7 +122,7 @@ export const DirectorDashboard: React.FC = () => {
         <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 relative overflow-hidden shadow-xl h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Orders Processed</span>
-            <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+            <div className="w-7 h-7 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center">
               <ShoppingBag className="w-4 h-4" />
             </div>
           </div>
@@ -208,7 +208,7 @@ export const DirectorDashboard: React.FC = () => {
                     <span>{branch.branchName}</span>
                   </td>
                   <td className="py-3 text-slate-300">{branch.city}</td>
-                  <td className="py-3 text-center font-mono font-bold text-cyan-400">{branch.activeCounters} Counters</td>
+                  <td className="py-3 text-center font-mono font-bold text-blue-400">{branch.activeCounters} Counters</td>
                   <td className="py-3 text-center font-bold text-white">{branch.ordersCount}</td>
                   <td className="py-3 text-right font-black text-emerald-400 text-sm">
                     ₨{branch.todaySalesPKR.toLocaleString()}
@@ -252,7 +252,7 @@ export const DirectorDashboard: React.FC = () => {
 
         <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 shadow-xl">
           <h3 className="font-bold text-sm text-white flex items-center gap-2">
-            <Users className="w-4 h-4 text-cyan-400" />
+            <Users className="w-4 h-4 text-blue-400" />
             <span>Cashier Shift Performance & Float</span>
           </h3>
           <div className="space-y-2">

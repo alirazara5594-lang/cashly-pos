@@ -170,7 +170,7 @@ export const StockRequests: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl md:text-2xl font-black text-white tracking-tight flex items-center gap-2">
-            <Package className="w-6 h-6 text-cyan-400" />
+            <Package className="w-6 h-6 text-blue-400" />
             Stock Requests
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -179,7 +179,7 @@ export const StockRequests: React.FC = () => {
         </div>
         <button
           onClick={() => setShowNewRequest(true)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs transition"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-slate-950 font-bold text-xs transition"
         >
           <Plus className="w-4 h-4" />
           New Stock Request
@@ -195,7 +195,7 @@ export const StockRequests: React.FC = () => {
             placeholder="Search by request #, creator, vendor..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+            className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
           />
         </div>
         <select
@@ -289,7 +289,7 @@ export const StockRequests: React.FC = () => {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="font-bold text-white text-base flex items-center gap-2">
-                <Send className="w-5 h-5 text-cyan-400" />
+                <Send className="w-5 h-5 text-blue-400" />
                 New Stock Request
               </h3>
               <button onClick={() => setShowNewRequest(false)} className="text-slate-400 hover:text-white text-sm cursor-pointer">✕</button>
@@ -307,7 +307,7 @@ export const StockRequests: React.FC = () => {
                   onClick={() => setRequestType(opt.value as any)}
                   className={`p-3 rounded-xl border text-left transition ${
                     requestType === opt.value
-                      ? 'border-cyan-500 bg-cyan-950/30 text-cyan-400'
+                      ? 'border-blue-500 bg-blue-950/30 text-blue-400'
                       : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
                   }`}
                 >
@@ -324,7 +324,7 @@ export const StockRequests: React.FC = () => {
                 placeholder="Vendor name (e.g., Fresh Supplies Co.)"
                 value={vendorName}
                 onChange={(e) => setVendorName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
               />
             )}
 
@@ -334,7 +334,7 @@ export const StockRequests: React.FC = () => {
               placeholder="Notes (optional)"
               value={requestNotes}
               onChange={(e) => setRequestNotes(e.target.value)}
-              className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
 
             {/* Add Item Row */}
@@ -366,7 +366,7 @@ export const StockRequests: React.FC = () => {
               <button
                 onClick={handleAddItem}
                 disabled={!selectedIngredient || !addQty}
-                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
               >
                 Add
               </button>
@@ -421,7 +421,7 @@ export const StockRequests: React.FC = () => {
                 <button
                   onClick={handleSubmitRequest}
                   disabled={requestItems.length === 0 || submitting}
-                  className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
+                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
                 >
                   {submitting ? 'Sending...' : 'Send Request'}
                 </button>
@@ -438,7 +438,7 @@ export const StockRequests: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
                 <h3 className="font-bold text-white text-base flex items-center gap-2">
-                  <span className="font-mono text-cyan-400">{viewRequest.requestNumber}</span>
+                  <span className="font-mono text-blue-400">{viewRequest.requestNumber}</span>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getStatusColor(viewRequest.status)}`}>
                     {viewRequest.status}
                   </span>

@@ -110,6 +110,28 @@
   color: #64748b !important;
 }
 
+.theme-light .text-slate-600 {
+  color: #475569 !important;
+}
+
+/* Opacity-reduced text needs stronger color in light mode */
+.theme-light .text-emerald-400\/80,
+.theme-light .text-emerald-300\/80 {
+  color: #047857 !important;
+}
+.theme-light .text-amber-400\/80,
+.theme-light .text-amber-300\/80 {
+  color: #b45309 !important;
+}
+.theme-light .text-cyan-400\/80,
+.theme-light .text-cyan-300\/80 {
+  color: #0e7490 !important;
+}
+.theme-light .text-rose-400\/80,
+.theme-light .text-rose-300\/80 {
+  color: #be123c !important;
+}
+
 /* Inputs, Selects & Textareas */
 .theme-light input,
 .theme-light select,
@@ -183,6 +205,21 @@
 .theme-light .text-purple-400,
 .theme-light .text-purple-300 {
   color: #7e22ce !important; /* Purple 700 */
+}
+
+.theme-light .bg-cyan-950,
+.theme-light .bg-cyan-950\/80,
+.theme-light .bg-cyan-950\/60,
+.theme-light .bg-cyan-950\/50,
+.theme-light .bg-cyan-950\/40,
+.theme-light .bg-cyan-950\/30 {
+  background-color: #ecfeff !important; /* Cyan 50 */
+  border-color: #a5f3fc !important;
+}
+.theme-light .text-cyan-400,
+.theme-light .text-cyan-300,
+.theme-light .text-cyan-200 {
+  color: #0e7490 !important; /* Cyan 700 */
 }
 
 /* Primary Action Buttons maintain high contrast */

@@ -225,7 +225,7 @@ export const MenuManagement: React.FC = () => {
             {[
               { name: 'Main Kitchen', id: 'MainKitchen', desc: 'Pizzas, Combos, Entrees', color: 'text-amber-400' },
               { name: 'Grill Station', id: 'Grill', desc: 'Burgers, Shawarma, Fries', color: 'text-rose-400' },
-              { name: 'Beverage Bar', id: 'BeverageBar', desc: 'Drinks, Juices, Shakes', color: 'text-cyan-400' },
+              { name: 'Beverage Bar', id: 'BeverageBar', desc: 'Drinks, Juices, Shakes', color: 'text-blue-400' },
             ].map(station => (
               <div key={station.id} className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
                 <div className={`font-black text-xs ${station.color}`}>{station.name}</div>
