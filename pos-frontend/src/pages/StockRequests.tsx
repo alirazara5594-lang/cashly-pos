@@ -214,9 +214,9 @@ export const StockRequests: React.FC = () => {
 
       {/* Requests List */}
       {loading ? (
-        <div className="text-center py-12 text-slate-500 text-xs">Loading...</div>
+        <div className="text-center py-12 text-slate-400 text-xs">Loading...</div>
       ) : filteredRequests.length === 0 ? (
-        <div className="text-center py-12 text-slate-500 bg-slate-900 rounded-2xl border border-slate-800">
+        <div className="text-center py-12 text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
           <Package className="w-12 h-12 mx-auto mb-3 text-slate-700" />
           <p className="text-xs">No stock requests found</p>
         </div>
@@ -263,7 +263,7 @@ export const StockRequests: React.FC = () => {
                   </span>
                 ))}
                 {r.items.length > 4 && (
-                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-500">
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-400">
                     +{r.items.length - 4} more
                   </span>
                 )}
@@ -312,7 +312,7 @@ export const StockRequests: React.FC = () => {
                   }`}
                 >
                   <div className="text-xs font-bold">{opt.label}</div>
-                  <div className="text-[10px] opacity-70">{opt.desc}</div>
+                  <div className="text-[10px] opacity-80">{opt.desc}</div>
                 </button>
               ))}
             </div>
@@ -375,7 +375,7 @@ export const StockRequests: React.FC = () => {
             {/* Items List */}
             <div className="flex-1 overflow-y-auto space-y-2">
               {requestItems.length === 0 ? (
-                <div className="p-6 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                <div className="p-6 text-center text-slate-400 bg-slate-950 rounded-xl border border-slate-800 text-xs">
                   Add items to your request above
                 </div>
               ) : (
@@ -476,7 +476,7 @@ export const StockRequests: React.FC = () => {
                 <div className="text-xs text-slate-400">📝 {viewRequest.notes}</div>
               )}
               {viewRequest.reviewedBy && (
-                <div className="text-[10px] text-slate-500">
+                <div className="text-[10px] text-slate-400">
                   Reviewed by {viewRequest.reviewedBy} on {viewRequest.reviewedAt ? new Date(viewRequest.reviewedAt).toLocaleString() : 'N/A'}
                   {viewRequest.reviewNotes && ` — ${viewRequest.reviewNotes}`}
                 </div>

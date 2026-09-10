@@ -36,7 +36,7 @@ export const ReportsManagement: React.FC = () => {
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
 
   // Active submodule tab
-  const [activeTab, setActiveTab] = useState<'zreport' | 'tax' | 'categories' | 'products' | 'payments' | 'multibranch'>(
+  const [activeTab, setActiveTab] = useState<'zreport' | 'tax' | 'categories' | 'products' | 'payments' | 'multibranch' | 'cashSales' | 'cardSales' | 'cashTally'>(
     location.state?.tab || 'zreport'
   );
 
@@ -57,6 +57,16 @@ export const ReportsManagement: React.FC = () => {
   const [actualCashCounted, setActualCashCounted] = useState<number | ''>('');
   const [isZReportPrintOpen, setIsZReportPrintOpen] = useState(false);
 
+  // Cash Tally modal
+  const [isCashTallyOpen, setIsCashTallyOpen] = useState(false);
+  const [cashTally, setCashTally] = useState<any>(null);
+  const [cashTallyLoading, setCashTallyLoading] = useState(false);
+  const [showAddEntry, setShowAddEntry] = useState(false);
+  const [entryType, setEntryType] = useState<'PaidOut' | 'Received'>('PaidOut');
+  const [entryAmount, setEntryAmount] = useState('');
+  const [entryDesc, setEntryDesc] = useState('');
+  const [entryRecipient, setEntryRecipient] = useState('');
+
   // Report Datasets
   const [zReport, setZReport] = useState<ZReportSummary | null>(null);
   const [taxAudit, setTaxAudit] = useState<TaxAuditReport | null>(null);
@@ -64,6 +74,8 @@ export const ReportsManagement: React.FC = () => {
   const [productPerformance, setProductPerformance] = useState<ItemPerformanceReport[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodsReport | null>(null);
   const [consolidated, setConsolidated] = useState<ConsolidatedFinancialReport | null>(null);
+  const [cashSalesReport, setCashSalesReport] = useState<any>(null);
+  const [cardSalesReport, setCardSalesReport] = useState<any>(null);
 
   const loadReportData = async () => {
     if (!selectedBranch?.id) return;
@@ -90,6 +102,12 @@ export const ReportsManagement: React.FC = () => {
       } else if (activeTab === 'multibranch' && selectedTenant?.id) {
         const data = await posApi.getConsolidatedFinancials(selectedTenant.id, selectedDaysRange);
         setConsolidated(data);
+      } else if (activeTab === 'cashSales') {
+        const data = await posApi.getCashSalesReport(selectedBranch.id, selectedDate);
+        setCashSalesReport(data);
+      } else if (activeTab === 'cardSales') {
+        const data = await posApi.getCardSalesReport(selectedBranch.id, selectedDate);
+        setCardSalesReport(data);
       }
     } catch (err) {
       console.error('Failed to load reports', err);
@@ -101,6 +119,50 @@ export const ReportsManagement: React.FC = () => {
   useEffect(() => {
     loadReportData();
   }, [selectedBranch?.id, selectedTenant?.id, activeTab, selectedDate, selectedDaysRange]);
+
+  // Cash Tally functions
+  const loadCashTally = async (shiftId: string) => {
+    setCashTallyLoading(true);
+    try {
+      const data = await posApi.getCashTally(shiftId);
+      setCashTally(data);
+    } catch (err) {
+      console.error('Failed to load cash tally:', err);
+    } finally {
+      setCashTallyLoading(false);
+    }
+  };
+
+  const handleAddCashEntry = async () => {
+    if (!cashTally || !entryAmount || !entryDesc) return;
+    const user = JSON.parse(localStorage.getItem('cashly_pos_user') || '{}');
+    try {
+      await posApi.addCashEntry(cashTally.shiftId, {
+        entryType,
+        amountPKR: parseFloat(entryAmount),
+        description: entryDesc,
+        recipientOrSource: entryRecipient || undefined,
+        createdBy: user.fullName || user.username || 'Cashier'
+      });
+      setEntryAmount('');
+      setEntryDesc('');
+      setEntryRecipient('');
+      setShowAddEntry(false);
+      loadCashTally(cashTally.shiftId);
+    } catch (err) {
+      console.error('Failed to add entry:', err);
+    }
+  };
+
+  const handleDeleteCashEntry = async (entryId: string) => {
+    if (!cashTally || !confirm('Delete this entry?')) return;
+    try {
+      await posApi.deleteCashEntry(cashTally.shiftId, entryId);
+      loadCashTally(cashTally.shiftId);
+    } catch (err) {
+      console.error('Failed to delete entry:', err);
+    }
+  };
 
   // Export Tax Audit to CSV
   const handleExportTaxCSV = () => {
@@ -148,7 +210,7 @@ export const ReportsManagement: React.FC = () => {
             <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-emerald-500" />
               Auditing Branch: <span className="text-emerald-400 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
-              <span className="text-slate-500 mx-1">•</span>
+              <span className="text-slate-400 mx-1">•</span>
               <span className="text-slate-400">FBR &amp; PRA Restaurant Compliance Mode</span>
             </p>
           </div>
@@ -213,6 +275,30 @@ export const ReportsManagement: React.FC = () => {
             >
               <Wallet className="w-3.5 h-3.5" />
               <span>Payment Tender Mix</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('cashSales')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+                activeTab === 'cashSales'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Banknote className="w-3.5 h-3.5" />
+              <span>Cash Sales Report</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('cardSales')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+                activeTab === 'cardSales'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              <span>Card Sales Report</span>
             </button>
 
             {isMultiBranchChain && (
@@ -313,7 +399,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Gross Sales Turnover</div>
                     <div>
                       <div className="text-xl font-black text-emerald-400 leading-tight">₨{zReport.totalSalesPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{zReport.totalOrders} paid orders settled</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">{zReport.totalOrders} paid orders settled</div>
                     </div>
                   </div>
 
@@ -345,7 +431,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Tax Collected</div>
                     <div>
                       <div className="text-xl font-black text-amber-400 leading-tight">₨{zReport.totalTaxPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-amber-500/80 mt-0.5">Cash (16%) &amp; Card (8%) Split</div>
+                      <div className="text-[10px] text-amber-400 mt-0.5">Cash (16%) &amp; Card (8%) Split</div>
                     </div>
                   </div>
                 </div>
@@ -383,19 +469,19 @@ export const ReportsManagement: React.FC = () => {
                     <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
                       <span className="text-[10px] font-bold text-slate-400 uppercase">1. Opening Float</span>
                       <div className="text-base font-mono font-black text-white mt-1">₨{zReport.openingFloatPKR.toLocaleString()}</div>
-                      <span className="text-[10px] text-slate-500">Initial drawer change</span>
+                      <span className="text-[10px] text-slate-400">Initial drawer change</span>
                     </div>
 
                     <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
                       <span className="text-[10px] font-bold text-slate-400 uppercase">2. Cash Sales Inward</span>
                       <div className="text-base font-mono font-black text-emerald-400 mt-1">+₨{zReport.cashSalesPKR.toLocaleString()}</div>
-                      <span className="text-[10px] text-slate-500">Net cash receipts</span>
+                      <span className="text-[10px] text-slate-400">Net cash receipts</span>
                     </div>
 
                     <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
                       <span className="text-[10px] font-bold text-slate-400 uppercase">3. Expected in Drawer</span>
                       <div className="text-base font-mono font-black text-cyan-400 mt-1">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
-                      <span className="text-[10px] text-slate-500">System calculated total</span>
+                      <span className="text-[10px] text-slate-400">System calculated total</span>
                     </div>
 
                     <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
@@ -410,7 +496,7 @@ export const ReportsManagement: React.FC = () => {
                           className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-sm font-mono font-black text-white focus:outline-none focus:border-emerald-500"
                         />
                       </div>
-                      <span className="text-[10px] text-slate-500">Input by cashier/manager</span>
+                      <span className="text-[10px] text-slate-400">Input by cashier/manager</span>
                     </div>
                   </div>
                 </div>
@@ -450,9 +536,24 @@ export const ReportsManagement: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Cash Tally Button */}
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => {
+                      setIsCashTallyOpen(true);
+                      // Load tally for today's shift
+                      if (zReport.shiftId) loadCashTally(zReport.shiftId);
+                    }}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold text-xs transition"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    Cash Tally & Closing
+                  </button>
+                </div>
               </>
             ) : (
-              <div className="p-12 text-center text-slate-500 bg-slate-900 rounded-2xl border border-slate-800">
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
                 No closed register shifts or orders found for {selectedDate}.
               </div>
             )}
@@ -542,7 +643,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="flex items-center gap-2">
                       {/* Search Bar */}
                       <div className="relative w-48">
-                        <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" />
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
                         <input
                           type="text"
                           value={taxSearchQuery}
@@ -582,7 +683,7 @@ export const ReportsManagement: React.FC = () => {
                       <tbody className="divide-y divide-slate-800">
                         {filteredTaxInvoices.length === 0 ? (
                           <tr>
-                            <td colSpan={8} className="py-10 text-center text-slate-500">No invoices match the selected tax filters.</td>
+                            <td colSpan={8} className="py-10 text-center text-slate-400">No invoices match the selected tax filters.</td>
                           </tr>
                         ) : (
                           filteredTaxInvoices.map(inv => (
@@ -618,7 +719,7 @@ export const ReportsManagement: React.FC = () => {
                 </div>
               </>
             ) : (
-              <div className="p-12 text-center text-slate-500 bg-slate-900 rounded-2xl border border-slate-800">
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
                 No tax audit records found for the past {selectedDaysRange} days.
               </div>
             )}
@@ -652,7 +753,7 @@ export const ReportsManagement: React.FC = () => {
                 <tbody className="divide-y divide-slate-800">
                   {categorySales.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-10 text-center text-slate-500">No category sales records found.</td>
+                      <td colSpan={6} className="py-10 text-center text-slate-400">No category sales records found.</td>
                     </tr>
                   ) : (
                     categorySales.map(c => (
@@ -740,7 +841,7 @@ export const ReportsManagement: React.FC = () => {
                   <tbody className="divide-y divide-slate-800">
                     {productPerformance.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="py-10 text-center text-slate-500">No product sales records found.</td>
+                        <td colSpan={7} className="py-10 text-center text-slate-400">No product sales records found.</td>
                       </tr>
                     ) : (
                       productPerformance.map((p, idx) => {
@@ -758,7 +859,7 @@ export const ReportsManagement: React.FC = () => {
                           <tr key={p.productId} className="hover:bg-slate-850/50 transition">
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-2.5">
-                                <span className="text-[10px] font-mono font-bold text-slate-500 w-4">#{idx + 1}</span>
+                                <span className="text-[10px] font-mono font-bold text-slate-400 w-4">#{idx + 1}</span>
                                 <div>
                                   <div className="font-bold text-white">{p.productName}</div>
                                   <div className="text-[11px] text-slate-400">{p.categoryName}</div>
@@ -842,8 +943,167 @@ export const ReportsManagement: React.FC = () => {
                 </div>
               </>
             ) : (
-              <div className="p-12 text-center text-slate-500 bg-slate-900 rounded-2xl border border-slate-800">
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
                 No payment tender records found.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* SUBMODULE: CASH SALES REPORT                                              */}
+        {/* ========================================================================= */}
+        {activeTab === 'cashSales' && (
+          <div className="space-y-6">
+            {cashSalesReport ? (
+              <>
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Cash Sales</div>
+                    <div className="text-2xl font-black text-emerald-400 mt-1">₨{cashSalesReport.totalCashSalesPKR.toLocaleString()}</div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Cash Invoices</div>
+                    <div className="text-2xl font-black text-white mt-1">{cashSalesReport.orderCount}</div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Average Cash Invoice</div>
+                    <div className="text-2xl font-black text-amber-400 mt-1">
+                      ₨{cashSalesReport.orderCount > 0 ? Math.round(cashSalesReport.totalCashSalesPKR / cashSalesReport.orderCount).toLocaleString() : 0}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cash Orders Table */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                  <div className="p-4 border-b border-slate-800">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Banknote className="w-4 h-4 text-emerald-400" />
+                      Cash Payment Invoices — {cashSalesReport.date}
+                    </h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                          <th className="p-3">Invoice #</th>
+                          <th className="p-3">Table</th>
+                          <th className="p-3">Cashier</th>
+                          <th className="p-3 text-right">Amount</th>
+                          <th className="p-3 text-right">Paid</th>
+                          <th className="p-3 text-right">Change</th>
+                          <th className="p-3">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {cashSalesReport.orders.map((o: any) => (
+                          <tr key={o.id} className="hover:bg-slate-850/50 transition">
+                            <td className="p-3 font-mono font-bold text-white">{o.orderNumber}</td>
+                            <td className="p-3 text-slate-300">{o.tableNumber || '—'}</td>
+                            <td className="p-3 text-slate-300">{o.cashierName}</td>
+                            <td className="p-3 text-right font-mono font-bold text-emerald-400">₨{o.totalPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-slate-300">₨{o.amountPaidPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-amber-400">₨{o.changeDuePKR.toLocaleString()}</td>
+                            <td className="p-3 text-slate-400">{new Date(o.createdAt).toLocaleTimeString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
+                <Banknote className="w-12 h-12 mx-auto mb-3 text-slate-700" />
+                <p className="text-xs">Select a date and branch to view cash sales</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* SUBMODULE: CARD / DIGITAL SALES REPORT                                    */}
+        {/* ========================================================================= */}
+        {activeTab === 'cardSales' && (
+          <div className="space-y-6">
+            {cardSalesReport ? (
+              <>
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Card / Digital Sales</div>
+                    <div className="text-2xl font-black text-cyan-400 mt-1">₨{cardSalesReport.totalCardSalesPKR.toLocaleString()}</div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Digital Invoices</div>
+                    <div className="text-2xl font-black text-white mt-1">{cardSalesReport.orderCount}</div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+                    <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Average Digital Invoice</div>
+                    <div className="text-2xl font-black text-amber-400 mt-1">
+                      ₨{cardSalesReport.orderCount > 0 ? Math.round(cardSalesReport.totalCardSalesPKR / cardSalesReport.orderCount).toLocaleString() : 0}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Breakdown by Payment Method */}
+                {cardSalesReport.byMethod.length > 0 && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {cardSalesReport.byMethod.map((m: any) => (
+                      <div key={m.method} className="p-4 rounded-xl bg-slate-900 border border-slate-800">
+                        <div className="text-[10px] text-slate-400 uppercase font-semibold">{m.method}</div>
+                        <div className="text-sm font-black text-cyan-400 mt-0.5">₨{m.total.toLocaleString()}</div>
+                        <div className="text-[10px] text-slate-400">{m.count} invoices</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Card Orders Table */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                  <div className="p-4 border-b border-slate-800">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-cyan-400" />
+                      Card / Digital Invoices — {cardSalesReport.date}
+                    </h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider">
+                          <th className="p-3">Invoice #</th>
+                          <th className="p-3">Method</th>
+                          <th className="p-3">Table</th>
+                          <th className="p-3">Cashier</th>
+                          <th className="p-3 text-right">Amount</th>
+                          <th className="p-3">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {cardSalesReport.orders.map((o: any) => (
+                          <tr key={o.id} className="hover:bg-slate-850/50 transition">
+                            <td className="p-3 font-mono font-bold text-white">{o.orderNumber}</td>
+                            <td className="p-3">
+                              <span className="px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-400 text-[10px] font-bold border border-cyan-800">
+                                {o.paymentMethod}
+                              </span>
+                            </td>
+                            <td className="p-3 text-slate-300">{o.tableNumber || '—'}</td>
+                            <td className="p-3 text-slate-300">{o.cashierName}</td>
+                            <td className="p-3 text-right font-mono font-bold text-cyan-400">₨{o.totalPKR.toLocaleString()}</td>
+                            <td className="p-3 text-slate-400">{new Date(o.createdAt).toLocaleTimeString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
+                <CreditCard className="w-12 h-12 mx-auto mb-3 text-slate-700" />
+                <p className="text-xs">Select a date and branch to view card/digital sales</p>
               </div>
             )}
           </div>
@@ -862,7 +1122,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Chain Total Revenue</div>
                     <div>
                       <div className="text-xl font-black text-emerald-400 leading-tight">₨{consolidated.chainGrossSalesPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">Across {consolidated.branches.length} branches</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Across {consolidated.branches.length} branches</div>
                     </div>
                   </div>
 
@@ -942,7 +1202,7 @@ export const ReportsManagement: React.FC = () => {
                 </div>
               </>
             ) : (
-              <div className="p-12 text-center text-slate-500 bg-slate-900 rounded-2xl border border-slate-800">
+              <div className="p-12 text-center text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
                 No consolidated records available.
               </div>
             )}
@@ -1067,6 +1327,183 @@ export const ReportsManagement: React.FC = () => {
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>Print Receipt Now</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* CASH TALLY MODAL (End-of-Day Cash Reconciliation)                         */}
+        {/* ========================================================================= */}
+        {isCashTallyOpen && (
+          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <h3 className="font-bold text-white text-base flex items-center gap-2">
+                  <Wallet className="w-5 h-5 text-amber-400" />
+                  Cash Tally — End of Day
+                </h3>
+                <button onClick={() => setIsCashTallyOpen(false)} className="text-slate-400 hover:text-white text-sm cursor-pointer">✕</button>
+              </div>
+
+              {cashTallyLoading ? (
+                <div className="text-center py-8 text-slate-400 text-xs">Loading cash tally...</div>
+              ) : cashTally ? (
+                <>
+                  {/* Cash Summary Cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Opening Float</div>
+                      <div className="text-sm font-black text-white font-mono">₨{cashTally.openingFloat.toLocaleString()}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Cash Sales</div>
+                      <div className="text-sm font-black text-emerald-400 font-mono">₨{cashTally.cashSales.toLocaleString()}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Cash Received</div>
+                      <div className="text-sm font-black text-cyan-400 font-mono">₨{cashTally.cashReceived.toLocaleString()}</div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Cash Paid Out</div>
+                      <div className="text-sm font-black text-red-400 font-mono">₨{cashTally.cashPaidOut.toLocaleString()}</div>
+                    </div>
+                  </div>
+
+                  {/* Expected Cash */}
+                  <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-800 flex items-center justify-between">
+                    <span className="text-xs text-emerald-300 font-bold">Expected Cash in Drawer:</span>
+                    <span className="text-lg font-black text-emerald-400 font-mono">₨{cashTally.expectedCash.toLocaleString()}</span>
+                  </div>
+
+                  {/* Formula Explanation */}
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[10px] text-slate-400 space-y-1">
+                    <div className="font-bold text-slate-300">Formula:</div>
+                    <div className="font-mono">
+                      Opening Float (₨{cashTally.openingFloat.toLocaleString()}) + Cash Sales (₨{cashTally.cashSales.toLocaleString()}) + Cash Received (₨{cashTally.cashReceived.toLocaleString()}) - Cash Paid Out (₨{cashTally.cashPaidOut.toLocaleString()}) = <span className="text-emerald-400 font-bold">₨{cashTally.expectedCash.toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  {/* Cash Entries List */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-white">Cash Entries Today</h4>
+                      <button
+                        onClick={() => setShowAddEntry(!showAddEntry)}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 text-[10px] font-bold transition"
+                      >
+                        + Add Entry
+                      </button>
+                    </div>
+
+                    {/* Add Entry Form */}
+                    {showAddEntry && (
+                      <div className="p-3 rounded-xl bg-slate-950 border border-amber-800 space-y-2">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setEntryType('PaidOut')}
+                            className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition ${
+                              entryType === 'PaidOut' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            Cash Paid Out
+                          </button>
+                          <button
+                            onClick={() => setEntryType('Received')}
+                            className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition ${
+                              entryType === 'Received' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            Cash Received
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            placeholder="Amount (₨)"
+                            value={entryAmount}
+                            onChange={(e) => setEntryAmount(e.target.value)}
+                            className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Description"
+                            value={entryDesc}
+                            onChange={(e) => setEntryDesc(e.target.value)}
+                            className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Vendor / Person name (optional)"
+                            value={entryRecipient}
+                            onChange={(e) => setEntryRecipient(e.target.value)}
+                            className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+                          />
+                          <button
+                            onClick={handleAddCashEntry}
+                            disabled={!entryAmount || !entryDesc}
+                            className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-slate-950 text-xs font-bold transition"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Entries List */}
+                    {cashTally.entries.length === 0 ? (
+                      <div className="p-4 text-center text-slate-400 bg-slate-950 rounded-xl border border-slate-800 text-[10px]">
+                        No cash entries today. Use "Add Entry" to record cash paid out or received.
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                        {cashTally.entries.map((e: any) => (
+                          <div key={e.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-950 border border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                e.entryType === 'PaidOut' ? 'bg-red-950 text-red-400 border border-red-800' : 'bg-cyan-950 text-cyan-400 border border-cyan-800'
+                              }`}>
+                                {e.entryType === 'PaidOut' ? 'PAID OUT' : 'RECEIVED'}
+                              </span>
+                              <div>
+                                <div className="text-[10px] font-bold text-white">{e.description}</div>
+                                <div className="text-[9px] text-slate-400">
+                                  {e.recipientOrSource && `${e.recipientOrSource} • `}{new Date(e.createdAt).toLocaleTimeString()}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-mono font-bold ${e.entryType === 'PaidOut' ? 'text-red-400' : 'text-cyan-400'}`}>
+                                {e.entryType === 'PaidOut' ? '-' : '+'}₨{e.amountPKR.toLocaleString()}
+                              </span>
+                              <button
+                                onClick={() => handleDeleteCashEntry(e.id)}
+                                className="text-slate-400 hover:text-red-400 transition"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-center py-8 text-slate-400 text-xs">
+                  No active cash shift found. Open a shift first.
+                </div>
+              )}
+
+              <div className="pt-3 border-t border-slate-800">
+                <button
+                  onClick={() => setIsCashTallyOpen(false)}
+                  className="w-full px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition cursor-pointer"
+                >
+                  Close
                 </button>
               </div>
             </div>

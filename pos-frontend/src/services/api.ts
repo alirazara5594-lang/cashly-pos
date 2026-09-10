@@ -342,6 +342,40 @@ export const posApi = {
     return res.data;
   },
 
+  // Cash Entries (Paid Out / Received)
+  getCashEntries: async (shiftId: string) => {
+    const res = await api.get(`/api/cash-shifts/${shiftId}/entries`);
+    return res.data;
+  },
+  addCashEntry: async (shiftId: string, data: {
+    entryType: string;
+    amountPKR: number;
+    description: string;
+    recipientOrSource?: string;
+    createdBy: string;
+  }) => {
+    const res = await api.post(`/api/cash-shifts/${shiftId}/entries`, data);
+    return res.data;
+  },
+  deleteCashEntry: async (shiftId: string, entryId: string) => {
+    const res = await api.delete(`/api/cash-shifts/${shiftId}/entries/${entryId}`);
+    return res.data;
+  },
+  getCashTally: async (shiftId: string) => {
+    const res = await api.get(`/api/cash-shifts/${shiftId}/tally`);
+    return res.data;
+  },
+
+  // Reports - Cash & Card Sales
+  getCashSalesReport: async (branchId: string, date: string) => {
+    const res = await api.get('/api/reports/cash-sales', { params: { branchId, date } });
+    return res.data;
+  },
+  getCardSalesReport: async (branchId: string, date: string) => {
+    const res = await api.get('/api/reports/card-sales', { params: { branchId, date } });
+    return res.data;
+  },
+
   // Inventory Management
   getInventory: async (branchId: string) => {
     const res = await api.get<BranchStockItem[]>('/api/inventory', { params: { branchId } });

@@ -148,7 +148,7 @@ export const MenuManagement: React.FC = () => {
               />
               <span className="text-slate-400 font-mono font-bold">%</span>
             </div>
-            <p className="text-[10px] text-slate-500">Standard rate for cash tender (Default 16%)</p>
+            <p className="text-[10px] text-slate-400">Standard rate for cash tender (Default 16%)</p>
           </div>
 
           {/* Card / Digital Tax Rate */}
@@ -181,7 +181,7 @@ export const MenuManagement: React.FC = () => {
               <option value="Exclusive">Tax Exclusive (Added on top at checkout)</option>
               <option value="Inclusive">Tax Inclusive (Included inside shelf price)</option>
             </select>
-            <p className="text-[10px] text-slate-500">Exclusive is standard for Restaurants, Inclusive for Retail</p>
+            <p className="text-[10px] text-slate-400">Exclusive is standard for Restaurants, Inclusive for Retail</p>
           </div>
         </div>
       </div>
@@ -335,7 +335,7 @@ export const MenuManagement: React.FC = () => {
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Required Ingredients per Sale:</div>
               {recipeItems.length === 0 ? (
-                <div className="p-6 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                <div className="p-6 text-center text-slate-400 bg-slate-950 rounded-xl border border-slate-800 text-xs">
                   No ingredients configured for this item yet.
                 </div>
               ) : (

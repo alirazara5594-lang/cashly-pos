@@ -213,11 +213,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
             icon: FileText,
             subItems: [
               { label: 'Daily End-of-Day Z-Report', path: '/reports', state: { tab: 'zreport' }, icon: Receipt },
+              { label: 'Cash Sales Report', path: '/reports', state: { tab: 'cashSales' }, icon: Banknote },
+              { label: 'Card / Digital Sales Report', path: '/reports', state: { tab: 'cardSales' }, icon: CreditCard },
+              { label: 'Cash Tally & Closing', path: '/reports', state: { tab: 'cashTally' }, icon: Wallet },
               { label: 'Tax Audit & FBR Register', path: '/reports', state: { tab: 'tax' }, icon: Percent },
               { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
               { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
-              { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: CreditCard },
+              { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: Wallet },
               ...(isMultiBranchChain ? [{ label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }] : [])
+            ]
+          },
+          {
+            id: 'stockRequests',
+            label: 'Stock Requests',
+            path: '/stock-requests',
+            icon: Send,
+            subItems: [
+              { label: 'Request Stock (Owner/Vendor/HQ)', path: '/stock-requests', icon: Send }
             ]
           },
           {

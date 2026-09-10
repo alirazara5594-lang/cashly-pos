@@ -570,7 +570,7 @@ export const SettingsManagement: React.FC = () => {
 
                           <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-between">
                             <div className="space-y-0.5">
-                              <span className="text-[10px] text-slate-500 uppercase font-semibold">Branch Pairing Token</span>
+                              <span className="text-[10px] text-slate-400 uppercase font-semibold">Branch Pairing Token</span>
                               <div className="text-sm font-extrabold text-emerald-400 font-mono tracking-wider">
                                 {branch.pairingToken}
                               </div>
@@ -906,23 +906,23 @@ export const SettingsManagement: React.FC = () => {
               {selectedBranch && (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-500 uppercase">Branch</div>
+                    <div className="text-[10px] text-slate-400 uppercase">Branch</div>
                     <div className="text-xs font-bold text-white">{selectedBranch.name}</div>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-500 uppercase">Max Counters</div>
+                    <div className="text-[10px] text-slate-400 uppercase">Max Counters</div>
                     <div className="text-xs font-bold text-emerald-400 font-mono">
                       {terminals.filter(t => t.terminalType === 'Counter').length} / {selectedBranch.allowedCounters || 5}
                     </div>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-500 uppercase">Max Order Tabs</div>
+                    <div className="text-[10px] text-slate-400 uppercase">Max Order Tabs</div>
                     <div className="text-xs font-bold text-cyan-400 font-mono">
                       {terminals.filter(t => t.terminalType === 'OrderTab').length} / {selectedBranch.allowedOrderTabs || 15}
                     </div>
                   </div>
                   <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-500 uppercase">Kitchen Displays</div>
+                    <div className="text-[10px] text-slate-400 uppercase">Kitchen Displays</div>
                     <div className="text-xs font-bold text-amber-400 font-mono">
                       {terminals.filter(t => t.terminalType === 'KitchenDisplay').length}
                     </div>
@@ -1001,7 +1001,7 @@ export const SettingsManagement: React.FC = () => {
                         ) : (
                           <div className="font-bold text-xs text-white">{t.terminalName}</div>
                         )}
-                        <div className="text-[10px] text-slate-500 font-mono">Token: {t.deviceToken.slice(0, 12)}...</div>
+                        <div className="text-[10px] text-slate-400 font-mono">Token: {t.deviceToken.slice(0, 12)}...</div>
                       </div>
 
                       {/* Status */}
@@ -1011,7 +1011,7 @@ export const SettingsManagement: React.FC = () => {
                       </div>
 
                       {/* Last Seen */}
-                      <div className="text-[10px] text-slate-500 min-w-[80px] text-right">
+                      <div className="text-[10px] text-slate-400 min-w-[80px] text-right">
                         {new Date(t.lastSeenAt).toLocaleDateString()}
                       </div>
 
@@ -1047,9 +1047,9 @@ export const SettingsManagement: React.FC = () => {
               </div>
 
               {/* Info Box */}
-              <div className="p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-800/40 text-[11px] text-cyan-300 space-y-1.5">
+              <div className="p-3.5 rounded-xl bg-cyan-950/50 border border-cyan-800/60 text-[11px] text-cyan-200 space-y-1.5">
                 <div className="font-bold">How Device Registration Works</div>
-                <ul className="list-disc list-inside space-y-0.5 text-cyan-400/80">
+                <ul className="list-disc list-inside space-y-0.5 text-cyan-300/90">
                   <li>Each device gets a unique Device Token on creation</li>
                   <li>When a waiter opens the app and selects "Waiter" mode, the device auto-registers with this token</li>
                   <li>Disable a tab to lock a lost/stolen tablet from placing orders</li>

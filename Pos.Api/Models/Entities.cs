@@ -317,10 +317,35 @@ public class CashShift
     public DateTime? ClosedAt { get; set; }
     public decimal OpeningFloatPKR { get; set; }
     public decimal CashSalesPKR { get; set; }
+    public decimal CashReceivedPKR { get; set; } // Cash received from owner/personal
+    public decimal CashPaidOutPKR { get; set; } // Cash paid to vendor/owner personal
     public decimal ExpectedCashPKR { get; set; }
     public decimal ActualCashCountedPKR { get; set; }
     public decimal VariancePKR { get; set; }
+    public string? Notes { get; set; }
     public bool IsClosed { get; set; } = false;
+
+    public ICollection<CashEntry> Entries { get; set; } = new List<CashEntry>();
+}
+
+public enum CashEntryType
+{
+    PaidOut = 1,      // Cash given to vendor, owner personal use
+    Received = 2,     // Cash received from owner
+    Adjustment = 3    // Manual adjustment
+}
+
+public class CashEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CashShiftId { get; set; }
+    public CashShift? CashShift { get; set; }
+    public CashEntryType EntryType { get; set; } = CashEntryType.PaidOut;
+    public decimal AmountPKR { get; set; }
+    public string Description { get; set; } = string.Empty; // e.g. "Paid to vendor for vegetables"
+    public string? RecipientOrSource { get; set; } // Vendor name, owner name, etc.
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string CreatedBy { get; set; } = string.Empty;
 }
 
 public enum UserRole

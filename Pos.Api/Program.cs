@@ -1409,6 +1409,164 @@ api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, Guid id, [Microso
     return Results.Ok(shift);
 });
 
+// --- Cash Entry (Paid Out / Received) ---
+api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shiftId, CreateCashEntryDto dto) =>
+{
+    var shift = await db.CashShifts.FindAsync(shiftId);
+    if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot add entries to a closed shift" });
+
+    var entry = new CashEntry
+    {
+        Id = Guid.NewGuid(),
+        CashShiftId = shiftId,
+        EntryType = dto.EntryType,
+        AmountPKR = dto.AmountPKR,
+        Description = dto.Description.Trim(),
+        RecipientOrSource = dto.RecipientOrSource,
+        CreatedAt = DateTime.UtcNow,
+        CreatedBy = dto.CreatedBy
+    };
+    db.CashEntries.Add(entry);
+
+    // Update shift totals
+    if (dto.EntryType == CashEntryType.PaidOut)
+        shift.CashPaidOutPKR += dto.AmountPKR;
+    else if (dto.EntryType == CashEntryType.Received)
+        shift.CashReceivedPKR += dto.AmountPKR;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Cash entry added", entry.Id });
+});
+
+api.MapGet("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shiftId) =>
+{
+    var entries = await db.CashEntries
+        .Where(e => e.CashShiftId == shiftId)
+        .OrderByDescending(e => e.CreatedAt)
+        .ToListAsync();
+    return Results.Ok(entries);
+});
+
+api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db, Guid shiftId, Guid entryId) =>
+{
+    var shift = await db.CashShifts.FindAsync(shiftId);
+    if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot delete entries from a closed shift" });
+
+    var entry = await db.CashEntries.FindAsync(entryId);
+    if (entry == null) return Results.NotFound(new { error = "Entry not found" });
+
+    // Reverse the entry amount
+    if (entry.EntryType == CashEntryType.PaidOut)
+        shift.CashPaidOutPKR -= entry.AmountPKR;
+    else if (entry.EntryType == CashEntryType.Received)
+        shift.CashReceivedPKR -= entry.AmountPKR;
+
+    db.CashEntries.Remove(entry);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Entry deleted" });
+});
+
+// --- Cash Sale Report ---
+api.MapGet("/reports/cash-sales", async (AppDbContext db, Guid branchId, string date) =>
+{
+    if (!DateTime.TryParse(date, out var reportDate))
+        reportDate = DateTime.UtcNow.Date;
+
+    var startOfDay = reportDate.Date;
+    var endOfDay = startOfDay.AddDays(1);
+
+    var orders = await db.Orders
+        .Where(o => o.BranchId == branchId && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay && o.PaymentMethod == PaymentMethod.Cash)
+        .OrderBy(o => o.CreatedAt)
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        date = reportDate.ToString("yyyy-MM-dd"),
+        totalCashSalesPKR = orders.Sum(o => o.TotalPKR),
+        orderCount = orders.Count,
+        orders = orders.Select(o => new
+        {
+            o.Id, o.OrderNumber, o.TotalPKR, o.AmountPaidPKR, o.ChangeDuePKR,
+            o.TableNumber, o.CashierName, o.CreatedAt
+        })
+    });
+});
+
+// --- Card / Digital Sale Report ---
+api.MapGet("/reports/card-sales", async (AppDbContext db, Guid branchId, string date) =>
+{
+    if (!DateTime.TryParse(date, out var reportDate))
+        reportDate = DateTime.UtcNow.Date;
+
+    var startOfDay = reportDate.Date;
+    var endOfDay = startOfDay.AddDays(1);
+
+    var orders = await db.Orders
+        .Where(o => o.BranchId == branchId && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay 
+            && o.PaymentMethod != PaymentMethod.Cash)
+        .OrderBy(o => o.CreatedAt)
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        date = reportDate.ToString("yyyy-MM-dd"),
+        totalCardSalesPKR = orders.Sum(o => o.TotalPKR),
+        orderCount = orders.Count,
+        byMethod = orders.GroupBy(o => o.PaymentMethod).Select(g => new
+        {
+            method = g.Key.ToString(),
+            total = g.Sum(o => o.TotalPKR),
+            count = g.Count()
+        }),
+        orders = orders.Select(o => new
+        {
+            o.Id, o.OrderNumber, o.TotalPKR, o.PaymentMethod, o.AmountPaidPKR,
+            o.TableNumber, o.CashierName, o.CreatedAt
+        })
+    });
+});
+
+// --- Cash Tally (End-of-Day Summary) ---
+api.MapGet("/cash-shifts/{shiftId}/tally", async (AppDbContext db, Guid shiftId) =>
+{
+    var shift = await db.CashShifts
+        .Include(s => s.Entries)
+        .FirstOrDefaultAsync(s => s.Id == shiftId);
+    if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+
+    var cashSales = await db.Orders
+        .Where(o => o.BranchId == shift.BranchId && o.CreatedAt >= shift.OpenedAt 
+            && (!shift.ClosedAt.HasValue || o.CreatedAt <= shift.ClosedAt.Value)
+            && o.PaymentMethod == PaymentMethod.Cash)
+        .SumAsync(o => o.TotalPKR);
+
+    var cashPaidOut = shift.Entries.Where(e => e.EntryType == CashEntryType.PaidOut).Sum(e => e.AmountPKR);
+    var cashReceived = shift.Entries.Where(e => e.EntryType == CashEntryType.Received).Sum(e => e.AmountPKR);
+
+    var expectedCash = shift.OpeningFloatPKR + cashSales + cashReceived - cashPaidOut;
+
+    return Results.Ok(new
+    {
+        shiftId = shift.Id,
+        shift.CashierName,
+        shift.TerminalName,
+        openedAt = shift.OpenedAt,
+        closedAt = shift.ClosedAt,
+        openingFloat = shift.OpeningFloatPKR,
+        cashSales,
+        cashReceived,
+        cashPaidOut,
+        expectedCash,
+        entries = shift.Entries.Select(e => new
+        {
+            e.Id, e.EntryType, e.AmountPKR, e.Description, e.RecipientOrSource, e.CreatedAt, e.CreatedBy
+        })
+    });
+});
+
 // --- Inventory ---
 api.MapGet("/inventory", async (AppDbContext db, Guid branchId) =>
 {
@@ -1658,7 +1816,8 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime?
     var actualCash = shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : expectedCash;
     return Results.Ok(new
     {
-        period = targetDate.ToString("yyyy-MM-dd"), totalSalesPKR = orders.Sum(o => o.TotalPKR), totalOrders = orders.Count,
+        period = targetDate.ToString("yyyy-MM-dd"), shiftId = shift != null ? shift.Id.ToString() : null,
+        totalSalesPKR = orders.Sum(o => o.TotalPKR), totalOrders = orders.Count,
         cashSalesPKR = cashSales, cardSalesPKR = cardOrders.Sum(o => o.TotalPKR), digitalSalesPKR = digitalOrders.Sum(o => o.TotalPKR),
         cashTaxPKR = cashOrders.Sum(o => o.TaxPKR), cardTaxPKR = cardOrders.Sum(o => o.TaxPKR), totalTaxPKR = orders.Sum(o => o.TaxPKR),
         openingFloatPKR = openingFloat, expectedCashInDrawerPKR = expectedCash, actualCashInDrawerPKR = actualCash, variancePKR = actualCash - expectedCash,
@@ -2055,5 +2214,6 @@ public record TerminalHeartbeatDto(string DeviceToken);
 public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType, string? VendorName, string? Notes, string CreatedBy, Guid? CreatedByUserId, List<CreateStockRequestItemDto> Items);
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
+public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
 
 

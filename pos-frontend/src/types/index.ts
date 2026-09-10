@@ -172,6 +172,7 @@ export interface BranchStockItem {
 
 export interface ZReportSummary {
   period: string;
+  shiftId?: string;
   totalSalesPKR: number;
   totalOrders: number;
   cashSalesPKR: number;
