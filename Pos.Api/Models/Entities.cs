@@ -66,9 +66,18 @@ public class Tenant
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = string.Empty;
+    public string Slug { get; set; } = string.Empty; // unique URL-safe identifier
+    public string ContactName { get; set; } = string.Empty;
+    public string ContactEmail { get; set; } = string.Empty;
+    public string ContactPhone { get; set; } = string.Empty;
+    public string? City { get; set; }
+    public string? Address { get; set; }
     public BusinessType BusinessType { get; set; } = BusinessType.Restaurant;
-    public SubscriptionTier Tier { get; set; } = SubscriptionTier.Professional;
+    public SubscriptionTier Tier { get; set; } = SubscriptionTier.Starter;
     public bool IsActive { get; set; } = true;
+    public bool IsTrialActive { get; set; } = true;
+    public DateTime TrialEndsAt { get; set; } = DateTime.UtcNow.AddDays(30);
+    public DateTime? SubscriptionPaidUntil { get; set; } // null = not paid yet
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<Branch> Branches { get; set; } = new List<Branch>();
@@ -350,6 +359,7 @@ public class CashEntry
 
 public enum UserRole
 {
+    SuperAdmin = 0,
     OwnerAdmin = 1,
     BranchManager = 2,
     Cashier = 3,

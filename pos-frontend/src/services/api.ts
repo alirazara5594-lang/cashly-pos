@@ -591,6 +591,51 @@ export const posApi = {
   pairBranchWithToken: async (pairingToken: string) => {
     const res = await api.post<BranchPairResponse>('/api/setup/pair-branch', { pairingToken });
     return res.data;
+  },
+
+  // SAAS — Public Signup
+  signup: async (data: {
+    restaurantName: string;
+    contactName: string;
+    email: string;
+    phone: string;
+    city?: string;
+    address?: string;
+    adminUsername: string;
+    adminPin: string;
+  }) => {
+    const res = await api.post('/api/auth/signup', data);
+    return res.data;
+  },
+
+  // SAAS — Super Admin Login
+  superAdminLogin: async (username: string, pinCode: string) => {
+    const res = await api.post('/api/auth/super-admin-login', { username, pinCode });
+    return res.data;
+  },
+
+  // SAAS — Admin: List all tenants
+  getAdminTenants: async () => {
+    const res = await api.get('/api/admin/tenants');
+    return res.data;
+  },
+
+  // SAAS — Admin: Toggle tenant active
+  toggleTenantActive: async (tenantId: string) => {
+    const res = await api.put(`/api/admin/tenants/${tenantId}/toggle-active`);
+    return res.data;
+  },
+
+  // SAAS — Admin: Change tier
+  changeTenantTier: async (tenantId: string, tier: string, paidUntil?: string) => {
+    const res = await api.put(`/api/admin/tenants/${tenantId}/change-tier`, { tier, paidUntil });
+    return res.data;
+  },
+
+  // SAAS — Admin: Dashboard stats
+  getAdminStats: async () => {
+    const res = await api.get('/api/admin/stats');
+    return res.data;
   }
 };
 

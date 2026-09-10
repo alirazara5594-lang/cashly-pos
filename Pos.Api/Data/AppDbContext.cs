@@ -48,6 +48,10 @@ public class AppDbContext : DbContext
         }
 
         // Unique constraints
+        modelBuilder.Entity<Tenant>()
+            .HasIndex(t => t.Slug)
+            .IsUnique();
+
         modelBuilder.Entity<BranchStock>()
             .HasIndex(b => new { b.BranchId, b.ProductId })
             .IsUnique();

@@ -12,6 +12,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Pos.Api.Data;
 using Pos.Api.Models;
+using Pos.Api.Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,6 +89,7 @@ app.UseExceptionHandler(error =>
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<TenantIsolationMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -2154,6 +2156,234 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, Guid id) =>
     return Results.Ok(new { message = "Stock request deleted" });
 });
 
+// ============================================================
+// SAAS ENDPOINTS — SIGNUP + TENANT MANAGEMENT
+// ============================================================
+
+app.MapPost("/api/auth/signup", async (AppDbContext db, SignupDto dto) =>
+{
+    // Validate unique slug
+    var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
+    slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
+    if (await db.Tenants.AnyAsync(t => t.Slug == slug))
+        return Results.BadRequest(new { error = "A restaurant with a similar name already exists. Try a different name." });
+
+    // Validate unique admin username
+    if (await db.Users.AnyAsync(u => u.Username == dto.AdminUsername.ToLower().Trim()))
+        return Results.BadRequest(new { error = "Username already taken. Choose a different one." });
+
+    using var transaction = await db.Database.BeginTransactionAsync();
+
+    try
+    {
+        // 1. Create tenant
+        var tenant = new Tenant
+        {
+            Name = dto.RestaurantName.Trim(),
+            Slug = slug,
+            ContactName = dto.ContactName.Trim(),
+            ContactEmail = dto.Email.Trim().ToLower(),
+            ContactPhone = dto.Phone.Trim(),
+            City = dto.City?.Trim(),
+            BusinessType = BusinessType.Restaurant,
+            Tier = SubscriptionTier.Starter,
+            IsActive = true,
+            IsTrialActive = true,
+            TrialEndsAt = DateTime.UtcNow.AddDays(30)
+        };
+        db.Tenants.Add(tenant);
+
+        // 2. Create head office branch
+        var branch = new Branch
+        {
+            TenantId = tenant.Id,
+            Name = $"{dto.RestaurantName.Trim()} — Main Branch",
+            Code = "MAIN",
+            Address = dto.Address ?? "",
+            City = dto.City ?? "Islamabad",
+            Phone = dto.Phone,
+            IsHeadOffice = true,
+            AllowedCounters = 1,
+            AllowedOrderTabs = 3
+        };
+        db.Branches.Add(branch);
+
+        // 3. Create admin user
+        var adminUser = new AppUser
+        {
+            TenantId = tenant.Id,
+            BranchId = branch.Id,
+            FullName = dto.ContactName.Trim(),
+            Username = dto.AdminUsername.ToLower().Trim(),
+            PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.AdminPin),
+            Role = UserRole.OwnerAdmin,
+            IsActive = true,
+            CanViewFinancialReports = true,
+            CanManageInventory = true,
+            CanManageMenuAndTax = true,
+            CanGiveDiscounts = true,
+            CanVoidOrders = true
+        };
+        db.Users.Add(adminUser);
+
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return Results.Ok(new
+        {
+            message = "Restaurant created successfully!",
+            tenant = new
+            {
+                id = tenant.Id,
+                name = tenant.Name,
+                slug = tenant.Slug,
+                tier = tenant.Tier.ToString(),
+                trialEndsAt = tenant.TrialEndsAt
+            },
+            admin = new
+            {
+                id = adminUser.Id,
+                username = adminUser.Username,
+                fullName = adminUser.FullName
+            }
+        });
+    }
+    catch (Exception ex)
+    {
+        await transaction.RollbackAsync();
+        return Results.BadRequest(new { error = "Failed to create restaurant", details = ex.Message });
+    }
+});
+
+app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
+{
+    // Only super admins can list all tenants
+    if (!http.IsSuperAdmin())
+    {
+        // Regular users can only see their own tenant
+        var myTenantId = http.GetTenantId();
+        if (myTenantId == null) return Results.Unauthorized();
+        var myTenant = await db.Tenants.FindAsync(myTenantId.Value);
+        if (myTenant == null) return Results.NotFound();
+        return Results.Ok(new[] { myTenant });
+    }
+
+    var tenants = await db.Tenants
+        .OrderByDescending(t => t.CreatedAt)
+        .Select(t => new
+        {
+            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
+            t.City, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
+            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt,
+            branchCount = t.Branches.Count,
+            userCount = t.Branches.SelectMany(b => b.Terminals).Count()
+        })
+        .ToListAsync();
+
+    return Results.Ok(tenants);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/tenants/{id:guid}/toggle-active", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var tenant = await db.Tenants.FindAsync(id);
+    if (tenant == null) return Results.NotFound();
+    tenant.IsActive = !tenant.IsActive;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { tenant.Id, tenant.IsActive, message = tenant.IsActive ? "Tenant activated" : "Tenant deactivated" });
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (Guid id, AppDbContext db, HttpContext http, ChangeTierDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var tenant = await db.Tenants.FindAsync(id);
+    if (tenant == null) return Results.NotFound();
+    tenant.Tier = dto.Tier;
+    tenant.SubscriptionPaidUntil = dto.PaidUntil;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil });
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/super-admin-login", async (AppDbContext db, LoginDto dto) =>
+{
+    // Fixed super admin credentials — platform owner only
+    if (dto.Username != "superadmin" || dto.PinCode != "999999")
+        return Results.Unauthorized();
+
+    // Find or create super admin user (no tenant)
+    var superAdmin = await db.Users.FirstOrDefaultAsync(u => u.Username == "superadmin" && u.Role == UserRole.SuperAdmin);
+    if (superAdmin == null)
+    {
+        superAdmin = new AppUser
+        {
+            TenantId = Guid.Empty,
+            BranchId = null,
+            FullName = "Platform Super Admin",
+            Username = "superadmin",
+            PinCodeHash = BCrypt.Net.BCrypt.HashPassword("999999"),
+            Role = UserRole.SuperAdmin,
+            IsActive = true
+        };
+        db.Users.Add(superAdmin);
+        await db.SaveChangesAsync();
+    }
+
+    var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
+    var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
+    var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
+    {
+        Expires = DateTime.UtcNow.AddHours(12),
+        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+        Claims = new Dictionary<string, object>
+        {
+            { "userId", superAdmin.Id.ToString() },
+            { "tenantId", Guid.Empty.ToString() },
+            { "branchId", "" },
+            { "role", "SuperAdmin" },
+            { "permissions", "{}" }
+        }
+    };
+    var token = tokenHandler.CreateToken(tokenDescriptor);
+
+    return Results.Ok(new
+    {
+        token = tokenHandler.WriteToken(token),
+        user = new
+        {
+            id = superAdmin.Id,
+            fullName = superAdmin.FullName,
+            username = superAdmin.Username,
+            role = "SuperAdmin",
+            tenantId = Guid.Empty,
+            branchId = (Guid?)null
+        }
+    });
+});
+
+app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var totalTenants = await db.Tenants.CountAsync();
+    var activeTenants = await db.Tenants.CountAsync(t => t.IsActive);
+    var trialTenants = await db.Tenants.CountAsync(t => t.IsTrialActive && t.TrialEndsAt > DateTime.UtcNow);
+    var paidTenants = await db.Tenants.CountAsync(t => !t.IsTrialActive && t.SubscriptionPaidUntil > DateTime.UtcNow);
+    var totalBranches = await db.Branches.CountAsync();
+    var totalOrders = await db.Orders.CountAsync();
+
+    return Results.Ok(new
+    {
+        totalTenants,
+        activeTenants,
+        trialTenants,
+        paidTenants,
+        totalBranches,
+        totalOrders
+    });
+}).RequireAuthorization();
+
 app.Run();
 
 
@@ -2215,5 +2445,7 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin);
+public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil);
 
 

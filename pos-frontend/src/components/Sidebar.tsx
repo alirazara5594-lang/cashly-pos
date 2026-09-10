@@ -259,7 +259,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
               { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
               { label: 'Staff & Pin Access', path: '/users', icon: Users },
-              { label: 'Super Admin Quotas', path: '/super-admin', icon: ShieldCheck }
+              { label: 'Platform Admin', path: '/super-admin', icon: ShieldCheck }
             ]
           },
           {

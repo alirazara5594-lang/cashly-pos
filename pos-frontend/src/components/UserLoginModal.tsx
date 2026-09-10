@@ -21,6 +21,7 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
   const [pinCode, setPinCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isSuperAdminLogin, setIsSuperAdminLogin] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,17 +33,30 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
     setLoading(true);
     setError('');
     try {
-      const result = await posApi.login(username, pinCode);
-      if (result.user) {
-        onLogin(result.user);
-        setUsername('');
-        setPinCode('');
-        onClose();
+      if (isSuperAdminLogin) {
+        const result = await posApi.superAdminLogin(username, pinCode);
+        if (result.user) {
+          onLogin(result.user);
+          setUsername('');
+          setPinCode('');
+          setIsSuperAdminLogin(false);
+          onClose();
+        } else {
+          setError('Invalid credentials');
+        }
       } else {
-        setError('Invalid credentials');
+        const result = await posApi.login(username, pinCode);
+        if (result.user) {
+          onLogin(result.user);
+          setUsername('');
+          setPinCode('');
+          onClose();
+        } else {
+          setError('Invalid credentials');
+        }
       }
     } catch (err: any) {
-      setError(err?.response?.data?.message || 'Login failed');
+      setError(err?.response?.data?.message || err?.response?.data?.error || 'Login failed');
     } finally {
       setLoading(false);
     }
@@ -84,6 +98,19 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleLogin} className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs text-slate-400 font-medium">
+                {isSuperAdminLogin ? 'Platform Admin Login' : 'Staff Login'}
+              </label>
+              <button
+                type="button"
+                onClick={() => { setIsSuperAdminLogin(!isSuperAdminLogin); setError(''); }}
+                className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold transition"
+              >
+                {isSuperAdminLogin ? '← Staff Login' : 'Platform Admin →'}
+              </button>
+            </div>
+
             <div>
               <label className="block text-xs text-slate-400 font-medium mb-1">Username</label>
               <input
@@ -125,6 +152,12 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
                 </>
               )}
             </button>
+
+            <div className="text-center pt-2">
+              <a href="/signup" className="text-[10px] text-slate-500 hover:text-blue-400 transition font-semibold">
+                New restaurant? Register here →
+              </a>
+            </div>
           </form>
         )}
       </div>

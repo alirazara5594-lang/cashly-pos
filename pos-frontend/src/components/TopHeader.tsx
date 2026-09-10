@@ -18,7 +18,8 @@ import {
   Tablet,
   ChefHat,
   Check,
-  User
+  User,
+  LogOut
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -28,6 +29,7 @@ interface TopHeaderProps {
   isSidebarOpen?: boolean;
   currentUser?: any;
   onOpenLogin?: () => void;
+  onLogout?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({ 
@@ -35,7 +37,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onToggleSidebar,
   isSidebarOpen,
   currentUser,
-  onOpenLogin
+  onOpenLogin,
+  onLogout
 }) => {
   const { 
     tenants, 
@@ -262,15 +265,35 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             )
           )}
 
-          {/* User Login Button */}
-          <button
-            onClick={onOpenLogin}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition cursor-pointer"
-            title="Login / Switch User"
-          >
-            <User className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">{currentUser?.fullName || currentUser?.username || 'Login'}</span>
-          </button>
+          {/* User Button */}
+          {currentUser ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={onOpenLogin}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition cursor-pointer"
+                title="Switch User"
+              >
+                <User className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{currentUser.fullName || currentUser.username}</span>
+              </button>
+              <button
+                onClick={onLogout}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-950 hover:bg-red-900 text-red-400 border border-red-900 text-xs font-semibold transition cursor-pointer"
+                title="Logout"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onOpenLogin}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition cursor-pointer"
+              title="Login"
+            >
+              <User className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Login</span>
+            </button>
+          )}
 
           {/* Quick Call Order Intake */}
           <button

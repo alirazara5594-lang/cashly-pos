@@ -18,6 +18,7 @@ import { FloorManagement } from './pages/FloorManagement';
 import { InstallationWizard } from './pages/InstallationWizard';
 import { SettingsManagement } from './pages/SettingsManagement';
 import { StockRequests } from './pages/StockRequests';
+import { TenantSignup } from './pages/TenantSignup';
 import { UserLoginModal } from './components/UserLoginModal';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
@@ -111,6 +112,11 @@ function MainLayoutInner() {
           isSidebarOpen={isMobileSidebarOpen}
           currentUser={currentUser}
           onOpenLogin={() => setIsLoginModalOpen(true)}
+          onLogout={() => {
+            setCurrentUser(null);
+            localStorage.removeItem('cashly_pos_user');
+            localStorage.removeItem('cashly_pos_token');
+          }}
         />
 
         <main className="flex-1 flex flex-col overflow-hidden">
@@ -127,6 +133,7 @@ function MainLayoutInner() {
             <Route path="/menu" element={<MenuManagement />} />
             <Route path="/director" element={<DirectorDashboard />} />
             <Route path="/super-admin" element={<SuperAdmin />} />
+            <Route path="/signup" element={<TenantSignup />} />
             <Route path="/settings" element={<SettingsManagement />} />
             <Route path="/stock-requests" element={<StockRequests />} />
             <Route path="/setup" element={<InstallationWizard />} />

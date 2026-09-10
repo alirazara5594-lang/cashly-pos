@@ -188,7 +188,9 @@
 .theme-light .bg-blue-950,
 .theme-light .bg-blue-950\/80,
 .theme-light .bg-blue-950\/60,
-.theme-light .bg-blue-950\/40 {
+.theme-light .bg-blue-950\/50,
+.theme-light .bg-blue-950\/40,
+.theme-light .bg-blue-950\/30 {
   background-color: #eff6ff !important; /* Blue 50 */
   border-color: #bfdbfe !important;
 }

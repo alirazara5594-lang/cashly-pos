@@ -249,7 +249,7 @@ export const DeliveryBoard: React.FC = () => {
         <div className="flex flex-col bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden">
           <div className="p-3 bg-slate-850 border-b border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-400"></span>
               <span className="font-bold text-xs text-white">2. Ready for Dispatch</span>
             </div>
             <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-blue-400 font-mono font-bold">
