@@ -665,58 +665,145 @@ export const InstallationWizard: React.FC = () => {
                     />
                   </div>
 
-                  <div className="space-y-3 pt-2">
+                  <div className="space-y-4 pt-2">
                     <label className="text-xs font-semibold text-slate-300">Initial Outlets / Branches:</label>
-                    {branches.map((b, idx) => (
-                      <div key={idx} className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
-                        <div className="md:col-span-4">
-                          <input 
-                            type="text"
-                            placeholder="Branch Name"
-                            value={b.name}
-                            onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          />
+                    {branches.map((b, idx) => {
+                      // Determine which plan this branch currently matches (for highlight)
+                      const branchPlanKey = PLANS.find(
+                        (p) => p.counters === b.allowedCounters && p.tablets === b.allowedOrderTabs
+                      )?.key ?? null;
+
+                      return (
+                        <div key={idx} className="rounded-xl bg-slate-950 border border-slate-800 overflow-hidden">
+                          {/* Branch header */}
+                          <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900/60 border-b border-slate-800">
+                            <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                              <Building2 className="w-3.5 h-3.5" /> Branch {idx + 1}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={branches.length <= 1}
+                              onClick={() => removeBranchRow(idx)}
+                              className="p-1 text-slate-500 hover:text-red-400 disabled:opacity-30 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          <div className="p-4 space-y-4">
+                            {/* Fields row */}
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                              <div>
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Branch Name</label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. Downtown Outlet"
+                                  value={b.name}
+                                  onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
+                                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Code</label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. BR-01"
+                                  value={b.code}
+                                  onChange={(e) => updateBranchField(idx, 'code', e.target.value)}
+                                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 uppercase"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">City</label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. Islamabad"
+                                  value={b.city}
+                                  onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
+                                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Address</label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. Sector F-7 Markaz"
+                                  value={b.address}
+                                  onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
+                                  className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Plan selector */}
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                <Zap className="w-3 h-3 text-amber-400" /> Terminal Plan
+                              </label>
+                              <div className="grid grid-cols-3 gap-2">
+                                {PLANS.map((plan) => {
+                                  const isActive = branchPlanKey === plan.key;
+                                  return (
+                                    <div
+                                      key={plan.key}
+                                      onClick={() => {
+                                        updateBranchField(idx, 'allowedCounters', plan.counters);
+                                        updateBranchField(idx, 'allowedOrderTabs', plan.tablets);
+                                      }}
+                                      className={`relative p-3 rounded-lg border-2 cursor-pointer transition-all duration-150 flex flex-col gap-2 ${
+                                        isActive
+                                          ? `${plan.borderActive} ${plan.bgActive} ring-1 ${plan.ring}`
+                                          : 'border-slate-800 bg-slate-900/50 hover:bg-slate-900'
+                                      }`}
+                                    >
+                                      {/* Plan name + check */}
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-bold text-white">{plan.label}</span>
+                                        {plan.badge && (
+                                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${plan.badgeColor}`}>
+                                            {plan.badge}
+                                          </span>
+                                        )}
+                                        {isActive && (
+                                          <CheckCircle2 className="w-3.5 h-3.5 text-white fill-current opacity-80 shrink-0" />
+                                        )}
+                                      </div>
+
+                                      {/* Auto Counter */}
+                                      <div className="flex items-center gap-2 p-2 rounded-md bg-slate-950/70 border border-slate-800">
+                                        <Monitor className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                        <div>
+                                          <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Auto Counter</p>
+                                          <p className="text-base font-extrabold text-white leading-tight">{plan.counters}</p>
+                                        </div>
+                                      </div>
+
+                                      {/* Tablet Users */}
+                                      <div className="flex items-center gap-2 p-2 rounded-md bg-slate-950/70 border border-slate-800">
+                                        <Tablet className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                        <div>
+                                          <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Tablet Users</p>
+                                          <p className="text-base font-extrabold text-white leading-tight">{plan.tablets}</p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Per-branch live summary */}
+                              <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-400">
+                                <Monitor className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span><span className="text-white font-semibold">{b.allowedCounters ?? 0}</span> Auto Counter{(b.allowedCounters ?? 0) !== 1 ? 's' : ''}</span>
+                                <span className="text-slate-700">·</span>
+                                <Tablet className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span><span className="text-white font-semibold">{b.allowedOrderTabs ?? 0}</span> Tablet User{(b.allowedOrderTabs ?? 0) !== 1 ? 's' : ''}</span>
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <div className="md:col-span-2">
-                          <input 
-                            type="text"
-                            placeholder="Code (e.g. RG-01)"
-                            value={b.code}
-                            onChange={(e) => updateBranchField(idx, 'code', e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 uppercase"
-                          />
-                        </div>
-                        <div className="md:col-span-2">
-                          <input 
-                            type="text"
-                            placeholder="City"
-                            value={b.city}
-                            onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          />
-                        </div>
-                        <div className="md:col-span-3">
-                          <input 
-                            type="text"
-                            placeholder="Address"
-                            value={b.address}
-                            onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                          />
-                        </div>
-                        <div className="md:col-span-1 flex justify-end">
-                          <button 
-                            type="button"
-                            disabled={branches.length <= 1}
-                            onClick={() => removeBranchRow(idx)}
-                            className="p-1.5 text-slate-500 hover:text-red-400 disabled:opacity-30 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
