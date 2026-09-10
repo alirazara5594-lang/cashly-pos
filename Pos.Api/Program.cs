@@ -541,8 +541,8 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
             City = dto.City ?? "Islamabad",
             Phone = dto.Phone ?? "",
             IsHeadOffice = false,
-            AllowedCounters = dto.AllowedCounters ?? 3,
-            AllowedOrderTabs = 10
+            AllowedCounters = dto.AllowedCounters ?? 2,
+            AllowedOrderTabs = dto.AllowedOrderTabs ?? 10
         };
         db.Branches.Add(singleBranch);
         createdBranches.Add(singleBranch);
@@ -1876,6 +1876,7 @@ public record SetupInitDto(
     string? MainBranchName,
     string? HqName,
     int? AllowedCounters,
+    int? AllowedOrderTabs,
     string? AdminFullName,
     string? AdminUsername,
     string? AdminPin,
