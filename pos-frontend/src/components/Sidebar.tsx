@@ -258,8 +258,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
     }
 
+    // ── BRANCH MANAGER: Stock + Requests only ──
+    if (activeDepartment === 'BranchManager') {
+      sections.push({
+        title: 'Stock & Requests',
+        items: [
+          {
+            id: 'inventory',
+            label: 'Inventory & Stock',
+            path: '/inventory',
+            icon: Boxes,
+            subItems: [
+              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
+            ]
+          },
+          {
+            id: 'stockRequests',
+            label: 'Stock Requests',
+            path: '/stock-requests',
+            icon: Send,
+            subItems: [
+              { label: 'Request Stock (Owner/Vendor/HQ)', path: '/stock-requests', icon: Send }
+            ]
+          }
+        ]
+      });
+    }
+
+    // ── CASHIER: POS only ──
+    if (activeDepartment === 'Cashier' && terminalMode !== 'OwnerAdmin') {
+      sections.push({
+        title: 'Cashier Operations',
+        items: [
+          {
+            id: 'pos',
+            label: 'POS Terminal',
+            path: '/',
+            icon: Store,
+            subItems: [
+              { label: 'Billing & Checkout', path: '/', icon: Store }
+            ]
+          }
+        ]
+      });
+    }
+
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, activeDepartment]);
 
   return (
     <>

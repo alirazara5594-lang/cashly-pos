@@ -468,7 +468,17 @@ export interface SetupStatusResponse {
 
 export type TerminalOperatingMode = 'CounterPOS' | 'OwnerAdmin' | 'WaiterTab' | 'KitchenKDS';
 
-export type DepartmentRole = 'Owner' | 'Accounts' | 'Procurement' | 'MenuOps' | 'Cashier' | 'Waiter' | 'Kitchen';
+export interface Terminal {
+  id: string;
+  branchId: string;
+  terminalName: string;
+  terminalType: TerminalType;
+  deviceToken: string;
+  isActive: boolean;
+  lastSeenAt: string;
+}
+
+export type DepartmentRole = 'Owner' | 'Accounts' | 'Procurement' | 'MenuOps' | 'Cashier' | 'Waiter' | 'Kitchen' | 'BranchManager';
 
 export interface BranchPairingInfo {
   branchId: string;
@@ -499,5 +509,35 @@ export interface BranchPairResponse {
   diningTables: DiningTable[];
 }
 
+export type StockRequestType = 'ToOwner' | 'ToVendor' | 'ToHQ';
+export type StockRequestStatus = 'Pending' | 'Approved' | 'Rejected' | 'Ordered' | 'Fulfilled';
 
+export interface StockRequestItem {
+  id?: string;
+  ingredientId: string;
+  ingredientName: string;
+  unit: string;
+  quantityRequested: number;
+  currentStock: number;
+  unitCostPKR: number;
+}
+
+export interface StockRequest {
+  id: string;
+  tenantId: string;
+  branchId: string;
+  branchName?: string;
+  requestNumber: string;
+  requestType: StockRequestType;
+  status: StockRequestStatus;
+  vendorName?: string;
+  notes?: string;
+  estimatedCostPKR: number;
+  createdBy: string;
+  createdAt: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+  items: StockRequestItem[];
+}
 

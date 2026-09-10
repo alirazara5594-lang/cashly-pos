@@ -31,6 +31,8 @@ public class AppDbContext : DbContext
     public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
     public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
     public DbSet<PurchaseOrderItem> PurchaseOrderItems => Set<PurchaseOrderItem>();
+    public DbSet<StockRequest> StockRequests => Set<StockRequest>();
+    public DbSet<StockRequestItem> StockRequestItems => Set<StockRequestItem>();
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -93,6 +95,12 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<PurchaseOrder>()
             .HasIndex(po => new { po.TenantId, po.PONumber });
+
+        modelBuilder.Entity<StockRequest>()
+            .HasIndex(sr => new { sr.TenantId, sr.RequestNumber });
+
+        modelBuilder.Entity<StockRequest>()
+            .HasIndex(sr => new { sr.BranchId, sr.Status });
 
         // Foreign key relationships with delete behavior
         modelBuilder.Entity<Order>()

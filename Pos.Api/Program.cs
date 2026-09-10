@@ -1261,6 +1261,73 @@ api.MapPost("/super-admin/update-limits", async (AppDbContext db, [Microsoft.Asp
     return Results.Ok(new { message = "Limits updated", branchId = branch.Id, allowedCounters = branch.AllowedCounters, allowedOrderTabs = branch.AllowedOrderTabs, tier = branch.Tenant?.Tier.ToString() });
 });
 
+// --- Terminal Device Management (Counters, Order Tabs, Kitchen Displays) ---
+api.MapGet("/terminals", async (AppDbContext db, Guid? branchId) =>
+{
+    var q = db.Terminals.AsQueryable();
+    if (branchId.HasValue) q = q.Where(t => t.BranchId == branchId.Value);
+    var terminals = await q.OrderByDescending(t => t.LastSeenAt).ToListAsync();
+    return Results.Ok(terminals.Select(t => new
+    {
+        t.Id, t.BranchId, t.TerminalName, t.TerminalType, t.DeviceToken, t.IsActive, t.LastSeenAt
+    }));
+});
+
+api.MapPost("/terminals", async (AppDbContext db, CreateTerminalDto dto) =>
+{
+    var branch = await db.Branches.FindAsync(dto.BranchId);
+    if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
+
+    var terminalCount = await db.Terminals.CountAsync(t => t.BranchId == dto.BranchId && t.TerminalType == dto.TerminalType);
+    var limit = dto.TerminalType == TerminalType.OrderTab ? branch.AllowedOrderTabs : branch.AllowedCounters;
+    if (terminalCount >= limit)
+        return Results.BadRequest(new { error = $"Branch limit reached: max {limit} {dto.TerminalType} devices allowed" });
+
+    var terminal = new Terminal
+    {
+        Id = Guid.NewGuid(),
+        BranchId = dto.BranchId,
+        TerminalName = dto.TerminalName.Trim(),
+        TerminalType = dto.TerminalType,
+        DeviceToken = Guid.NewGuid().ToString("N"),
+        IsActive = true,
+        LastSeenAt = DateTime.UtcNow
+    };
+    db.Terminals.Add(terminal);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Terminal created", terminal.Id, terminal.TerminalName, terminal.DeviceToken });
+});
+
+api.MapPut("/terminals/{id}", async (AppDbContext db, Guid id, UpdateTerminalDto dto) =>
+{
+    var terminal = await db.Terminals.FindAsync(id);
+    if (terminal == null) return Results.NotFound(new { error = "Terminal not found" });
+
+    if (!string.IsNullOrWhiteSpace(dto.TerminalName)) terminal.TerminalName = dto.TerminalName.Trim();
+    if (dto.IsActive.HasValue) terminal.IsActive = dto.IsActive.Value;
+    terminal.LastSeenAt = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Terminal updated", terminal.Id, terminal.TerminalName, terminal.IsActive });
+});
+
+api.MapDelete("/terminals/{id}", async (AppDbContext db, Guid id) =>
+{
+    var terminal = await db.Terminals.FindAsync(id);
+    if (terminal == null) return Results.NotFound(new { error = "Terminal not found" });
+    db.Terminals.Remove(terminal);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Terminal deleted" });
+});
+
+api.MapPost("/terminals/heartbeat", async (AppDbContext db, TerminalHeartbeatDto dto) =>
+{
+    var terminal = await db.Terminals.FirstOrDefaultAsync(t => t.DeviceToken == dto.DeviceToken);
+    if (terminal == null) return Results.NotFound(new { error = "Terminal not registered" });
+    terminal.LastSeenAt = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { terminal.TerminalName, terminal.TerminalType });
+});
+
 // --- Offline Batch Sync (fixed order numbers) ---
 api.MapPost("/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] List<CreateOrderDto> offlineOrders) =>
 {
@@ -1839,6 +1906,95 @@ api.MapPost("/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, 
     return Results.Ok(new { success = true, status = "Cancelled" });
 });
 
+// --- Stock Request (Branch Manager -> Owner / Vendor / HQ) ---
+api.MapGet("/stock-requests", async (AppDbContext db, Guid? branchId, string? status) =>
+{
+    var q = db.StockRequests
+        .Include(sr => sr.Items)
+        .ThenInclude(i => i.Ingredient)
+        .AsQueryable();
+    if (branchId.HasValue) q = q.Where(sr => sr.BranchId == branchId.Value);
+    if (!string.IsNullOrEmpty(status) && Enum.TryParse<StockRequestStatus>(status, out var st))
+        q = q.Where(sr => sr.Status == st);
+    var requests = await q.OrderByDescending(sr => sr.CreatedAt).ToListAsync();
+    return Results.Ok(requests.Select(sr => new
+    {
+        sr.Id, sr.TenantId, sr.BranchId, sr.RequestNumber, sr.RequestType, sr.Status,
+        sr.VendorName, sr.Notes, sr.EstimatedCostPKR, sr.CreatedBy, sr.CreatedAt,
+        sr.ReviewedBy, sr.ReviewedAt, sr.ReviewNotes,
+        BranchName = sr.Branch?.Name,
+        Items = sr.Items.Select(i => new
+        {
+            i.Id, i.IngredientId, i.IngredientName, i.Unit,
+            i.QuantityRequested, i.CurrentStock, i.UnitCostPKR
+        })
+    }));
+});
+
+api.MapPost("/stock-requests", async (AppDbContext db, CreateStockRequestDto dto) =>
+{
+    var branch = await db.Branches.FindAsync(dto.BranchId);
+    if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
+
+    var seq = await db.StockRequests.CountAsync(sr => sr.TenantId == branch.TenantId) + 1;
+    var request = new StockRequest
+    {
+        Id = Guid.NewGuid(),
+        TenantId = branch.TenantId,
+        BranchId = dto.BranchId,
+        RequestNumber = $"SR-{seq:0000}",
+        RequestType = dto.RequestType,
+        VendorName = dto.VendorName,
+        Notes = dto.Notes,
+        EstimatedCostPKR = dto.Items.Sum(i => i.QuantityRequested * i.UnitCostPKR),
+        CreatedBy = dto.CreatedBy,
+        CreatedByUserId = dto.CreatedByUserId,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    foreach (var item in dto.Items)
+    {
+        request.Items.Add(new StockRequestItem
+        {
+            Id = Guid.NewGuid(),
+            IngredientId = item.IngredientId,
+            IngredientName = item.IngredientName,
+            Unit = item.Unit,
+            QuantityRequested = item.QuantityRequested,
+            CurrentStock = item.CurrentStock,
+            UnitCostPKR = item.UnitCostPKR
+        });
+    }
+
+    db.StockRequests.Add(request);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Stock request created", request.Id, request.RequestNumber });
+});
+
+api.MapPut("/stock-requests/{id}/review", async (AppDbContext db, Guid id, ReviewStockRequestDto dto) =>
+{
+    var request = await db.StockRequests.FindAsync(id);
+    if (request == null) return Results.NotFound(new { error = "Stock request not found" });
+
+    request.Status = dto.Status;
+    request.ReviewedBy = dto.ReviewedBy;
+    request.ReviewedAt = DateTime.UtcNow;
+    request.ReviewNotes = dto.ReviewNotes;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = $"Request {dto.Status}", request.Id, request.Status });
+});
+
+api.MapDelete("/stock-requests/{id}", async (AppDbContext db, Guid id) =>
+{
+    var request = await db.StockRequests.FindAsync(id);
+    if (request == null) return Results.NotFound(new { error = "Stock request not found" });
+    if (request.Status != StockRequestStatus.Pending)
+        return Results.BadRequest(new { error = "Only pending requests can be deleted" });
+    db.StockRequests.Remove(request);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Stock request deleted" });
+});
+
 app.Run();
 
 
@@ -1893,5 +2049,11 @@ public record SetupInitDto(
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
 public record PairBranchDto(string PairingToken);
+public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
+public record UpdateTerminalDto(string? TerminalName, bool? IsActive);
+public record TerminalHeartbeatDto(string DeviceToken);
+public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType, string? VendorName, string? Notes, string CreatedBy, Guid? CreatedByUserId, List<CreateStockRequestItemDto> Items);
+public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
+public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 
 

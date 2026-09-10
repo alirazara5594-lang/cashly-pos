@@ -8,6 +8,7 @@ import {
   RefreshCw, 
   Copy, 
   Check, 
+  X,
   Download, 
   Key, 
   Lock, 
@@ -52,7 +53,7 @@ export const SettingsManagement: React.FC = () => {
     setTaxSettings
   } = usePosStore();
 
-  const [activeTab, setActiveTab] = useState<'profile' | 'provisioning' | 'terminal' | 'departments' | 'sync'>('terminal');
+  const [activeTab, setActiveTab] = useState<'profile' | 'provisioning' | 'terminal' | 'departments' | 'sync' | 'devices'>('terminal');
 
   // HQ Branch Pairing state
   const [pairingBranches, setPairingBranches] = useState<BranchPairingInfo[]>([]);
@@ -67,9 +68,17 @@ export const SettingsManagement: React.FC = () => {
   const [dbStats, setDbStats] = useState<{ products: number; categories: number; offlineOrders: number }>({ products: 0, categories: 0, offlineOrders: 0 });
   const [isSyncingNow, setIsSyncingNow] = useState(false);
 
+  // Device & Tab Config state
+  const [terminals, setTerminals] = useState<any[]>([]);
+  const [newTabName, setNewTabName] = useState('');
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editingTabName, setEditingTabName] = useState('');
+  const [tabMessage, setTabMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     loadPairingInfo();
     loadDbStats();
+    loadTerminals();
   }, []);
 
   const loadPairingInfo = async () => {
@@ -89,6 +98,64 @@ export const SettingsManagement: React.FC = () => {
       setDbStats({ products: pCount, categories: cCount, offlineOrders: oCount });
     } catch {
       // ignore
+    }
+  };
+
+  const loadTerminals = async () => {
+    try {
+      const data = await posApi.getTerminals(selectedBranch?.id);
+      setTerminals(data);
+    } catch (err) {
+      console.warn('Failed to load terminals:', err);
+    }
+  };
+
+  const handleAddTerminal = async () => {
+    if (!newTabName.trim() || !selectedBranch?.id) return;
+    try {
+      await posApi.createTerminal({
+        branchId: selectedBranch.id,
+        terminalName: newTabName.trim(),
+        terminalType: 2 // OrderTab
+      });
+      setNewTabName('');
+      setTabMessage({ type: 'success', text: 'Tab device added' });
+      loadTerminals();
+      setTimeout(() => setTabMessage(null), 2500);
+    } catch (err: any) {
+      setTabMessage({ type: 'error', text: err?.response?.data?.error || 'Failed to add tab' });
+      setTimeout(() => setTabMessage(null), 3000);
+    }
+  };
+
+  const handleRenameTerminal = async (id: string) => {
+    if (!editingTabName.trim()) return;
+    try {
+      await posApi.updateTerminal(id, { terminalName: editingTabName.trim() });
+      setEditingTabId(null);
+      setEditingTabName('');
+      loadTerminals();
+    } catch (err) {
+      console.warn('Failed to rename terminal:', err);
+    }
+  };
+
+  const handleToggleTerminal = async (id: string, currentActive: boolean) => {
+    try {
+      await posApi.updateTerminal(id, { isActive: !currentActive });
+      loadTerminals();
+    } catch (err) {
+      console.warn('Failed to toggle terminal:', err);
+    }
+  };
+
+  const handleDeleteTerminal = async (id: string) => {
+    if (!confirm('Delete this terminal device?')) return;
+    try {
+      await posApi.deleteTerminal(id);
+      loadTerminals();
+    } catch (err) {
+      console.warn('Failed to delete terminal:', err);
     }
   };
 
@@ -219,6 +286,18 @@ export const SettingsManagement: React.FC = () => {
           >
             <Users className="w-4 h-4" />
             Department Roles & Module Access
+          </button>
+
+          <button
+            onClick={() => setActiveTab('devices')}
+            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${
+              activeTab === 'devices' 
+                ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' 
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+            }`}
+          >
+            <Tablet className="w-4 h-4" />
+            Device & Tab Config
           </button>
 
           <button
@@ -804,6 +883,178 @@ export const SettingsManagement: React.FC = () => {
                     {offlinePendingCount} Invoices
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 6: DEVICE & TAB CONFIGURATION */}
+        {activeTab === 'devices' && (
+          <div className="space-y-6 animate-fadeIn">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-6">
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <Tablet className="w-4 h-4 text-cyan-400" />
+                  Device & Tab Configuration
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Manage waiter tablet devices, POS counters, and kitchen display screens for this branch.
+                </p>
+              </div>
+
+              {/* Branch Info & Limits */}
+              {selectedBranch && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-500 uppercase">Branch</div>
+                    <div className="text-xs font-bold text-white">{selectedBranch.name}</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-500 uppercase">Max Counters</div>
+                    <div className="text-xs font-bold text-emerald-400 font-mono">
+                      {terminals.filter(t => t.terminalType === 'Counter').length} / {selectedBranch.allowedCounters || 5}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-500 uppercase">Max Order Tabs</div>
+                    <div className="text-xs font-bold text-cyan-400 font-mono">
+                      {terminals.filter(t => t.terminalType === 'OrderTab').length} / {selectedBranch.allowedOrderTabs || 15}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-[10px] text-slate-500 uppercase">Kitchen Displays</div>
+                    <div className="text-xs font-bold text-amber-400 font-mono">
+                      {terminals.filter(t => t.terminalType === 'KitchenDisplay').length}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Add New Tab */}
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  placeholder="New tab name (e.g., Floor Tab 3)"
+                  value={newTabName}
+                  onChange={(e) => setNewTabName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddTerminal()}
+                  className="flex-1 px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                />
+                <button
+                  onClick={handleAddTerminal}
+                  disabled={!newTabName.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
+                >
+                  + Add Order Tab
+                </button>
+              </div>
+
+              {tabMessage && (
+                <div className={`px-3 py-2 rounded-xl text-xs font-semibold ${
+                  tabMessage.type === 'success' ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800' : 'bg-red-950/50 text-red-400 border border-red-800'
+                }`}>
+                  {tabMessage.text}
+                </div>
+              )}
+
+              {/* Terminal Devices List */}
+              <div className="space-y-2">
+                {terminals.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                    No devices registered yet. Add your first tab above.
+                  </div>
+                ) : (
+                  terminals.map(t => (
+                    <div key={t.id} className={`flex items-center gap-3 p-3 rounded-xl border transition ${
+                      t.isActive 
+                        ? 'bg-slate-950 border-slate-800' 
+                        : 'bg-slate-950/50 border-slate-800/50 opacity-60'
+                    }`}>
+                      {/* Type Icon */}
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
+                        t.terminalType === 'Counter' ? 'bg-emerald-950 text-emerald-400' :
+                        t.terminalType === 'OrderTab' ? 'bg-cyan-950 text-cyan-400' :
+                        'bg-amber-950 text-amber-400'
+                      }`}>
+                        {t.terminalType === 'Counter' ? 'POS' : t.terminalType === 'OrderTab' ? 'TAB' : 'KDS'}
+                      </div>
+
+                      {/* Name */}
+                      <div className="flex-1 min-w-0">
+                        {editingTabId === t.id ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={editingTabName}
+                              onChange={(e) => setEditingTabName(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleRenameTerminal(t.id)}
+                              className="flex-1 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-cyan-500"
+                              autoFocus
+                            />
+                            <button onClick={() => handleRenameTerminal(t.id)} className="text-emerald-400 hover:text-emerald-300 text-xs">
+                              <Check className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => setEditingTabId(null)} className="text-slate-400 hover:text-slate-300 text-xs">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="font-bold text-xs text-white">{t.terminalName}</div>
+                        )}
+                        <div className="text-[10px] text-slate-500 font-mono">Token: {t.deviceToken.slice(0, 12)}...</div>
+                      </div>
+
+                      {/* Status */}
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-2 h-2 rounded-full ${t.isActive ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                        <span className="text-[10px] text-slate-400">{t.isActive ? 'Active' : 'Disabled'}</span>
+                      </div>
+
+                      {/* Last Seen */}
+                      <div className="text-[10px] text-slate-500 min-w-[80px] text-right">
+                        {new Date(t.lastSeenAt).toLocaleDateString()}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => { setEditingTabId(t.id); setEditingTabName(t.terminalName); }}
+                          className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                          title="Rename"
+                        >
+                          <Sliders className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleToggleTerminal(t.id, t.isActive)}
+                          className={`p-1.5 rounded-lg hover:bg-slate-800 transition ${
+                            t.isActive ? 'text-emerald-400 hover:text-emerald-300' : 'text-slate-400 hover:text-slate-300'
+                          }`}
+                          title={t.isActive ? 'Disable' : 'Enable'}
+                        >
+                          {t.isActive ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTerminal(t.id)}
+                          className="p-1.5 rounded-lg hover:bg-red-950 text-slate-400 hover:text-red-400 transition"
+                          title="Delete"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Info Box */}
+              <div className="p-3.5 rounded-xl bg-cyan-950/30 border border-cyan-800/40 text-[11px] text-cyan-300 space-y-1.5">
+                <div className="font-bold">How Device Registration Works</div>
+                <ul className="list-disc list-inside space-y-0.5 text-cyan-400/80">
+                  <li>Each device gets a unique Device Token on creation</li>
+                  <li>When a waiter opens the app and selects "Waiter" mode, the device auto-registers with this token</li>
+                  <li>Disable a tab to lock a lost/stolen tablet from placing orders</li>
+                  <li>Max limits enforced by your subscription tier</li>
+                </ul>
               </div>
             </div>
           </div>

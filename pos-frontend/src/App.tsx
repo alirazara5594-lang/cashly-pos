@@ -17,6 +17,7 @@ import { UserManagement } from './pages/UserManagement';
 import { FloorManagement } from './pages/FloorManagement';
 import { InstallationWizard } from './pages/InstallationWizard';
 import { SettingsManagement } from './pages/SettingsManagement';
+import { StockRequests } from './pages/StockRequests';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -119,6 +120,7 @@ function MainLayoutInner() {
             <Route path="/director" element={<DirectorDashboard />} />
             <Route path="/super-admin" element={<SuperAdmin />} />
             <Route path="/settings" element={<SettingsManagement />} />
+            <Route path="/stock-requests" element={<StockRequests />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

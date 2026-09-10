@@ -83,21 +83,18 @@ export const PosTerminal: React.FC = () => {
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  // Load Catalog - Cache-first strategy
+  // Load Catalog - Cache only (menu updates via Menu Management page)
   useEffect(() => {
     const loadCatalog = async () => {
       if (!selectedTenant?.id) return;
 
       try {
-        // Always load from cache first (instant, works offline)
         const cached = await getCachedCatalog(selectedTenant.id);
         if (cached.categories.length > 0) {
           setCategories(cached.categories);
           setProducts(cached.products);
-        }
-
-        // Then refresh from API if online (and update cache)
-        if (isOnline) {
+        } else if (isOnline) {
+          // First visit: fetch once and cache
           const [cats, prods] = await Promise.all([
             posApi.getCategories(selectedTenant.id),
             posApi.getProducts({ tenantId: selectedTenant.id })

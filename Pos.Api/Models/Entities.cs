@@ -437,3 +437,55 @@ public class PurchaseOrderItem
     public decimal TotalPKR { get; set; }
 }
 
+public enum StockRequestType
+{
+    ToOwner = 1,   // Single Restaurant: BM sends to Owner for approval
+    ToVendor = 2,  // Single Restaurant: BM contacts vendor directly
+    ToHQ = 3       // Multi-Branch: BM always sends to HQ
+}
+
+public enum StockRequestStatus
+{
+    Pending = 1,
+    Approved = 2,
+    Rejected = 3,
+    Ordered = 4,    // Vendor has been contacted / order placed
+    Fulfilled = 5   // Stock received
+}
+
+public class StockRequest
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string RequestNumber { get; set; } = string.Empty; // e.g. "SR-1001"
+    public StockRequestType RequestType { get; set; } = StockRequestType.ToOwner;
+    public StockRequestStatus Status { get; set; } = StockRequestStatus.Pending;
+    public string? VendorName { get; set; } // filled if ToVendor
+    public string? Notes { get; set; }
+    public decimal EstimatedCostPKR { get; set; }
+    public string CreatedBy { get; set; } = string.Empty; // BM name
+    public Guid? CreatedByUserId { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string? ReviewedBy { get; set; } // Owner/HQ name
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewNotes { get; set; }
+
+    public ICollection<StockRequestItem> Items { get; set; } = new List<StockRequestItem>();
+}
+
+public class StockRequestItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid StockRequestId { get; set; }
+    public StockRequest? StockRequest { get; set; }
+    public Guid IngredientId { get; set; }
+    public Ingredient? Ingredient { get; set; }
+    public string IngredientName { get; set; } = string.Empty;
+    public string Unit { get; set; } = "Piece";
+    public decimal QuantityRequested { get; set; }
+    public decimal CurrentStock { get; set; } // snapshot at request time
+    public decimal UnitCostPKR { get; set; }
+}
+

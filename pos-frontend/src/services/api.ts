@@ -270,6 +270,58 @@ export const posApi = {
     return res.data;
   },
 
+  // Terminal Device Management
+  getTerminals: async (branchId?: string) => {
+    const params = branchId ? `?branchId=${branchId}` : '';
+    const res = await api.get(`/api/terminals${params}`);
+    return res.data;
+  },
+  createTerminal: async (data: { branchId: string; terminalName: string; terminalType: number }) => {
+    const res = await api.post('/api/terminals', data);
+    return res.data;
+  },
+  updateTerminal: async (id: string, data: { terminalName?: string; isActive?: boolean }) => {
+    const res = await api.put(`/api/terminals/${id}`, data);
+    return res.data;
+  },
+  deleteTerminal: async (id: string) => {
+    const res = await api.delete(`/api/terminals/${id}`);
+    return res.data;
+  },
+  terminalHeartbeat: async (deviceToken: string) => {
+    const res = await api.post('/api/terminals/heartbeat', { deviceToken });
+    return res.data;
+  },
+
+  // Stock Requests (Branch Manager -> Owner/Vendor/HQ)
+  getStockRequests: async (branchId?: string, status?: string) => {
+    const params: any = {};
+    if (branchId) params.branchId = branchId;
+    if (status) params.status = status;
+    const res = await api.get('/api/stock-requests', { params });
+    return res.data;
+  },
+  createStockRequest: async (data: {
+    branchId: string;
+    requestType: string;
+    vendorName?: string;
+    notes?: string;
+    createdBy: string;
+    createdByUserId?: string;
+    items: { ingredientId: string; ingredientName: string; unit: string; quantityRequested: number; currentStock: number; unitCostPKR: number }[];
+  }) => {
+    const res = await api.post('/api/stock-requests', data);
+    return res.data;
+  },
+  reviewStockRequest: async (id: string, data: { status: string; reviewedBy: string; reviewNotes?: string }) => {
+    const res = await api.put(`/api/stock-requests/${id}/review`, data);
+    return res.data;
+  },
+  deleteStockRequest: async (id: string) => {
+    const res = await api.delete(`/api/stock-requests/${id}`);
+    return res.data;
+  },
+
   // Offline Batch Sync
   syncOfflineBatch: async (orders: any[]) => {
     const res = await api.post('/api/sync/offline-batch', orders);
