@@ -25,7 +25,9 @@ import {
   Receipt,
   CreditCard,
   TrendingUp,
-  Send
+  Send,
+  Banknote,
+  Wallet
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 

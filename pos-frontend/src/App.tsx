@@ -18,6 +18,7 @@ import { FloorManagement } from './pages/FloorManagement';
 import { InstallationWizard } from './pages/InstallationWizard';
 import { SettingsManagement } from './pages/SettingsManagement';
 import { StockRequests } from './pages/StockRequests';
+import { UserLoginModal } from './components/UserLoginModal';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -31,6 +32,11 @@ function MainLayoutInner() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
+  const [currentUser, setCurrentUser] = useState<any>(() => {
+    const saved = localStorage.getItem('cashly_pos_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -103,6 +109,8 @@ function MainLayoutInner() {
           onOpenCallOrder={() => setIsCallOrderOpen(true)}
           onToggleSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
           isSidebarOpen={isMobileSidebarOpen}
+          currentUser={currentUser}
+          onOpenLogin={() => setIsLoginModalOpen(true)}
         />
 
         <main className="flex-1 flex flex-col overflow-hidden">
@@ -130,6 +138,21 @@ function MainLayoutInner() {
       <CallOrderModal
         isOpen={isCallOrderOpen}
         onClose={() => setIsCallOrderOpen(false)}
+      />
+
+      <UserLoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLogin={(user) => {
+          setCurrentUser(user);
+          localStorage.setItem('cashly_pos_user', JSON.stringify(user));
+        }}
+        onLogout={() => {
+          setCurrentUser(null);
+          localStorage.removeItem('cashly_pos_user');
+          localStorage.removeItem('cashly_pos_token');
+        }}
+        currentUser={currentUser}
       />
     </div>
   );

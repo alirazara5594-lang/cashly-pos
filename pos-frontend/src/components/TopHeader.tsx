@@ -17,7 +17,8 @@ import {
   Laptop,
   Tablet,
   ChefHat,
-  Check
+  Check,
+  User
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -25,12 +26,16 @@ interface TopHeaderProps {
   onOpenCallOrder: () => void;
   onToggleSidebar?: () => void;
   isSidebarOpen?: boolean;
+  currentUser?: any;
+  onOpenLogin?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({ 
   onOpenCallOrder, 
   onToggleSidebar,
-  isSidebarOpen 
+  isSidebarOpen,
+  currentUser,
+  onOpenLogin
 }) => {
   const { 
     tenants, 
@@ -256,6 +261,16 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               </button>
             )
           )}
+
+          {/* User Login Button */}
+          <button
+            onClick={onOpenLogin}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition cursor-pointer"
+            title="Login / Switch User"
+          >
+            <User className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{currentUser?.fullName || currentUser?.username || 'Login'}</span>
+          </button>
 
           {/* Quick Call Order Intake */}
           <button

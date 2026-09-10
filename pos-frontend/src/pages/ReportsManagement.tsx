@@ -81,11 +81,18 @@ export const ReportsManagement: React.FC = () => {
     if (!selectedBranch?.id) return;
     setLoading(true);
     try {
-      if (activeTab === 'zreport') {
+      if (activeTab === 'zreport' || activeTab === 'cashTally') {
         const data = await posApi.getZReport(selectedBranch.id, selectedDate);
         setZReport(data);
         if (data) {
           setActualCashCounted(data.actualCashInDrawerPKR || data.expectedCashInDrawerPKR);
+        }
+        // Auto-open Cash Tally modal when cashTally tab is selected
+        if (activeTab === 'cashTally' && data?.shiftId) {
+          setTimeout(() => {
+            setIsCashTallyOpen(true);
+            loadCashTally(data.shiftId!);
+          }, 300);
         }
       } else if (activeTab === 'tax') {
         const data = await posApi.getTaxAuditReport(selectedBranch.id, selectedDaysRange);
@@ -299,6 +306,18 @@ export const ReportsManagement: React.FC = () => {
             >
               <CreditCard className="w-3.5 h-3.5" />
               <span>Card Sales Report</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('cashTally')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+                activeTab === 'cashTally'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Wallet className="w-3.5 h-3.5" />
+              <span>Cash Tally & Closing</span>
             </button>
 
             {isMultiBranchChain && (
