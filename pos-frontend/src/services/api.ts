@@ -25,7 +25,9 @@ import type {
   PaymentMethodsReport,
   ConsolidatedFinancialReport,
   SetupInitPayload,
-  SetupStatusResponse
+  SetupStatusResponse,
+  BranchPairingInfo,
+  BranchPairResponse
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -493,6 +495,17 @@ export const posApi = {
   syncBatchOrders: async (orders: any[]) => {
     const res = await api.post<{ count: number; orders: any[] }>('/api/sync/batch-orders', orders);
     return res.data;
+  },
+
+  // HQ Branch Pairing & Provisioning
+  getPairingInfo: async () => {
+    const res = await api.get<BranchPairingInfo[]>('/api/setup/pairing-info');
+    return res.data;
+  },
+  pairBranchWithToken: async (pairingToken: string) => {
+    const res = await api.post<BranchPairResponse>('/api/setup/pair-branch', { pairingToken });
+    return res.data;
   }
 };
+
 

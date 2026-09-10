@@ -710,6 +710,67 @@ api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> o
     return Results.Ok(new { count = syncedResults.Count, orders = syncedResults });
 });
 
+// --- Branch Provisioning & Pairing Hub ---
+api.MapGet("/setup/pairing-info", async (AppDbContext db) =>
+{
+    var branches = await db.Branches
+        .Include(b => b.Tenant)
+        .Where(b => !b.IsHeadOffice)
+        .Select(b => new
+        {
+            branchId = b.Id,
+            branchName = b.Name,
+            branchCode = b.Code,
+            city = b.City,
+            tenantId = b.TenantId,
+            tenantName = b.Tenant != null ? b.Tenant.Name : "Cashly Restaurant",
+            pairingToken = $"{b.Code.Replace(" ", "").ToUpper()}-{b.Id.ToString().Substring(0, 4).ToUpper()}",
+            allowedCounters = b.AllowedCounters,
+            allowedOrderTabs = b.AllowedOrderTabs
+        })
+        .ToListAsync();
+
+    return Results.Ok(branches);
+});
+
+api.MapPost("/setup/pair-branch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] PairBranchDto dto) =>
+{
+    var cleanToken = (dto.PairingToken ?? string.Empty).Trim().ToUpper();
+    var allBranches = await db.Branches.Include(b => b.Tenant).ToListAsync();
+    var branch = allBranches.FirstOrDefault(b => 
+        $"{b.Code.Replace(" ", "").ToUpper()}-{b.Id.ToString().Substring(0, 4).ToUpper()}" == cleanToken ||
+        b.Code.ToUpper() == cleanToken ||
+        b.Id.ToString().ToUpper().StartsWith(cleanToken)
+    );
+
+    if (branch == null)
+    {
+        return Results.NotFound(new { message = "Invalid Branch Pairing Token. Please verify the code generated at Head Office." });
+    }
+
+    var categories = await db.Categories.Where(c => c.TenantId == branch.TenantId).OrderBy(c => c.SortOrder).ToListAsync();
+    var products = await db.Products.Include(p => p.Modifiers).Where(p => p.TenantId == branch.TenantId && p.IsActive).ToListAsync();
+    var tables = await db.DiningTables.Where(t => t.BranchId == branch.Id).ToListAsync();
+
+    return Results.Ok(new
+    {
+        success = true,
+        tenantId = branch.TenantId,
+        tenantName = branch.Tenant?.Name ?? "Restaurant Chain",
+        branchId = branch.Id,
+        branchName = branch.Name,
+        branchCode = branch.Code,
+        city = branch.City,
+        isHeadOffice = branch.IsHeadOffice,
+        categoriesCount = categories.Count,
+        productsCount = products.Count,
+        tablesCount = tables.Count,
+        categories,
+        products,
+        diningTables = tables
+    });
+});
+
 // --- Tenancy & Hierarchy ---
 api.MapGet("/tenants", async (AppDbContext db) =>
 {
@@ -1821,4 +1882,6 @@ public record SetupInitDto(
     List<BranchInitDto>? Branches
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
+public record PairBranchDto(string PairingToken);
+
 

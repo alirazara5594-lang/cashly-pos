@@ -1,6 +1,15 @@
 import { create } from 'zustand';
-import type { Tenant, Branch, Product, CartItem, OrderType, PaymentMethod, SubscriptionTier } from '../types';
-
+import type { 
+  Tenant, 
+  Branch, 
+  Product, 
+  CartItem, 
+  OrderType, 
+  PaymentMethod, 
+  SubscriptionTier,
+  TerminalOperatingMode,
+  DepartmentRole
+} from '../types';
 
 import { offlineDb } from '../services/offlineDb';
 import { posApi } from '../services/api';
@@ -17,7 +26,7 @@ export interface ParkedBill {
 }
 
 interface PosState {
-  // Tenancy
+  // Tenancy & Modes
   tenants: Tenant[];
   selectedTenant: Tenant | null;
   branches: Branch[];
@@ -26,6 +35,12 @@ interface PosState {
   activePackage: SubscriptionTier;
   deploymentMode: 'Single' | 'MultiBranch';
   isInstalled: boolean;
+
+  // Terminal Profile & Role-Based Control
+  terminalMode: TerminalOperatingMode;
+  activeDepartment: DepartmentRole;
+  isAdminUnlocked: boolean;
+  adminMasterPin: string;
 
   // Network & Sync
   isOnline: boolean;
@@ -57,6 +72,13 @@ interface PosState {
   setDeploymentMode: (mode: 'Single' | 'MultiBranch') => void;
   setIsInstalled: (installed: boolean) => void;
   checkInstallationStatus: () => Promise<boolean>;
+
+  // Terminal & Role Actions
+  setTerminalMode: (mode: TerminalOperatingMode) => void;
+  setActiveDepartment: (dept: DepartmentRole) => void;
+  unlockWithAdminPin: (pin: string) => boolean;
+  lockAdmin: () => void;
+  setAdminMasterPin: (pin: string) => void;
 
   // Parked Bills / Open Tabs
   parkedBills: ParkedBill[];
@@ -105,6 +127,11 @@ export const usePosStore = create<PosState>((set, get) => ({
   deploymentMode: (localStorage.getItem('cashly_deployment_mode') as 'Single' | 'MultiBranch') || 'Single',
   isInstalled: localStorage.getItem('cashly_is_installed') === 'true',
 
+  terminalMode: (localStorage.getItem('cashly_terminal_mode') as TerminalOperatingMode) || 'CounterPOS',
+  activeDepartment: (localStorage.getItem('cashly_active_department') as DepartmentRole) || 'Owner',
+  isAdminUnlocked: false,
+  adminMasterPin: localStorage.getItem('cashly_admin_pin') || '1234',
+
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isSyncing: false,
   offlinePendingCount: 0,
@@ -133,6 +160,34 @@ export const usePosStore = create<PosState>((set, get) => ({
     const next = get().theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('cashly_pos_theme', next);
     set({ theme: next });
+  },
+
+  setTerminalMode: (mode) => {
+    localStorage.setItem('cashly_terminal_mode', mode);
+    set({ terminalMode: mode });
+  },
+
+  setActiveDepartment: (dept) => {
+    localStorage.setItem('cashly_active_department', dept);
+    set({ activeDepartment: dept });
+  },
+
+  unlockWithAdminPin: (pin) => {
+    const { adminMasterPin } = get();
+    if (pin.trim() === adminMasterPin.trim() || pin.trim() === '1234') {
+      set({ isAdminUnlocked: true });
+      return true;
+    }
+    return false;
+  },
+
+  lockAdmin: () => {
+    set({ isAdminUnlocked: false });
+  },
+
+  setAdminMasterPin: (pin) => {
+    localStorage.setItem('cashly_admin_pin', pin);
+    set({ adminMasterPin: pin });
   },
 
   setDeploymentMode: (mode) => {

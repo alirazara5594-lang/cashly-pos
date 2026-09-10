@@ -466,4 +466,38 @@ export interface SetupStatusResponse {
   }>;
 }
 
+export type TerminalOperatingMode = 'CounterPOS' | 'OwnerAdmin' | 'WaiterTab' | 'KitchenKDS';
+
+export type DepartmentRole = 'Owner' | 'Accounts' | 'Procurement' | 'MenuOps' | 'Cashier' | 'Waiter' | 'Kitchen';
+
+export interface BranchPairingInfo {
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  city: string;
+  tenantId: string;
+  tenantName: string;
+  pairingToken: string;
+  allowedCounters: number;
+  allowedOrderTabs: number;
+}
+
+export interface BranchPairResponse {
+  success: boolean;
+  tenantId: string;
+  tenantName: string;
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  city: string;
+  isHeadOffice: boolean;
+  categoriesCount: number;
+  productsCount: number;
+  tablesCount: number;
+  categories: Category[];
+  products: Product[];
+  diningTables: DiningTable[];
+}
+
+
 
