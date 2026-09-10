@@ -23,7 +23,9 @@ import type {
   DiningTable,
   TaxAuditReport,
   PaymentMethodsReport,
-  ConsolidatedFinancialReport
+  ConsolidatedFinancialReport,
+  SetupInitPayload,
+  SetupStatusResponse
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -47,10 +49,11 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // NOTE: Do NOT redirect on 401 here — this causes an infinite reload loop
+    // because the POS app doesn't use a login screen and the API doesn't require auth tokens.
+    // If token auth is needed in future, add a login page first.
     if (error.response?.status === 401) {
-      localStorage.removeItem('cashly_pos_token');
-      localStorage.removeItem('cashly_pos_user');
-      window.location.href = '/';
+      console.warn('API 401 Unauthorized — token may be missing or expired. Not redirecting to avoid reload loop.');
     }
     return Promise.reject(error);
   }
@@ -467,5 +470,29 @@ export const posApi = {
   getDeliverySettlements: async (branchId: string) => {
     const res = await api.get<RiderSettlementRecord[]>('/api/delivery/settlements', { params: { branchId } });
     return res.data;
+  },
+
+  // First-Run Setup & Installation Wizard
+  getSetupStatus: async () => {
+    const res = await api.get<SetupStatusResponse>('/api/setup/status');
+    return res.data;
+  },
+  initializeSetup: async (data: SetupInitPayload) => {
+    const res = await api.post<{
+      success: boolean;
+      message: string;
+      tenantId: string;
+      tenantName: string;
+      deploymentMode: string;
+      branches: Array<{ id: string; name: string; code: string; city: string; isHeadOffice: boolean }>;
+    }>('/api/setup/initialize', data);
+    return res.data;
+  },
+
+  // Offline Batch Orders Sync
+  syncBatchOrders: async (orders: any[]) => {
+    const res = await api.post<{ count: number; orders: any[] }>('/api/sync/batch-orders', orders);
+    return res.data;
   }
 };
+

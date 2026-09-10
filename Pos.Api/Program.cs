@@ -417,9 +417,298 @@ app.MapPost("/api/auth/login", async (AppDbContext db, LoginDto dto) =>
 });
 
 // ============================================================
-// PROTECTED ENDPOINTS (require JWT)
+// CORE API ENDPOINTS
+// NOTE: Authorization removed — POS terminal operates without a login screen.
+// To re-enable JWT auth in future, add .RequireAuthorization() back and build a login page first.
 // ============================================================
-var api = app.MapGroup("/api").RequireAuthorization();
+var api = app.MapGroup("/api");
+
+// --- Setup & Installation Wizard ---
+api.MapGet("/setup/status", async (AppDbContext db) =>
+{
+    var tenantCount = await db.Tenants.CountAsync();
+    var tenants = await db.Tenants
+        .Include(t => t.Branches)
+        .Select(t => new
+        {
+            t.Id,
+            t.Name,
+            t.BusinessType,
+            t.Tier,
+            t.IsActive,
+            BranchCount = t.Branches.Count,
+            HasHeadOffice = t.Branches.Any(b => b.IsHeadOffice),
+            Branches = t.Branches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice, b.AllowedCounters, b.AllowedOrderTabs })
+        })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        isConfigured = tenantCount > 0,
+        tenantCount,
+        tenants
+    });
+});
+
+api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
+{
+    var tenant = new Tenant
+    {
+        Id = Guid.NewGuid(),
+        Name = string.IsNullOrWhiteSpace(dto.RestaurantName) ? "Cashly Restaurant" : dto.RestaurantName.Trim(),
+        BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
+        Tier = dto.DeploymentMode == "MultiBranch" ? SubscriptionTier.Professional : SubscriptionTier.Standard,
+        IsActive = true,
+        CreatedAt = DateTime.UtcNow
+    };
+    db.Tenants.Add(tenant);
+
+    var createdBranches = new List<Branch>();
+
+    if (dto.DeploymentMode == "MultiBranch")
+    {
+        // 1. Central Commissary / Head Office
+        var hqBranch = new Branch
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenant.Id,
+            Name = string.IsNullOrWhiteSpace(dto.HqName) ? $"{dto.RestaurantName} Head Office & Commissary" : dto.HqName.Trim(),
+            Code = "HQ-01",
+            Address = dto.Address ?? "Central Commissary / HQ",
+            City = dto.City ?? "Islamabad",
+            Phone = dto.Phone ?? "",
+            IsHeadOffice = true,
+            AllowedCounters = 10,
+            AllowedOrderTabs = 25
+        };
+        db.Branches.Add(hqBranch);
+        createdBranches.Add(hqBranch);
+
+        // 2. Outlet branches
+        if (dto.Branches != null && dto.Branches.Count > 0)
+        {
+            int idx = 1;
+            foreach (var bDto in dto.Branches)
+            {
+                var branch = new Branch
+                {
+                    Id = Guid.NewGuid(),
+                    TenantId = tenant.Id,
+                    Name = bDto.Name.Trim(),
+                    Code = !string.IsNullOrWhiteSpace(bDto.Code) ? bDto.Code.Trim().ToUpper() : $"BR-0{idx}",
+                    Address = bDto.Address ?? dto.Address ?? "",
+                    City = bDto.City ?? dto.City ?? "Islamabad",
+                    Phone = bDto.Phone ?? dto.Phone ?? "",
+                    IsHeadOffice = false,
+                    AllowedCounters = bDto.AllowedCounters > 0 ? bDto.AllowedCounters : 5,
+                    AllowedOrderTabs = bDto.AllowedOrderTabs > 0 ? bDto.AllowedOrderTabs : 15
+                };
+                db.Branches.Add(branch);
+                createdBranches.Add(branch);
+                idx++;
+            }
+        }
+        else
+        {
+            var outlet1 = new Branch
+            {
+                Id = Guid.NewGuid(),
+                TenantId = tenant.Id,
+                Name = $"{dto.RestaurantName} - Main Outlet",
+                Code = "BR-01",
+                Address = dto.Address ?? "Commercial Sector",
+                City = dto.City ?? "Islamabad",
+                Phone = dto.Phone ?? "",
+                IsHeadOffice = false,
+                AllowedCounters = 5,
+                AllowedOrderTabs = 15
+            };
+            db.Branches.Add(outlet1);
+            createdBranches.Add(outlet1);
+        }
+    }
+    else
+    {
+        // Single Restaurant Mode
+        var singleBranch = new Branch
+        {
+            Id = Guid.NewGuid(),
+            TenantId = tenant.Id,
+            Name = string.IsNullOrWhiteSpace(dto.MainBranchName) ? $"{dto.RestaurantName} - Main Dining" : dto.MainBranchName.Trim(),
+            Code = "MAIN-01",
+            Address = dto.Address ?? "Main Location",
+            City = dto.City ?? "Islamabad",
+            Phone = dto.Phone ?? "",
+            IsHeadOffice = false,
+            AllowedCounters = dto.AllowedCounters ?? 3,
+            AllowedOrderTabs = 10
+        };
+        db.Branches.Add(singleBranch);
+        createdBranches.Add(singleBranch);
+    }
+
+    // Create Admin User
+    var adminPin = string.IsNullOrWhiteSpace(dto.AdminPin) ? "1234" : dto.AdminPin.Trim();
+    var pinHash = BCrypt.Net.BCrypt.HashPassword(adminPin);
+    var adminUser = new AppUser
+    {
+        Id = Guid.NewGuid(),
+        TenantId = tenant.Id,
+        BranchId = null,
+        FullName = string.IsNullOrWhiteSpace(dto.AdminFullName) ? "Master Admin" : dto.AdminFullName.Trim(),
+        Username = string.IsNullOrWhiteSpace(dto.AdminUsername) ? "admin" : dto.AdminUsername.Trim().ToLower(),
+        PinCodeHash = pinHash,
+        Role = UserRole.OwnerAdmin,
+        IsActive = true,
+        CreatedAt = DateTime.UtcNow,
+        CanViewFinancialReports = true,
+        CanManageInventory = true,
+        CanManageMenuAndTax = true,
+        CanGiveDiscounts = true,
+        CanVoidOrders = true
+    };
+    db.Users.Add(adminUser);
+
+    if (dto.SeedStarterMenu)
+    {
+        var catBurgers = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Burgers & Sandwiches", Icon = "sandwich", SortOrder = 1 };
+        var catPizza = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Pizzas & Platters", Icon = "pizza", SortOrder = 2 };
+        var catBeverages = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Beverages & Drinks", Icon = "coffee", SortOrder = 3 };
+        var catSides = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Sides & Desserts", Icon = "cake", SortOrder = 4 };
+        db.Categories.AddRange(catBurgers, catPizza, catBeverages, catSides);
+
+        var p1 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBurgers.Id, SKU = "B-01", Barcode = "1000000001", Name = "Classic Smash Burger", UrduName = "کلاسک سمیش برگر", CostPricePKR = 380, SellingPricePKR = 750, Unit = "Piece", Station = KitchenStation.Grill, IsActive = true };
+        var p2 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBurgers.Id, SKU = "B-02", Barcode = "1000000002", Name = "Crispy Zinger Crunch", UrduName = "کرسپی زنگر برگر", CostPricePKR = 320, SellingPricePKR = 620, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true };
+        var p3 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catPizza.Id, SKU = "P-01", Barcode = "1000000003", Name = "Royal Chicken Tikka Pizza", UrduName = "چکن تکہ پیزا", CostPricePKR = 650, SellingPricePKR = 1350, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true };
+        var p4 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBeverages.Id, SKU = "D-01", Barcode = "1000000004", Name = "Fresh Mint Margarita", UrduName = "منٹ مارگریٹا", CostPricePKR = 90, SellingPricePKR = 290, Unit = "Glass", Station = KitchenStation.BeverageBar, IsActive = true };
+        var p5 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catSides.Id, SKU = "S-01", Barcode = "1000000005", Name = "Loaded Gourmet Fries", UrduName = "لوڈڈ فرائز", CostPricePKR = 160, SellingPricePKR = 390, Unit = "Portion", Station = KitchenStation.MainKitchen, IsActive = true };
+
+        p1.Modifiers.Add(new ProductModifier { Name = "Extra Cheese Slice", PricePKR = 90 });
+        p1.Modifiers.Add(new ProductModifier { Name = "Double Patty Upgrade", PricePKR = 250 });
+        p2.Modifiers.Add(new ProductModifier { Name = "Spicy Chipotle Dip", PricePKR = 60 });
+
+        db.Products.AddRange(p1, p2, p3, p4, p5);
+
+        foreach (var branch in createdBranches.Where(b => !b.IsHeadOffice))
+        {
+            for (int i = 1; i <= 8; i++)
+            {
+                db.DiningTables.Add(new DiningTable
+                {
+                    BranchId = branch.Id,
+                    TableNumber = $"T-{i}",
+                    Section = i <= 4 ? "Main Dining" : "Family Terrace",
+                    Capacity = (i % 2 == 0) ? 6 : 4,
+                    IsOccupied = false
+                });
+            }
+        }
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        success = true,
+        message = $"Successfully configured {tenant.Name} in {dto.DeploymentMode} mode.",
+        tenantId = tenant.Id,
+        tenantName = tenant.Name,
+        deploymentMode = dto.DeploymentMode,
+        branches = createdBranches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice })
+    });
+});
+
+// --- Offline Batch Sync ---
+api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> ordersList) =>
+{
+    var syncedResults = new List<object>();
+
+    foreach (var dto in ordersList)
+    {
+        var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
+        if (branch == null) continue;
+
+        var orderNumber = await GenerateOrderNumberAsync(db);
+        var order = new Order
+        {
+            TenantId = branch.TenantId,
+            BranchId = branch.Id,
+            OrderNumber = orderNumber,
+            OrderType = dto.OrderType,
+            Status = dto.OrderType == OrderType.DineIn ? OrderStatus.InKitchen :
+                     (dto.OrderType == OrderType.Delivery || dto.OrderType == OrderType.CallOrder) ? OrderStatus.InKitchen :
+                     OrderStatus.ReadyForDispatch,
+            TableNumber = dto.TableNumber,
+            CustomerName = dto.CustomerName,
+            CustomerPhone = dto.CustomerPhone,
+            DeliveryAddress = dto.DeliveryAddress,
+            SubTotalPKR = dto.SubTotalPKR,
+            DiscountPKR = dto.DiscountPKR,
+            TaxPKR = dto.TaxPKR,
+            TotalPKR = dto.TotalPKR,
+            PaymentMethod = dto.PaymentMethod,
+            AmountPaidPKR = dto.AmountPaidPKR,
+            ChangeDuePKR = dto.ChangeDuePKR,
+            IsPaid = dto.IsPaid,
+            CashierName = dto.CashierName ?? "Counter 1 Cashier",
+            CreatedByRole = dto.CreatedByRole ?? "Cashier (Offline Sync)",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        foreach (var item in dto.Items)
+        {
+            order.Items.Add(new OrderItem
+            {
+                OrderId = order.Id,
+                ProductId = item.ProductId,
+                ProductName = item.ProductName,
+                Quantity = item.Quantity,
+                UnitPricePKR = item.UnitPricePKR,
+                TotalPricePKR = item.UnitPricePKR * item.Quantity,
+                ModifiersSummary = item.ModifiersSummary,
+                SpecialNotes = item.SpecialNotes,
+                Station = item.Station
+            });
+        }
+
+        var stationGroups = order.Items.GroupBy(i => i.Station);
+        int ticketIndex = 1;
+        foreach (var group in stationGroups)
+        {
+            order.KitchenTickets.Add(new KitchenTicket
+            {
+                OrderId = order.Id,
+                BranchId = branch.Id,
+                TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
+                Station = group.Key,
+                Status = "Cooking",
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        if (!string.IsNullOrEmpty(dto.TableNumber))
+        {
+            var table = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == branch.Id && t.TableNumber == dto.TableNumber);
+            if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
+        }
+
+        if (dto.IsPaid && dto.PaymentMethod == PaymentMethod.Cash)
+        {
+            var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
+            if (activeShift != null)
+            {
+                activeShift.CashSalesPKR += dto.TotalPKR;
+                activeShift.ExpectedCashPKR = activeShift.OpeningFloatPKR + activeShift.CashSalesPKR;
+            }
+        }
+
+        db.Orders.Add(order);
+        syncedResults.Add(new { orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced" });
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { count = syncedResults.Count, orders = syncedResults });
+});
 
 // --- Tenancy & Hierarchy ---
 api.MapGet("/tenants", async (AppDbContext db) =>
@@ -1515,3 +1804,21 @@ public record LoginDto(string Username, string PinCode);
 public record VoidOrderDto(string? Reason);
 public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
 public record CloseCashShiftDto(decimal ActualCashCounted, string? Notes);
+public record SetupInitDto(
+    string DeploymentMode,
+    string RestaurantName,
+    BusinessType? BusinessType,
+    string? City,
+    string? Address,
+    string? Phone,
+    string? MainBranchName,
+    string? HqName,
+    int? AllowedCounters,
+    string? AdminFullName,
+    string? AdminUsername,
+    string? AdminPin,
+    bool SeedStarterMenu,
+    List<BranchInitDto>? Branches
+);
+public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
+

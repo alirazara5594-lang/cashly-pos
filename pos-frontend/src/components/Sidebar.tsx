@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { 
   Store, 
@@ -43,16 +43,18 @@ interface SubMenuItem {
   icon?: React.ElementType;
 }
 
+interface NavItem {
+  id: string;
+  label: string;
+  path: string;
+  icon: React.ElementType;
+  badge?: string;
+  subItems?: SubMenuItem[];
+}
+
 interface NavSection {
   title: string;
-  items: {
-    id: string;
-    label: string;
-    path: string;
-    icon: React.ElementType;
-    badge?: string;
-    subItems?: SubMenuItem[];
-  }[];
+  items: NavItem[];
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -65,7 +67,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { selectedTenant, selectedBranch } = usePosStore();
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
-  // Single restaurant = owner has full access (no HQ concept)
   const hasFullAccess = isHeadOffice || !isMultiBranchChain;
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
@@ -80,12 +81,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setOpenMenus(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const navSections: NavSection[] = [
+  const navSections = useMemo<NavSection[]>(() => {
+    const sections: NavSection[] = [];
+
     // ═══════════════════════════════════════
-    // SECTION 1: POS & OPERATIONS (Branch only)
+    // SECTION 1: POS (Single restaurant + Branch, NOT HQ)
     // ═══════════════════════════════════════
-    ...(!hasFullAccess ? [
-      {
+    if (!isHeadOffice) {
+      sections.push({
         title: 'Operations & Dining',
         items: [
           {
@@ -101,17 +104,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ]
           }
         ]
-      }
-    ] : []),
+      });
+    }
 
     // ═══════════════════════════════════════
-    // SECTION 2: INVENTORY (Branch: view only, HQ: full)
+    // SECTION 2: INVENTORY
     // ═══════════════════════════════════════
-    {
-      title: 'Inventory & Logistics',
-      items: [
-        // Branch: View stock + request to HQ
-        ...(!hasFullAccess ? [
+    if (!hasFullAccess) {
+      // Branch: view only + request to HQ
+      sections.push({
+        title: 'Inventory & Logistics',
+        items: [
           {
             id: 'inventory',
             label: 'Stock Management',
@@ -123,8 +126,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
             ]
           }
-        ] : [
-          // HQ: Full inventory + supply chain + procurement
+        ]
+      });
+    } else {
+      // HQ: full inventory + supply chain
+      sections.push({
+        title: 'Inventory & Logistics',
+        items: [
           {
             id: 'inventory',
             label: 'Stock Management',
@@ -146,15 +154,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
             ]
           }
-        ])
-      ]
-    },
+        ]
+      });
+    }
 
     // ═══════════════════════════════════════
     // SECTION 3: REPORTS (HQ only)
     // ═══════════════════════════════════════
-    ...(hasFullAccess ? [
-      {
+    if (hasFullAccess) {
+      sections.push({
+        title: 'Reporting & Analytics',
+        items: [
+          {
             id: 'reports',
             label: 'Financial Reports',
             path: '/reports',
@@ -175,14 +186,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             icon: BarChart3
           }
         ]
-      : [])
-    },
+      });
+    }
 
     // ═══════════════════════════════════════
     // SECTION 4: ADMIN (HQ only)
     // ═══════════════════════════════════════
-    ...(hasFullAccess ? [
-      {
+    if (hasFullAccess) {
+      sections.push({
         title: 'Head Office Administration',
         items: [
           {
@@ -199,9 +210,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ]
           }
         ]
-      }
-    ] : [])
-  ];
+      });
+    }
+
+    return sections;
+  }, [hasFullAccess]);
 
   return (
     <>
@@ -348,7 +361,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {!isCollapsed && (
           <div className="p-3 border-t border-slate-800 bg-slate-950/40 text-[11px]">
             <div className="flex items-center gap-2 text-slate-400">
-              {isHeadOffice ? (
+              {hasFullAccess && isMultiBranchChain ? (
                 <Building2 className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
                 <Store className="w-3.5 h-3.5 text-emerald-400" />
@@ -358,7 +371,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              {isHeadOffice ? 'Head Office & Commissary' : `Branch • ${selectedBranch?.city || ''}`}
+              {hasFullAccess ? (isMultiBranchChain ? 'Head Office & Commissary' : 'Owner Access') : `Branch • ${selectedBranch?.city || ''}`}
             </div>
           </div>
         )}

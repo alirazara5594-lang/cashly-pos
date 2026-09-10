@@ -414,3 +414,56 @@ export interface ConsolidatedFinancialReport {
   branches: BranchFinancialSummary[];
 }
 
+export type DeploymentMode = 'Single' | 'MultiBranch';
+
+export interface BranchInitPayload {
+  name: string;
+  code?: string;
+  city?: string;
+  address?: string;
+  phone?: string;
+  allowedCounters?: number;
+  allowedOrderTabs?: number;
+}
+
+export interface SetupInitPayload {
+  deploymentMode: DeploymentMode;
+  restaurantName: string;
+  businessType?: BusinessType;
+  city?: string;
+  address?: string;
+  phone?: string;
+  mainBranchName?: string;
+  hqName?: string;
+  allowedCounters?: number;
+  adminFullName?: string;
+  adminUsername?: string;
+  adminPin?: string;
+  seedStarterMenu: boolean;
+  branches?: BranchInitPayload[];
+}
+
+export interface SetupStatusResponse {
+  isConfigured: boolean;
+  tenantCount: number;
+  tenants: Array<{
+    id: string;
+    name: string;
+    businessType: BusinessType;
+    tier: SubscriptionTier;
+    isActive: boolean;
+    branchCount: number;
+    hasHeadOffice: boolean;
+    branches: Array<{
+      id: string;
+      name: string;
+      code: string;
+      city: string;
+      isHeadOffice: boolean;
+      allowedCounters: number;
+      allowedOrderTabs: number;
+    }>;
+  }>;
+}
+
+

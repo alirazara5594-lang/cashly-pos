@@ -24,9 +24,12 @@ interface PosState {
   selectedBranch: Branch | null;
   activeCounterName: string;
   activePackage: SubscriptionTier;
+  deploymentMode: 'Single' | 'MultiBranch';
+  isInstalled: boolean;
 
   // Network & Sync
   isOnline: boolean;
+  isSyncing: boolean;
   offlinePendingCount: number;
 
   // Active Cart
@@ -51,6 +54,9 @@ interface PosState {
   setPaymentMethod: (method: PaymentMethod) => void;
   setTaxSettings: (settings: { cashRate?: number; cardRate?: number; mode?: 'Exclusive' | 'Inclusive' }) => void;
   setIsMenuEditLocked: (locked: boolean) => void;
+  setDeploymentMode: (mode: 'Single' | 'MultiBranch') => void;
+  setIsInstalled: (installed: boolean) => void;
+  checkInstallationStatus: () => Promise<boolean>;
 
   // Parked Bills / Open Tabs
   parkedBills: ParkedBill[];
@@ -62,6 +68,7 @@ interface PosState {
   setActivePackage: (tier: SubscriptionTier) => void;
   setIsOnline: (online: boolean) => void;
   setOfflinePendingCount: (count: number) => void;
+  refreshOfflineCount: () => Promise<number>;
   
   // Cart Actions
   addToCart: (product: Product, modifiers?: any[], notes?: string) => void;
@@ -95,8 +102,11 @@ export const usePosStore = create<PosState>((set, get) => ({
   selectedBranch: null,
   activeCounterName: 'Counter 1 - Fast Checkout',
   activePackage: 'Professional',
+  deploymentMode: (localStorage.getItem('cashly_deployment_mode') as 'Single' | 'MultiBranch') || 'Single',
+  isInstalled: localStorage.getItem('cashly_is_installed') === 'true',
 
-  isOnline: navigator.onLine,
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  isSyncing: false,
   offlinePendingCount: 0,
 
   cart: [],
@@ -125,6 +135,36 @@ export const usePosStore = create<PosState>((set, get) => ({
     set({ theme: next });
   },
 
+  setDeploymentMode: (mode) => {
+    localStorage.setItem('cashly_deployment_mode', mode);
+    set({ deploymentMode: mode });
+  },
+
+  setIsInstalled: (isInstalled) => {
+    localStorage.setItem('cashly_is_installed', isInstalled ? 'true' : 'false');
+    set({ isInstalled });
+  },
+
+  checkInstallationStatus: async () => {
+    try {
+      const status = await posApi.getSetupStatus();
+      const isInstalled = status.isConfigured;
+      localStorage.setItem('cashly_is_installed', isInstalled ? 'true' : 'false');
+      if (status.tenants && status.tenants.length > 0) {
+        const primary = status.tenants[0];
+        const mode = primary.hasHeadOffice || primary.branchCount > 1 ? 'MultiBranch' : 'Single';
+        localStorage.setItem('cashly_deployment_mode', mode);
+        set({ isInstalled, deploymentMode: mode });
+      } else {
+        set({ isInstalled });
+      }
+      return isInstalled;
+    } catch (err) {
+      console.warn('Backend setup status check failed, using local flag:', err);
+      return get().isInstalled;
+    }
+  },
+
   parkedBills: [],
 
   setPaymentMethod: (paymentMethod) => set({ paymentMethod }),
@@ -140,12 +180,20 @@ export const usePosStore = create<PosState>((set, get) => ({
     const selected = tenants.length > 0 ? tenants[0] : null;
     const branches = selected?.branches || [];
     const activeBranch = branches.find(b => !b.isHeadOffice) || branches[0] || null;
+    const hasMultipleOrHQ = branches.some(b => b.isHeadOffice) || branches.length > 1;
+    const mode = hasMultipleOrHQ ? 'MultiBranch' : 'Single';
+    
+    localStorage.setItem('cashly_is_installed', tenants.length > 0 ? 'true' : 'false');
+    localStorage.setItem('cashly_deployment_mode', mode);
+
     set({
       tenants,
       selectedTenant: selected,
       branches,
       selectedBranch: activeBranch,
-      activePackage: selected?.tier || 'Professional'
+      activePackage: selected?.tier || 'Professional',
+      isInstalled: tenants.length > 0,
+      deploymentMode: mode
     });
   },
 
@@ -271,13 +319,31 @@ export const usePosStore = create<PosState>((set, get) => ({
     set({ parkedBills: get().parkedBills.filter(b => b.id !== billId) });
   },
 
-  syncPendingOrders: async () => {
+  refreshOfflineCount: async () => {
     try {
-      const offlineOrders = await offlineDb.offlineOrders.where('isSynced').equals(0 as any).toArray();
-      if (offlineOrders.length === 0) return 0;
+      const unsynced = await offlineDb.offlineOrders.filter(o => !o.isSynced).toArray();
+      const count = unsynced.length;
+      set({ offlinePendingCount: count });
+      return count;
+    } catch {
+      return 0;
+    }
+  },
+
+  syncPendingOrders: async () => {
+    const { isSyncing } = get();
+    if (isSyncing) return 0;
+
+    set({ isSyncing: true });
+    try {
+      const offlineOrders = await offlineDb.offlineOrders.filter(o => !o.isSynced).toArray();
+      if (offlineOrders.length === 0) {
+        set({ offlinePendingCount: 0, isSyncing: false });
+        return 0;
+      }
 
       const payload = offlineOrders.map(o => o.orderData);
-      const res = await posApi.syncOfflineBatch(payload);
+      const res = await posApi.syncBatchOrders(payload);
 
       // Mark local orders as synced
       for (const order of offlineOrders) {
@@ -286,10 +352,11 @@ export const usePosStore = create<PosState>((set, get) => ({
         }
       }
 
-      set({ offlinePendingCount: 0 });
-      return res.syncedCount || offlineOrders.length;
+      set({ offlinePendingCount: 0, isSyncing: false });
+      return res.count || offlineOrders.length;
     } catch (err) {
       console.error('Failed to sync offline orders:', err);
+      set({ isSyncing: false });
       return 0;
     }
   },
