@@ -52,10 +52,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     lockAdmin
   } = usePosStore();
 
-  const [isSyncing, setIsSyncing] = useState(false);
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [pendingMode, setPendingMode] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   // Admin PIN Unlock Modal State
   const [showPinModal, setShowPinModal] = useState(false);
@@ -88,6 +88,12 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       setPinError(true);
       setEnteredPin('');
     }
+  };
+
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    await syncPendingOrders();
+    setIsSyncing(false);
   };
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
@@ -209,10 +215,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 ].map(({ mode, icon: Icon, label, desc, color }) => (
                   <button
                     key={mode}
-                    onClick={() => {
-                      setTerminalMode(mode);
-                      setShowModeDropdown(false);
-                    }}
+                    onClick={() => handleModeSwitch(mode)}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition cursor-pointer ${
                       terminalMode === mode
                         ? `bg-${color}-500/20 border border-${color}-500/30 text-${color}-300`
@@ -325,9 +328,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         </div>
       </header>
 
-      {/* Admin PIN Unlock Modal */}
+      {/* Admin PIN Modal (for mode switch or admin unlock) */}
       {showPinModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
@@ -335,17 +338,24 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                   <Key className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Owner Master PIN</h3>
-                  <p className="text-[11px] text-slate-400">Unlock owner screens on this counter</p>
+                  <h3 className="text-sm font-bold text-white">
+                    {pendingMode === 'OwnerAdmin' ? 'Switch to Owner Mode' : 'Owner Master PIN'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {pendingMode === 'OwnerAdmin'
+                      ? 'Enter admin PIN to access full back office'
+                      : 'Unlock owner screens on this counter'}
+                  </p>
                 </div>
               </div>
               <button
                 onClick={() => {
                   setShowPinModal(false);
+                  setPendingMode(null);
                   setEnteredPin('');
                   setPinError(false);
                 }}
-                className="p-1 rounded-lg text-slate-400 hover:text-white"
+                className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>

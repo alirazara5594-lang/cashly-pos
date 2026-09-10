@@ -91,18 +91,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navSections = useMemo<NavSection[]>(() => {
     const sections: NavSection[] = [];
 
-    // ═══════════════════════════════════════
-    // SECTION 1: OPERATIONS & DINING (POS, KDS, TAB, DELIVERY)
-    // ═══════════════════════════════════════
-    // Available for Cashier, Owner, Waiter, Kitchen, or non-HQ
-    const canShowPOS = (activeDepartment === 'Cashier' || activeDepartment === 'Owner' || activeDepartment === 'Waiter' || activeDepartment === 'Kitchen' || !isHeadOffice);
+    // ═══════════════════════════════════════════════════════════════════
+    // terminalMode is the PRIMARY gate for module visibility.
+    // CounterPOS = cashier tasks only
+    // OwnerAdmin = full access to everything
+    // WaiterTab = waiter tasks only
+    // KitchenKDS = kitchen tasks only
+    // ═══════════════════════════════════════════════════════════════════
 
-    if (canShowPOS) {
-      const posSubItems: SubMenuItem[] = [];
-      if (terminalMode !== 'KitchenKDS') {
-        posSubItems.push({ label: 'POS Terminal (Register)', path: '/', icon: Store });
-      }
-      if (terminalMode !== 'CounterPOS' || isOwnerOrUnlocked) {
+    // ── SECTION 1: POS & OPERATIONS ──
+    if (terminalMode === 'CounterPOS' || terminalMode === 'OwnerAdmin') {
+      const posSubItems: SubMenuItem[] = [
+        { label: 'POS Terminal (Register)', path: '/', icon: Store }
+      ];
+      if (terminalMode === 'OwnerAdmin') {
         posSubItems.push({ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat });
         posSubItems.push({ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet });
       }
@@ -110,43 +112,65 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       sections.push({
         title: 'Operations & Dining',
-        items: [
-          {
-            id: 'pos',
-            label: 'POS & Orders',
-            path: '/',
-            icon: Store,
-            subItems: posSubItems
-          }
-        ]
+        items: [{
+          id: 'pos',
+          label: 'POS & Orders',
+          path: '/',
+          icon: Store,
+          subItems: posSubItems
+        }]
       });
     }
 
-    // ═══════════════════════════════════════
-    // SECTION 2: INVENTORY & LOGISTICS
-    // ═══════════════════════════════════════
-    const canShowInventory = activeDepartment === 'Procurement' || activeDepartment === 'Owner' || !isHeadOffice;
-    if (canShowInventory) {
+    if (terminalMode === 'WaiterTab') {
+      sections.push({
+        title: 'Waiter Operations',
+        items: [{
+          id: 'pos',
+          label: 'Dining & Orders',
+          path: '/order-tab',
+          icon: Tablet,
+          subItems: [
+            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
+            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+          ]
+        }]
+      });
+    }
+
+    if (terminalMode === 'KitchenKDS') {
+      sections.push({
+        title: 'Kitchen Operations',
+        items: [{
+          id: 'pos',
+          label: 'Kitchen Display',
+          path: '/kitchen',
+          icon: ChefHat,
+          subItems: [
+            { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat }
+          ]
+        }]
+      });
+    }
+
+    // ── SECTION 2: INVENTORY (OwnerAdmin only, or branch view-only) ──
+    if (terminalMode === 'OwnerAdmin') {
       if (!isHeadOffice) {
-        // Branch: view only + request to HQ
         sections.push({
           title: 'Inventory & Stock',
-          items: [
-            {
-              id: 'inventory',
-              label: 'Stock Management',
-              path: '/inventory',
-              icon: Boxes,
-              subItems: [
-                { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
-                { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
-                { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
-              ]
-            }
-          ]
+          items: [{
+            id: 'inventory',
+            label: 'Stock Management',
+            path: '/inventory',
+            icon: Boxes,
+            subItems: [
+              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
+              { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
+            ]
+          }]
         });
       } else {
-        // HQ Commissary: full inventory + supply chain
         const invItems: NavItem[] = [
           {
             id: 'inventory',
@@ -157,11 +181,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Raw Ingredients & BOM', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
               { label: 'Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
             ]
-          }
-        ];
-
-        if (activeDepartment === 'Procurement' || activeDepartment === 'Owner') {
-          invItems.push({
+          },
+          {
             id: 'supplyChain',
             label: 'Supply Chain',
             path: '/transfers',
@@ -171,9 +192,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
               { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
             ]
-          });
-        }
-
+          }
+        ];
         sections.push({
           title: 'Commissary & Logistics',
           items: invItems
@@ -181,11 +201,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       }
     }
 
-    // ═══════════════════════════════════════
-    // SECTION 3: REPORTS & ANALYTICS (Owner / Accounts / Unlocked Counter)
-    // ═══════════════════════════════════════
-    const canShowReports = (activeDepartment === 'Accounts' || activeDepartment === 'Owner' || isOwnerOrUnlocked);
-    if (canShowReports && terminalMode !== 'WaiterTab' && terminalMode !== 'KitchenKDS') {
+    // ── SECTION 3: REPORTS (OwnerAdmin only) ──
+    if (terminalMode === 'OwnerAdmin') {
       sections.push({
         title: 'Reporting & Analytics',
         items: [
@@ -213,11 +230,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
     }
 
-    // ═══════════════════════════════════════
-    // SECTION 4: ADMINISTRATION & SETTINGS
-    // ═══════════════════════════════════════
-    const canShowAdmin = (activeDepartment === 'MenuOps' || activeDepartment === 'Owner' || isOwnerOrUnlocked);
-    if (canShowAdmin && terminalMode !== 'WaiterTab' && terminalMode !== 'KitchenKDS') {
+    // ── SECTION 4: ADMIN & SETTINGS (OwnerAdmin only) ──
+    if (terminalMode === 'OwnerAdmin') {
       sections.push({
         title: 'System & Administration',
         items: [
@@ -245,7 +259,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, isOwnerOrUnlocked, terminalMode, activeDepartment]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode]);
 
   return (
     <>
