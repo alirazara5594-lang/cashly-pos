@@ -16,6 +16,7 @@ import { ReportsManagement } from './pages/ReportsManagement';
 import { UserManagement } from './pages/UserManagement';
 import { FloorManagement } from './pages/FloorManagement';
 import { InstallationWizard } from './pages/InstallationWizard';
+import { SettingsManagement } from './pages/SettingsManagement';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -111,6 +112,7 @@ function MainLayout() {
             <Route path="/menu" element={<MenuManagement />} />
             <Route path="/director" element={<DirectorDashboard />} />
             <Route path="/super-admin" element={<SuperAdmin />} />
+            <Route path="/settings" element={<SettingsManagement />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

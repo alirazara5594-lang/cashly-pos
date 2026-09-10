@@ -64,10 +64,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile
 }) => {
   const location = useLocation();
-  const { selectedTenant, selectedBranch } = usePosStore();
+  const { 
+    selectedTenant, 
+    selectedBranch, 
+    terminalMode, 
+    activeDepartment, 
+    isAdminUnlocked 
+  } = usePosStore();
+
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
-  const hasFullAccess = isHeadOffice || !isMultiBranchChain;
+  const isOwnerOrUnlocked = terminalMode === 'OwnerAdmin' || isAdminUnlocked || activeDepartment === 'Owner';
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
     pos: true,
@@ -85,9 +92,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const sections: NavSection[] = [];
 
     // ═══════════════════════════════════════
-    // SECTION 1: POS (Single restaurant + Branch, NOT HQ)
+    // SECTION 1: OPERATIONS & DINING (POS, KDS, TAB, DELIVERY)
     // ═══════════════════════════════════════
-    if (!isHeadOffice) {
+    // Available for Cashier, Owner, Waiter, Kitchen, or non-HQ
+    const canShowPOS = (activeDepartment === 'Cashier' || activeDepartment === 'Owner' || activeDepartment === 'Waiter' || activeDepartment === 'Kitchen' || !isHeadOffice);
+
+    if (canShowPOS) {
+      const posSubItems: SubMenuItem[] = [];
+      if (terminalMode !== 'KitchenKDS') {
+        posSubItems.push({ label: 'POS Terminal (Register)', path: '/', icon: Store });
+      }
+      if (terminalMode !== 'CounterPOS' || isOwnerOrUnlocked) {
+        posSubItems.push({ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat });
+        posSubItems.push({ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet });
+      }
+      posSubItems.push({ label: 'Delivery & COD Board', path: '/delivery', icon: Bike });
+
       sections.push({
         title: 'Operations & Dining',
         items: [
@@ -96,43 +116,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
             label: 'POS & Orders',
             path: '/',
             icon: Store,
-            subItems: [
-              { label: 'POS Terminal (Register)', path: '/', icon: Store },
-              { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat },
-              { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
-              { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
-            ]
+            subItems: posSubItems
           }
         ]
       });
     }
 
     // ═══════════════════════════════════════
-    // SECTION 2: INVENTORY
+    // SECTION 2: INVENTORY & LOGISTICS
     // ═══════════════════════════════════════
-    if (!hasFullAccess) {
-      // Branch: view only + request to HQ
-      sections.push({
-        title: 'Inventory & Logistics',
-        items: [
-          {
-            id: 'inventory',
-            label: 'Stock Management',
-            path: '/inventory',
-            icon: Boxes,
-            subItems: [
-              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
-              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
-              { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
-            ]
-          }
-        ]
-      });
-    } else {
-      // HQ: full inventory + supply chain
-      sections.push({
-        title: 'Inventory & Logistics',
-        items: [
+    const canShowInventory = activeDepartment === 'Procurement' || activeDepartment === 'Owner' || !isHeadOffice;
+    if (canShowInventory) {
+      if (!isHeadOffice) {
+        // Branch: view only + request to HQ
+        sections.push({
+          title: 'Inventory & Stock',
+          items: [
+            {
+              id: 'inventory',
+              label: 'Stock Management',
+              path: '/inventory',
+              icon: Boxes,
+              subItems: [
+                { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+                { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
+                { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
+              ]
+            }
+          ]
+        });
+      } else {
+        // HQ Commissary: full inventory + supply chain
+        const invItems: NavItem[] = [
           {
             id: 'inventory',
             label: 'Stock Management',
@@ -142,8 +157,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Raw Ingredients & BOM', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
               { label: 'Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
             ]
-          },
-          {
+          }
+        ];
+
+        if (activeDepartment === 'Procurement' || activeDepartment === 'Owner') {
+          invItems.push({
             id: 'supplyChain',
             label: 'Supply Chain',
             path: '/transfers',
@@ -153,15 +171,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
               { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
             ]
-          }
-        ]
-      });
+          });
+        }
+
+        sections.push({
+          title: 'Commissary & Logistics',
+          items: invItems
+        });
+      }
     }
 
     // ═══════════════════════════════════════
-    // SECTION 3: REPORTS (HQ only)
+    // SECTION 3: REPORTS & ANALYTICS (Owner / Accounts / Unlocked Counter)
     // ═══════════════════════════════════════
-    if (hasFullAccess) {
+    const canShowReports = (activeDepartment === 'Accounts' || activeDepartment === 'Owner' || isOwnerOrUnlocked);
+    if (canShowReports && terminalMode !== 'WaiterTab' && terminalMode !== 'KitchenKDS') {
       sections.push({
         title: 'Reporting & Analytics',
         items: [
@@ -176,7 +200,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
               { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
               { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: CreditCard },
-              { label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }
+              ...(isMultiBranchChain ? [{ label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }] : [])
             ]
           },
           {
@@ -190,15 +214,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     // ═══════════════════════════════════════
-    // SECTION 4: ADMIN (HQ only)
+    // SECTION 4: ADMINISTRATION & SETTINGS
     // ═══════════════════════════════════════
-    if (hasFullAccess) {
+    const canShowAdmin = (activeDepartment === 'MenuOps' || activeDepartment === 'Owner' || isOwnerOrUnlocked);
+    if (canShowAdmin && terminalMode !== 'WaiterTab' && terminalMode !== 'KitchenKDS') {
       sections.push({
-        title: 'Head Office Administration',
+        title: 'System & Administration',
         items: [
           {
             id: 'management',
-            label: 'Menu & Settings',
+            label: 'Menu & Setup',
             path: '/menu',
             icon: BookOpen,
             subItems: [
@@ -208,13 +233,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Staff & Pin Access', path: '/users', icon: Users },
               { label: 'Super Admin Quotas', path: '/super-admin', icon: ShieldCheck }
             ]
+          },
+          {
+            id: 'settings',
+            label: 'System Settings & HQ Hub',
+            path: '/settings',
+            icon: Building2
           }
         ]
       });
     }
 
     return sections;
-  }, [hasFullAccess]);
+  }, [isHeadOffice, isMultiBranchChain, isOwnerOrUnlocked, terminalMode, activeDepartment]);
 
   return (
     <>
@@ -244,7 +275,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   Cashly <span className="text-emerald-400 font-semibold text-xs px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60">POS</span>
                 </span>
                 <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">
-                  {hasFullAccess ? (isMultiBranchChain ? 'Head Office' : 'Owner') : 'Branch'}
+                  {isOwnerOrUnlocked ? (isMultiBranchChain ? 'Head Office' : 'Owner') : 'Branch'}
                 </span>
               </div>
             )}
@@ -361,7 +392,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {!isCollapsed && (
           <div className="p-3 border-t border-slate-800 bg-slate-950/40 text-[11px]">
             <div className="flex items-center gap-2 text-slate-400">
-              {hasFullAccess && isMultiBranchChain ? (
+              {isOwnerOrUnlocked && isMultiBranchChain ? (
                 <Building2 className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
                 <Store className="w-3.5 h-3.5 text-emerald-400" />
@@ -371,7 +402,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              {hasFullAccess ? (isMultiBranchChain ? 'Head Office & Commissary' : 'Owner Access') : `Branch • ${selectedBranch?.city || ''}`}
+              {isOwnerOrUnlocked ? (isMultiBranchChain ? 'Head Office & Commissary' : 'Owner Access') : `Branch • ${selectedBranch?.city || ''}`}
             </div>
           </div>
         )}

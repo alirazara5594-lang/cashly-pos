@@ -17,9 +17,11 @@ import {
   Phone,
   Lock,
   User,
-  DollarSign
+  DollarSign,
+  Key
 } from 'lucide-react';
 import { posApi } from '../services/api';
+import { offlineDb } from '../services/offlineDb';
 import { usePosStore } from '../store/posStore';
 import type { BusinessType, DeploymentMode, BranchInitPayload } from '../types';
 
@@ -61,6 +63,11 @@ export const InstallationWizard: React.FC = () => {
   const [apiUrl, setApiUrl] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288');
   const [seedStarterMenu, setSeedStarterMenu] = useState(true);
 
+  // Quick Branch Pairing State
+  const [showTokenPairing, setShowTokenPairing] = useState(false);
+  const [pairingInputToken, setPairingInputToken] = useState('');
+  const [isPairing, setIsPairing] = useState(false);
+
   // Multi-branch row manipulation
   const addBranchRow = () => {
     const idx = branches.length + 1;
@@ -79,6 +86,42 @@ export const InstallationWizard: React.FC = () => {
     const next = [...branches];
     next[index] = { ...next[index], [field]: val };
     setBranches(next);
+  };
+
+  const handlePairWithToken = async () => {
+    if (!pairingInputToken.trim()) return;
+    setIsPairing(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await posApi.pairBranchWithToken(pairingInputToken.trim());
+      if (res && res.success) {
+        setDeploymentMode('MultiBranch');
+        setIsInstalled(true);
+        localStorage.setItem('cashly_is_installed', 'true');
+        localStorage.setItem('cashly_deployment_mode', 'MultiBranch');
+        localStorage.setItem('cashly_terminal_mode', 'CounterPOS');
+        localStorage.setItem('cashly_api_url', apiUrl);
+
+        // Cache products and categories in local IndexedDB
+        if (res.categories) {
+          await offlineDb.categories.bulkPut(res.categories);
+        }
+        if (res.products) {
+          await offlineDb.products.bulkPut(res.products);
+        }
+
+        const tenants = await posApi.getTenants();
+        setTenants(tenants);
+
+        navigate('/');
+      }
+    } catch (err: any) {
+      console.error('Branch pairing failed:', err);
+      setErrorMessage(err?.response?.data?.message || 'Failed to pair branch. Verify the pairing token and ensure HQ server is reachable.');
+    } finally {
+      setIsPairing(false);
+    }
   };
 
   const handleCompleteSetup = async () => {
@@ -288,6 +331,78 @@ export const InstallationWizard: React.FC = () => {
                   Enterprise-grade • Full commissary supply chain
                 </div>
               </div>
+            </div>
+
+            {/* Quick Pair Branch Option */}
+            <div className="pt-4 border-t border-slate-800/80">
+              <div className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Key className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-sm font-bold text-white">Installing on a Restaurant Branch Counter PC?</h3>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    If your Head Office has already generated a <strong>Branch Pairing Token</strong>, connect this PC to HQ instantly in 5 seconds.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowTokenPairing(!showTokenPairing)}
+                  className="px-4 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  {showTokenPairing ? 'Hide Token Input' : '⚡ Connect with Branch Token'}
+                </button>
+              </div>
+
+              {showTokenPairing && (
+                <div className="mt-3 p-4 rounded-2xl bg-slate-900 border border-indigo-500/40 space-y-4 animate-fadeIn">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                    <div className="md:col-span-4 space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">HQ Server API URL</label>
+                      <input 
+                        type="text"
+                        value={apiUrl}
+                        onChange={(e) => setApiUrl(e.target.value)}
+                        placeholder="http://localhost:5288"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-indigo-300 font-mono focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div className="md:col-span-5 space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Branch Pairing Token (From HQ Settings)</label>
+                      <input 
+                        type="text"
+                        value={pairingInputToken}
+                        onChange={(e) => setPairingInputToken(e.target.value)}
+                        placeholder="e.g. RG-DT-8912"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-emerald-400 font-mono font-bold tracking-wider uppercase focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <button
+                        type="button"
+                        disabled={isPairing || !pairingInputToken.trim()}
+                        onClick={handlePairWithToken}
+                        className="w-full py-2 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 transition cursor-pointer"
+                      >
+                        {isPairing ? (
+                          <>
+                            <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                            Pairing...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5 fill-slate-950" /> Pair & Launch Branch POS
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
