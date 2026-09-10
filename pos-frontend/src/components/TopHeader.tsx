@@ -16,7 +16,8 @@ import {
   Monitor,
   Laptop,
   Tablet,
-  ChefHat
+  ChefHat,
+  Check
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -45,6 +46,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     theme,
     toggleTheme,
     terminalMode,
+    setTerminalMode,
     isAdminUnlocked,
     unlockWithAdminPin,
     lockAdmin
@@ -52,23 +54,34 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
+  const [showModeDropdown, setShowModeDropdown] = useState(false);
+  const [pendingMode, setPendingMode] = useState<string | null>(null);
   
   // Admin PIN Unlock Modal State
   const [showPinModal, setShowPinModal] = useState(false);
   const [enteredPin, setEnteredPin] = useState('');
   const [pinError, setPinError] = useState(false);
 
-  const handleManualSync = async () => {
-    setIsSyncing(true);
-    await syncPendingOrders();
-    setIsSyncing(false);
+  const handleModeSwitch = (mode: string) => {
+    if (mode === 'OwnerAdmin') {
+      setPendingMode(mode);
+      setShowModeDropdown(false);
+      setShowPinModal(true);
+      setEnteredPin('');
+      setPinError(false);
+    } else {
+      setTerminalMode(mode as any);
+      setShowModeDropdown(false);
+    }
   };
 
   const handlePinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const success = unlockWithAdminPin(enteredPin);
-    if (success) {
+    if (success && pendingMode) {
+      setTerminalMode(pendingMode as any);
       setShowPinModal(false);
+      setPendingMode(null);
       setEnteredPin('');
       setPinError(false);
     } else {
@@ -159,47 +172,86 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </div>
         </div>
 
-        {/* Right Action Icons: Terminal Mode Badge, Admin Unlock, Network, Sync, Theme, Currency */}
+        {/* Right Action Icons: Terminal Mode Switcher, Admin Unlock, Network, Sync, Theme, Currency */}
         <div className="flex items-center gap-2">
-          {/* Terminal Mode Badge & On-Counter Unlock */}
-          {terminalMode === 'CounterPOS' ? (
-            <div className="flex items-center gap-1">
-              <span className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/80 border border-slate-700 text-[11px] text-slate-300">
-                <Monitor className="w-3.5 h-3.5 text-emerald-400" /> Counter PC
+          {/* Terminal Mode Switcher */}
+          <div className="relative">
+            <button
+              onClick={() => setShowModeDropdown(!showModeDropdown)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
+                terminalMode === 'CounterPOS' ? 'bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700/80' :
+                terminalMode === 'OwnerAdmin' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20' :
+                terminalMode === 'WaiterTab' ? 'bg-blue-500/10 border-blue-500/30 text-blue-300 hover:bg-blue-500/20' :
+                'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20'
+              }`}
+              title="Switch terminal mode"
+            >
+              {terminalMode === 'CounterPOS' && <Monitor className="w-3.5 h-3.5" />}
+              {terminalMode === 'OwnerAdmin' && <Laptop className="w-3.5 h-3.5" />}
+              {terminalMode === 'WaiterTab' && <Tablet className="w-3.5 h-3.5" />}
+              {terminalMode === 'KitchenKDS' && <ChefHat className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">
+                {terminalMode === 'CounterPOS' ? 'Counter' :
+                 terminalMode === 'OwnerAdmin' ? 'Owner' :
+                 terminalMode === 'WaiterTab' ? 'Waiter' : 'Kitchen'}
               </span>
+              <ChevronDown className="w-3 h-3" />
+            </button>
 
-              {isAdminUnlocked ? (
-                <button
-                  onClick={lockAdmin}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition cursor-pointer"
-                  title="Click to lock back to cashier mode"
-                >
-                  <Unlock className="w-3 h-3 text-emerald-400" />
-                  <span className="hidden sm:inline">Admin Unlocked (Lock)</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => setShowPinModal(true)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold transition cursor-pointer"
-                  title="Owner Master PIN Unlock"
-                >
-                  <Lock className="w-3 h-3" />
-                  <span className="hidden sm:inline">Admin Unlock</span>
-                </button>
-              )}
-            </div>
-          ) : terminalMode === 'OwnerAdmin' ? (
-            <span className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-[11px] font-semibold text-indigo-300">
-              <Laptop className="w-3.5 h-3.5 text-indigo-400" /> Owner Laptop
-            </span>
-          ) : terminalMode === 'WaiterTab' ? (
-            <span className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-500/10 border border-blue-500/30 text-[11px] font-semibold text-blue-300">
-              <Tablet className="w-3.5 h-3.5 text-blue-400" /> Waiter Tab
-            </span>
-          ) : (
-            <span className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] font-semibold text-amber-300">
-              <ChefHat className="w-3.5 h-3.5 text-amber-400" /> Kitchen KDS
-            </span>
+            {showModeDropdown && (
+              <div className="absolute right-0 mt-2 w-56 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl p-2 z-50">
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Terminal Mode</div>
+                {[
+                  { mode: 'CounterPOS' as const, icon: Monitor, label: 'Cashier Counter', desc: 'POS checkout only', color: 'emerald' },
+                  { mode: 'OwnerAdmin' as const, icon: Laptop, label: 'Owner / Back Office', desc: 'Full access — reports, menu, staff', color: 'indigo' },
+                  { mode: 'WaiterTab' as const, icon: Tablet, label: 'Waiter Tablet', desc: 'Dining tables & orders', color: 'blue' },
+                  { mode: 'KitchenKDS' as const, icon: ChefHat, label: 'Kitchen Display', desc: 'Cooking tickets only', color: 'amber' }
+                ].map(({ mode, icon: Icon, label, desc, color }) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setTerminalMode(mode);
+                      setShowModeDropdown(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition cursor-pointer ${
+                      terminalMode === mode
+                        ? `bg-${color}-500/20 border border-${color}-500/30 text-${color}-300`
+                        : 'text-slate-300 hover:bg-slate-700/50'
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 shrink-0 ${terminalMode === mode ? `text-${color}-400` : 'text-slate-400'}`} />
+                    <div>
+                      <div className="text-xs font-semibold">{label}</div>
+                      <div className="text-[10px] text-slate-500">{desc}</div>
+                    </div>
+                    {terminalMode === mode && <Check className="w-3.5 h-3.5 ml-auto text-emerald-400" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Admin PIN Unlock (Counter POS mode) */}
+          {terminalMode === 'CounterPOS' && (
+            isAdminUnlocked ? (
+              <button
+                onClick={lockAdmin}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 text-xs font-semibold transition cursor-pointer"
+                title="Click to lock back to cashier mode"
+              >
+                <Unlock className="w-3 h-3 text-emerald-400" />
+                <span className="hidden sm:inline">Admin Unlocked</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowPinModal(true)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-semibold transition cursor-pointer"
+                title="Owner Master PIN Unlock"
+              >
+                <Lock className="w-3 h-3" />
+                <span className="hidden sm:inline">Admin Unlock</span>
+              </button>
+            )
           )}
 
           {/* Quick Call Order Intake */}
