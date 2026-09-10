@@ -18,7 +18,10 @@ import {
   Lock,
   User,
   DollarSign,
-  Key
+  Key,
+  Monitor,
+  Tablet,
+  Zap
 } from 'lucide-react';
 import { posApi } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
@@ -44,7 +47,52 @@ export const InstallationWizard: React.FC = () => {
 
   // Single Branch Settings
   const [mainBranchName, setMainBranchName] = useState('Main Dining Branch');
-  const [allowedCounters, setAllowedCounters] = useState<number>(3);
+  const [allowedCounters, setAllowedCounters] = useState<number>(2);
+  const [allowedOrderTabs, setAllowedOrderTabs] = useState<number>(10);
+  const [selectedPlan, setSelectedPlan] = useState<'Starter' | 'Standard' | 'Professional'>('Standard');
+
+  const PLANS: { key: 'Starter' | 'Standard' | 'Professional'; label: string; counters: number; tablets: number; badge?: string; color: string; ring: string; borderActive: string; bgActive: string; badgeColor: string }[] = [
+    {
+      key: 'Starter',
+      label: 'Starter',
+      counters: 1,
+      tablets: 3,
+      color: 'emerald',
+      ring: 'ring-emerald-500',
+      borderActive: 'border-emerald-500',
+      bgActive: 'bg-emerald-950/20',
+      badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+    },
+    {
+      key: 'Standard',
+      label: 'Standard',
+      counters: 2,
+      tablets: 10,
+      badge: 'Most Popular',
+      color: 'indigo',
+      ring: 'ring-indigo-500',
+      borderActive: 'border-indigo-500',
+      bgActive: 'bg-indigo-950/20',
+      badgeColor: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
+    },
+    {
+      key: 'Professional',
+      label: 'Professional',
+      counters: 5,
+      tablets: 25,
+      color: 'amber',
+      ring: 'ring-amber-500',
+      borderActive: 'border-amber-500',
+      bgActive: 'bg-amber-950/20',
+      badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+    },
+  ];
+
+  const handleSelectPlan = (plan: typeof PLANS[number]) => {
+    setSelectedPlan(plan.key);
+    setAllowedCounters(plan.counters);
+    setAllowedOrderTabs(plan.tablets);
+  };
 
   // Multi-Branch Settings
   const [hqName, setHqName] = useState('Head Office & Central Commissary');
@@ -139,6 +187,7 @@ export const InstallationWizard: React.FC = () => {
         mainBranchName,
         hqName,
         allowedCounters,
+        allowedOrderTabs: deploymentMode === 'Single' ? allowedOrderTabs : undefined,
         adminFullName,
         adminUsername,
         adminPin,
@@ -511,25 +560,79 @@ export const InstallationWizard: React.FC = () => {
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
                     <Store className="w-4 h-4 text-emerald-400" /> Single Outlet Configuration
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-300">Outlet Branch Name</label>
-                      <input 
-                        type="text" 
-                        value={mainBranchName}
-                        onChange={(e) => setMainBranchName(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
-                      />
+
+                  {/* Outlet name */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">Outlet Branch Name</label>
+                    <input
+                      type="text"
+                      value={mainBranchName}
+                      onChange={(e) => setMainBranchName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Plan selection cards */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-400" /> Select Terminal Plan
+                      <span className="text-slate-500 font-normal ml-1">— auto-sets your counter &amp; tablet users</span>
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {PLANS.map((plan) => {
+                        const isActive = selectedPlan === plan.key;
+                        const borderClass = isActive ? plan.borderActive : 'border-slate-800';
+                        const bgClass = isActive ? plan.bgActive : 'bg-slate-900/60 hover:bg-slate-900';
+                        const ringClass = isActive ? `ring-1 ${plan.ring}` : '';
+                        return (
+                          <div
+                            key={plan.key}
+                            onClick={() => handleSelectPlan(plan)}
+                            className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all duration-150 flex flex-col gap-3 ${borderClass} ${bgClass} ${ringClass}`}
+                          >
+                            {/* Top row: plan name + badge */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-bold text-white">{plan.label}</span>
+                              {plan.badge && (
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${plan.badgeColor}`}>
+                                  {plan.badge}
+                                </span>
+                              )}
+                              {isActive && (
+                                <CheckCircle2 className="w-4 h-4 text-white fill-current opacity-80 shrink-0" />
+                              )}
+                            </div>
+
+                            {/* Auto Counter */}
+                            <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-950/70 border border-slate-800">
+                              <Monitor className="w-4 h-4 text-slate-400 shrink-0" />
+                              <div>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Auto Counter</p>
+                                <p className="text-lg font-extrabold text-white leading-tight">{plan.counters}</p>
+                              </div>
+                            </div>
+
+                            {/* Tablet Users */}
+                            <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-950/70 border border-slate-800">
+                              <Tablet className="w-4 h-4 text-slate-400 shrink-0" />
+                              <div>
+                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Tablet Users</p>
+                                <p className="text-lg font-extrabold text-white leading-tight">{plan.tablets}</p>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-300">Allowed Counter Terminals</label>
-                      <input 
-                        type="number" 
-                        value={allowedCounters}
-                        onChange={(e) => setAllowedCounters(parseInt(e.target.value) || 1)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
-                      />
+                    {/* Live summary of selected plan */}
+                    <div className="flex items-center gap-4 px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-400">
+                      <Monitor className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span><span className="text-white font-semibold">{allowedCounters}</span> Auto Counter{allowedCounters !== 1 ? 's' : ''}</span>
+                      <span className="text-slate-700">·</span>
+                      <Tablet className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span><span className="text-white font-semibold">{allowedOrderTabs}</span> Tablet User{allowedOrderTabs !== 1 ? 's' : ''}</span>
+                      <span className="ml-auto text-slate-600">Plan: <span className="text-white font-semibold">{selectedPlan}</span></span>
                     </div>
                   </div>
                 </div>

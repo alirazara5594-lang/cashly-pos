@@ -270,6 +270,7 @@ using (var scope = app.Services.CreateScope())
         }
 
         await DbSeeder.SeedAsync(db);
+        await DbSeeder.EnsureDemoUsersAsync(db);
     }
     catch (Exception ex)
     {

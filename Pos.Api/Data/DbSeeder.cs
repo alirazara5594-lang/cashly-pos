@@ -474,6 +474,363 @@ public static class DbSeeder
             }
         );
 
+        // 12. Seed Demo AppUsers
+        var users = new List<AppUser>
+        {
+            // === HQ Multi-Branch Accounts (Royal Grill & Kitchen) ===
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = chainRestaurant.Id,
+                BranchId = null, // All Branches / Group wide
+                FullName = "Tariq Malik (HQ Director)",
+                Username = "hq_admin",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"),
+                Role = UserRole.OwnerAdmin,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = true,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = chainRestaurant.Id,
+                BranchId = chainHO.Id,
+                FullName = "Zahid Ahmed (HQ Accounts & Finance)",
+                Username = "hq_finance",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("2222"),
+                Role = UserRole.OwnerAdmin,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = chainRestaurant.Id,
+                BranchId = chainHO.Id,
+                FullName = "Farhan Saeed (HQ Purchase & Supply)",
+                Username = "hq_procurement",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("3333"),
+                Role = UserRole.BranchManager,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = false,
+                CanManageInventory = true,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = chainRestaurant.Id,
+                BranchId = chainDowntown.Id,
+                FullName = "Imran Khan (Downtown Branch Manager)",
+                Username = "mgr_downtown",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("4444"),
+                Role = UserRole.BranchManager,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = chainRestaurant.Id,
+                BranchId = chainDowntown.Id,
+                FullName = "Hamza POS (Downtown Cashier)",
+                Username = "cashier_downtown",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("5555"),
+                Role = UserRole.Cashier,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+
+            // === Single Restaurant Accounts (Spice Bistro) ===
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleRestaurant.Id,
+                BranchId = singleBranch.Id,
+                FullName = "Rashid Mahmood (Restaurant Owner)",
+                Username = "single_owner",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"),
+                Role = UserRole.OwnerAdmin,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = true,
+                CanManageInventory = true,
+                CanManageMenuAndTax = true,
+                CanGiveDiscounts = true,
+                CanVoidOrders = true
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleRestaurant.Id,
+                BranchId = singleBranch.Id,
+                FullName = "Ali Raza (Counter Cashier)",
+                Username = "single_cashier",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1111"),
+                Role = UserRole.Cashier,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleRestaurant.Id,
+                BranchId = singleBranch.Id,
+                FullName = "Waqas Waiter (Order Tab)",
+                Username = "single_waiter",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("7777"),
+                Role = UserRole.Waiter,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            },
+            new AppUser
+            {
+                Id = Guid.NewGuid(),
+                TenantId = singleRestaurant.Id,
+                BranchId = singleBranch.Id,
+                FullName = "Chef Umer (Kitchen Station)",
+                Username = "single_chef",
+                PinCodeHash = BCrypt.Net.BCrypt.HashPassword("8888"),
+                Role = UserRole.KitchenChef,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                CanViewFinancialReports = false,
+                CanManageInventory = false,
+                CanManageMenuAndTax = false,
+                CanGiveDiscounts = false,
+                CanVoidOrders = false
+            }
+        };
+
+        db.Users.AddRange(users);
+
+        await db.SaveChangesAsync();
+    }
+
+    public static async Task EnsureDemoUsersAsync(AppDbContext db)
+    {
+        var chainTenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        var singleTenant = await db.Tenants.FirstOrDefaultAsync(t => t.Id == Guid.Parse("22222222-2222-2222-2222-222222222222"));
+
+        if (chainTenant != null)
+        {
+            var hqAdmin = await db.Users.FirstOrDefaultAsync(u => u.Username == "hq_admin");
+            if (hqAdmin == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = chainTenant.Id,
+                    FullName = "Tariq Malik (HQ Director)",
+                    Username = "hq_admin",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"),
+                    Role = UserRole.OwnerAdmin,
+                    IsActive = true,
+                    CanViewFinancialReports = true,
+                    CanManageInventory = true,
+                    CanManageMenuAndTax = true,
+                    CanGiveDiscounts = true,
+                    CanVoidOrders = true
+                });
+            }
+
+            var hqFinance = await db.Users.FirstOrDefaultAsync(u => u.Username == "hq_finance");
+            if (hqFinance == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = chainTenant.Id,
+                    FullName = "Zahid Ahmed (HQ Accounts & Finance)",
+                    Username = "hq_finance",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("2222"),
+                    Role = UserRole.OwnerAdmin,
+                    IsActive = true,
+                    CanViewFinancialReports = true,
+                    CanManageInventory = true,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = true,
+                    CanVoidOrders = true
+                });
+            }
+
+            var hqProc = await db.Users.FirstOrDefaultAsync(u => u.Username == "hq_procurement");
+            if (hqProc == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = chainTenant.Id,
+                    FullName = "Farhan Saeed (HQ Purchase & Supply)",
+                    Username = "hq_procurement",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("3333"),
+                    Role = UserRole.BranchManager,
+                    IsActive = true,
+                    CanViewFinancialReports = false,
+                    CanManageInventory = true,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = false,
+                    CanVoidOrders = false
+                });
+            }
+
+            var mgrDt = await db.Users.FirstOrDefaultAsync(u => u.Username == "mgr_downtown");
+            if (mgrDt == null)
+            {
+                var dtBranch = await db.Branches.FirstOrDefaultAsync(b => b.Code == "RG-DT");
+                db.Users.Add(new AppUser
+                {
+                    TenantId = chainTenant.Id,
+                    BranchId = dtBranch?.Id,
+                    FullName = "Imran Khan (Downtown Branch Manager)",
+                    Username = "mgr_downtown",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("4444"),
+                    Role = UserRole.BranchManager,
+                    IsActive = true,
+                    CanViewFinancialReports = true,
+                    CanManageInventory = true,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = true,
+                    CanVoidOrders = true
+                });
+            }
+
+            var cashDt = await db.Users.FirstOrDefaultAsync(u => u.Username == "cashier_downtown");
+            if (cashDt == null)
+            {
+                var dtBranch = await db.Branches.FirstOrDefaultAsync(b => b.Code == "RG-DT");
+                db.Users.Add(new AppUser
+                {
+                    TenantId = chainTenant.Id,
+                    BranchId = dtBranch?.Id,
+                    FullName = "Hamza POS (Downtown Cashier)",
+                    Username = "cashier_downtown",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("5555"),
+                    Role = UserRole.Cashier,
+                    IsActive = true,
+                    CanViewFinancialReports = false,
+                    CanManageInventory = false,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = false,
+                    CanVoidOrders = false
+                });
+            }
+        }
+
+        if (singleTenant != null)
+        {
+            var singleBranch = await db.Branches.FirstOrDefaultAsync(b => b.TenantId == singleTenant.Id);
+            var singleOwner = await db.Users.FirstOrDefaultAsync(u => u.Username == "single_owner");
+            if (singleOwner == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = singleTenant.Id,
+                    BranchId = singleBranch?.Id,
+                    FullName = "Rashid Mahmood (Restaurant Owner)",
+                    Username = "single_owner",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"),
+                    Role = UserRole.OwnerAdmin,
+                    IsActive = true,
+                    CanViewFinancialReports = true,
+                    CanManageInventory = true,
+                    CanManageMenuAndTax = true,
+                    CanGiveDiscounts = true,
+                    CanVoidOrders = true
+                });
+            }
+
+            var singleCashier = await db.Users.FirstOrDefaultAsync(u => u.Username == "single_cashier");
+            if (singleCashier == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = singleTenant.Id,
+                    BranchId = singleBranch?.Id,
+                    FullName = "Ali Raza (Counter Cashier)",
+                    Username = "single_cashier",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1111"),
+                    Role = UserRole.Cashier,
+                    IsActive = true,
+                    CanViewFinancialReports = false,
+                    CanManageInventory = false,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = false,
+                    CanVoidOrders = false
+                });
+            }
+
+            var singleWaiter = await db.Users.FirstOrDefaultAsync(u => u.Username == "single_waiter");
+            if (singleWaiter == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = singleTenant.Id,
+                    BranchId = singleBranch?.Id,
+                    FullName = "Waqas Waiter (Order Tab)",
+                    Username = "single_waiter",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("7777"),
+                    Role = UserRole.Waiter,
+                    IsActive = true,
+                    CanViewFinancialReports = false,
+                    CanManageInventory = false,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = false,
+                    CanVoidOrders = false
+                });
+            }
+
+            var singleChef = await db.Users.FirstOrDefaultAsync(u => u.Username == "single_chef");
+            if (singleChef == null)
+            {
+                db.Users.Add(new AppUser
+                {
+                    TenantId = singleTenant.Id,
+                    BranchId = singleBranch?.Id,
+                    FullName = "Chef Umer (Kitchen Station)",
+                    Username = "single_chef",
+                    PinCodeHash = BCrypt.Net.BCrypt.HashPassword("8888"),
+                    Role = UserRole.KitchenChef,
+                    IsActive = true,
+                    CanViewFinancialReports = false,
+                    CanManageInventory = false,
+                    CanManageMenuAndTax = false,
+                    CanGiveDiscounts = false,
+                    CanVoidOrders = false
+                });
+            }
+        }
+
         await db.SaveChangesAsync();
     }
 }
