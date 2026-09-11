@@ -107,6 +107,19 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<StockRequest>()
             .HasIndex(sr => new { sr.BranchId, sr.Status });
 
+        // Unique constraints for document numbers (prevent duplicates from race conditions)
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => o.OrderNumber)
+            .IsUnique();
+
+        modelBuilder.Entity<StockTransferOrder>()
+            .HasIndex(st => st.TransferNumber)
+            .IsUnique();
+
+        modelBuilder.Entity<PurchaseOrder>()
+            .HasIndex(po => po.PONumber)
+            .IsUnique();
+
         // Foreign key relationships with delete behavior
         modelBuilder.Entity<Order>()
             .HasOne(o => o.Branch)

@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,14 +15,29 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Pos.Api.Data;
 using Pos.Api.Models;
 using Pos.Api.Middlewares;
+using static Pos.Api.Constants.AppConstants;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Configuration ---
-var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!";
-var dbConnection = builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? Environment.GetEnvironmentVariable("DATABASE_URL")
-    ?? "Host=localhost;Port=5432;Database=cashly_pos_db;Username=postgres;Password=12345678";
+var isProduction = builder.Environment.IsProduction();
+var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY");
+if (isProduction && string.IsNullOrWhiteSpace(jwtKey))
+{
+    throw new InvalidOperationException("JWT_KEY must be configured in production. Set the JWT_KEY environment variable or appsettings.json.");
+}
+jwtKey ??= "CashlyPOS_SuperSecretKey_2024_Change_In_Production!";
+
+var dbConnection = builder.Configuration.GetConnectionString("DefaultConnection");
+if (isProduction && string.IsNullOrWhiteSpace(dbConnection))
+{
+    dbConnection = Environment.GetEnvironmentVariable("DATABASE_URL");
+}
+if (isProduction && string.IsNullOrWhiteSpace(dbConnection))
+{
+    throw new InvalidOperationException("Database connection must be configured in production. Set DATABASE_URL environment variable or DefaultConnection in appsettings.json.");
+}
+dbConnection ??= "Host=localhost;Port=5432;Database=cashly_pos_db;Username=postgres;Password=12345678";
 
 // --- JWT Authentication ---
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -64,6 +81,25 @@ builder.Services.AddCors(options =>
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(dbConnection));
 
+// --- Rate Limiting ---
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("auth", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 10;
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 5;
+    });
+    options.AddFixedWindowLimiter("default", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 100;
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 10;
+    });
+});
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -87,6 +123,7 @@ app.UseExceptionHandler(error =>
 });
 
 app.UseCors();
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<TenantIsolationMiddleware>();
@@ -224,55 +261,8 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientQty"" numeric(18,2);
         ");
 
-        // Seed data
-        var singleTenantId = Guid.Parse("22222222-2222-2222-2222-222222222222");
-        var singleBranchId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
-        if (!await db.Products.AnyAsync(p => p.TenantId == singleTenantId))
-        {
-            var singleCat = new Category { Id = Guid.NewGuid(), TenantId = singleTenantId, Name = "Wraps & Grills", Icon = "sandwich", SortOrder = 1 };
-            db.Categories.Add(singleCat);
-            var sp1 = new Product
-            {
-                Id = Guid.NewGuid(),
-                TenantId = singleTenantId,
-                CategoryId = singleCat.Id,
-                SKU = "SB-WRP-01",
-                Barcode = "896101112233",
-                Name = "Crispy Chicken Wrap",
-                UrduName = "کرسپی چکن ریپ",
-                Description = "Crispy spiced chicken rolled in tortilla with garlic sauce and greens",
-                CostPricePKR = 280,
-                SellingPricePKR = 620,
-                Unit = "Piece",
-                Station = KitchenStation.Grill,
-                ImageUrl = "https://images.unsplash.com/photo-1626700051175-6818013e1d4f?w=400"
-            };
-            var sp2 = new Product
-            {
-                Id = Guid.NewGuid(),
-                TenantId = singleTenantId,
-                CategoryId = singleCat.Id,
-                SKU = "SB-BBQ-01",
-                Barcode = "896101112244",
-                Name = "Smoky BBQ Platter",
-                UrduName = "اسمونکی بی بی کیو پلیٹر",
-                Description = "Flame-grilled succulent chicken skewers with mint chutney and fresh paratha",
-                CostPricePKR = 520,
-                SellingPricePKR = 1150,
-                Unit = "Platter",
-                Station = KitchenStation.Grill,
-                ImageUrl = "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=400"
-            };
-            db.Products.AddRange(sp1, sp2);
-            db.BranchStocks.AddRange(
-                new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranchId, ProductId = sp1.Id, QuantityOnHand = 75 },
-                new BranchStock { Id = Guid.NewGuid(), BranchId = singleBranchId, ProductId = sp2.Id, QuantityOnHand = 60 }
-            );
-            await db.SaveChangesAsync();
-        }
-
+        // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
-        await DbSeeder.EnsureDemoUsersAsync(db);
     }
     catch (Exception ex)
     {
@@ -364,7 +354,9 @@ app.MapGet("/", () => Results.Ok(new
 }));
 
 // --- Auth: PIN Login ---
-app.MapPost("/api/auth/login", async (AppDbContext db, LoginDto dto) =>
+var authApi = app.MapGroup("/api/auth").RequireRateLimiting("auth");
+
+authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
 {
     var user = await db.Users.FirstOrDefaultAsync(u => u.Username == dto.Username.ToLower().Trim() && u.IsActive);
     if (user == null || !BCrypt.Net.BCrypt.Verify(dto.PinCode, user.PinCodeHash))
@@ -2160,7 +2152,7 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, Guid id) =>
 // SAAS ENDPOINTS — SIGNUP + TENANT MANAGEMENT
 // ============================================================
 
-app.MapPost("/api/auth/signup", async (AppDbContext db, SignupDto dto) =>
+authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
 {
     // Validate unique slug
     var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
@@ -2306,10 +2298,19 @@ app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (Guid id, AppDbCont
     return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil });
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/super-admin-login", async (AppDbContext db, LoginDto dto) =>
+authApi.MapPost("/super-admin-login", async (AppDbContext db, LoginDto dto) =>
 {
-    // Fixed super admin credentials — platform owner only
-    if (dto.Username != "superadmin" || dto.PinCode != "999999")
+    // Super admin credentials from configuration (not hardcoded)
+    var superAdminUsername = builder.Configuration["SuperAdmin:Username"] ?? "superadmin";
+    var superAdminPin = builder.Configuration["SuperAdmin:Pin"] ?? Environment.GetEnvironmentVariable("SUPER_ADMIN_PIN") ?? "999999";
+    
+    if (isProduction && dto.PinCode == superAdminPin && superAdminPin == "999999")
+    {
+        // Warn if using default PIN in production
+        Console.WriteLine("[WARNING] Super admin is using the default PIN. Change SUPER_ADMIN_PIN in production!");
+    }
+    
+    if (dto.Username != superAdminUsername || dto.PinCode != superAdminPin)
         return Results.Unauthorized();
 
     // Find or create super admin user (no tenant)
