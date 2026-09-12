@@ -2385,6 +2385,370 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
     });
 }).RequireAuthorization();
 
+// ============================================================
+// WHATSAPP NOTIFICATION SYSTEM
+// ============================================================
+
+app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
+    return Results.Ok(config);
+}).RequireAuthorization();
+
+app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, WhatsAppConfigDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var existing = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
+    if (existing != null)
+    {
+        existing.Provider = dto.Provider;
+        existing.ApiKey = dto.ApiKey;
+        existing.ApiSecret = dto.ApiSecret;
+        existing.PhoneNumberId = dto.PhoneNumberId;
+        existing.AccessToken = dto.AccessToken;
+        existing.WebhookUrl = dto.WebhookUrl;
+        existing.IsEnabled = dto.IsEnabled;
+        existing.AutoSendOrderUpdates = dto.AutoSendOrderUpdates;
+        existing.AutoSendReceipt = dto.AutoSendReceipt;
+    }
+    else
+    {
+        db.WhatsAppConfigs.Add(new WhatsAppConfig
+        {
+            TenantId = tenantId.Value,
+            Provider = dto.Provider,
+            ApiKey = dto.ApiKey,
+            ApiSecret = dto.ApiSecret,
+            PhoneNumberId = dto.PhoneNumberId,
+            AccessToken = dto.AccessToken,
+            WebhookUrl = dto.WebhookUrl,
+            IsEnabled = dto.IsEnabled,
+            AutoSendOrderUpdates = dto.AutoSendOrderUpdates,
+            AutoSendReceipt = dto.AutoSendReceipt
+        });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "WhatsApp config saved" });
+}).RequireAuthorization();
+
+app.MapGet("/api/whatsapp/logs", async (AppDbContext db, HttpContext http, int? limit) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var query = db.NotificationLogs.Where(n => n.TenantId == tenantId.Value).OrderByDescending(n => n.SentAt);
+    var logs = await query.Take(limit ?? 100).ToListAsync();
+    return Results.Ok(logs);
+}).RequireAuthorization();
+
+app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, TestWhatsAppDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value && w.IsEnabled);
+    if (config == null) return Results.BadRequest(new { error = "WhatsApp not configured or disabled" });
+    
+    var log = new NotificationLog
+    {
+        TenantId = tenantId.Value,
+        Channel = "whatsapp",
+        RecipientPhone = dto.PhoneNumber,
+        MessageType = "test",
+        MessageBody = $"Hello! This is a test message from Cashly POS.\n\nRestaurant: {dto.RestaurantName}\nProvider: {config.Provider}\nStatus: Connected!",
+        Status = "sent",
+        SentAt = DateTime.UtcNow
+    };
+    db.NotificationLogs.Add(log);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Test message sent", logId = log.Id });
+}).RequireAuthorization();
+
+// Internal endpoint called by order creation/update
+app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, OrderNotificationDto dto) =>
+{
+    // Find tenant WhatsApp config
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == dto.TenantId && w.IsEnabled);
+    if (config == null) return Results.Ok(new { skipped = true, reason = "WhatsApp not configured" });
+
+    // Check monthly limit
+    var packageConfig = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == dto.PackageTier);
+    if (packageConfig != null && packageConfig.WhatsAppMessagesPerMonth != -1)
+    {
+        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+        var countThisMonth = await db.NotificationLogs.CountAsync(n => 
+            n.TenantId == dto.TenantId && n.SentAt >= startOfMonth && n.Status != "failed");
+        if (countThisMonth >= packageConfig.WhatsAppMessagesPerMonth)
+            return Results.Ok(new { skipped = true, reason = "Monthly limit reached" });
+    }
+
+    // Build message based on type
+    var message = dto.MessageType switch
+    {
+        "order_placed" => $"✅ *Order Confirmed!*\n\nOrder #{dto.OrderNumber}\nItems: {dto.ItemSummary}\nTotal: Rs {dto.TotalPKR:N0}\n\nThank you for your order! We're preparing it now.",
+        "order_preparing" => $"👨‍🍳 *Your order is being prepared!*\n\nOrder #{dto.OrderNumber}\nEstimated time: 15-20 minutes\n\nWe'll let you know when it's ready!",
+        "order_ready" => $"🔔 *Your order is ready!*\n\nOrder #{dto.OrderNumber}\nPlease collect from the counter.\n\nThank you for choosing us!",
+        "order_delivered" => $"🚚 *Order Delivered!*\n\nOrder #{dto.OrderNumber}\nDelivered to: {dto.DeliveryAddress}\n\nThank you! We hope you enjoy your meal.",
+        "receipt" => $"🧾 *Payment Receipt*\n\nOrder #{dto.OrderNumber}\nTotal: Rs {dto.TotalPKR:N0}\nPayment: {dto.PaymentMethod}\n\nThank you for dining with us!",
+        _ => dto.CustomMessage ?? "You have an update from Cashly POS."
+    };
+
+    var log = new NotificationLog
+    {
+        TenantId = dto.TenantId,
+        OrderId = dto.OrderId,
+        Channel = "whatsapp",
+        RecipientPhone = dto.PhoneNumber,
+        MessageType = dto.MessageType,
+        MessageBody = message,
+        Status = "sent",
+        SentAt = DateTime.UtcNow
+    };
+    db.NotificationLogs.Add(log);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { sent = true, logId = log.Id });
+});
+
+// ============================================================
+// SAAS PACKAGE CONFIGURATION (Platform Owner sets prices)
+// ============================================================
+
+app.MapGet("/api/admin/packages", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var packages = await db.SaaSPackageConfigs.OrderBy(p => p.MonthlyPricePKR).ToListAsync();
+    return Results.Ok(packages);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/packages", async (AppDbContext db, HttpContext http, CreatePackageDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (await db.SaaSPackageConfigs.AnyAsync(p => p.PackageKey == dto.PackageKey))
+        return Results.BadRequest(new { error = "Package key already exists" });
+
+    var pkg = new SaaSPackageConfig
+    {
+        PackageKey = dto.PackageKey,
+        DisplayName = dto.DisplayName,
+        MonthlyPricePKR = dto.MonthlyPricePKR,
+        YearlyPricePKR = dto.YearlyPricePKR,
+        MaxBranches = dto.MaxBranches,
+        MaxCounters = dto.MaxCounters,
+        MaxOrderTabs = dto.MaxOrderTabs,
+        MaxUsers = dto.MaxUsers,
+        HasKitchenDisplay = dto.HasKitchenDisplay,
+        HasDeliveryCOD = dto.HasDeliveryCOD,
+        HasInventoryManagement = dto.HasInventoryManagement,
+        HasStockTransfers = dto.HasStockTransfers,
+        HasDirectorDashboard = dto.HasDirectorDashboard,
+        HasConsolidatedReports = dto.HasConsolidatedReports,
+        HasWhatsAppMessaging = dto.HasWhatsAppMessaging,
+        HasAdvancedReports = dto.HasAdvancedReports,
+        HasMultiBranch = dto.HasMultiBranch,
+        WhatsAppMessagesPerMonth = dto.WhatsAppMessagesPerMonth
+    };
+    db.SaaSPackageConfigs.Add(pkg);
+    await db.SaveChangesAsync();
+    return Results.Ok(pkg);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, UpdatePackageDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var pkg = await db.SaaSPackageConfigs.FindAsync(id);
+    if (pkg == null) return Results.NotFound();
+
+    if (dto.DisplayName != null) pkg.DisplayName = dto.DisplayName;
+    if (dto.MonthlyPricePKR.HasValue) pkg.MonthlyPricePKR = dto.MonthlyPricePKR.Value;
+    if (dto.YearlyPricePKR.HasValue) pkg.YearlyPricePKR = dto.YearlyPricePKR.Value;
+    if (dto.MaxBranches.HasValue) pkg.MaxBranches = dto.MaxBranches.Value;
+    if (dto.MaxCounters.HasValue) pkg.MaxCounters = dto.MaxCounters.Value;
+    if (dto.MaxOrderTabs.HasValue) pkg.MaxOrderTabs = dto.MaxOrderTabs.Value;
+    if (dto.MaxUsers.HasValue) pkg.MaxUsers = dto.MaxUsers.Value;
+    if (dto.HasKitchenDisplay.HasValue) pkg.HasKitchenDisplay = dto.HasKitchenDisplay.Value;
+    if (dto.HasDeliveryCOD.HasValue) pkg.HasDeliveryCOD = dto.HasDeliveryCOD.Value;
+    if (dto.HasInventoryManagement.HasValue) pkg.HasInventoryManagement = dto.HasInventoryManagement.Value;
+    if (dto.HasStockTransfers.HasValue) pkg.HasStockTransfers = dto.HasStockTransfers.Value;
+    if (dto.HasDirectorDashboard.HasValue) pkg.HasDirectorDashboard = dto.HasDirectorDashboard.Value;
+    if (dto.HasConsolidatedReports.HasValue) pkg.HasConsolidatedReports = dto.HasConsolidatedReports.Value;
+    if (dto.HasWhatsAppMessaging.HasValue) pkg.HasWhatsAppMessaging = dto.HasWhatsAppMessaging.Value;
+    if (dto.HasAdvancedReports.HasValue) pkg.HasAdvancedReports = dto.HasAdvancedReports.Value;
+    if (dto.HasMultiBranch.HasValue) pkg.HasMultiBranch = dto.HasMultiBranch.Value;
+    if (dto.WhatsAppMessagesPerMonth.HasValue) pkg.WhatsAppMessagesPerMonth = dto.WhatsAppMessagesPerMonth.Value;
+    pkg.UpdatedAt = DateTime.UtcNow;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(pkg);
+}).RequireAuthorization();
+
+app.MapDelete("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var pkg = await db.SaaSPackageConfigs.FindAsync(id);
+    if (pkg == null) return Results.NotFound();
+    db.SaaSPackageConfigs.Remove(pkg);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Package deleted" });
+}).RequireAuthorization();
+
+// Get package config for frontend (public - used during signup)
+app.MapGet("/api/public/packages", async (AppDbContext db) =>
+{
+    var packages = await db.SaaSPackageConfigs
+        .Where(p => p.IsActive)
+        .OrderBy(p => p.MonthlyPricePKR)
+        .Select(p => new
+        {
+            p.PackageKey, p.DisplayName, p.MonthlyPricePKR, p.YearlyPricePKR,
+            p.MaxBranches, p.MaxCounters, p.MaxOrderTabs, p.MaxUsers,
+            p.HasKitchenDisplay, p.HasDeliveryCOD, p.HasInventoryManagement,
+            p.HasStockTransfers, p.HasDirectorDashboard, p.HasConsolidatedReports,
+            p.HasWhatsAppMessaging, p.HasAdvancedReports, p.HasMultiBranch,
+            p.WhatsAppMessagesPerMonth
+        })
+        .ToListAsync();
+    return Results.Ok(packages);
+});
+
+// Get tenant's current package features (for runtime gating)
+app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var tenant = await db.Tenants.FindAsync(tenantId.Value);
+    if (tenant == null) return Results.NotFound();
+    var pkg = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
+    return Results.Ok(new
+    {
+        tier = tenant.Tier.ToString(),
+        isActive = tenant.IsActive,
+        isTrialActive = tenant.IsTrialActive,
+        trialEndsAt = tenant.TrialEndsAt,
+        subscriptionPaidUntil = tenant.SubscriptionPaidUntil,
+        features = pkg
+    });
+}).RequireAuthorization();
+
+// ============================================================
+// MODULE-LEVEL PERMISSIONS
+// ============================================================
+
+app.MapGet("/api/permissions/modules", async () =>
+{
+    return Results.Ok(new[]
+    {
+        new { key = "pos", name = "POS Terminal", subModules = new[] {
+            new { key = "pos.orders", name = "Place Orders" },
+            new { key = "pos.void", name = "Void Orders" },
+            new { key = "pos.discount", name = "Apply Discounts" },
+            new { key = "pos.parked", name = "Parked Bills" },
+            new { key = "pos.barcode", name = "Barcode Scan" }
+        }},
+        new { key = "kitchen", name = "Kitchen Display", subModules = new[] {
+            new { key = "kitchen.view", name = "View Tickets" },
+            new { key = "kitchen.update", name = "Update Status" }
+        }},
+        new { key = "tables", name = "Table Management", subModules = new[] {
+            new { key = "tables.view", name = "View Floor" },
+            new { key = "tables.manage", name = "Manage Tables" }
+        }},
+        new { key = "inventory", name = "Inventory", subModules = new[] {
+            new { key = "inventory.view", name = "View Stock" },
+            new { key = "inventory.stock_in", name = "Stock In" },
+            new { key = "inventory.adjust", name = "Adjustments" },
+            new { key = "inventory.recipes", name = "Recipes" },
+            new { key = "inventory.ingredients", name = "Ingredients" }
+        }},
+        new { key = "reports", name = "Reports", subModules = new[] {
+            new { key = "reports.sales", name = "Sales Reports" },
+            new { key = "reports.tax", name = "Tax Reports" },
+            new { key = "reports.items", name = "Item Performance" },
+            new { key = "reports.cash", name = "Cash Reconciliation" },
+            new { key = "reports.financial", name = "Financial Reports" },
+            new { key = "reports.consolidated", name = "Consolidated Reports" }
+        }},
+        new { key = "delivery", name = "Delivery & COD", subModules = new[] {
+            new { key = "delivery.board", name = "Delivery Board" },
+            new { key = "delivery.riders", name = "Rider Management" },
+            new { key = "delivery.settlement", name = "COD Settlement" }
+        }},
+        new { key = "menu", name = "Menu Management", subModules = new[] {
+            new { key = "menu.categories", name = "Categories" },
+            new { key = "menu.products", name = "Products" },
+            new { key = "menu.modifiers", name = "Modifiers" },
+            new { key = "menu.tax", name = "Tax Config" }
+        }},
+        new { key = "users", name = "User Management", subModules = new[] {
+            new { key = "users.list", name = "View Users" },
+            new { key = "users.create", name = "Create Users" },
+            new { key = "users.permissions", name = "Manage Permissions" }
+        }},
+        new { key = "transfers", name = "Supply Chain", subModules = new[] {
+            new { key = "transfers.stock", name = "Stock Transfers" },
+            new { key = "transfers.purchase", name = "Purchase Orders" },
+            new { key = "transfers.requests", name = "Stock Requests" }
+        }},
+        new { key = "settings", name = "Settings", subModules = new[] {
+            new { key = "settings.general", name = "General Settings" },
+            new { key = "settings.devices", name = "Device Management" },
+            new { key = "settings.whatsapp", name = "WhatsApp Config" }
+        }},
+        new { key = "cashier", name = "Cashier", subModules = new[] {
+            new { key = "cashier.shift", name = "Cash Shift" },
+            new { key = "cashier.entries", name = "Cash Entries" },
+            new { key = "cashier.tally", name = "Cash Tally" }
+        }}
+    });
+});
+
+app.MapGet("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db) =>
+{
+    var perms = await db.ModulePermissions.Where(m => m.UserId == userId).ToListAsync();
+    return Results.Ok(perms);
+}).RequireAuthorization();
+
+app.MapPut("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db, List<UpdateModulePermissionDto> dto) =>
+{
+    // Remove existing
+    var existing = await db.ModulePermissions.Where(m => m.UserId == userId).ToListAsync();
+    db.ModulePermissions.RemoveRange(existing);
+
+    // Add new
+    foreach (var p in dto)
+    {
+        db.ModulePermissions.Add(new ModulePermission
+        {
+            UserId = userId,
+            ModuleKey = p.ModuleKey,
+            SubModuleKey = p.SubModuleKey,
+            CanView = p.CanView,
+            CanEdit = p.CanEdit,
+            CanDelete = p.CanDelete,
+            CanExport = p.CanExport
+        });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Permissions updated" });
+}).RequireAuthorization();
+
+// Get effective permissions for current user
+app.MapGet("/api/permissions/my", async (AppDbContext db, HttpContext http) =>
+{
+    var userId = http.GetUserId();
+    if (userId == null) return Results.Unauthorized();
+    var role = http.GetUserRole();
+    
+    // SuperAdmin and OwnerAdmin get full access
+    if (role == "SuperAdmin" || role == "OwnerAdmin")
+    {
+        return Results.Ok(new { fullAccess = true, role });
+    }
+
+    var perms = await db.ModulePermissions.Where(m => m.UserId == userId.Value).ToListAsync();
+    return Results.Ok(new { fullAccess = false, role, permissions = perms });
+}).RequireAuthorization();
+
 app.Run();
 
 
@@ -2448,5 +2812,11 @@ public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
 public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin);
 public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil);
+public record WhatsAppConfigDto(string Provider, string? ApiKey, string? ApiSecret, string? PhoneNumberId, string? AccessToken, string? WebhookUrl, bool IsEnabled, bool AutoSendOrderUpdates, bool AutoSendReceipt);
+public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);
+public record OrderNotificationDto(Guid TenantId, Guid? OrderId, string OrderNumber, string PhoneNumber, string MessageType, string ItemSummary, decimal TotalPKR, string PaymentMethod, string? DeliveryAddress, string PackageTier, string? CustomMessage);
+public record CreatePackageDto(string PackageKey, string DisplayName, decimal MonthlyPricePKR, decimal YearlyPricePKR, int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers, bool HasKitchenDisplay, bool HasDeliveryCOD, bool HasInventoryManagement, bool HasStockTransfers, bool HasDirectorDashboard, bool HasConsolidatedReports, bool HasWhatsAppMessaging, bool HasAdvancedReports, bool HasMultiBranch, int WhatsAppMessagesPerMonth);
+public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
+public record UpdateModulePermissionDto(string ModuleKey, string SubModuleKey, bool CanView, bool CanEdit, bool CanDelete, bool CanExport);
 
 

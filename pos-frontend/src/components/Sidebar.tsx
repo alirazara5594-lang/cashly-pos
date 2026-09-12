@@ -27,7 +27,9 @@ import {
   TrendingUp,
   Send,
   Banknote,
-  Wallet
+  Wallet,
+  MessageSquare,
+  Shield
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 
@@ -260,6 +262,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
               { label: 'Staff & Pin Access', path: '/users', icon: Users },
               { label: 'Platform Admin', path: '/super-admin', icon: ShieldCheck }
+            ]
+          },
+          {
+            id: 'platformAdmin',
+            label: 'Platform Admin',
+            path: '/super-admin',
+            icon: ShieldCheck,
+            subItems: [
+              { label: 'Tenant Management', path: '/super-admin', icon: Building2 },
+              { label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard },
+              { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare },
+              { label: 'Permissions', path: '/permissions', icon: Shield }
             ]
           },
           {

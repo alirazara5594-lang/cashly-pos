@@ -19,6 +19,9 @@ import { InstallationWizard } from './pages/InstallationWizard';
 import { SettingsManagement } from './pages/SettingsManagement';
 import { StockRequests } from './pages/StockRequests';
 import { TenantSignup } from './pages/TenantSignup';
+import { WhatsAppConfig } from './pages/WhatsAppConfig';
+import { PricingAdmin } from './pages/PricingAdmin';
+import { ModulePermissions } from './pages/ModulePermissions';
 import { UserLoginModal } from './components/UserLoginModal';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
@@ -136,6 +139,9 @@ function MainLayoutInner() {
             <Route path="/signup" element={<TenantSignup />} />
             <Route path="/settings" element={<SettingsManagement />} />
             <Route path="/stock-requests" element={<StockRequests />} />
+            <Route path="/whatsapp-config" element={<WhatsAppConfig />} />
+            <Route path="/pricing-admin" element={<PricingAdmin />} />
+            <Route path="/permissions" element={<ModulePermissions />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

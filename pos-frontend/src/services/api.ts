@@ -636,6 +636,84 @@ export const posApi = {
   getAdminStats: async () => {
     const res = await api.get('/api/admin/stats');
     return res.data;
+  },
+
+  // SAAS — WhatsApp Config
+  getWhatsAppConfig: async () => {
+    const res = await api.get('/api/whatsapp/config');
+    return res.data;
+  },
+  saveWhatsAppConfig: async (data: {
+    provider: string; apiKey?: string; apiSecret?: string;
+    phoneNumberId?: string; accessToken?: string; webhookUrl?: string;
+    isEnabled: boolean; autoSendOrderUpdates: boolean; autoSendReceipt: boolean;
+  }) => {
+    const res = await api.post('/api/whatsapp/config', data);
+    return res.data;
+  },
+  getWhatsAppLogs: async (limit?: number) => {
+    const res = await api.get('/api/whatsapp/logs', { params: { limit } });
+    return res.data;
+  },
+  sendWhatsAppTest: async (phoneNumber: string, restaurantName: string) => {
+    const res = await api.post('/api/whatsapp/test', { phoneNumber, restaurantName });
+    return res.data;
+  },
+  sendOrderNotification: async (data: {
+    tenantId: string; orderId?: string; orderNumber: string;
+    phoneNumber: string; messageType: string; itemSummary: string;
+    totalPKR: number; paymentMethod: string; deliveryAddress?: string;
+    packageTier: string; customMessage?: string;
+  }) => {
+    const res = await api.post('/api/whatsapp/send-order-update', data);
+    return res.data;
+  },
+
+  // SAAS — Package Config (Platform Admin)
+  getPackages: async () => {
+    const res = await api.get('/api/admin/packages');
+    return res.data;
+  },
+  getPublicPackages: async () => {
+    const res = await api.get('/api/public/packages');
+    return res.data;
+  },
+  createPackage: async (data: any) => {
+    const res = await api.post('/api/admin/packages', data);
+    return res.data;
+  },
+  updatePackage: async (id: string, data: any) => {
+    const res = await api.put(`/api/admin/packages/${id}`, data);
+    return res.data;
+  },
+  deletePackage: async (id: string) => {
+    const res = await api.delete(`/api/admin/packages/${id}`);
+    return res.data;
+  },
+  getMyPackage: async () => {
+    const res = await api.get('/api/tenant/my-package');
+    return res.data;
+  },
+
+  // SAAS — Module Permissions
+  getModuleCatalog: async () => {
+    const res = await api.get('/api/permissions/modules');
+    return res.data;
+  },
+  getUserPermissions: async (userId: string) => {
+    const res = await api.get(`/api/permissions/${userId}`);
+    return res.data;
+  },
+  updateUserPermissions: async (userId: string, permissions: Array<{
+    moduleKey: string; subModuleKey: string;
+    canView: boolean; canEdit: boolean; canDelete: boolean; canExport: boolean;
+  }>) => {
+    const res = await api.put(`/api/permissions/${userId}`, permissions);
+    return res.data;
+  },
+  getMyPermissions: async () => {
+    const res = await api.get('/api/permissions/my');
+    return res.data;
   }
 };
 

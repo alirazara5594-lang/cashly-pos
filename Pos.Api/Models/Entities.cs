@@ -357,6 +357,75 @@ public class CashEntry
     public string CreatedBy { get; set; } = string.Empty;
 }
 
+public class NotificationLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? OrderId { get; set; }
+    public string Channel { get; set; } = "whatsapp"; // whatsapp, sms
+    public string RecipientPhone { get; set; } = string.Empty;
+    public string MessageType { get; set; } = string.Empty; // order_placed, order_preparing, order_ready, order_delivered, receipt
+    public string MessageBody { get; set; } = string.Empty;
+    public string Status { get; set; } = "queued"; // queued, sent, delivered, failed
+    public string? ProviderMessageId { get; set; }
+    public string? ErrorMessage { get; set; }
+    public DateTime SentAt { get; set; } = DateTime.UtcNow;
+}
+
+public class WhatsAppConfig
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Provider { get; set; } = "manual"; // manual, twilio, meta_api, whaticket
+    public string? ApiKey { get; set; }
+    public string? ApiSecret { get; set; }
+    public string? PhoneNumberId { get; set; }
+    public string? AccessToken { get; set; }
+    public string? WebhookUrl { get; set; }
+    public bool IsEnabled { get; set; } = false;
+    public bool AutoSendOrderUpdates { get; set; } = true;
+    public bool AutoSendReceipt { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class SaaSPackageConfig
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string PackageKey { get; set; } = string.Empty; // Starter, Standard, Professional
+    public string DisplayName { get; set; } = string.Empty;
+    public decimal MonthlyPricePKR { get; set; }
+    public decimal YearlyPricePKR { get; set; }
+    public int MaxBranches { get; set; }
+    public int MaxCounters { get; set; }
+    public int MaxOrderTabs { get; set; }
+    public int MaxUsers { get; set; }
+    public bool HasKitchenDisplay { get; set; }
+    public bool HasDeliveryCOD { get; set; }
+    public bool HasInventoryManagement { get; set; }
+    public bool HasStockTransfers { get; set; }
+    public bool HasDirectorDashboard { get; set; }
+    public bool HasConsolidatedReports { get; set; }
+    public bool HasWhatsAppMessaging { get; set; }
+    public bool HasAdvancedReports { get; set; }
+    public bool HasMultiBranch { get; set; }
+    public int WhatsAppMessagesPerMonth { get; set; } // -1 = unlimited
+    public bool IsActive { get; set; } = true;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class ModulePermission
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    public string ModuleKey { get; set; } = string.Empty; // pos, kitchen, inventory, reports, etc.
+    public string SubModuleKey { get; set; } = string.Empty; // e.g. pos.void, reports.tax, inventory.stock_in
+    public bool CanView { get; set; } = false;
+    public bool CanEdit { get; set; } = false;
+    public bool CanDelete { get; set; } = false;
+    public bool CanExport { get; set; } = false;
+}
+
 public enum UserRole
 {
     SuperAdmin = 0,

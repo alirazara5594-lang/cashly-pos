@@ -34,7 +34,10 @@ public class AppDbContext : DbContext
     public DbSet<PurchaseOrderItem> PurchaseOrderItems => Set<PurchaseOrderItem>();
     public DbSet<StockRequest> StockRequests => Set<StockRequest>();
     public DbSet<StockRequestItem> StockRequestItems => Set<StockRequestItem>();
-
+    public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
+    public DbSet<WhatsAppConfig> WhatsAppConfigs => Set<WhatsAppConfig>();
+    public DbSet<SaaSPackageConfig> SaaSPackageConfigs => Set<SaaSPackageConfig>();
+    public DbSet<ModulePermission> ModulePermissions => Set<ModulePermission>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -106,6 +109,24 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<StockRequest>()
             .HasIndex(sr => new { sr.BranchId, sr.Status });
+
+        modelBuilder.Entity<NotificationLog>()
+            .HasIndex(n => new { n.TenantId, n.SentAt });
+
+        modelBuilder.Entity<NotificationLog>()
+            .HasIndex(n => n.OrderId);
+
+        modelBuilder.Entity<WhatsAppConfig>()
+            .HasIndex(w => w.TenantId)
+            .IsUnique();
+
+        modelBuilder.Entity<SaaSPackageConfig>()
+            .HasIndex(p => p.PackageKey)
+            .IsUnique();
+
+        modelBuilder.Entity<ModulePermission>()
+            .HasIndex(mp => new { mp.UserId, mp.ModuleKey, mp.SubModuleKey })
+            .IsUnique();
 
         // Unique constraints for document numbers (prevent duplicates from race conditions)
         modelBuilder.Entity<Order>()
