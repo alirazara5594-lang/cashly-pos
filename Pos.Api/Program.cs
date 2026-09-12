@@ -447,13 +447,24 @@ api.MapGet("/setup/status", async (AppDbContext db) =>
 
 api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 {
+    var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
+    slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
+
     var tenant = new Tenant
     {
         Id = Guid.NewGuid(),
         Name = string.IsNullOrWhiteSpace(dto.RestaurantName) ? "Cashly Restaurant" : dto.RestaurantName.Trim(),
+        Slug = slug,
+        ContactName = dto.AdminFullName ?? "Admin",
+        ContactEmail = dto.AdminUsername ?? "admin",
+        ContactPhone = dto.Phone ?? "",
+        City = dto.City,
+        Address = dto.Address,
         BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
         Tier = dto.DeploymentMode == "MultiBranch" ? SubscriptionTier.Professional : SubscriptionTier.Standard,
         IsActive = true,
+        IsTrialActive = false,
+        SubscriptionPaidUntil = DateTime.UtcNow.AddYears(1),
         CreatedAt = DateTime.UtcNow
     };
     db.Tenants.Add(tenant);
