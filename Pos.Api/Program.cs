@@ -15,7 +15,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Pos.Api.Data;
 using Pos.Api.Models;
 using Pos.Api.Middlewares;
-using static Pos.Api.Constants.AppConstants;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
