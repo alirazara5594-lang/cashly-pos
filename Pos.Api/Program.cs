@@ -259,6 +259,78 @@ using (var scope = app.Services.CreateScope())
             );
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientId"" uuid;
             ALTER TABLE ""ProductModifiers"" ADD COLUMN IF NOT EXISTS ""IngredientQty"" numeric(18,2);
+
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Slug"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactName"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactEmail"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactPhone"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""City"" text;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Address"" text;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""IsTrialActive"" boolean NOT NULL DEFAULT true;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TrialEndsAt"" timestamp with time zone NOT NULL DEFAULT NOW();
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""SubscriptionPaidUntil"" timestamp with time zone;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Tier"" integer NOT NULL DEFAULT 1;
+
+            CREATE TABLE IF NOT EXISTS ""NotificationLogs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""OrderId"" uuid,
+                ""Channel"" text NOT NULL,
+                ""RecipientPhone"" text NOT NULL,
+                ""MessageType"" text NOT NULL,
+                ""MessageBody"" text NOT NULL,
+                ""Status"" text NOT NULL,
+                ""ProviderMessageId"" text,
+                ""ErrorMessage"" text,
+                ""SentAt"" timestamp with time zone NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ""WhatsAppConfigs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Provider"" text NOT NULL,
+                ""ApiKey"" text,
+                ""ApiSecret"" text,
+                ""PhoneNumberId"" text,
+                ""AccessToken"" text,
+                ""WebhookUrl"" text,
+                ""IsEnabled"" boolean NOT NULL,
+                ""AutoSendOrderUpdates"" boolean NOT NULL,
+                ""AutoSendReceipt"" boolean NOT NULL,
+                ""CreatedAt"" timestamp with time zone NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ""SaaSPackageConfigs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""PackageKey"" text NOT NULL,
+                ""DisplayName"" text NOT NULL,
+                ""MonthlyPricePKR"" numeric(18,2) NOT NULL,
+                ""YearlyPricePKR"" numeric(18,2) NOT NULL,
+                ""MaxBranches"" integer NOT NULL,
+                ""MaxCounters"" integer NOT NULL,
+                ""MaxOrderTabs"" integer NOT NULL,
+                ""MaxUsers"" integer NOT NULL,
+                ""HasKitchenDisplay"" boolean NOT NULL,
+                ""HasDeliveryCOD"" boolean NOT NULL,
+                ""HasInventoryManagement"" boolean NOT NULL,
+                ""HasStockTransfers"" boolean NOT NULL,
+                ""HasDirectorDashboard"" boolean NOT NULL,
+                ""HasConsolidatedReports"" boolean NOT NULL,
+                ""HasWhatsAppMessaging"" boolean NOT NULL,
+                ""HasAdvancedReports"" boolean NOT NULL,
+                ""HasMultiBranch"" boolean NOT NULL,
+                ""WhatsAppMessagesPerMonth"" integer NOT NULL,
+                ""IsActive"" boolean NOT NULL,
+                ""UpdatedAt"" timestamp with time zone NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ""ModulePermissions"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""UserId"" uuid NOT NULL,
+                ""ModuleKey"" text NOT NULL,
+                ""SubModuleKey"" text NOT NULL,
+                ""CanView"" boolean NOT NULL,
+                ""CanEdit"" boolean NOT NULL,
+                ""CanDelete"" boolean NOT NULL,
+                ""CanExport"" boolean NOT NULL
+            );
         ");
 
         // Seed data — clean slate, user creates everything
