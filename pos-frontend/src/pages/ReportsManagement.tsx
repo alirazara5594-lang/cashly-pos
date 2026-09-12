@@ -4,17 +4,13 @@ import {
   Printer, 
   Banknote, 
   CreditCard, 
-  PieChart, 
-  Award, 
   RefreshCw,
   Building2,
-  Percent,
   Wallet,
   Download,
   CheckCircle2,
   AlertCircle,
   X,
-  Layers,
   Search
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
@@ -32,9 +28,6 @@ import type {
 export const ReportsManagement: React.FC = () => {
   const { selectedBranch, selectedTenant } = usePosStore();
   const location = useLocation();
-
-  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
-
   // Active submodule tab
   const [activeTab, setActiveTab] = useState<'zreport' | 'tax' | 'categories' | 'products' | 'payments' | 'multibranch' | 'cashSales' | 'cardSales' | 'cashTally'>(
     location.state?.tab || 'zreport'
@@ -208,132 +201,27 @@ export const ReportsManagement: React.FC = () => {
     <div className="flex-1 bg-slate-950 text-slate-100 overflow-y-auto p-4 lg:p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header Strip */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl">
-          <div>
-            <div className="flex items-center gap-2">
-              <BarChart3 className="w-6 h-6 text-emerald-400" />
-              <h1 className="text-xl font-black text-white tracking-tight">Financial &amp; Revenue Reports</h1>
-            </div>
-            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5 text-emerald-500" />
-              Auditing Branch: <span className="text-emerald-400 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
-              <span className="text-slate-400 mx-1">•</span>
-              <span className="text-slate-400">FBR &amp; PRA Restaurant Compliance Mode</span>
-            </p>
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-6 h-6 text-emerald-400" />
+            <h1 className="text-xl font-black text-white tracking-tight">
+              {activeTab === 'zreport' && 'Z-Report (End of Day)'}
+              {activeTab === 'tax' && 'Tax Audit & FBR Register'}
+              {activeTab === 'categories' && 'Category Turnover & Channels'}
+              {activeTab === 'products' && 'Menu Profitability & COGS'}
+              {activeTab === 'payments' && 'Payment Tender Mix'}
+              {activeTab === 'cashSales' && 'Cash Sales Report'}
+              {activeTab === 'cardSales' && 'Card / Digital Sales Report'}
+              {activeTab === 'cashTally' && 'Cash Tally & Closing'}
+              {activeTab === 'multibranch' && 'Multi-Branch Consolidation'}
+            </h1>
           </div>
-
-          {/* Submodule Tabs */}
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 overflow-x-auto no-scrollbar">
-            <button
-              onClick={() => setActiveTab('zreport')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'zreport'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Banknote className="w-3.5 h-3.5" />
-              <span>Z-Report (Day Close)</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('tax')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'tax'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Percent className="w-3.5 h-3.5" />
-              <span>Tax Audit (16% / 8%)</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('categories')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'categories'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <PieChart className="w-3.5 h-3.5" />
-              <span>Category Turnover</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('products')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'products'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Award className="w-3.5 h-3.5" />
-              <span>Item Profitability &amp; COGS</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('payments')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'payments'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Wallet className="w-3.5 h-3.5" />
-              <span>Payment Tender Mix</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('cashSales')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'cashSales'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Banknote className="w-3.5 h-3.5" />
-              <span>Cash Sales Report</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('cardSales')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'cardSales'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <CreditCard className="w-3.5 h-3.5" />
-              <span>Card Sales Report</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('cashTally')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                activeTab === 'cashTally'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <Wallet className="w-3.5 h-3.5" />
-              <span>Cash Tally & Closing</span>
-            </button>
-
-            {isMultiBranchChain && (
-              <button
-                onClick={() => setActiveTab('multibranch')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
-                  activeTab === 'multibranch'
-                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>Multi-Branch Consolidation</span>
-              </button>
-            )}
-          </div>
+          <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
+            <Building2 className="w-3.5 h-3.5 text-emerald-500" />
+            Auditing Branch: <span className="text-emerald-400 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
+            <span className="text-slate-400 mx-1">•</span>
+            <span className="text-slate-400">FBR &amp; PRA Restaurant Compliance Mode</span>
+          </p>
         </div>
 
         {/* Date / Time Window Filter Strip */}
