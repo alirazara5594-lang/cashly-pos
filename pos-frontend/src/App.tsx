@@ -22,6 +22,7 @@ import { TenantSignup } from './pages/TenantSignup';
 import { WhatsAppConfig } from './pages/WhatsAppConfig';
 import { PricingAdmin } from './pages/PricingAdmin';
 import { ModulePermissions } from './pages/ModulePermissions';
+import { SmartAnalytics } from './pages/SmartAnalytics';
 import { UserLoginModal } from './components/UserLoginModal';
 import { usePosStore } from './store/posStore';
 import { posApi } from './services/api';
@@ -93,7 +94,7 @@ function MainLayoutInner() {
   }
 
   return (
-    <div className={`min-h-screen flex selection:bg-emerald-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
+    <div className={`min-h-screen flex flex-col bg-mesh selection:bg-emerald-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
       theme === 'light' ? 'theme-light bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'
     }`}>
       {/* Left Side Navigation Sidebar with grouped submodules */}
@@ -142,6 +143,7 @@ function MainLayoutInner() {
             <Route path="/whatsapp-config" element={<WhatsAppConfig />} />
             <Route path="/pricing-admin" element={<PricingAdmin />} />
             <Route path="/permissions" element={<ModulePermissions />} />
+            <Route path="/analytics" element={<SmartAnalytics />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

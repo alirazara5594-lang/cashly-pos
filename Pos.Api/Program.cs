@@ -331,6 +331,19 @@ using (var scope = app.Services.CreateScope())
                 ""CanDelete"" boolean NOT NULL,
                 ""CanExport"" boolean NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS ""SmartAlerts"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid,
+                ""AlertType"" text NOT NULL,
+                ""Severity"" text NOT NULL,
+                ""Title"" text NOT NULL,
+                ""Message"" text NOT NULL,
+                ""Metadata"" text,
+                ""IsRead"" boolean NOT NULL DEFAULT false,
+                ""IsDismissed"" boolean NOT NULL DEFAULT false,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
         ");
 
         // Seed data — clean slate, user creates everything
@@ -2830,6 +2843,253 @@ app.MapGet("/api/permissions/my", async (AppDbContext db, HttpContext http) =>
 
     var perms = await db.ModulePermissions.Where(m => m.UserId == userId.Value).ToListAsync();
     return Results.Ok(new { fullAccess = false, role, permissions = perms });
+}).RequireAuthorization();
+
+// ============================================================
+// SMART ALERTS & AUTOMATION
+// ============================================================
+
+// Get alerts for tenant
+app.MapGet("/api/alerts", async (AppDbContext db, HttpContext http, bool? unreadOnly) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var query = db.SmartAlerts.Where(a => a.TenantId == tenantId.Value && !a.IsDismissed);
+    if (unreadOnly == true) query = query.Where(a => !a.IsRead);
+    var alerts = await query.OrderByDescending(a => a.CreatedAt).Take(50).ToListAsync();
+    var unreadCount = await db.SmartAlerts.CountAsync(a => a.TenantId == tenantId.Value && !a.IsRead && !a.IsDismissed);
+    return Results.Ok(new { alerts, unreadCount });
+}).RequireAuthorization();
+
+// Mark alert as read
+app.MapPut("/api/alerts/{id:guid}/read", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    var alert = await db.SmartAlerts.FindAsync(id);
+    if (alert == null) return Results.NotFound();
+    alert.IsRead = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Marked as read" });
+}).RequireAuthorization();
+
+// Dismiss alert
+app.MapPut("/api/alerts/{id:guid}/dismiss", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    var alert = await db.SmartAlerts.FindAsync(id);
+    if (alert == null) return Results.NotFound();
+    alert.IsDismissed = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Alert dismissed" });
+}).RequireAuthorization();
+
+// Dismiss all
+app.MapPut("/api/alerts/dismiss-all", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var alerts = await db.SmartAlerts.Where(a => a.TenantId == tenantId.Value && !a.IsDismissed).ToListAsync();
+    foreach (var a in alerts) a.IsDismissed = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = $"Dismissed {alerts.Count} alerts" });
+}).RequireAuthorization();
+
+// Generate smart alerts (called periodically or manually)
+app.MapPost("/api/alerts/generate", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var branchId = http.GetUserId() != null ? db.Users.FirstOrDefault(u => u.Id == http.GetUserId().Value)?.BranchId : null;
+    var createdAlerts = new List<SmartAlert>();
+
+    // 1. Low Stock Alerts
+    var lowStockItems = await db.Ingredients
+        .Where(i => i.TenantId == tenantId.Value && i.CurrentStock <= i.MinAlertLevel)
+        .ToListAsync();
+    foreach (var item in lowStockItems)
+    {
+        var exists = await db.SmartAlerts.AnyAsync(a => 
+            a.TenantId == tenantId.Value && 
+            a.AlertType == "low_stock" && 
+            a.Title.Contains(item.Name) && 
+            !a.IsDismissed &&
+            a.CreatedAt > DateTime.UtcNow.AddHours(-12));
+        if (!exists)
+        {
+            var alert = new SmartAlert
+            {
+                TenantId = tenantId.Value,
+                BranchId = item.BranchId,
+                AlertType = "low_stock",
+                Severity = item.CurrentStock == 0 ? "critical" : "warning",
+                Title = $"Low Stock: {item.Name}",
+                Message = item.CurrentStock == 0 
+                    ? $"{item.Name} is OUT OF STOCK! Current: {item.CurrentStock} {item.Unit}, Min: {item.MinAlertLevel}"
+                    : $"{item.Name} is running low. Current: {item.CurrentStock} {item.Unit}, Min alert: {item.MinAlertLevel}",
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { ingredientId = item.Id, currentStock = item.CurrentStock, minLevel = item.MinAlertLevel })
+            };
+            db.SmartAlerts.Add(alert);
+            createdAlerts.Add(alert);
+        }
+    }
+
+    // 2. Shift Reminder (if no open shift after 30min of business hours)
+    var today = DateTime.UtcNow.Date;
+    var todayStart = today.AddHours(10); // assume 10am open
+    if (DateTime.UtcNow > todayStart && DateTime.UtcNow < today.AddHours(23))
+    {
+        var branches = await db.Branches.Where(b => b.TenantId == tenantId.Value).ToListAsync();
+        foreach (var branch in branches)
+        {
+            var hasOpenShift = await db.CashShifts.AnyAsync(s => 
+                s.BranchId == branch.Id && 
+                s.OpenedAt >= today && 
+                s.ClosedAt == null);
+            if (!hasOpenShift)
+            {
+                var exists = await db.SmartAlerts.AnyAsync(a => 
+                    a.TenantId == tenantId.Value && 
+                    a.AlertType == "shift_reminder" && 
+                    a.BranchId == branch.Id &&
+                    !a.IsDismissed &&
+                    a.CreatedAt > today);
+                if (!exists)
+                {
+                    var alert = new SmartAlert
+                    {
+                        TenantId = tenantId.Value,
+                        BranchId = branch.Id,
+                        AlertType = "shift_reminder",
+                        Severity = "warning",
+                        Title = $"No Open Shift: {branch.Name}",
+                        Message = $"{branch.Name} has no open cash shift today. Open a shift to start recording sales.",
+                        Metadata = System.Text.Json.JsonSerializer.Serialize(new { branchId = branch.Id })
+                    };
+                    db.SmartAlerts.Add(alert);
+                    createdAlerts.Add(alert);
+                }
+            }
+        }
+    }
+
+    // 3. Daily Summary Alert (if it's evening and no Z-Report run)
+    if (DateTime.UtcNow.Hour >= 20) // 8pm
+    {
+        var hasTodayZReport = await db.CashShifts.AnyAsync(s => 
+            s.BranchId != null &&
+            s.ClosedAt != null && 
+            s.ClosedAt >= today);
+        if (!hasTodayZReport)
+        {
+            var exists = await db.SmartAlerts.AnyAsync(a => 
+                a.TenantId == tenantId.Value && 
+                a.AlertType == "daily_summary" &&
+                !a.IsDismissed &&
+                a.CreatedAt > today);
+            if (!exists)
+            {
+                var totalOrdersToday = await db.Orders.CountAsync(o => o.TenantId == tenantId.Value && o.CreatedAt >= today);
+                var totalSalesToday = await db.Orders.Where(o => o.TenantId == tenantId.Value && o.CreatedAt >= today && o.IsPaid).SumAsync(o => o.TotalPKR);
+                var alert = new SmartAlert
+                {
+                    TenantId = tenantId.Value,
+                    AlertType = "daily_summary",
+                    Severity = "info",
+                    Title = "End of Day Reminder",
+                    Message = $"Today: {totalOrdersToday} orders, Rs {totalSalesToday:N0} sales. Run Z-Report to close the day.",
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { totalOrders = totalOrdersToday, totalSales = totalSalesToday })
+                };
+                db.SmartAlerts.Add(alert);
+                createdAlerts.Add(alert);
+            }
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { generated = createdAlerts.Count, alerts = createdAlerts });
+}).RequireAuthorization();
+
+// ============================================================
+// SMART ANALYTICS
+// ============================================================
+
+app.MapGet("/api/analytics/smart", async (AppDbContext db, HttpContext http, int? days) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var targetDays = days ?? 30;
+    var since = DateTime.UtcNow.AddDays(-targetDays);
+
+    var orders = await db.Orders
+        .Where(o => o.TenantId == tenantId.Value && o.CreatedAt >= since && o.IsPaid)
+        .ToListAsync();
+
+    // Best sellers
+    var bestSellers = orders
+        .SelectMany(o => o.Items)
+        .GroupBy(i => i.ProductName)
+        .Select(g => new { productName = g.Key, totalQty = g.Sum(i => i.Quantity), totalRevenue = g.Sum(i => i.UnitPricePKR * i.Quantity) })
+        .OrderByDescending(x => x.totalQty)
+        .Take(10)
+        .ToList();
+
+    // Peak hours
+    var hourlySales = orders
+        .GroupBy(o => o.CreatedAt.Hour)
+        .Select(g => new { hour = g.Key, orderCount = g.Count(), totalSales = g.Sum(o => o.TotalPKR) })
+        .OrderBy(x => x.hour)
+        .ToList();
+
+    // Revenue trend (last 7 days)
+    var last7Days = Enumerable.Range(0, 7).Select(i => DateTime.UtcNow.Date.AddDays(-i)).Reverse().ToList();
+    var revenueTrend = last7Days.Select(date => new
+    {
+        date = date.ToString("MMM dd"),
+        orders = orders.Count(o => o.CreatedAt.Date == date),
+        revenue = orders.Where(o => o.CreatedAt.Date == date).Sum(o => o.TotalPKR)
+    }).ToList();
+
+    // Average order value
+    var avgOrderValue = orders.Count > 0 ? orders.Average(o => o.TotalPKR) : 0;
+
+    // Payment method breakdown
+    var paymentBreakdown = orders
+        .GroupBy(o => o.PaymentMethod.ToString())
+        .Select(g => new { method = g.Key, count = g.Count(), total = g.Sum(o => o.TotalPKR) })
+        .ToList();
+
+    // Order type breakdown
+    var orderTypeBreakdown = orders
+        .GroupBy(o => o.OrderType.ToString())
+        .Select(g => new { type = g.Key, count = g.Count(), total = g.Sum(o => o.TotalPKR) })
+        .ToList();
+
+    // Prediction: simple moving average for next 3 days
+    var last7DaysSales = last7Days.Select(date => orders.Where(o => o.CreatedAt.Date == date).Sum(o => o.TotalPKR)).ToList();
+    var avgDailySales = last7DaysSales.Count > 0 ? last7DaysSales.Average() : 0;
+    var predictedNext3Days = avgDailySales * 3;
+
+    return Results.Ok(new
+    {
+        bestSellers,
+        peakHours = hourlySales,
+        revenueTrend,
+        avgOrderValue = Math.Round(avgOrderValue, 0),
+        paymentBreakdown,
+        orderTypeBreakdown,
+        predictions = new
+        {
+            avgDailySales = Math.Round(avgDailySales, 0),
+            predictedNext3Days = Math.Round(predictedNext3Days, 0),
+            trend = last7DaysSales.Count >= 2 && last7DaysSales.Last() > last7DaysSales.First() ? "growing" : "stable"
+        },
+        summary = new
+        {
+            totalOrders = orders.Count,
+            totalRevenue = orders.Sum(o => o.TotalPKR),
+            avgOrdersPerDay = Math.Round((double)orders.Count / targetDays, 0),
+            busiestHour = hourlySales.OrderByDescending(h => h.orderCount).FirstOrDefault()?.hour ?? 0,
+            topPaymentMethod = paymentBreakdown.OrderByDescending(p => p.count).FirstOrDefault()?.method ?? "Cash"
+        }
+    });
 }).RequireAuthorization();
 
 app.Run();

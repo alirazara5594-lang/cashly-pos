@@ -38,6 +38,7 @@ public class AppDbContext : DbContext
     public DbSet<WhatsAppConfig> WhatsAppConfigs => Set<WhatsAppConfig>();
     public DbSet<SaaSPackageConfig> SaaSPackageConfigs => Set<SaaSPackageConfig>();
     public DbSet<ModulePermission> ModulePermissions => Set<ModulePermission>();
+    public DbSet<SmartAlert> SmartAlerts => Set<SmartAlert>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

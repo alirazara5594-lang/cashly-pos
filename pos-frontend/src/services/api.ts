@@ -714,6 +714,31 @@ export const posApi = {
   getMyPermissions: async () => {
     const res = await api.get('/api/permissions/my');
     return res.data;
+  },
+
+  getAlerts: async (unreadOnly?: boolean) => {
+    const res = await api.get('/api/alerts', { params: { unreadOnly } });
+    return res.data;
+  },
+  markAlertRead: async (id: string) => {
+    const res = await api.put(`/api/alerts/${id}/read`);
+    return res.data;
+  },
+  dismissAlert: async (id: string) => {
+    const res = await api.put(`/api/alerts/${id}/dismiss`);
+    return res.data;
+  },
+  dismissAllAlerts: async () => {
+    const res = await api.put('/api/alerts/dismiss-all');
+    return res.data;
+  },
+  generateAlerts: async () => {
+    const res = await api.post('/api/alerts/generate');
+    return res.data;
+  },
+  getSmartAnalytics: async (days?: number) => {
+    const res = await api.get('/api/analytics/smart', { params: { days } });
+    return res.data;
   }
 };
 

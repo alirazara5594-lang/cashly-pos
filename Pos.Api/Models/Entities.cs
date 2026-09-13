@@ -426,6 +426,21 @@ public class ModulePermission
     public bool CanExport { get; set; } = false;
 }
 
+public class SmartAlert
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? BranchId { get; set; }
+    public string AlertType { get; set; } = string.Empty; // low_stock, unusual_sales, shift_reminder, peak_hour, daily_summary
+    public string Severity { get; set; } = "info"; // info, warning, critical
+    public string Title { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string? Metadata { get; set; } // JSON for additional data
+    public bool IsRead { get; set; } = false;
+    public bool IsDismissed { get; set; } = false;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public enum UserRole
 {
     SuperAdmin = 0,
