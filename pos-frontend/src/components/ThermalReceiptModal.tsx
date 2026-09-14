@@ -88,8 +88,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                     {item.specialNotes && <div className="text-[9px] text-gray-600 italic">*{item.specialNotes}</div>}
                   </div>
                   <div className="col-span-2 text-center">{item.quantity}</div>
-                  <div className="col-span-2 text-right">₨{item.unitPricePKR}</div>
-                  <div className="col-span-2 text-right font-bold">₨{item.totalPricePKR}</div>
+                  <div className="col-span-2 text-right">{item.unitPricePKR}</div>
+                  <div className="col-span-2 text-right font-bold">{item.totalPricePKR}</div>
                 </div>
               ))}
             </div>
@@ -99,23 +99,23 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           <div className="py-2 border-b border-dashed border-gray-400 space-y-1 text-[10px]">
             <div className="flex justify-between">
               <span>Subtotal:</span>
-              <span>₨{order.subTotalPKR.toLocaleString()}</span>
+              <span>{order.subTotalPKR.toLocaleString()}</span>
             </div>
             {order.discountPKR > 0 && (
               <div className="flex justify-between text-gray-700">
                 <span>Discount:</span>
-                <span>-₨{order.discountPKR.toLocaleString()}</span>
+                <span>-{order.discountPKR.toLocaleString()}</span>
               </div>
             )}
             <div className="flex justify-between">
               <span>
-                Sales Tax ({order.paymentMethod === 'Cash' ? '16% Cash Rate' : '8% Digital Card Rate'}):
+                Sales Tax ({order.paymentMethod === 'Cash' ? 'Tax Rate' : 'Digital Rate'}):
               </span>
-              <span>₨{order.taxPKR.toLocaleString()}</span>
+              <span>{order.taxPKR.toLocaleString()}</span>
             </div>
             <div className="flex justify-between text-xs font-black pt-1 border-t border-gray-300">
-              <span>TOTAL (PKR):</span>
-              <span>₨{order.totalPKR.toLocaleString()}</span>
+              <span>TOTAL:</span>
+              <span>{order.totalPKR.toLocaleString()}</span>
             </div>
           </div>
 
@@ -127,18 +127,18 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             </div>
             {order.paymentMethod !== 'Cash' && (
               <div className="p-1 rounded bg-gray-100 text-[9px] text-teal-800 font-semibold text-center mt-1">
-                * DIGITAL INCENTIVE: Saved 8% tax by paying digitally! *
+                * DIGITAL PAYMENT DISCOUNT APPLIED *
               </div>
             )}
             {order.paymentMethod === 'Cash' && (
               <>
                 <div className="flex justify-between">
                   <span>Cash Tendered:</span>
-                  <span>₨{order.amountPaidPKR.toLocaleString()}</span>
+                  <span>{order.amountPaidPKR.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between font-bold">
                   <span>Change Due:</span>
-                  <span>₨{order.changeDuePKR.toLocaleString()}</span>
+                  <span>{order.changeDuePKR.toLocaleString()}</span>
                 </div>
               </>
             )}
@@ -148,7 +148,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           {/* Fiscal Barcode & Footer */}
           <div className="pt-3 text-center space-y-1">
             <div className="inline-block px-3 py-1 bg-gray-100 border border-gray-300 rounded text-[9px] tracking-widest font-mono">
-              FBR-POS-PKR-{order.orderNumber.replace(/[^0-9]/g, '')}
+              POS-{order.orderNumber.replace(/[^0-9]/g, '')}
             </div>
             <div className="text-[9px] text-gray-600 mt-1">Thank you for your visit!</div>
             <div className="text-[8px] text-gray-400">Powered by Cashly POS • www.cashlypos.com</div>

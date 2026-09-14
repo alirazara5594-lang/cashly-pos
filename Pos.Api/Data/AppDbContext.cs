@@ -39,6 +39,7 @@ public class AppDbContext : DbContext
     public DbSet<SaaSPackageConfig> SaaSPackageConfigs => Set<SaaSPackageConfig>();
     public DbSet<ModulePermission> ModulePermissions => Set<ModulePermission>();
     public DbSet<SmartAlert> SmartAlerts => Set<SmartAlert>();
+    public DbSet<TenantSettings> TenantSettings => Set<TenantSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -127,6 +128,10 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<ModulePermission>()
             .HasIndex(mp => new { mp.UserId, mp.ModuleKey, mp.SubModuleKey })
+            .IsUnique();
+
+        modelBuilder.Entity<TenantSettings>()
+            .HasIndex(ts => ts.TenantId)
             .IsUnique();
 
         // Unique constraints for document numbers (prevent duplicates from race conditions)

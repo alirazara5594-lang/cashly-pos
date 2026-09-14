@@ -1,3 +1,20 @@
+export interface TenantSettings {
+  id: string;
+  tenantId: string;
+  currencyCode: string;
+  currencySymbol: string;
+  decimalPlaces: number;
+  taxAuthorityName: string;
+  defaultTaxRate: number;
+  useDualTaxRate: boolean;
+  digitalTaxRate: number;
+  phoneCode: string;
+  defaultCity: string;
+  dateFormat: string;
+  receiptFooter: string;
+  allowedPaymentMethods: string;
+}
+
 export type BusinessType = 'Restaurant' | 'Retail' | 'CashAndCarry' | 'Hybrid';
 export type SubscriptionTier = 'Starter' | 'Standard' | 'Professional';
 export type TerminalType = 'Counter' | 'OrderTab' | 'KitchenDisplay';

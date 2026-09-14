@@ -739,7 +739,17 @@ export const posApi = {
   getSmartAnalytics: async (days?: number) => {
     const res = await api.get('/api/analytics/smart', { params: { days } });
     return res.data;
-  }
+  },
+
+  // Tenant Settings
+  getTenantSettings: async (tenantId: string) => {
+    const res = await api.get('/api/tenant/settings', { params: { tenantId } });
+    return res.data;
+  },
+  updateTenantSettings: async (tenantId: string, settings: any) => {
+    const res = await api.put('/api/tenant/settings', settings, { params: { tenantId } });
+    return res.data;
+  },
 };
 
 

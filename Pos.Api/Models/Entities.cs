@@ -82,6 +82,26 @@ public class Tenant
 
     public ICollection<Branch> Branches { get; set; } = new List<Branch>();
     public ICollection<AddOnSubscription> AddOns { get; set; } = new List<AddOnSubscription>();
+    public TenantSettings? Settings { get; set; }
+}
+
+public class TenantSettings
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string CountryCode { get; set; } = "PK";
+    public string CurrencyCode { get; set; } = "PKR";
+    public string CurrencySymbol { get; set; } = "₨";
+    public int DecimalPlaces { get; set; } = 0;
+    public string TaxAuthorityName { get; set; } = "FBR";
+    public decimal DefaultTaxRate { get; set; } = 16;
+    public bool UseDualTaxRate { get; set; } = true;
+    public decimal DigitalTaxRate { get; set; } = 8;
+    public string PhoneCode { get; set; } = "+92";
+    public string DefaultCity { get; set; } = "Islamabad";
+    public string DateFormat { get; set; } = "dd/MM/yyyy";
+    public string ReceiptFooter { get; set; } = "Thank you for your visit!";
+    public string AllowedPaymentMethods { get; set; } = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata";
 }
 
 public class Branch
@@ -133,6 +153,7 @@ public class Category
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string? LocalName { get; set; }
     public string Icon { get; set; } = "utensils";
     public int SortOrder { get; set; }
     public ICollection<Product> Products { get; set; } = new List<Product>();

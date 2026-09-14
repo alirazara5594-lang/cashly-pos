@@ -213,7 +213,7 @@ export const OrderTab: React.FC = () => {
                 {p.urduName && <div className="text-[11px] text-slate-500 font-sans mt-0.5">{p.urduName}</div>}
               </div>
               <div className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between">
-                <span className="text-teal-600 font-black text-xs">₨{p.sellingPricePKR.toLocaleString()}</span>
+                <span className="text-teal-600 font-black text-xs">{p.sellingPricePKR.toLocaleString()}</span>
                 <span className="w-6 h-6 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center font-bold text-xs group-hover:bg-purple-500 group-hover:text-white transition">
                   +
                 </span>
@@ -253,7 +253,7 @@ export const OrderTab: React.FC = () => {
               <div key={item.productId} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="font-bold text-xs text-slate-900 truncate">{item.productName}</div>
-                  <div className="text-[10px] text-teal-600">₨{item.unitPricePKR}</div>
+                  <div className="text-[10px] text-teal-600">{item.unitPricePKR}</div>
                 </div>
                 <div className="flex items-center gap-1.5 bg-white px-1.5 py-0.5 rounded-lg border border-slate-200">
                   <button onClick={() => updateTabQty(item.productId, -1)} className="text-slate-500 p-0.5">
@@ -265,7 +265,7 @@ export const OrderTab: React.FC = () => {
                   </button>
                 </div>
                 <div className="text-right min-w-[50px]">
-                  <div className="font-bold text-xs text-slate-900">₨{item.totalPricePKR}</div>
+                  <div className="font-bold text-xs text-slate-900">{item.totalPricePKR}</div>
                   <button onClick={() => removeFromTab(item.productId)} className="text-slate-400 hover:text-rose-500">
                     <Trash2 className="w-3 h-3 ml-auto" />
                   </button>
@@ -288,7 +288,7 @@ export const OrderTab: React.FC = () => {
           </div>
           <div className="flex justify-between items-center text-xs">
             <span className="text-slate-500">Items Total:</span>
-            <span className="text-base font-black text-teal-600">₨{totalTabPKR.toLocaleString()}</span>
+            <span className="text-base font-black text-teal-600">{totalTabPKR.toLocaleString()}</span>
           </div>
           <button
             onClick={handleSendOrderMode1}

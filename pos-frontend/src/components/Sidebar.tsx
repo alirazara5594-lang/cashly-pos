@@ -210,7 +210,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Cash Sales Report', path: '/reports', state: { tab: 'cashSales' }, icon: Banknote },
               { label: 'Card / Digital Sales Report', path: '/reports', state: { tab: 'cardSales' }, icon: CreditCard },
               { label: 'Cash Tally & Closing', path: '/reports', state: { tab: 'cashTally' }, icon: Wallet },
-              { label: 'Tax Audit & FBR Register', path: '/reports', state: { tab: 'tax' }, icon: Percent },
+              { label: 'Tax Audit & Compliance', path: '/reports', state: { tab: 'tax' }, icon: Percent },
               { label: 'Category Turnover & Channels', path: '/reports', state: { tab: 'categories' }, icon: PieChart },
               { label: 'Menu Profitability & COGS', path: '/reports', state: { tab: 'products' }, icon: TrendingUp },
               { label: 'Payment Tender Mix', path: '/reports', state: { tab: 'payments' }, icon: Wallet },

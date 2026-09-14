@@ -352,7 +352,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </button>
 
           <div className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-bold text-teal-600">
-            PKR ₨
+            PKR
           </div>
         </div>
       </header>

@@ -275,7 +275,7 @@ export const StockRequests: React.FC = () => {
                   {r.notes && <span>📝 {r.notes}</span>}
                 </div>
                 <div className="font-mono font-bold text-teal-600">
-                  ₨{r.estimatedCostPKR.toLocaleString()}
+                  {r.estimatedCostPKR.toLocaleString()}
                 </div>
               </div>
             </div>
@@ -384,7 +384,7 @@ export const StockRequests: React.FC = () => {
                     <div className="flex-1">
                       <div className="text-xs font-bold text-slate-900">{item.ingredientName}</div>
                       <div className="text-[10px] text-slate-500">
-                        Current: {item.currentStock} {item.unit} • ₨{item.unitCostPKR}/{item.unit}
+                        Current: {item.currentStock} {item.unit} • {item.unitCostPKR}/{item.unit}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -392,7 +392,7 @@ export const StockRequests: React.FC = () => {
                         {item.quantityRequested} {item.unit}
                       </span>
                       <span className="text-xs font-mono text-teal-600 font-semibold min-w-[70px] text-right">
-                        ₨{(item.quantityRequested * item.unitCostPKR).toLocaleString()}
+                        {(item.quantityRequested * item.unitCostPKR).toLocaleString()}
                       </span>
                     </div>
                     <button
@@ -409,7 +409,7 @@ export const StockRequests: React.FC = () => {
             {/* Total + Submit */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-200">
               <div className="text-xs text-slate-500">
-                Total Estimated: <span className="font-bold text-teal-600 font-mono">₨{totalEstimated.toLocaleString()}</span>
+                Total Estimated: <span className="font-bold text-teal-600 font-mono">{totalEstimated.toLocaleString()}</span>
               </div>
               <div className="flex gap-2">
                 <button
@@ -456,11 +456,11 @@ export const StockRequests: React.FC = () => {
                 <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
                   <div>
                     <div className="text-xs font-bold text-slate-900">{item.ingredientName}</div>
-                    <div className="text-[10px] text-slate-500">Current: {item.currentStock} {item.unit} • ₨{item.unitCostPKR}/{item.unit}</div>
+                    <div className="text-[10px] text-slate-500">Current: {item.currentStock} {item.unit} • {item.unitCostPKR}/{item.unit}</div>
                   </div>
                   <div className="text-right">
                     <div className="text-xs font-mono font-bold text-amber-600">{item.quantityRequested} {item.unit}</div>
-                    <div className="text-[10px] font-mono text-teal-600">₨{(item.quantityRequested * item.unitCostPKR).toLocaleString()}</div>
+                    <div className="text-[10px] font-mono text-teal-600">{(item.quantityRequested * item.unitCostPKR).toLocaleString()}</div>
                   </div>
                 </div>
               ))}
@@ -470,7 +470,7 @@ export const StockRequests: React.FC = () => {
             <div className="pt-3 border-t border-slate-200 space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-500">Estimated Total:</span>
-                <span className="font-bold text-teal-600 font-mono">₨{viewRequest.estimatedCostPKR.toLocaleString()}</span>
+                <span className="font-bold text-teal-600 font-mono">{viewRequest.estimatedCostPKR.toLocaleString()}</span>
               </div>
               {viewRequest.notes && (
                 <div className="text-xs text-slate-500">📝 {viewRequest.notes}</div>

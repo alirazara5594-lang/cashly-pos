@@ -110,7 +110,7 @@ export const DirectorDashboard: React.FC = () => {
           </div>
           <div>
             <div className="text-xl font-black text-slate-900 leading-tight">
-              ₨{(kpis?.todaySalesPKR || 0).toLocaleString()}
+              {(kpis?.todaySalesPKR || 0).toLocaleString()}
             </div>
             <div className="text-[10px] text-teal-600 flex items-center gap-1 mt-0.5 font-semibold">
               <ArrowUpRight className="w-3 h-3" /> +14.8% vs yesterday
@@ -144,7 +144,7 @@ export const DirectorDashboard: React.FC = () => {
           </div>
           <div>
             <div className="text-xl font-black text-slate-900 leading-tight">
-              ₨{(kpis?.avgBasketPKR || 0).toLocaleString()}
+              {(kpis?.avgBasketPKR || 0).toLocaleString()}
             </div>
             <div className="text-[10px] text-purple-600 mt-0.5">
               High average spending per receipt
@@ -161,7 +161,7 @@ export const DirectorDashboard: React.FC = () => {
             </div>
           </div>
           <div>
-            <div className="text-xl font-black text-teal-600 leading-tight">₨58,500</div>
+            <div className="text-xl font-black text-teal-600 leading-tight">58,500</div>
             <div className="text-[10px] text-slate-500 mt-0.5">
               Active Shift: <strong>Hamza POS</strong>
             </div>
@@ -181,7 +181,7 @@ export const DirectorDashboard: React.FC = () => {
               Live breakdown of all branches connected to {selectedTenant?.name || 'Restaurant HQ'}
             </p>
           </div>
-          <span className="text-xs font-mono text-teal-600 font-bold">Currency: PKR ₨</span>
+          <span className="text-xs font-mono text-teal-600 font-bold">Currency: PKR</span>
         </div>
 
         <div className="overflow-x-auto">
@@ -211,7 +211,7 @@ export const DirectorDashboard: React.FC = () => {
                   <td className="py-3 text-center font-mono font-bold text-blue-600">{branch.activeCounters} Counters</td>
                   <td className="py-3 text-center font-bold text-slate-900">{branch.ordersCount}</td>
                   <td className="py-3 text-right font-black text-teal-600 text-sm">
-                    ₨{branch.todaySalesPKR.toLocaleString()}
+                    {branch.todaySalesPKR.toLocaleString()}
                   </td>
                   <td className="py-3 text-right">
                     <span className="px-2 py-0.5 rounded-full bg-teal-50 text-teal-600 border border-teal-200 text-[10px] font-bold">
@@ -234,10 +234,10 @@ export const DirectorDashboard: React.FC = () => {
           </h3>
           <div className="space-y-2">
             {[
-              { name: 'Crown Crust Pizza (Large)', count: 24, revenue: '₨42,000' },
-              { name: 'Zinger Supreme Burger', count: 35, revenue: '₨24,150' },
-              { name: 'Grand Family Feast', count: 6, revenue: '₨23,100' },
-              { name: 'Cheesy Loaded Fries', count: 28, revenue: '₨13,720' },
+              { name: 'Crown Crust Pizza (Large)', count: 24, revenue: '42,000' },
+              { name: 'Zinger Supreme Burger', count: 35, revenue: '24,150' },
+              { name: 'Grand Family Feast', count: 6, revenue: '23,100' },
+              { name: 'Cheesy Loaded Fries', count: 28, revenue: '13,720' },
             ].map((item, idx) => (
               <div key={idx} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                 <div>
@@ -267,11 +267,11 @@ export const DirectorDashboard: React.FC = () => {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Opening Cash Float:</span>
-                <span className="text-slate-700">₨10,000</span>
+                <span className="text-slate-700">10,000</span>
               </div>
               <div className="flex justify-between pt-1 border-t border-slate-200">
                 <span className="text-slate-500 font-bold">Total Cash in Till:</span>
-                <span className="text-teal-600 font-black">₨58,500</span>
+                <span className="text-teal-600 font-black">58,500</span>
               </div>
             </div>
           </div>

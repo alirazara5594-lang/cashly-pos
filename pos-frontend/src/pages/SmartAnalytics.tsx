@@ -149,7 +149,7 @@ export const SmartAnalytics: React.FC = () => {
                     Total Revenue
                   </div>
                   <div className="text-lg font-black text-slate-900">
-                    Rs {data.summary.totalRevenue.toLocaleString()}
+                    {data.summary.totalRevenue.toLocaleString()}
                   </div>
                 </div>
               </div>
@@ -179,7 +179,7 @@ export const SmartAnalytics: React.FC = () => {
                     Avg Order Value
                   </div>
                   <div className="text-lg font-black text-slate-900">
-                    Rs {data.summary.avgOrderValue.toLocaleString()}
+                    {data.summary.avgOrderValue.toLocaleString()}
                   </div>
                 </div>
               </div>
@@ -214,7 +214,7 @@ export const SmartAnalytics: React.FC = () => {
                   return (
                     <div key={i} className="flex-1 flex flex-col items-center gap-1">
                       <span className="text-[9px] font-semibold text-slate-500">
-                        {d.revenue > 0 ? `Rs ${(d.revenue / 1000).toFixed(1)}k` : '-'}
+                        {d.revenue > 0 ? `${(d.revenue / 1000).toFixed(1)}k` : '-'}
                       </span>
                       <div className="w-full flex justify-center">
                         <div
@@ -247,7 +247,7 @@ export const SmartAnalytics: React.FC = () => {
                     Avg Daily Sales
                   </div>
                   <div className="text-xl font-black text-slate-900 mt-1">
-                    Rs {data.predictions.avgDailySales.toLocaleString()}
+                    {data.predictions.avgDailySales.toLocaleString()}
                   </div>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
@@ -262,7 +262,7 @@ export const SmartAnalytics: React.FC = () => {
                       >
                         <div className="text-[9px] text-teal-600 font-bold">Day {i + 1}</div>
                         <div className="text-xs font-bold text-slate-900 mt-0.5">
-                          Rs {(val / 1000).toFixed(1)}k
+                          {(val / 1000).toFixed(1)}k
                         </div>
                       </div>
                     ))}
@@ -327,7 +327,7 @@ export const SmartAnalytics: React.FC = () => {
                             {item.quantity}
                           </td>
                           <td className="py-2 px-2 text-right text-teal-600 font-bold">
-                            Rs {item.revenue.toLocaleString()}
+                            {item.revenue.toLocaleString()}
                           </td>
                         </tr>
                       );

@@ -220,7 +220,7 @@ export const DeliveryBoard: React.FC = () => {
                     <span className="font-black text-xs text-slate-900">{order.orderNumber}</span>
                     <div className="text-[10px] text-amber-600 font-semibold">{order.orderType}</div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">₨{order.totalPKR.toLocaleString()}</span>
+                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()}</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -265,7 +265,7 @@ export const DeliveryBoard: React.FC = () => {
                     <span className="font-black text-xs text-slate-900">{order.orderNumber}</span>
                     <div className="text-[10px] text-blue-600 font-semibold">Packed & Ready</div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">₨{order.totalPKR.toLocaleString()}</span>
+                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()}</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -316,7 +316,7 @@ export const DeliveryBoard: React.FC = () => {
                       <span>{order.assignedRider?.name || 'Rider En Route'}</span>
                     </div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">₨{order.totalPKR.toLocaleString()} (COD)</span>
+                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()} (COD)</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -354,7 +354,7 @@ export const DeliveryBoard: React.FC = () => {
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 opacity-80">
                 <div className="flex justify-between items-start">
                   <span className="font-bold text-xs text-slate-700">{order.orderNumber}</span>
-                  <span className="text-xs font-bold text-teal-600">₨{order.totalPKR.toLocaleString()}</span>
+                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()}</span>
                 </div>
                 <div className="text-[11px] text-slate-500">{order.customerName} • {order.assignedRider?.name || 'Rider'}</div>
                 <div className="text-[10px] text-teal-600 font-semibold flex items-center gap-1">
@@ -380,7 +380,7 @@ export const DeliveryBoard: React.FC = () => {
             <div className="text-xs text-slate-700 space-y-1">
               <div>Order: <strong>{selectedOrderForAssign.orderNumber}</strong></div>
               <div>Customer: {selectedOrderForAssign.customerName}</div>
-              <div>COD Amount: <strong className="text-teal-600">₨{selectedOrderForAssign.totalPKR.toLocaleString()}</strong></div>
+              <div>COD Amount: <strong className="text-teal-600">{selectedOrderForAssign.totalPKR.toLocaleString()}</strong></div>
             </div>
 
             <div>
@@ -464,7 +464,7 @@ export const DeliveryBoard: React.FC = () => {
                     </div>
                     <div className="flex justify-between text-slate-500">
                       <span>Expected Cash Collection:</span>
-                      <strong className="text-teal-600 font-black text-sm">₨{expectedCOD.toLocaleString()}</strong>
+                      <strong className="text-teal-600 font-black text-sm">{expectedCOD.toLocaleString()}</strong>
                     </div>
 
                     <div className="pt-2 border-t border-slate-200 space-y-1">
@@ -489,7 +489,7 @@ export const DeliveryBoard: React.FC = () => {
                     }`}>
                       <span>Reconciliation Variance:</span>
                       <span>
-                        {variance === 0 ? '₨0 (Balanced 100%)' : variance > 0 ? `+₨${variance} (Surplus)` : `-₨${Math.abs(variance)} (Shortage)`}
+                        {variance === 0 ? '0 (Balanced 100%)' : variance > 0 ? `+${variance} (Surplus)` : `-${Math.abs(variance)} (Shortage)`}
                       </span>
                     </div>
                   </div>
@@ -534,8 +534,8 @@ export const DeliveryBoard: React.FC = () => {
                       <th className="p-2.5">Date / Time</th>
                       <th className="p-2.5">Rider</th>
                       <th className="p-2.5 text-center">Delivered</th>
-                      <th className="p-2.5 text-right">Expected (₨)</th>
-                      <th className="p-2.5 text-right">Collected (₨)</th>
+                      <th className="p-2.5 text-right">Expected (PKR)</th>
+                      <th className="p-2.5 text-right">Collected (PKR)</th>
                       <th className="p-2.5 text-right">Variance</th>
                     </tr>
                   </thead>
@@ -547,15 +547,15 @@ export const DeliveryBoard: React.FC = () => {
                         </td>
                         <td className="p-2.5 text-slate-900 font-bold">{st.rider?.name || 'Rider'}</td>
                         <td className="p-2.5 text-center text-slate-700">{st.totalOrdersDelivered}</td>
-                        <td className="p-2.5 text-right font-mono text-slate-700">₨{st.totalCODExpectedPKR.toLocaleString()}</td>
-                        <td className="p-2.5 text-right font-mono font-bold text-slate-900">₨{st.totalCashCollectedPKR.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono text-slate-700">{st.totalCODExpectedPKR.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono font-bold text-slate-900">{st.totalCashCollectedPKR.toLocaleString()}</td>
                         <td className="p-2.5 text-right font-mono font-bold">
                           {st.shortageSurplusPKR === 0 ? (
-                            <span className="text-teal-600">₨0</span>
+                            <span className="text-teal-600">0</span>
                           ) : st.shortageSurplusPKR > 0 ? (
-                            <span className="text-blue-600">+₨{st.shortageSurplusPKR}</span>
+                            <span className="text-blue-600">+{st.shortageSurplusPKR}</span>
                           ) : (
-                            <span className="text-rose-600">-₨{Math.abs(st.shortageSurplusPKR)}</span>
+                            <span className="text-rose-600">-{Math.abs(st.shortageSurplusPKR)}</span>
                           )}
                         </td>
                       </tr>

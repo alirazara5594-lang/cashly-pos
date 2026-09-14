@@ -206,7 +206,7 @@ export const ReportsManagement: React.FC = () => {
             <BarChart3 className="w-6 h-6 text-teal-500" />
             <h1 className="text-xl font-black text-slate-900 tracking-tight">
               {activeTab === 'zreport' && 'Z-Report (End of Day)'}
-              {activeTab === 'tax' && 'Tax Audit & FBR Register'}
+              {activeTab === 'tax' && 'Tax Audit & Compliance'}
               {activeTab === 'categories' && 'Category Turnover & Channels'}
               {activeTab === 'products' && 'Menu Profitability & COGS'}
               {activeTab === 'payments' && 'Payment Tender Mix'}
@@ -220,7 +220,7 @@ export const ReportsManagement: React.FC = () => {
             <Building2 className="w-3.5 h-3.5 text-teal-500" />
             Auditing Branch: <span className="text-teal-600 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
             <span className="text-slate-400 mx-1">•</span>
-            <span className="text-slate-500">FBR &amp; PRA Restaurant Compliance Mode</span>
+            <span className="text-slate-500">Tax Authority Compliance Mode</span>
           </p>
         </div>
 
@@ -305,7 +305,7 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-white border border-slate-200 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Gross Sales Turnover</div>
                     <div>
-                      <div className="text-xl font-black text-teal-600 leading-tight">₨{zReport.totalSalesPKR.toLocaleString()}</div>
+                      <div className="text-xl font-black text-teal-600 leading-tight">{zReport.totalSalesPKR.toLocaleString()}</div>
                       <div className="text-[10px] text-slate-500 mt-0.5">{zReport.totalOrders} paid orders settled</div>
                     </div>
                   </div>
@@ -316,9 +316,9 @@ export const ReportsManagement: React.FC = () => {
                       <Banknote className="w-4 h-4 text-teal-500" />
                     </div>
                     <div>
-                      <div className="text-xl font-black text-slate-900 leading-tight">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Float: ₨${zReport.openingFloatPKR.toLocaleString()} + Cash: ₨${zReport.cashSalesPKR.toLocaleString()}`}>
-                        Float: ₨{zReport.openingFloatPKR.toLocaleString()} + Cash: ₨{zReport.cashSalesPKR.toLocaleString()}
+                      <div className="text-xl font-black text-slate-900 leading-tight">{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Float: ${zReport.openingFloatPKR.toLocaleString()} + Cash: ${zReport.cashSalesPKR.toLocaleString()}`}>
+                        Float: {zReport.openingFloatPKR.toLocaleString()} + Cash: {zReport.cashSalesPKR.toLocaleString()}
                       </div>
                     </div>
                   </div>
@@ -329,15 +329,15 @@ export const ReportsManagement: React.FC = () => {
                       <CreditCard className="w-4 h-4 text-sky-500" />
                     </div>
                     <div>
-                      <div className="text-xl font-black text-sky-600 leading-tight">₨{(zReport.cardSalesPKR + zReport.digitalSalesPKR).toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5 truncate">Card: ₨{zReport.cardSalesPKR.toLocaleString()} | Wallet: ₨{zReport.digitalSalesPKR.toLocaleString()}</div>
+                      <div className="text-xl font-black text-sky-600 leading-tight">{(zReport.cardSalesPKR + zReport.digitalSalesPKR).toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate">Card: {zReport.cardSalesPKR.toLocaleString()} | Wallet: {zReport.digitalSalesPKR.toLocaleString()}</div>
                     </div>
                   </div>
 
                   <div className="bg-white border border-slate-200 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Total Tax Collected</div>
                     <div>
-                      <div className="text-xl font-black text-amber-600 leading-tight">₨{zReport.totalTaxPKR.toLocaleString()}</div>
+                      <div className="text-xl font-black text-amber-600 leading-tight">{zReport.totalTaxPKR.toLocaleString()}</div>
                       <div className="text-[10px] text-amber-600 mt-0.5">Cash (16%) &amp; Card (8%) Split</div>
                     </div>
                   </div>
@@ -367,7 +367,7 @@ export const ReportsManagement: React.FC = () => {
                           : 'bg-rose-50 text-rose-600 border border-rose-200 animate-pulse'
                       }`}>
                         {liveVariance === 0 ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
-                        <span>₨{liveVariance > 0 ? `+${liveVariance.toLocaleString()} Surplus` : liveVariance < 0 ? `${liveVariance.toLocaleString()} Shortage` : '0.00 Balanced'}</span>
+                        <span>{liveVariance > 0 ? `+${liveVariance.toLocaleString()} Surplus` : liveVariance < 0 ? `${liveVariance.toLocaleString()} Shortage` : '0.00 Balanced'}</span>
                       </span>
                     </div>
                   </div>
@@ -375,26 +375,26 @@ export const ReportsManagement: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">1. Opening Float</span>
-                      <div className="text-base font-mono font-black text-slate-900 mt-1">₨{zReport.openingFloatPKR.toLocaleString()}</div>
+                      <div className="text-base font-mono font-black text-slate-900 mt-1">{zReport.openingFloatPKR.toLocaleString()}</div>
                       <span className="text-[10px] text-slate-500">Initial drawer change</span>
                     </div>
 
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">2. Cash Sales Inward</span>
-                      <div className="text-base font-mono font-black text-teal-600 mt-1">+₨{zReport.cashSalesPKR.toLocaleString()}</div>
+                      <div className="text-base font-mono font-black text-teal-600 mt-1">+{zReport.cashSalesPKR.toLocaleString()}</div>
                       <span className="text-[10px] text-slate-500">Net cash receipts</span>
                     </div>
 
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">3. Expected in Drawer</span>
-                      <div className="text-base font-mono font-black text-blue-600 mt-1">₨{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
+                      <div className="text-base font-mono font-black text-blue-600 mt-1">{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
                       <span className="text-[10px] text-slate-500">System calculated total</span>
                     </div>
 
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">4. Physical Cash Counted</span>
                       <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-sm font-bold text-slate-500">₨</span>
+                        <span className="text-sm font-bold text-slate-500">PKR</span>
                         <input
                           type="number"
                           value={actualCashCounted}
@@ -415,7 +415,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
                       <div>
                         <div className="text-xs text-slate-500 font-semibold">Dine-In Restaurant Hall</div>
-                        <div className="text-lg font-black text-slate-900 mt-1">₨{zReport.dineInSalesPKR.toLocaleString()}</div>
+                        <div className="text-lg font-black text-slate-900 mt-1">{zReport.dineInSalesPKR.toLocaleString()}</div>
                       </div>
                       <div className="px-2.5 py-1 rounded-lg bg-white text-teal-600 font-mono text-xs font-bold border border-slate-200">
                         {zReport.totalSalesPKR > 0 ? Math.round((zReport.dineInSalesPKR / zReport.totalSalesPKR) * 100) : 0}%
@@ -425,7 +425,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
                       <div>
                         <div className="text-xs text-slate-500 font-semibold">Takeaway / Counter Pickup</div>
-                        <div className="text-lg font-black text-slate-900 mt-1">₨{zReport.takeawaySalesPKR.toLocaleString()}</div>
+                        <div className="text-lg font-black text-slate-900 mt-1">{zReport.takeawaySalesPKR.toLocaleString()}</div>
                       </div>
                       <div className="px-2.5 py-1 rounded-lg bg-white text-blue-600 font-mono text-xs font-bold border border-slate-200">
                         {zReport.totalSalesPKR > 0 ? Math.round((zReport.takeawaySalesPKR / zReport.totalSalesPKR) * 100) : 0}%
@@ -435,7 +435,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
                       <div>
                         <div className="text-xs text-slate-500 font-semibold">Rider Delivery &amp; Call Orders</div>
-                        <div className="text-lg font-black text-slate-900 mt-1">₨{zReport.deliverySalesPKR.toLocaleString()}</div>
+                        <div className="text-lg font-black text-slate-900 mt-1">{zReport.deliverySalesPKR.toLocaleString()}</div>
                       </div>
                       <div className="px-2.5 py-1 rounded-lg bg-white text-amber-600 font-mono text-xs font-bold border border-slate-200">
                         {zReport.totalSalesPKR > 0 ? Math.round((zReport.deliverySalesPKR / zReport.totalSalesPKR) * 100) : 0}%
@@ -468,7 +468,7 @@ export const ReportsManagement: React.FC = () => {
         )}
 
         {/* ========================================================================= */}
-        {/* SUBMODULE 2: TAX AUDIT & FBR COMPLIANCE (16% CASH VS 8% CARD)              */}
+        {/* SUBMODULE 2: TAX AUDIT & COMPLIANCE (16% CASH VS 8% CARD)              */}
         {/* ========================================================================= */}
         {activeTab === 'tax' && (
           <div className="space-y-6">
@@ -483,7 +483,7 @@ export const ReportsManagement: React.FC = () => {
                         <Banknote className="w-5 h-5 text-teal-500" />
                         <div>
                           <h4 className="font-black text-slate-900 text-sm">Cash Orders (Standard Tax)</h4>
-                          <span className="text-[10px] text-slate-500">PRA / SRB / FBR Default Restaurant Sales Tax</span>
+                          <span className="text-[10px] text-slate-500">Default Restaurant Sales Tax</span>
                         </div>
                       </div>
                       <span className="px-2.5 py-1 rounded-lg bg-teal-50 text-teal-600 font-mono text-xs font-black border border-teal-200">
@@ -498,11 +498,11 @@ export const ReportsManagement: React.FC = () => {
                       </div>
                       <div>
                         <span className="text-[10px] text-slate-500 font-semibold uppercase">Taxable Sales</span>
-                        <div className="text-lg font-mono font-bold text-slate-700">₨{taxAudit.cashSegment.netTaxableSalesPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-bold text-slate-700">{taxAudit.cashSegment.netTaxableSalesPKR.toLocaleString()}</div>
                       </div>
                       <div>
                         <span className="text-[10px] text-teal-600 font-bold uppercase">Tax Liability</span>
-                        <div className="text-lg font-mono font-black text-teal-600">₨{taxAudit.cashSegment.taxCollectedPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-black text-teal-600">{taxAudit.cashSegment.taxCollectedPKR.toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
@@ -529,11 +529,11 @@ export const ReportsManagement: React.FC = () => {
                       </div>
                       <div>
                         <span className="text-[10px] text-slate-500 font-semibold uppercase">Taxable Sales</span>
-                        <div className="text-lg font-mono font-bold text-slate-700">₨{taxAudit.cardSegment.netTaxableSalesPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-bold text-slate-700">{taxAudit.cardSegment.netTaxableSalesPKR.toLocaleString()}</div>
                       </div>
                       <div>
                         <span className="text-[10px] text-sky-600 font-bold uppercase">Tax Liability</span>
-                        <div className="text-lg font-mono font-black text-sky-600">₨{taxAudit.cardSegment.taxCollectedPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-black text-sky-600">{taxAudit.cardSegment.taxCollectedPKR.toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
@@ -581,10 +581,10 @@ export const ReportsManagement: React.FC = () => {
                           <th className="py-3 px-4">Date &amp; Time</th>
                           <th className="py-3 px-4">Order Type</th>
                           <th className="py-3 px-4">Payment Method</th>
-                          <th className="py-3 px-4 text-right">Net Bill (₨)</th>
+                          <th className="py-3 px-4 text-right">Net Bill (PKR)</th>
                           <th className="py-3 px-4 text-center">Tax Rate</th>
-                          <th className="py-3 px-4 text-right">Tax Collected (₨)</th>
-                          <th className="py-3 px-4 text-right">Total (₨)</th>
+                          <th className="py-3 px-4 text-right">Tax Collected (PKR)</th>
+                          <th className="py-3 px-4 text-right">Total (PKR)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
@@ -607,7 +607,7 @@ export const ReportsManagement: React.FC = () => {
                                   {inv.paymentMethod}
                                 </span>
                               </td>
-                              <td className="py-3 px-4 text-right font-mono text-slate-700">₨{inv.netAmountPKR.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right font-mono text-slate-700">{inv.netAmountPKR.toLocaleString()}</td>
                               <td className="py-3 px-4 text-center">
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
                                   inv.taxRatePercent === 16 ? 'text-teal-600 bg-teal-50' : 'text-sky-600 bg-sky-50'
@@ -615,8 +615,8 @@ export const ReportsManagement: React.FC = () => {
                                   {inv.taxRatePercent}%
                                 </span>
                               </td>
-                              <td className="py-3 px-4 text-right font-mono font-bold text-amber-600">₨{inv.taxAmountPKR.toLocaleString()}</td>
-                              <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">₨{inv.totalAmountPKR.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right font-mono font-bold text-amber-600">{inv.taxAmountPKR.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right font-mono font-bold text-slate-900">{inv.totalAmountPKR.toLocaleString()}</td>
                             </tr>
                           ))
                         )}
@@ -651,9 +651,9 @@ export const ReportsManagement: React.FC = () => {
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Category</th>
                     <th className="py-3 px-4 text-center">Items Sold</th>
-                    <th className="py-3 px-4 text-right">Net Sales (₨)</th>
-                    <th className="py-3 px-4 text-right">Tax (₨)</th>
-                    <th className="py-3 px-4 text-right">Gross Sales (₨)</th>
+                    <th className="py-3 px-4 text-right">Net Sales (PKR)</th>
+                    <th className="py-3 px-4 text-right">Tax (PKR)</th>
+                    <th className="py-3 px-4 text-right">Gross Sales (PKR)</th>
                     <th className="py-3 px-4 text-right">% Contribution</th>
                   </tr>
                 </thead>
@@ -667,9 +667,9 @@ export const ReportsManagement: React.FC = () => {
                       <tr key={c.categoryId} className="hover:bg-slate-50 transition">
                         <td className="py-3.5 px-4 font-bold text-slate-900">{c.categoryName}</td>
                         <td className="py-3.5 px-4 text-center font-mono text-slate-700 font-semibold">{c.quantitySold}</td>
-                        <td className="py-3.5 px-4 text-right font-mono text-slate-500">₨{c.netSalesPKR.toLocaleString()}</td>
-                        <td className="py-3.5 px-4 text-right font-mono text-amber-600">₨{c.taxPKR.toLocaleString()}</td>
-                        <td className="py-3.5 px-4 text-right font-mono text-teal-600 font-bold">₨{c.grossSalesPKR.toLocaleString()}</td>
+                        <td className="py-3.5 px-4 text-right font-mono text-slate-500">{c.netSalesPKR.toLocaleString()}</td>
+                        <td className="py-3.5 px-4 text-right font-mono text-amber-600">{c.taxPKR.toLocaleString()}</td>
+                        <td className="py-3.5 px-4 text-right font-mono text-teal-600 font-bold">{c.grossSalesPKR.toLocaleString()}</td>
                         <td className="py-3.5 px-4 text-right font-mono font-bold text-purple-600">
                           <div className="flex items-center justify-end gap-2">
                             <div className="w-16 h-1.5 bg-slate-200 rounded-full overflow-hidden hidden sm:block">
@@ -739,9 +739,9 @@ export const ReportsManagement: React.FC = () => {
                       <th className="py-3 px-4">Rank &amp; Product</th>
                       <th className="py-3 px-4 text-center">Class</th>
                       <th className="py-3 px-4 text-center">Units Sold</th>
-                      <th className="py-3 px-4 text-right">Revenue (₨)</th>
-                      <th className="py-3 px-4 text-right">Estimated Food Cost (₨)</th>
-                      <th className="py-3 px-4 text-right">Gross Profit (₨)</th>
+                      <th className="py-3 px-4 text-right">Revenue (PKR)</th>
+                      <th className="py-3 px-4 text-right">Estimated Food Cost (PKR)</th>
+                      <th className="py-3 px-4 text-right">Gross Profit (PKR)</th>
                       <th className="py-3 px-4 text-center">Gross Margin</th>
                     </tr>
                   </thead>
@@ -780,9 +780,9 @@ export const ReportsManagement: React.FC = () => {
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-center font-mono text-slate-700 font-bold">{p.quantitySold}</td>
-                            <td className="py-3.5 px-4 text-right font-mono font-bold text-teal-600">₨{p.revenuePKR.toLocaleString()}</td>
-                            <td className="py-3.5 px-4 text-right font-mono text-slate-500">₨{p.costPKR.toLocaleString()}</td>
-                            <td className="py-3.5 px-4 text-right font-mono font-bold text-sky-600">₨{p.grossProfitPKR.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right font-mono font-bold text-teal-600">{p.revenuePKR.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right font-mono text-slate-500">{p.costPKR.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right font-mono font-bold text-sky-600">{p.grossProfitPKR.toLocaleString()}</td>
                             <td className="py-3.5 px-4 text-center">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
                                 p.marginPercent >= 50 ? 'bg-teal-50 text-teal-600 border border-teal-200' :
@@ -824,7 +824,7 @@ export const ReportsManagement: React.FC = () => {
                       </div>
 
                       <div className="my-3">
-                        <div className="text-xl font-black text-slate-900 font-mono">₨{t.totalAmountPKR.toLocaleString()}</div>
+                        <div className="text-xl font-black text-slate-900 font-mono">{t.totalAmountPKR.toLocaleString()}</div>
                         <div className="w-full h-1.5 bg-slate-200 rounded-full mt-2 overflow-hidden">
                           <div className="bg-teal-500 h-full rounded-full" style={{ width: `${t.percentageOfTotal}%` }}></div>
                         </div>
@@ -832,7 +832,7 @@ export const ReportsManagement: React.FC = () => {
 
                       <div className="flex justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-200">
                         <span>{t.transactionCount} transactions</span>
-                        <span>Avg: <strong>₨{t.avgTicketPKR.toLocaleString()}</strong></span>
+                        <span>Avg: <strong>{t.avgTicketPKR.toLocaleString()}</strong></span>
                       </div>
                     </div>
                   ))}
@@ -841,7 +841,7 @@ export const ReportsManagement: React.FC = () => {
                 <div className="p-5 bg-white border border-slate-200 rounded-2xl flex items-center justify-between shadow-xl">
                   <div>
                     <span className="text-xs text-slate-500 font-semibold uppercase">Total Financial Settlements</span>
-                    <div className="text-2xl font-black text-teal-600 mt-0.5">₨{paymentMethods.totalRevenuePKR.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-teal-600 mt-0.5">{paymentMethods.totalRevenuePKR.toLocaleString()}</div>
                   </div>
                   <div className="text-right">
                     <span className="text-xs text-slate-500 font-semibold uppercase">Total Volume Count</span>
@@ -868,7 +868,7 @@ export const ReportsManagement: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Total Cash Sales</div>
-                    <div className="text-2xl font-black text-teal-600 mt-1">₨{cashSalesReport.totalCashSalesPKR.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-teal-600 mt-1">{cashSalesReport.totalCashSalesPKR.toLocaleString()}</div>
                   </div>
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Cash Invoices</div>
@@ -877,7 +877,7 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Average Cash Invoice</div>
                     <div className="text-2xl font-black text-amber-600 mt-1">
-                      ₨{cashSalesReport.orderCount > 0 ? Math.round(cashSalesReport.totalCashSalesPKR / cashSalesReport.orderCount).toLocaleString() : 0}
+                      {cashSalesReport.orderCount > 0 ? Math.round(cashSalesReport.totalCashSalesPKR / cashSalesReport.orderCount).toLocaleString() : 0}
                     </div>
                   </div>
                 </div>
@@ -909,9 +909,9 @@ export const ReportsManagement: React.FC = () => {
                             <td className="p-3 font-mono font-bold text-slate-900">{o.orderNumber}</td>
                             <td className="p-3 text-slate-700">{o.tableNumber || '—'}</td>
                             <td className="p-3 text-slate-700">{o.cashierName}</td>
-                            <td className="p-3 text-right font-mono font-bold text-teal-600">₨{o.totalPKR.toLocaleString()}</td>
-                            <td className="p-3 text-right font-mono text-slate-700">₨{o.amountPaidPKR.toLocaleString()}</td>
-                            <td className="p-3 text-right font-mono text-amber-600">₨{o.changeDuePKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono font-bold text-teal-600">{o.totalPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-slate-700">{o.amountPaidPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-amber-600">{o.changeDuePKR.toLocaleString()}</td>
                             <td className="p-3 text-slate-500">{new Date(o.createdAt).toLocaleTimeString()}</td>
                           </tr>
                         ))}
@@ -940,7 +940,7 @@ export const ReportsManagement: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Total Card / Digital Sales</div>
-                    <div className="text-2xl font-black text-blue-600 mt-1">₨{cardSalesReport.totalCardSalesPKR.toLocaleString()}</div>
+                    <div className="text-2xl font-black text-blue-600 mt-1">{cardSalesReport.totalCardSalesPKR.toLocaleString()}</div>
                   </div>
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Digital Invoices</div>
@@ -949,7 +949,7 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-white border border-slate-200 p-5 rounded-2xl">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Average Digital Invoice</div>
                     <div className="text-2xl font-black text-amber-600 mt-1">
-                      ₨{cardSalesReport.orderCount > 0 ? Math.round(cardSalesReport.totalCardSalesPKR / cardSalesReport.orderCount).toLocaleString() : 0}
+                      {cardSalesReport.orderCount > 0 ? Math.round(cardSalesReport.totalCardSalesPKR / cardSalesReport.orderCount).toLocaleString() : 0}
                     </div>
                   </div>
                 </div>
@@ -960,7 +960,7 @@ export const ReportsManagement: React.FC = () => {
                     {cardSalesReport.byMethod.map((m: any) => (
                       <div key={m.method} className="p-4 rounded-xl bg-white border border-slate-200">
                         <div className="text-[10px] text-slate-500 uppercase font-semibold">{m.method}</div>
-                        <div className="text-sm font-black text-blue-600 mt-0.5">₨{m.total.toLocaleString()}</div>
+                        <div className="text-sm font-black text-blue-600 mt-0.5">{m.total.toLocaleString()}</div>
                         <div className="text-[10px] text-slate-500">{m.count} invoices</div>
                       </div>
                     ))}
@@ -998,7 +998,7 @@ export const ReportsManagement: React.FC = () => {
                             </td>
                             <td className="p-3 text-slate-700">{o.tableNumber || '—'}</td>
                             <td className="p-3 text-slate-700">{o.cashierName}</td>
-                            <td className="p-3 text-right font-mono font-bold text-blue-600">₨{o.totalPKR.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono font-bold text-blue-600">{o.totalPKR.toLocaleString()}</td>
                             <td className="p-3 text-slate-500">{new Date(o.createdAt).toLocaleTimeString()}</td>
                           </tr>
                         ))}
@@ -1028,7 +1028,7 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-white border border-slate-200 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Chain Total Revenue</div>
                     <div>
-                      <div className="text-xl font-black text-teal-600 leading-tight">₨{consolidated.chainGrossSalesPKR.toLocaleString()}</div>
+                      <div className="text-xl font-black text-teal-600 leading-tight">{consolidated.chainGrossSalesPKR.toLocaleString()}</div>
                       <div className="text-[10px] text-slate-500 mt-0.5">Across {consolidated.branches.length} branches</div>
                     </div>
                   </div>
@@ -1036,15 +1036,15 @@ export const ReportsManagement: React.FC = () => {
                   <div className="bg-white border border-slate-200 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Consolidated Tax Liability</div>
                     <div>
-                      <div className="text-xl font-black text-amber-600 leading-tight">₨{consolidated.chainTaxCollectedPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">FBR / PRA Remittance</div>
+                      <div className="text-xl font-black text-amber-600 leading-tight">{consolidated.chainTaxCollectedPKR.toLocaleString()}</div>
+                       <div className="text-[10px] text-slate-500 mt-0.5">Tax Remittance</div>
                     </div>
                   </div>
 
                   <div className="bg-white border border-slate-200 p-4 rounded-xl h-[115px] flex flex-col justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Estimated Food Cost</div>
                     <div>
-                      <div className="text-xl font-black text-rose-600 leading-tight">₨{consolidated.chainCostPKR.toLocaleString()}</div>
+                      <div className="text-xl font-black text-rose-600 leading-tight">{consolidated.chainCostPKR.toLocaleString()}</div>
                       <div className="text-[10px] text-slate-500 mt-0.5">Recipe ingredient cost</div>
                     </div>
                   </div>
@@ -1053,7 +1053,7 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Chain Operating Margin</div>
                     <div>
                       <div className="text-xl font-black text-blue-600 leading-tight">{consolidated.chainProfitMargin}%</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">Net: ₨{consolidated.chainNetProfitPKR.toLocaleString()}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">Net: {consolidated.chainNetProfitPKR.toLocaleString()}</div>
                     </div>
                   </div>
                 </div>
@@ -1065,7 +1065,7 @@ export const ReportsManagement: React.FC = () => {
                       <h3 className="font-bold text-slate-900 text-sm">Cross-City Outlet Revenue Benchmarking</h3>
                       <p className="text-xs text-slate-500 mt-0.5">Financial comparison of all outlets connected to Head Office</p>
                     </div>
-                    <span className="text-xs font-mono text-teal-600 font-bold">Currency: PKR ₨</span>
+                    <span className="text-xs font-mono text-teal-600 font-bold">Currency: PKR</span>
                   </div>
 
                   <div className="overflow-x-auto">
@@ -1075,9 +1075,9 @@ export const ReportsManagement: React.FC = () => {
                           <th className="py-3 px-4">Branch Outlet</th>
                           <th className="py-3 px-4">City</th>
                           <th className="py-3 px-4 text-center">Orders</th>
-                          <th className="py-3 px-4 text-right">Gross Sales (₨)</th>
+                          <th className="py-3 px-4 text-right">Gross Sales (PKR)</th>
                           <th className="py-3 px-4 text-right">Cash / Card Split</th>
-                          <th className="py-3 px-4 text-right">Tax (₨)</th>
+                          <th className="py-3 px-4 text-right">Tax (PKR)</th>
                           <th className="py-3 px-4 text-right">Estimated Margin</th>
                         </tr>
                       </thead>
@@ -1095,11 +1095,11 @@ export const ReportsManagement: React.FC = () => {
                             </td>
                             <td className="py-3.5 px-4 text-slate-700">{b.city}</td>
                             <td className="py-3.5 px-4 text-center font-mono font-bold text-slate-700">{b.orderCount}</td>
-                            <td className="py-3.5 px-4 text-right font-mono font-black text-teal-600">₨{b.grossSalesPKR.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right font-mono font-black text-teal-600">{b.grossSalesPKR.toLocaleString()}</td>
                             <td className="py-3.5 px-4 text-right font-mono text-[11px] text-slate-500">
-                              <span className="text-teal-600">₨{b.cashSalesPKR.toLocaleString()}</span> / <span className="text-sky-600">₨{b.cardSalesPKR.toLocaleString()}</span>
+                              <span className="text-teal-600">{b.cashSalesPKR.toLocaleString()}</span> / <span className="text-sky-600">{b.cardSalesPKR.toLocaleString()}</span>
                             </td>
-                            <td className="py-3.5 px-4 text-right font-mono text-amber-600">₨{b.taxCollectedPKR.toLocaleString()}</td>
+                            <td className="py-3.5 px-4 text-right font-mono text-amber-600">{b.taxCollectedPKR.toLocaleString()}</td>
                             <td className="py-3.5 px-4 text-right font-mono font-black text-blue-600">{b.profitMarginPercent}%</td>
                           </tr>
                         ))}
@@ -1179,7 +1179,7 @@ export const ReportsManagement: React.FC = () => {
                     <span>Rs. {zReport.digitalSalesPKR.toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between text-gray-700">
-                    <span>Total Tax (FBR):</span>
+                    <span>Total Tax:</span>
                     <span>Rs. {zReport.totalTaxPKR.toLocaleString()}</span>
                   </div>
                 </div>
@@ -1262,33 +1262,33 @@ export const ReportsManagement: React.FC = () => {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] text-slate-500 uppercase">Opening Float</div>
-                      <div className="text-sm font-black text-slate-900 font-mono">₨{cashTally.openingFloat.toLocaleString()}</div>
+                      <div className="text-sm font-black text-slate-900 font-mono">{cashTally.openingFloat.toLocaleString()}</div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] text-slate-500 uppercase">Cash Sales</div>
-                      <div className="text-sm font-black text-teal-600 font-mono">₨{cashTally.cashSales.toLocaleString()}</div>
+                      <div className="text-sm font-black text-teal-600 font-mono">{cashTally.cashSales.toLocaleString()}</div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] text-slate-500 uppercase">Cash Received</div>
-                      <div className="text-sm font-black text-blue-600 font-mono">₨{cashTally.cashReceived.toLocaleString()}</div>
+                      <div className="text-sm font-black text-blue-600 font-mono">{cashTally.cashReceived.toLocaleString()}</div>
                     </div>
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] text-slate-500 uppercase">Cash Paid Out</div>
-                      <div className="text-sm font-black text-rose-600 font-mono">₨{cashTally.cashPaidOut.toLocaleString()}</div>
+                      <div className="text-sm font-black text-rose-600 font-mono">{cashTally.cashPaidOut.toLocaleString()}</div>
                     </div>
                   </div>
 
                   {/* Expected Cash */}
                   <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-between">
                     <span className="text-xs text-teal-700 font-bold">Expected Cash in Drawer:</span>
-                    <span className="text-lg font-black text-teal-600 font-mono">₨{cashTally.expectedCash.toLocaleString()}</span>
+                    <span className="text-lg font-black text-teal-600 font-mono">{cashTally.expectedCash.toLocaleString()}</span>
                   </div>
 
                   {/* Formula Explanation */}
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[10px] text-slate-500 space-y-1">
                     <div className="font-bold text-slate-700">Formula:</div>
                     <div className="font-mono">
-                      Opening Float (₨{cashTally.openingFloat.toLocaleString()}) + Cash Sales (₨{cashTally.cashSales.toLocaleString()}) + Cash Received (₨{cashTally.cashReceived.toLocaleString()}) - Cash Paid Out (₨{cashTally.cashPaidOut.toLocaleString()}) = <span className="text-teal-600 font-bold">₨{cashTally.expectedCash.toLocaleString()}</span>
+                      Opening Float ({cashTally.openingFloat.toLocaleString()}) + Cash Sales ({cashTally.cashSales.toLocaleString()}) + Cash Received ({cashTally.cashReceived.toLocaleString()}) - Cash Paid Out ({cashTally.cashPaidOut.toLocaleString()}) = <span className="text-teal-600 font-bold">{cashTally.expectedCash.toLocaleString()}</span>
                     </div>
                   </div>
 
@@ -1328,7 +1328,7 @@ export const ReportsManagement: React.FC = () => {
                         <div className="flex gap-2">
                           <input
                             type="number"
-                            placeholder="Amount (₨)"
+                            placeholder="Amount (PKR)"
                             value={entryAmount}
                             onChange={(e) => setEntryAmount(e.target.value)}
                             className="flex-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
@@ -1384,7 +1384,7 @@ export const ReportsManagement: React.FC = () => {
                             </div>
                             <div className="flex items-center gap-2">
                               <span className={`text-xs font-mono font-bold ${e.entryType === 'PaidOut' ? 'text-rose-600' : 'text-blue-600'}`}>
-                                {e.entryType === 'PaidOut' ? '-' : '+'}₨{e.amountPKR.toLocaleString()}
+                                {e.entryType === 'PaidOut' ? '-' : '+'}{e.amountPKR.toLocaleString()}
                               </span>
                               <button
                                 onClick={() => handleDeleteCashEntry(e.id)}

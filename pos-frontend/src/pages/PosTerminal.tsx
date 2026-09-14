@@ -382,7 +382,7 @@ export const PosTerminal: React.FC = () => {
                 <p className="text-xs text-slate-400 mt-0.5">{product.sku || product.barcode.slice(-4)}</p>
 
                 <div className="flex items-center justify-between mt-auto pt-2">
-                  <span className="text-sm font-bold text-teal-600">₨{product.sellingPricePKR.toLocaleString()}</span>
+                  <span className="text-sm font-bold text-teal-600">{product.sellingPricePKR.toLocaleString()}</span>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -549,8 +549,8 @@ export const PosTerminal: React.FC = () => {
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <p className="text-sm font-bold text-slate-900">₨{item.totalPricePKR.toLocaleString()}</p>
-                      <p className="text-[10px] text-slate-400">₨{item.unitPricePKR} ea</p>
+                      <p className="text-sm font-bold text-slate-900">{item.totalPricePKR.toLocaleString()}</p>
+                      <p className="text-[10px] text-slate-400">{item.unitPricePKR} ea</p>
                       <button
                         onClick={() => removeFromCart(item.productId)}
                         className="mt-1 text-slate-400 hover:text-rose-500 p-0.5 transition"
@@ -567,13 +567,13 @@ export const PosTerminal: React.FC = () => {
           <div className="p-4 border-t border-slate-100 space-y-2">
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>Sub Total</span>
-              <span className="font-medium text-slate-700">₨{subtotal.toLocaleString()}</span>
+              <span className="font-medium text-slate-700">{subtotal.toLocaleString()}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>
                 Sales Tax ({getEffectiveTaxRate()}% {paymentMethod === 'Cash' ? 'Cash' : 'Card/Digital'}):
               </span>
-              <span className="font-medium text-slate-700">₨{tax.toLocaleString()}</span>
+              <span className="font-medium text-slate-700">{tax.toLocaleString()}</span>
             </div>
             {taxMode === 'Inclusive' && (
               <div className="text-[10px] text-teal-500 italic">
@@ -599,7 +599,7 @@ export const PosTerminal: React.FC = () => {
             )}
             <div className="flex justify-between text-sm font-bold text-slate-900 border-t border-slate-100 pt-2">
               <span>TOTAL</span>
-              <span className="text-teal-600">₨{grandTotal.toLocaleString()}</span>
+              <span className="text-teal-600">{grandTotal.toLocaleString()}</span>
             </div>
           </div>
 
@@ -647,14 +647,14 @@ export const PosTerminal: React.FC = () => {
                       onClick={() => setCashTendered(amt)}
                       className="py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 text-center transition"
                     >
-                      {i === 0 ? 'Exact' : `₨${amt}`}
+                      {i === 0 ? 'Exact' : `${amt}`}
                     </button>
                   ))}
                 </div>
                 {cashTendered > 0 && (
                   <div className="flex justify-between items-center pt-1.5 border-t border-slate-200">
                     <span className="text-[11px] font-semibold text-slate-500">Change Due:</span>
-                    <span className="text-sm font-black text-teal-600">₨{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
+                    <span className="text-sm font-black text-teal-600">{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
                   </div>
                 )}
               </div>
@@ -688,7 +688,7 @@ export const PosTerminal: React.FC = () => {
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    <span>Charge ₨{grandTotal.toLocaleString()}</span>
+                    <span>Charge {grandTotal.toLocaleString()}</span>
                   </>
                 )}
               </button>
@@ -771,7 +771,7 @@ export const PosTerminal: React.FC = () => {
                       <div className="text-[10px] text-slate-400">
                         {bill.items.length} items • Held at {bill.parkedAt}
                       </div>
-                      <div className="text-xs font-bold text-teal-600 mt-0.5">₨{billTotal.toLocaleString()}</div>
+                      <div className="text-xs font-bold text-teal-600 mt-0.5">{billTotal.toLocaleString()}</div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -831,7 +831,7 @@ export const PosTerminal: React.FC = () => {
                       }`}
                     >
                       <span>{mod.name}</span>
-                      <span className="font-bold text-teal-600">+₨{mod.pricePKR}</span>
+                      <span className="font-bold text-teal-600">+{mod.pricePKR}</span>
                     </button>
                   );
                 })}

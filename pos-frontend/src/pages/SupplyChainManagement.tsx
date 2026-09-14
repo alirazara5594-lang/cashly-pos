@@ -556,13 +556,13 @@ export const SupplyChainManagement: React.FC = () => {
                             <div className="space-y-1">
                               {po.items?.map(it => (
                                 <div key={it.id} className="text-slate-700">
-                                  <strong className="text-slate-900">{it.quantity} {it.unit}</strong> &bull; {it.ingredientName} @ ₨{it.unitCostPKR}
+                                  <strong className="text-slate-900">{it.quantity} {it.unit}</strong> &bull; {it.ingredientName} @ {it.unitCostPKR}
                                 </div>
                               ))}
                             </div>
                           </td>
                           <td className="p-3 font-mono font-black text-teal-600 text-sm">
-                            ₨{po.totalCostPKR.toLocaleString()}
+                            {po.totalCostPKR.toLocaleString()}
                           </td>
                           <td className="p-3">
                             {po.status === 'Ordered' && (
@@ -916,7 +916,7 @@ export const SupplyChainManagement: React.FC = () => {
                         setPoLines(updated);
                       }}
                       className="w-20 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-right font-bold text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
-                      placeholder="₨ Unit"
+                      placeholder="PKR Unit"
                     />
 
                     <button

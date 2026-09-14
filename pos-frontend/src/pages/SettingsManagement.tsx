@@ -659,7 +659,7 @@ export const SettingsManagement: React.FC = () => {
                     <ul className="text-[11px] text-slate-700 space-y-1 pt-2 border-t border-slate-200">
                       <li className="text-blue-600">✓ Consolidated P&L Analytics</li>
                       <li className="text-blue-600">✓ End-of-Day Z-Reports</li>
-                      <li className="text-blue-600">✓ Tax Audit & FBR Register</li>
+                      <li className="text-blue-600">✓ Tax Audit & Compliance</li>
                       <li className="text-blue-600">✓ Payment Tender Mix</li>
                       <li className="text-rose-500 font-semibold">🔒 POS & Kitchen Hidden</li>
                     </ul>
@@ -749,7 +749,7 @@ export const SettingsManagement: React.FC = () => {
                   Business Profile & Tax Configuration
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Manage restaurant branding, tax rates (FBR compliance), and operating details.
+                  Manage restaurant branding, tax rates (compliance), and operating details.
                 </p>
               </div>
 
@@ -789,7 +789,7 @@ export const SettingsManagement: React.FC = () => {
               <div className="pt-4 border-t border-slate-200 space-y-4">
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Percent className="w-4 h-4 text-amber-600" />
-                  Tax Rates & FBR Differential Rates
+                  Tax Rate Configuration
                 </h3>
                 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

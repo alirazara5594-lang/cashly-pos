@@ -285,7 +285,7 @@ export const InventoryManagement: React.FC = () => {
             <div className="px-3.5 py-2 bg-teal-50 border border-teal-200 rounded-xl text-right">
               <div className="text-[10px] text-teal-500 font-medium">Stock Value</div>
               <div className="text-sm font-black text-teal-600">
-                ₨{Math.round(activeTab === 'ingredients' ? rawTotalValuationPKR : finishedTotalValuationPKR).toLocaleString()}
+                {Math.round(activeTab === 'ingredients' ? rawTotalValuationPKR : finishedTotalValuationPKR).toLocaleString()}
               </div>
             </div>
           </div>
@@ -395,9 +395,9 @@ export const InventoryManagement: React.FC = () => {
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Raw Ingredient</th>
                     <th className="py-3 px-3">Classification</th>
-                    <th className="py-3 px-3 text-right">Cost Per Unit (₨)</th>
+                    <th className="py-3 px-3 text-right">Cost Per Unit (PKR)</th>
                     <th className="py-3 px-3 text-center">Stock on Hand</th>
-                    <th className="py-3 px-3 text-right">Valuation (₨)</th>
+                    <th className="py-3 px-3 text-right">Valuation (PKR)</th>
                     <th className="py-3 px-3">Supplier / Vendor</th>
                     <th className="py-3 px-3 text-center">Status</th>
                     <th className="py-3 px-4 text-center">Quick Action</th>
@@ -423,7 +423,7 @@ export const InventoryManagement: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-slate-700">
-                          ₨{ing.costPerUnitPKR.toLocaleString()} / {ing.unit}
+                          {ing.costPerUnitPKR.toLocaleString()} / {ing.unit}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
@@ -436,7 +436,7 @@ export const InventoryManagement: React.FC = () => {
                           <div className="text-[10px] text-slate-500 mt-0.5">Min Alert: {ing.minAlertLevel}</div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-teal-600 font-bold">
-                          ₨{ing.totalValuationPKR.toLocaleString()}
+                          {ing.totalValuationPKR.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-slate-600 font-medium">
                           {ing.supplierName || 'Local Supplier'}
@@ -500,8 +500,8 @@ export const InventoryManagement: React.FC = () => {
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Item & Category</th>
                     <th className="py-3 px-3">Barcode / SKU</th>
-                    <th className="py-3 px-3 text-right">Cost Price (₨)</th>
-                    <th className="py-3 px-3 text-right">Selling Price (₨)</th>
+                    <th className="py-3 px-3 text-right">Cost Price (PKR)</th>
+                    <th className="py-3 px-3 text-right">Selling Price (PKR)</th>
                     <th className="py-3 px-3 text-center">Stock on Hand</th>
                     <th className="py-3 px-3">Batch & Expiry</th>
                     <th className="py-3 px-3 text-center">Status</th>
@@ -527,10 +527,10 @@ export const InventoryManagement: React.FC = () => {
                           <div className="text-[10px] text-slate-500">{item.sku}</div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-slate-700">
-                          ₨{item.costPricePKR.toLocaleString()}
+                          {item.costPricePKR.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-teal-600 font-bold">
-                          ₨{item.sellingPricePKR.toLocaleString()}
+                          {item.sellingPricePKR.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
@@ -656,7 +656,7 @@ export const InventoryManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-500 font-medium mb-1">Cost Per {restockIng.unit} (₨)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Cost Per {restockIng.unit} (PKR)</label>
                   <input
                     type="number"
                     min="0"
@@ -751,7 +751,7 @@ export const InventoryManagement: React.FC = () => {
 
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-[11px] text-slate-500 font-medium mb-1">Cost / Unit (₨)</label>
+                  <label className="block text-[11px] text-slate-500 font-medium mb-1">Cost / Unit (PKR)</label>
                   <input
                     type="number"
                     min="1"
@@ -861,7 +861,7 @@ export const InventoryManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-500 font-medium mb-1">Unit Cost Price (₨)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Unit Cost Price (PKR)</label>
                   <input
                     type="number"
                     min="0"

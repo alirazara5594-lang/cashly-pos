@@ -362,8 +362,8 @@ export const MenuManagement: React.FC = () => {
                           {p.station}
                         </span>
                       </td>
-                      <td className="py-3 text-right text-slate-500">₨{p.costPricePKR.toLocaleString()}</td>
-                      <td className="py-3 text-right font-black text-teal-600 text-sm">₨{p.sellingPricePKR.toLocaleString()}</td>
+                      <td className="py-3 text-right text-slate-500">{p.costPricePKR.toLocaleString()}</td>
+                      <td className="py-3 text-right font-black text-teal-600 text-sm">{p.sellingPricePKR.toLocaleString()}</td>
                       <td className="py-3 text-right">
                         <button
                           onClick={() => handleViewRecipe(p)}
@@ -587,14 +587,14 @@ export const MenuManagement: React.FC = () => {
                   <div key={item.ingredientId} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-3">
                     <div>
                       <div className="font-bold text-slate-900 text-xs">{item.ingredientName}</div>
-                      <div className="text-[10px] text-slate-500">{item.ingredientCategory} — ₨{item.costPerUnitPKR} / {item.unit}</div>
+                      <div className="text-[10px] text-slate-500">{item.ingredientCategory} — {item.costPerUnitPKR} / {item.unit}</div>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 border border-amber-200 text-xs font-mono font-bold">
                         {item.quantityRequired} {item.unit}
                       </span>
                       <span className="text-xs font-mono text-teal-600 font-semibold min-w-[60px] text-right">
-                        ₨{item.estimatedCostPKR}
+                        {item.estimatedCostPKR}
                       </span>
                     </div>
                   </div>
@@ -605,7 +605,7 @@ export const MenuManagement: React.FC = () => {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between">
               <span className="text-xs text-slate-500 font-medium">Calculated Ingredient Cost per Portion:</span>
               <span className="text-base font-black text-teal-600 font-mono">
-                ₨{recipeItems.reduce((s, i) => s + (i.estimatedCostPKR || 0), 0).toLocaleString()}
+                {recipeItems.reduce((s, i) => s + (i.estimatedCostPKR || 0), 0).toLocaleString()}
               </span>
             </div>
 

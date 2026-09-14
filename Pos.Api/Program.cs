@@ -355,6 +355,20 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// Seed TenantSettings for existing tenants
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var tenantsWithoutSettings = db.Tenants
+        .Where(t => !db.TenantSettings.Any(s => s.TenantId == t.Id))
+        .ToList();
+    foreach (var tenant in tenantsWithoutSettings)
+    {
+        db.TenantSettings.Add(new TenantSettings { TenantId = tenant.Id });
+    }
+    if (tenantsWithoutSettings.Count > 0) await db.SaveChangesAsync();
+}
+
 // --- Helper: Generate unique order number ---
 static async Task<string> GenerateOrderNumberAsync(AppDbContext db, string prefix = "ORD")
 {
@@ -695,6 +709,25 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
             }
         }
     }
+
+    // Seed default tenant settings
+    var tenantSettings = new TenantSettings
+    {
+        TenantId = tenant.Id,
+        CurrencyCode = "PKR",
+        CurrencySymbol = "₨",
+        DecimalPlaces = 0,
+        TaxAuthorityName = "FBR",
+        DefaultTaxRate = 16,
+        UseDualTaxRate = true,
+        DigitalTaxRate = 8,
+        PhoneCode = "+92",
+        DefaultCity = "Islamabad",
+        DateFormat = "dd/MM/yyyy",
+        ReceiptFooter = "Thank you for your visit!",
+        AllowedPaymentMethods = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
+    };
+    db.TenantSettings.Add(tenantSettings);
 
     try
     {
@@ -2314,6 +2347,25 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
         };
         db.Users.Add(adminUser);
 
+        // Seed default tenant settings
+        var tenantSettings = new TenantSettings
+        {
+            TenantId = tenant.Id,
+            CurrencyCode = "PKR",
+            CurrencySymbol = "₨",
+            DecimalPlaces = 0,
+            TaxAuthorityName = "FBR",
+            DefaultTaxRate = 16,
+            UseDualTaxRate = true,
+            DigitalTaxRate = 8,
+            PhoneCode = "+92",
+            DefaultCity = "Islamabad",
+            DateFormat = "dd/MM/yyyy",
+            ReceiptFooter = "Thank you for your visit!",
+            AllowedPaymentMethods = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
+        };
+        db.TenantSettings.Add(tenantSettings);
+
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
 
@@ -3092,6 +3144,43 @@ app.MapGet("/api/analytics/smart", async (AppDbContext db, HttpContext http, int
     });
 }).RequireAuthorization();
 
+// ── Tenant Settings CRUD ──
+app.MapGet("/api/tenant/settings", async (Guid tenantId, AppDbContext db) =>
+{
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    if (settings == null)
+    {
+        settings = new TenantSettings { TenantId = tenantId };
+        db.TenantSettings.Add(settings);
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(settings);
+});
+
+app.MapPut("/api/tenant/settings", async (Guid tenantId, TenantSettingsDto dto, AppDbContext db) =>
+{
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    if (settings == null)
+    {
+        settings = new TenantSettings { TenantId = tenantId };
+        db.TenantSettings.Add(settings);
+    }
+    settings.CurrencyCode = dto.CurrencyCode ?? settings.CurrencyCode;
+    settings.CurrencySymbol = dto.CurrencySymbol ?? settings.CurrencySymbol;
+    settings.DecimalPlaces = dto.DecimalPlaces;
+    settings.TaxAuthorityName = dto.TaxAuthorityName ?? settings.TaxAuthorityName;
+    settings.DefaultTaxRate = dto.DefaultTaxRate;
+    settings.UseDualTaxRate = dto.UseDualTaxRate;
+    settings.DigitalTaxRate = dto.DigitalTaxRate;
+    settings.PhoneCode = dto.PhoneCode ?? settings.PhoneCode;
+    settings.DefaultCity = dto.DefaultCity ?? settings.DefaultCity;
+    settings.DateFormat = dto.DateFormat ?? settings.DateFormat;
+    settings.ReceiptFooter = dto.ReceiptFooter ?? settings.ReceiptFooter;
+    settings.AllowedPaymentMethods = dto.AllowedPaymentMethods ?? settings.AllowedPaymentMethods;
+    await db.SaveChangesAsync();
+    return Results.Ok(settings);
+});
+
 app.Run();
 
 
@@ -3131,6 +3220,7 @@ public record SetupInitDto(
     string DeploymentMode,
     string RestaurantName,
     BusinessType? BusinessType,
+    string? CountryCode,
     string? City,
     string? Address,
     string? Phone,
@@ -3161,5 +3251,19 @@ public record OrderNotificationDto(Guid TenantId, Guid? OrderId, string OrderNum
 public record CreatePackageDto(string PackageKey, string DisplayName, decimal MonthlyPricePKR, decimal YearlyPricePKR, int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers, bool HasKitchenDisplay, bool HasDeliveryCOD, bool HasInventoryManagement, bool HasStockTransfers, bool HasDirectorDashboard, bool HasConsolidatedReports, bool HasWhatsAppMessaging, bool HasAdvancedReports, bool HasMultiBranch, int WhatsAppMessagesPerMonth);
 public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
 public record UpdateModulePermissionDto(string ModuleKey, string SubModuleKey, bool CanView, bool CanEdit, bool CanDelete, bool CanExport);
+public record TenantSettingsDto(
+    string? CurrencyCode,
+    string? CurrencySymbol,
+    int DecimalPlaces,
+    string? TaxAuthorityName,
+    decimal DefaultTaxRate,
+    bool UseDualTaxRate,
+    decimal DigitalTaxRate,
+    string? PhoneCode,
+    string? DefaultCity,
+    string? DateFormat,
+    string? ReceiptFooter,
+    string? AllowedPaymentMethods
+);
 
 

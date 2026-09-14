@@ -8,7 +8,8 @@ import type {
   PaymentMethod, 
   SubscriptionTier,
   TerminalOperatingMode,
-  DepartmentRole
+  DepartmentRole,
+  TenantSettings
 } from '../types';
 
 import { offlineDb } from '../services/offlineDb';
@@ -85,6 +86,8 @@ interface PosState {
   paymentMethod: PaymentMethod;
   isMenuEditLocked: boolean; // Super Admin managed menu lock
   theme: 'light' | 'dark';
+  tenantSettings: TenantSettings | null;
+  loadTenantSettings: () => Promise<void>;
 
   setTheme: (theme: 'light' | 'dark') => void;
   toggleTheme: () => void;
@@ -175,6 +178,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   paymentMethod: 'Cash',
   isMenuEditLocked: true,
   theme: (localStorage.getItem('cashly_pos_theme') as 'light' | 'dark') || 'light',
+  tenantSettings: null,
 
   setTheme: (theme) => {
     localStorage.setItem('cashly_pos_theme', theme);
@@ -253,6 +257,17 @@ export const usePosStore = create<PosState>((set, get) => ({
     taxMode: settings.mode ?? state.taxMode
   })),
   setIsMenuEditLocked: (isMenuEditLocked) => set({ isMenuEditLocked }),
+
+  loadTenantSettings: async () => {
+    const { selectedTenant } = get();
+    if (!selectedTenant?.id) return;
+    try {
+      const settings = await posApi.getTenantSettings(selectedTenant.id);
+      set({ tenantSettings: settings });
+    } catch (err) {
+      console.error('Failed to load tenant settings:', err);
+    }
+  },
 
 
   setTenants: (tenants) => {
@@ -494,11 +509,15 @@ export const usePosStore = create<PosState>((set, get) => ({
   },
 
   getEffectiveTaxRate: () => {
-    const { paymentMethod, cashTaxRatePercent, cardTaxRatePercent } = get();
-    if (paymentMethod === 'Cash') {
-      return cashTaxRatePercent;
+    const { paymentMethod, tenantSettings, cashTaxRatePercent, cardTaxRatePercent } = get();
+    if (tenantSettings) {
+      if (tenantSettings.useDualTaxRate) {
+        return paymentMethod === 'Cash' ? tenantSettings.defaultTaxRate : tenantSettings.digitalTaxRate;
+      }
+      return tenantSettings.defaultTaxRate;
     }
-    // Card, JazzCash, EasyPaisa, Raast get reduced 8% rate
+    // Fallback to store values
+    if (paymentMethod === 'Cash') return cashTaxRatePercent;
     return cardTaxRatePercent;
   },
 
