@@ -128,8 +128,8 @@ export const WhatsAppConfig: React.FC = () => {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
-          <RefreshCw className="w-8 h-8 text-blue-400 animate-spin mx-auto mb-3" />
-          <p className="text-sm text-slate-400">Loading WhatsApp configuration...</p>
+          <RefreshCw className="w-8 h-8 text-teal-500 animate-spin mx-auto mb-3" />
+          <p className="text-sm text-slate-500">Loading WhatsApp configuration...</p>
         </div>
       </div>
     );
@@ -139,17 +139,17 @@ export const WhatsAppConfig: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
-            <MessageSquare className="w-5 h-5 text-emerald-400" />
+          <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
+            <MessageSquare className="w-5 h-5 text-teal-500" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-white">WhatsApp Configuration</h1>
-            <p className="text-xs text-slate-400">Configure WhatsApp notifications for order updates</p>
+            <h1 className="text-lg font-black text-slate-900">WhatsApp Configuration</h1>
+            <p className="text-xs text-slate-500">Configure WhatsApp notifications for order updates</p>
           </div>
         </div>
         <button
           onClick={loadData}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
         >
           <RefreshCw className="w-3.5 h-3.5" />
           Refresh
@@ -158,7 +158,7 @@ export const WhatsAppConfig: React.FC = () => {
 
       {message && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold ${
-          message.type === 'success' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-red-950 text-red-400 border border-red-800'
+          message.type === 'success' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
         }`}>
           {message.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
           {message.text}
@@ -167,40 +167,40 @@ export const WhatsAppConfig: React.FC = () => {
 
       {/* Status Indicators */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl bg-white border border-slate-200">
           <div className="flex items-center gap-2 mb-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            <span className="text-[10px] font-semibold text-slate-400 uppercase">Sent / Delivered</span>
+            <CheckCircle2 className="w-4 h-4 text-teal-500" />
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Sent / Delivered</span>
           </div>
-          <div className="text-2xl font-black text-emerald-400">{statusCounts.sent}</div>
+          <div className="text-2xl font-black text-teal-600">{statusCounts.sent}</div>
         </div>
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl bg-white border border-slate-200">
           <div className="flex items-center gap-2 mb-2">
-            <Clock className="w-4 h-4 text-amber-400" />
-            <span className="text-[10px] font-semibold text-slate-400 uppercase">Pending</span>
+            <Clock className="w-4 h-4 text-amber-500" />
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Pending</span>
           </div>
-          <div className="text-2xl font-black text-amber-400">{statusCounts.pending}</div>
+          <div className="text-2xl font-black text-amber-600">{statusCounts.pending}</div>
         </div>
-        <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
+        <div className="p-4 rounded-2xl bg-white border border-slate-200">
           <div className="flex items-center gap-2 mb-2">
-            <XCircle className="w-4 h-4 text-red-400" />
-            <span className="text-[10px] font-semibold text-slate-400 uppercase">Failed</span>
+            <XCircle className="w-4 h-4 text-rose-500" />
+            <span className="text-[10px] font-semibold text-slate-500 uppercase">Failed</span>
           </div>
-          <div className="text-2xl font-black text-red-400">{statusCounts.failed}</div>
+          <div className="text-2xl font-black text-rose-600">{statusCounts.failed}</div>
         </div>
       </div>
 
       {/* Config Form */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-5">
-        <h2 className="text-sm font-bold text-white">Provider Settings</h2>
+      <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-5">
+        <h2 className="text-sm font-bold text-slate-900">Provider Settings</h2>
 
         <div>
-          <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Provider</label>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Provider</label>
           <div className="relative">
             <select
               value={config.provider}
               onChange={(e) => setConfig({ ...config, provider: e.target.value })}
-              className="w-full appearance-none pl-3 pr-8 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 cursor-pointer"
+              className="w-full appearance-none pl-3 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 cursor-pointer"
             >
               <option value="Manual">Manual (No API)</option>
               <option value="Twilio">Twilio</option>
@@ -213,64 +213,64 @@ export const WhatsAppConfig: React.FC = () => {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">API Key</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">API Key</label>
             <input
               type="password"
               value={config.apiKey}
               onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
               placeholder="Enter API key"
-              className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">API Secret</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">API Secret</label>
             <input
               type="password"
               value={config.apiSecret}
               onChange={(e) => setConfig({ ...config, apiSecret: e.target.value })}
               placeholder="Enter API secret"
-              className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Phone Number ID</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Phone Number ID</label>
             <input
               value={config.phoneNumberId}
               onChange={(e) => setConfig({ ...config, phoneNumberId: e.target.value })}
               placeholder="WhatsApp phone number ID"
-              className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Access Token</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Access Token</label>
             <input
               type="password"
               value={config.accessToken}
               onChange={(e) => setConfig({ ...config, accessToken: e.target.value })}
               placeholder="Long-lived access token"
-              className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1.5">Webhook URL</label>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Webhook URL</label>
           <input
             value={config.webhookUrl}
             onChange={(e) => setConfig({ ...config, webhookUrl: e.target.value })}
             placeholder="https://your-domain.com/api/whatsapp/webhook"
-            className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
           />
         </div>
 
         {/* Toggle Switches */}
         <div className="space-y-3 pt-2">
-          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-950 border border-slate-800">
+          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-50 border border-slate-200">
             <div>
-              <div className="text-xs font-bold text-white">Enable WhatsApp Notifications</div>
+              <div className="text-xs font-bold text-slate-900">Enable WhatsApp Notifications</div>
               <div className="text-[10px] text-slate-500">Master toggle for all WhatsApp messages</div>
             </div>
             <button
@@ -278,15 +278,15 @@ export const WhatsAppConfig: React.FC = () => {
               className="transition"
             >
               {config.isEnabled ? (
-                <ToggleRight className="w-7 h-7 text-emerald-400" />
+                <ToggleRight className="w-7 h-7 text-teal-500" />
               ) : (
-                <ToggleLeft className="w-7 h-7 text-slate-500" />
+                <ToggleLeft className="w-7 h-7 text-slate-400" />
               )}
             </button>
           </div>
-          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-950 border border-slate-800">
+          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-50 border border-slate-200">
             <div>
-              <div className="text-xs font-bold text-white">Auto Send Order Updates</div>
+              <div className="text-xs font-bold text-slate-900">Auto Send Order Updates</div>
               <div className="text-[10px] text-slate-500">Automatically notify customers on order status changes</div>
             </div>
             <button
@@ -294,15 +294,15 @@ export const WhatsAppConfig: React.FC = () => {
               className="transition"
             >
               {config.autoSendOrderUpdates ? (
-                <ToggleRight className="w-7 h-7 text-emerald-400" />
+                <ToggleRight className="w-7 h-7 text-teal-500" />
               ) : (
-                <ToggleLeft className="w-7 h-7 text-slate-500" />
+                <ToggleLeft className="w-7 h-7 text-slate-400" />
               )}
             </button>
           </div>
-          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-950 border border-slate-800">
+          <div className="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-50 border border-slate-200">
             <div>
-              <div className="text-xs font-bold text-white">Auto Send Receipt</div>
+              <div className="text-xs font-bold text-slate-900">Auto Send Receipt</div>
               <div className="text-[10px] text-slate-500">Send digital receipt after successful payment</div>
             </div>
             <button
@@ -310,9 +310,9 @@ export const WhatsAppConfig: React.FC = () => {
               className="transition"
             >
               {config.autoSendReceipt ? (
-                <ToggleRight className="w-7 h-7 text-emerald-400" />
+                <ToggleRight className="w-7 h-7 text-teal-500" />
               ) : (
-                <ToggleLeft className="w-7 h-7 text-slate-500" />
+                <ToggleLeft className="w-7 h-7 text-slate-400" />
               )}
             </button>
           </div>
@@ -321,7 +321,7 @@ export const WhatsAppConfig: React.FC = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition disabled:opacity-50"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
         >
           <Save className="w-4 h-4" />
           {saving ? 'Saving...' : 'Save Configuration'}
@@ -329,25 +329,25 @@ export const WhatsAppConfig: React.FC = () => {
       </div>
 
       {/* Test Message */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 space-y-4">
-        <h2 className="text-sm font-bold text-white flex items-center gap-2">
-          <TestTube2 className="w-4 h-4 text-blue-400" />
+      <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-4">
+        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+          <TestTube2 className="w-4 h-4 text-teal-500" />
           Send Test Message
         </h2>
         <div className="flex items-center gap-3">
           <div className="relative flex-1">
-            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               value={testPhone}
               onChange={(e) => setTestPhone(e.target.value)}
               placeholder="+92 300 1234567"
-              className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
           <button
             onClick={handleSendTest}
             disabled={testSending || !testPhone.trim()}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
           >
             <Send className="w-3.5 h-3.5" />
             {testSending ? 'Sending...' : 'Send Test'}
@@ -356,35 +356,35 @@ export const WhatsAppConfig: React.FC = () => {
       </div>
 
       {/* Logs Table */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-        <h2 className="text-sm font-bold text-white mb-4">Recent Notification Logs</h2>
-        <div className="rounded-xl border border-slate-800 overflow-hidden">
+      <div className="p-5 rounded-2xl bg-white border border-slate-200">
+        <h2 className="text-sm font-bold text-slate-900 mb-4">Recent Notification Logs</h2>
+        <div className="rounded-xl border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="bg-slate-950 border-b border-slate-800">
-                  <th className="text-left px-4 py-3 font-bold text-slate-400 uppercase text-[10px]">Phone</th>
-                  <th className="text-left px-4 py-3 font-bold text-slate-400 uppercase text-[10px]">Type</th>
-                  <th className="text-center px-4 py-3 font-bold text-slate-400 uppercase text-[10px]">Status</th>
-                  <th className="text-center px-4 py-3 font-bold text-slate-400 uppercase text-[10px]">Sent At</th>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Phone</th>
+                  <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Type</th>
+                  <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Status</th>
+                  <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Sent At</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/50">
+              <tbody className="divide-y divide-slate-100">
                 {logs.map((log) => (
-                  <tr key={log.id} className="bg-slate-950 hover:bg-slate-900 transition">
-                    <td className="px-4 py-3 font-mono text-slate-300">{log.phoneNumber}</td>
-                    <td className="px-4 py-3 text-slate-300">{log.messageType}</td>
+                  <tr key={log.id} className="bg-white hover:bg-slate-50 transition">
+                    <td className="px-4 py-3 font-mono text-slate-700">{log.phoneNumber}</td>
+                    <td className="px-4 py-3 text-slate-700">{log.messageType}</td>
                     <td className="text-center px-4 py-3">
                       {log.status === 'sent' || log.status === 'delivered' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 text-[10px] font-bold">
                           <CheckCircle2 className="w-3 h-3" /> {log.status}
                         </span>
                       ) : log.status === 'failed' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-950 text-red-400 border border-red-800 text-[10px] font-bold">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-bold">
                           <XCircle className="w-3 h-3" /> Failed
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-950 text-amber-400 border border-amber-800 text-[10px] font-bold">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-bold">
                           <Clock className="w-3 h-3" /> Pending
                         </span>
                       )}

@@ -89,13 +89,13 @@ export const CallOrderModal: React.FC<CallOrderModalProps> = ({ isOpen, onClose 
 
           {/* Past Customer History Found Badge */}
           {lookupResult?.found && (
-            <div className="p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs space-y-2">
+            <div className="p-3.5 rounded-xl bg-teal-950/40 border border-teal-800/60 text-teal-300 text-xs space-y-2">
               <div className="flex items-center justify-between font-bold">
-                <div className="flex items-center gap-1.5 text-emerald-400">
+                <div className="flex items-center gap-1.5 text-teal-400">
                   <Check className="w-4 h-4" />
                   <span>Existing Customer Found</span>
                 </div>
-                <span className="text-[11px] px-2 py-0.5 rounded bg-emerald-900/60 border border-emerald-700">
+                <span className="text-[11px] px-2 py-0.5 rounded bg-teal-900/60 border border-teal-700">
                   {lookupResult.totalPastOrders} Past Orders
                 </span>
               </div>
@@ -119,7 +119,7 @@ export const CallOrderModal: React.FC<CallOrderModalProps> = ({ isOpen, onClose 
                 placeholder="Customer Name"
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-emerald-500"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-teal-500"
               />
             </div>
 
@@ -132,13 +132,13 @@ export const CallOrderModal: React.FC<CallOrderModalProps> = ({ isOpen, onClose 
                 placeholder="House / Flat #, Street, Sector / Area, City"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-emerald-500"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-teal-500"
               />
             </div>
 
             <div className="p-2.5 rounded-lg bg-slate-800/50 border border-slate-700 text-xs text-slate-400 flex items-center justify-between">
               <span>Fulfillment Branch:</span>
-              <span className="font-bold text-emerald-400">{selectedBranch?.name || 'Main Branch'}</span>
+              <span className="font-bold text-teal-400">{selectedBranch?.name || 'Main Branch'}</span>
             </div>
           </div>
         </div>

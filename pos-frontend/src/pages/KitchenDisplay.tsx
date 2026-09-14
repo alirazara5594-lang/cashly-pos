@@ -44,21 +44,21 @@ export const KitchenDisplay: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-hidden bg-slate-950 text-slate-100 p-4">
+    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-hidden bg-slate-50 text-slate-900 p-4">
       {/* Top Bar: Station Tabs & Auto-refresh indicator */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-200">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
             <ChefHat className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-white flex items-center gap-2">
+            <h1 className="text-lg font-black text-slate-900 flex items-center gap-2">
               <span>Kitchen Display System (KDS)</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-teal-50 text-teal-600 border border-teal-200 font-mono">
                 MODE 1 ACTIVE
               </span>
             </h1>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-500">
               Direct live dispatch from Waiter Tabs and POS Counters • Branch: {selectedBranch?.name || 'Main Kitchen Branch'}
             </p>
           </div>
@@ -77,8 +77,8 @@ export const KitchenDisplay: React.FC = () => {
               onClick={() => setSelectedStation(id)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition ${
                 selectedStation === id
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'bg-slate-900 border border-slate-800 text-slate-300 hover:bg-slate-800'
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/25'
+                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -88,7 +88,7 @@ export const KitchenDisplay: React.FC = () => {
 
           <button
             onClick={fetchTickets}
-            className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
+            className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-slate-900"
             title="Refresh KDS"
           >
             <RefreshCw className="w-4 h-4" />
@@ -99,10 +99,10 @@ export const KitchenDisplay: React.FC = () => {
       {/* Tickets Grid - items-start & content-start ensures cards hug their own natural height without stretching */}
       <div className="flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start content-start">
         {tickets.length === 0 ? (
-          <div className="col-span-full h-96 flex flex-col items-center justify-center text-slate-600 space-y-2">
-            <CheckCircle2 className="w-12 h-12 stroke-[1.5] text-emerald-500/40" />
-            <p className="text-sm font-semibold text-slate-400">All caught up! No active cooking tickets.</p>
-            <p className="text-xs text-slate-500">Orders sent from Tab or Counter will immediately appear here via Mode 1.</p>
+          <div className="col-span-full h-96 flex flex-col items-center justify-center text-slate-400 space-y-2">
+            <CheckCircle2 className="w-12 h-12 stroke-[1.5] text-teal-500/40" />
+            <p className="text-sm font-semibold text-slate-500">All caught up! No active cooking tickets.</p>
+            <p className="text-xs text-slate-400">Orders sent from Tab or Counter will immediately appear here via Mode 1.</p>
           </div>
         ) : (
           tickets.map((ticket) => {
@@ -113,28 +113,28 @@ export const KitchenDisplay: React.FC = () => {
             return (
               <div
                 key={ticket.id}
-                className={`rounded-2xl border flex flex-col overflow-hidden shadow-xl transition min-h-[140px] ${
+                className={`rounded-2xl border flex flex-col overflow-hidden shadow-lg transition min-h-[140px] ${
                   ticket.status === 'Ready'
-                    ? 'bg-emerald-950/20 border-emerald-800/80 shadow-emerald-500/5'
+                    ? 'bg-teal-50 border-teal-200'
                     : isLate
-                    ? 'bg-rose-950/20 border-rose-800 shadow-rose-500/10'
+                    ? 'bg-rose-50 border-rose-200'
                     : isWarning
-                    ? 'bg-amber-950/20 border-amber-800'
-                    : 'bg-slate-900 border-slate-800'
+                    ? 'bg-amber-50 border-amber-200'
+                    : 'bg-white border-slate-200'
                 }`}
               >
                 {/* Ticket Header */}
-                <div className="p-3 bg-slate-850 border-b border-slate-800 flex items-center justify-between">
+                <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                   <div>
-                    <div className="font-black text-sm text-white tracking-wider flex items-center gap-1.5">
+                    <div className="font-black text-sm text-slate-900 tracking-wider flex items-center gap-1.5">
                       <span>{ticket.ticketNumber}</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-500 font-mono">
                         {ticket.order?.orderNumber || 'ORD'}
                       </span>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">
+                    <div className="text-[11px] text-slate-500 mt-0.5">
                       {ticket.order?.tableNumber ? (
-                        <strong className="text-amber-400">Table: {ticket.order.tableNumber}</strong>
+                        <strong className="text-amber-600">Table: {ticket.order.tableNumber}</strong>
                       ) : (
                         <span>Type: <strong>{ticket.order?.orderType}</strong></span>
                       )}
@@ -144,10 +144,10 @@ export const KitchenDisplay: React.FC = () => {
                   {/* Timer Badge */}
                   <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
                     isLate
-                      ? 'bg-rose-600 text-white animate-pulse'
+                      ? 'bg-rose-500 text-white animate-pulse'
                       : isWarning
-                      ? 'bg-amber-600 text-white'
-                      : 'bg-slate-800 text-emerald-400 border border-slate-700'
+                      ? 'bg-amber-500 text-white'
+                      : 'bg-slate-100 text-teal-600 border border-slate-200'
                   }`}>
                     <Clock className="w-3.5 h-3.5" />
                     <span>{elapsed}m</span>
@@ -161,21 +161,21 @@ export const KitchenDisplay: React.FC = () => {
                     const hasIngredients = recipeItems.length > 0;
 
                     return (
-                      <div key={idx} className="border-b border-slate-800/60 pb-2.5 last:border-b-0 last:pb-0">
+                      <div key={idx} className="border-b border-slate-200 pb-2.5 last:border-b-0 last:pb-0">
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-start gap-2">
-                            <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-black text-xs shrink-0 mt-0.5">
+                            <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 font-black text-xs shrink-0 mt-0.5">
                               {item.quantity}x
                             </span>
                             <div>
-                              <div className="font-bold text-xs text-white leading-tight">{item.productName}</div>
+                              <div className="font-bold text-xs text-slate-900 leading-tight">{item.productName}</div>
                               {item.modifiersSummary && (
-                                <div className="text-[10px] text-amber-300 italic mt-0.5">
+                                <div className="text-[10px] text-amber-600 italic mt-0.5">
                                   +{item.modifiersSummary}
                                 </div>
                               )}
                               {item.specialNotes && (
-                                <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
+                                <div className="text-[10px] text-teal-600 font-semibold mt-0.5">
                                   Note: "{item.specialNotes}"
                                 </div>
                               )}
@@ -185,9 +185,9 @@ export const KitchenDisplay: React.FC = () => {
 
                         {/* Ingredients / Recipe BOM List - Increases KOT card height with ingredients */}
                         {hasIngredients && (
-                          <div className="mt-2 pl-2.5 ml-2 border-l-2 border-amber-500/50 space-y-1">
-                            <div className="text-[10px] font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1">
-                              <Wheat className="w-3 h-3 text-amber-400" />
+                          <div className="mt-2 pl-2.5 ml-2 border-l-2 border-amber-300 space-y-1">
+                            <div className="text-[10px] font-bold text-amber-600 uppercase tracking-wider flex items-center gap-1">
+                              <Wheat className="w-3 h-3 text-amber-500" />
                               <span>Ingredients ({recipeItems.length})</span>
                             </div>
                             <div className="flex flex-wrap gap-1">
@@ -197,9 +197,9 @@ export const KitchenDisplay: React.FC = () => {
                                 return (
                                   <span
                                     key={rIdx}
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 text-[10px] border border-slate-700/80 font-medium"
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] border border-slate-200 font-medium"
                                   >
-                                    <span className="text-amber-400 font-bold font-mono">{totalQty} {r.unit}</span>
+                                    <span className="text-amber-600 font-bold font-mono">{totalQty} {r.unit}</span>
                                     <span className="truncate max-w-[120px]">{ingName}</span>
                                   </span>
                                 );
@@ -213,15 +213,15 @@ export const KitchenDisplay: React.FC = () => {
                 </div>
 
                 {/* Footer Action */}
-                <div className="p-2.5 bg-slate-850/80 border-t border-slate-800 flex items-center justify-between gap-2 mt-auto">
-                  <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                    Station: <span className="text-slate-200 font-semibold">{ticket.station}</span>
+                <div className="p-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 mt-auto">
+                  <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">
+                    Station: <span className="text-slate-700 font-semibold">{ticket.station}</span>
                   </span>
 
                   {ticket.status !== 'Ready' ? (
                     <button
                       onClick={() => handleUpdateStatus(ticket.id, 'Ready')}
-                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs shadow-lg shadow-emerald-600/20 transition flex items-center gap-1.5"
+                      className="px-3.5 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25 transition flex items-center gap-1.5"
                     >
                       <CheckCircle2 className="w-4 h-4" />
                       <span>Mark Ready</span>
@@ -229,7 +229,7 @@ export const KitchenDisplay: React.FC = () => {
                   ) : (
                     <button
                       onClick={() => handleUpdateStatus(ticket.id, 'Completed')}
-                      className="px-3.5 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-xs transition"
+                      className="px-3.5 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs transition"
                     >
                       Archive Ticket
                     </button>

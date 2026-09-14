@@ -141,8 +141,8 @@ export const ModulePermissions: React.FC = () => {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
-          <RefreshCw className="w-8 h-8 text-blue-400 animate-spin mx-auto mb-3" />
-          <p className="text-sm text-slate-400">Loading permissions data...</p>
+          <RefreshCw className="w-8 h-8 text-teal-500 animate-spin mx-auto mb-3" />
+          <p className="text-sm text-slate-500">Loading permissions data...</p>
         </div>
       </div>
     );
@@ -152,18 +152,18 @@ export const ModulePermissions: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-violet-500/20 flex items-center justify-center">
-            <Shield className="w-5 h-5 text-violet-400" />
+          <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
+            <Shield className="w-5 h-5 text-teal-500" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-white">Module Permissions</h1>
-            <p className="text-xs text-slate-400">Control what each staff member can access</p>
+            <h1 className="text-lg font-black text-slate-900">Module Permissions</h1>
+            <p className="text-xs text-slate-500">Control what each staff member can access</p>
           </div>
         </div>
         <button
           onClick={handleSave}
           disabled={!selectedUserId || saving}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition disabled:opacity-50"
+          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
         >
           <Save className="w-4 h-4" />
           {saving ? 'Saving...' : 'Save Permissions'}
@@ -172,7 +172,7 @@ export const ModulePermissions: React.FC = () => {
 
       {message && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold ${
-          message.type === 'success' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-red-950 text-red-400 border border-red-800'
+          message.type === 'success' ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-rose-50 text-rose-700 border border-rose-200'
         }`}>
           {message.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
           {message.text}
@@ -180,15 +180,15 @@ export const ModulePermissions: React.FC = () => {
       )}
 
       {/* User Selector */}
-      <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800">
-        <label className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase mb-2">
+      <div className="p-5 rounded-2xl bg-white border border-slate-200">
+        <label className="flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase mb-2">
           <Users className="w-3.5 h-3.5" /> Select Staff Member
         </label>
         <div className="relative">
           <select
             value={selectedUserId}
             onChange={(e) => loadUserPermissions(e.target.value)}
-            className="w-full appearance-none pl-3 pr-8 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 cursor-pointer"
+            className="w-full appearance-none pl-3 pr-8 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 cursor-pointer"
           >
             <option value="">-- Choose a user --</option>
             {users.map(u => (
@@ -203,14 +203,14 @@ export const ModulePermissions: React.FC = () => {
       {selectedUserId && (
         <div className="space-y-4">
           {modules.map((mod) => (
-            <div key={mod.key} className="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
-              <div className="px-5 py-3 bg-slate-950 border-b border-slate-800">
-                <h3 className="text-xs font-bold text-white">{mod.label}</h3>
+            <div key={mod.key} className="rounded-2xl bg-white border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3 bg-slate-50 border-b border-slate-200">
+                <h3 className="text-xs font-bold text-slate-900">{mod.label}</h3>
               </div>
-              <div className="divide-y divide-slate-800/50">
+              <div className="divide-y divide-slate-100">
                 {mod.subModules.map((sub) => (
                   <div key={sub.key} className="px-5 py-3 flex items-center gap-4">
-                    <span className="text-[11px] text-slate-300 font-medium min-w-[140px]">{sub.label}</span>
+                    <span className="text-[11px] text-slate-700 font-medium min-w-[140px]">{sub.label}</span>
                     <div className="flex items-center gap-3 flex-1">
                       {[
                         { field: 'canView' as const, icon: Eye, label: 'View' },
@@ -225,8 +225,8 @@ export const ModulePermissions: React.FC = () => {
                             onClick={() => setPermission(mod.key, sub.key, field, !hasAccess)}
                             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-bold transition border ${
                               hasAccess
-                                ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
-                                : 'bg-slate-950 text-red-400 border-red-900'
+                                ? 'bg-teal-50 text-teal-700 border-teal-200'
+                                : 'bg-rose-50 text-rose-600 border-rose-200'
                             }`}
                           >
                             <Icon className="w-3 h-3" />
@@ -241,7 +241,7 @@ export const ModulePermissions: React.FC = () => {
                           f => getPermission(mod.key, sub.key, f as keyof PermissionEntry)
                         );
                         return allTrue ? (
-                          <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded-full border border-emerald-800">Full Access</span>
+                          <span className="text-[9px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">Full Access</span>
                         ) : null;
                       })()}
                     </div>

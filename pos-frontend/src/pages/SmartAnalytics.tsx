@@ -70,10 +70,10 @@ export const SmartAnalytics: React.FC = () => {
       : Minus;
   const trendColor =
     data?.predictions?.trend === 'growing'
-      ? 'text-emerald-400'
+      ? 'text-teal-600'
       : data?.predictions?.trend === 'declining'
-      ? 'text-red-400'
-      : 'text-slate-400';
+      ? 'text-rose-600'
+      : 'text-slate-500';
   const trendLabel =
     data?.predictions?.trend === 'growing'
       ? 'Growing'
@@ -83,38 +83,38 @@ export const SmartAnalytics: React.FC = () => {
 
   const medalIcons = [Trophy, Medal, Award];
   const medalColors = [
-    'text-yellow-400 bg-yellow-950 border-yellow-800',
-    'text-slate-300 bg-slate-800 border-slate-600',
-    'text-amber-600 bg-amber-950 border-amber-800',
+    'text-amber-600 bg-amber-50 border-amber-200',
+    'text-slate-600 bg-slate-100 border-slate-300',
+    'text-amber-700 bg-amber-50 border-amber-200',
   ];
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-y-auto bg-slate-950 text-slate-100 p-4 md:p-6 space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
+    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-y-auto bg-slate-50 text-slate-900 p-4 md:p-6 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
           <div className="flex items-center gap-2">
-            <Brain className="w-6 h-6 text-indigo-400" />
+            <Brain className="w-6 h-6 text-teal-500" />
             <h1 className="text-xl md:text-2xl font-black text-gradient tracking-tight">
               Smart Analytics
             </h1>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-950 text-indigo-400 border border-indigo-800 font-bold uppercase">
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 font-bold uppercase">
               AI Powered
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-slate-500 mt-0.5">
             Predictive analytics, peak hours heatmap, and smart business insights
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex p-1 bg-slate-900 border border-slate-800 rounded-xl">
+          <div className="flex p-1 bg-white border border-slate-200 rounded-xl">
             {[7, 14, 30].map((d) => (
               <button
                 key={d}
                 onClick={() => setDays(d)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                   days === d
-                    ? 'bg-indigo-600 text-white shadow-md'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                    : 'text-slate-600 hover:bg-teal-50'
                 }`}
               >
                 {d}D
@@ -124,7 +124,7 @@ export const SmartAnalytics: React.FC = () => {
           <button
             onClick={fetchData}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             Refresh
@@ -134,66 +134,66 @@ export const SmartAnalytics: React.FC = () => {
 
       {isLoading && !data ? (
         <div className="flex items-center justify-center py-20">
-          <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+          <div className="w-6 h-6 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
         </div>
       ) : data ? (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="glass card-hover rounded-2xl p-4 border border-white/10">
+            <div className="card-hover rounded-2xl p-4 border border-slate-200 bg-white">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-                  <DollarSign className="w-5 h-5 text-indigo-400" />
+                <div className="p-2.5 rounded-xl bg-teal-500/10 border border-teal-200">
+                  <DollarSign className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                     Total Revenue
                   </div>
-                  <div className="text-lg font-black text-white">
+                  <div className="text-lg font-black text-slate-900">
                     Rs {data.summary.totalRevenue.toLocaleString()}
                   </div>
                 </div>
               </div>
             </div>
-            <div className="glass card-hover rounded-2xl p-4 border border-white/10">
+            <div className="card-hover rounded-2xl p-4 border border-slate-200 bg-white">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-                  <ShoppingBag className="w-5 h-5 text-indigo-400" />
+                <div className="p-2.5 rounded-xl bg-teal-500/10 border border-teal-200">
+                  <ShoppingBag className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                     Total Orders
                   </div>
-                  <div className="text-lg font-black text-white">
+                  <div className="text-lg font-black text-slate-900">
                     {data.summary.totalOrders.toLocaleString()}
                   </div>
                 </div>
               </div>
             </div>
-            <div className="glass card-hover rounded-2xl p-4 border border-white/10">
+            <div className="card-hover rounded-2xl p-4 border border-slate-200 bg-white">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-                  <Target className="w-5 h-5 text-indigo-400" />
+                <div className="p-2.5 rounded-xl bg-teal-500/10 border border-teal-200">
+                  <Target className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                     Avg Order Value
                   </div>
-                  <div className="text-lg font-black text-white">
+                  <div className="text-lg font-black text-slate-900">
                     Rs {data.summary.avgOrderValue.toLocaleString()}
                   </div>
                 </div>
               </div>
             </div>
-            <div className="glass card-hover rounded-2xl p-4 border border-white/10">
+            <div className="card-hover rounded-2xl p-4 border border-slate-200 bg-white">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
-                  <Clock className="w-5 h-5 text-indigo-400" />
+                <div className="p-2.5 rounded-xl bg-teal-500/10 border border-teal-200">
+                  <Clock className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                     Busiest Hour
                   </div>
-                  <div className="text-lg font-black text-white">
+                  <div className="text-lg font-black text-slate-900">
                     {data.summary.busiestHour || 'N/A'}
                   </div>
                 </div>
@@ -202,10 +202,10 @@ export const SmartAnalytics: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="lg:col-span-2 glass rounded-2xl p-5 border border-white/10">
+            <div className="lg:col-span-2 rounded-2xl p-5 border border-slate-200 bg-white">
               <div className="flex items-center gap-2 mb-4">
-                <BarChart3 className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-white">Revenue Trend</h2>
+                <BarChart3 className="w-4 h-4 text-teal-500" />
+                <h2 className="text-sm font-bold text-slate-900">Revenue Trend</h2>
                 <span className="text-[10px] text-slate-500 ml-auto">Last {days} days</span>
               </div>
               <div className="flex items-end gap-2 h-48">
@@ -213,44 +213,44 @@ export const SmartAnalytics: React.FC = () => {
                   const height = maxRevenue > 0 ? (d.revenue / maxRevenue) * 100 : 0;
                   return (
                     <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                      <span className="text-[9px] font-semibold text-slate-400">
+                      <span className="text-[9px] font-semibold text-slate-500">
                         {d.revenue > 0 ? `Rs ${(d.revenue / 1000).toFixed(1)}k` : '-'}
                       </span>
                       <div className="w-full flex justify-center">
                         <div
-                          className="w-full max-w-[32px] rounded-t-lg bg-gradient-to-t from-indigo-600 to-indigo-400 transition-all duration-500"
+                          className="w-full max-w-[32px] rounded-t-lg bg-gradient-to-t from-teal-600 to-teal-400 transition-all duration-500"
                           style={{ height: `${Math.max(height, 2)}%` }}
                         />
                       </div>
-                      <span className="text-[9px] text-slate-600">
+                      <span className="text-[9px] text-slate-400">
                         {new Date(d.date).toLocaleDateString('en', { day: 'numeric', month: 'short' })}
                       </span>
                     </div>
                   );
                 })}
                 {data.revenueTrend.length === 0 && (
-                  <div className="flex-1 flex items-center justify-center h-full text-slate-600 text-xs">
+                  <div className="flex-1 flex items-center justify-center h-full text-slate-500 text-xs">
                     No revenue data
                   </div>
                 )}
               </div>
             </div>
 
-            <div className="glass rounded-2xl p-5 border border-white/10">
+            <div className="rounded-2xl p-5 border border-slate-200 bg-white">
               <div className="flex items-center gap-2 mb-4">
-                <Zap className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-white">Predictions</h2>
+                <Zap className="w-4 h-4 text-teal-500" />
+                <h2 className="text-sm font-bold text-slate-900">Predictions</h2>
               </div>
               <div className="space-y-4">
-                <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-800">
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                   <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
                     Avg Daily Sales
                   </div>
-                  <div className="text-xl font-black text-white mt-1">
+                  <div className="text-xl font-black text-slate-900 mt-1">
                     Rs {data.predictions.avgDailySales.toLocaleString()}
                   </div>
                 </div>
-                <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-800">
+                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                   <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
                     Predicted Next 3 Days
                   </div>
@@ -258,17 +258,17 @@ export const SmartAnalytics: React.FC = () => {
                     {data.predictions.predictedNext3Days.map((val, i) => (
                       <div
                         key={i}
-                        className="flex-1 text-center p-2 rounded-lg bg-indigo-950/50 border border-indigo-800/50"
+                        className="flex-1 text-center p-2 rounded-lg bg-teal-50 border border-teal-200"
                       >
-                        <div className="text-[9px] text-indigo-400 font-bold">Day {i + 1}</div>
-                        <div className="text-xs font-bold text-white mt-0.5">
+                        <div className="text-[9px] text-teal-600 font-bold">Day {i + 1}</div>
+                        <div className="text-xs font-bold text-slate-900 mt-0.5">
                           Rs {(val / 1000).toFixed(1)}k
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-900/50 border border-slate-800">
+                <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
                   {React.createElement(trendIcon, { className: `w-4 h-4 ${trendColor}` })}
                   <span className={`text-sm font-bold ${trendColor}`}>{trendLabel}</span>
                   <span className="text-[10px] text-slate-500 ml-auto">Trend</span>
@@ -278,16 +278,16 @@ export const SmartAnalytics: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="glass rounded-2xl p-5 border border-white/10">
+            <div className="rounded-2xl p-5 border border-slate-200 bg-white">
               <div className="flex items-center gap-2 mb-4">
-                <Trophy className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-white">Best Sellers</h2>
+                <Trophy className="w-4 h-4 text-teal-500" />
+                <h2 className="text-sm font-bold text-slate-900">Best Sellers</h2>
                 <span className="text-[10px] text-slate-500 ml-auto">Top 10</span>
               </div>
               <div className="overflow-hidden">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-slate-800">
+                    <tr className="border-b border-slate-200">
                       <th className="text-left py-2 px-2 text-[10px] font-bold uppercase text-slate-500">
                         #
                       </th>
@@ -309,7 +309,7 @@ export const SmartAnalytics: React.FC = () => {
                       return (
                         <tr
                           key={i}
-                          className="table-row-hover border-b border-slate-800/50"
+                          className="table-row-hover border-b border-slate-100"
                         >
                           <td className="py-2 px-2">
                             {MedalIcon ? (
@@ -317,16 +317,16 @@ export const SmartAnalytics: React.FC = () => {
                                 <MedalIcon className="w-3 h-3" />
                               </div>
                             ) : (
-                              <span className="text-slate-600 font-bold">{i + 1}</span>
+                              <span className="text-slate-400 font-bold">{i + 1}</span>
                             )}
                           </td>
-                          <td className="py-2 px-2 font-semibold text-white truncate max-w-[160px]">
+                          <td className="py-2 px-2 font-semibold text-slate-900 truncate max-w-[160px]">
                             {item.name}
                           </td>
-                          <td className="py-2 px-2 text-right text-slate-300 font-medium">
+                          <td className="py-2 px-2 text-right text-slate-700 font-medium">
                             {item.quantity}
                           </td>
-                          <td className="py-2 px-2 text-right text-indigo-400 font-bold">
+                          <td className="py-2 px-2 text-right text-teal-600 font-bold">
                             Rs {item.revenue.toLocaleString()}
                           </td>
                         </tr>
@@ -334,7 +334,7 @@ export const SmartAnalytics: React.FC = () => {
                     })}
                     {data.bestSellers.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="py-8 text-center text-slate-600 text-xs">
+                        <td colSpan={4} className="py-8 text-center text-slate-500 text-xs">
                           No sales data yet
                         </td>
                       </tr>
@@ -344,10 +344,10 @@ export const SmartAnalytics: React.FC = () => {
               </div>
             </div>
 
-            <div className="glass rounded-2xl p-5 border border-white/10">
+            <div className="rounded-2xl p-5 border border-slate-200 bg-white">
               <div className="flex items-center gap-2 mb-4">
-                <Clock className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-white">Peak Hours Heatmap</h2>
+                <Clock className="w-4 h-4 text-teal-500" />
+                <h2 className="text-sm font-bold text-slate-900">Peak Hours Heatmap</h2>
                 <span className="text-[10px] text-slate-500 ml-auto">24h Order Volume</span>
               </div>
               <div className="grid grid-cols-12 gap-1.5">
@@ -366,18 +366,18 @@ export const SmartAnalytics: React.FC = () => {
                         style={{
                           backgroundColor:
                             intensity > 0.7
-                              ? 'rgb(79 70 229 / 0.9)'
+                              ? 'rgb(20 184 166 / 0.9)'
                               : intensity > 0.4
-                              ? 'rgb(79 70 229 / 0.5)'
+                              ? 'rgb(20 184 166 / 0.5)'
                               : intensity > 0.1
-                              ? 'rgb(79 70 229 / 0.25)'
-                              : 'rgb(30 41 59 / 0.5)',
-                          color: intensity > 0.4 ? 'white' : intensity > 0 ? 'rgb(165 160 190)' : 'rgb(71 85 105)',
+                              ? 'rgb(20 184 166 / 0.25)'
+                              : 'rgb(226 232 240 / 0.5)',
+                          color: intensity > 0.4 ? 'white' : intensity > 0 ? 'rgb(100 116 139)' : 'rgb(148 163 184)',
                         }}
                       >
                         {count > 0 ? count : ''}
                       </div>
-                      <span className="text-[7px] text-slate-600 font-medium">
+                      <span className="text-[7px] text-slate-400 font-medium">
                         {i % 3 === 0 ? `${i}` : ''}
                       </span>
                     </div>
@@ -386,27 +386,27 @@ export const SmartAnalytics: React.FC = () => {
               </div>
               <div className="flex items-center justify-center gap-3 mt-4">
                 <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 rounded bg-slate-800" />
-                  <span className="text-[9px] text-slate-600">None</span>
+                  <div className="w-3 h-3 rounded bg-slate-200" />
+                  <span className="text-[9px] text-slate-500">None</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 rounded bg-indigo-900/25" />
-                  <span className="text-[9px] text-slate-600">Low</span>
+                  <div className="w-3 h-3 rounded bg-teal-200" />
+                  <span className="text-[9px] text-slate-500">Low</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 rounded bg-indigo-500/50" />
-                  <span className="text-[9px] text-slate-600">Med</span>
+                  <div className="w-3 h-3 rounded bg-teal-400" />
+                  <span className="text-[9px] text-slate-500">Med</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 rounded bg-indigo-500/90" />
-                  <span className="text-[9px] text-slate-600">High</span>
+                  <div className="w-3 h-3 rounded bg-teal-600" />
+                  <span className="text-[9px] text-slate-500">High</span>
                 </div>
               </div>
             </div>
           </div>
         </>
       ) : (
-        <div className="flex flex-col items-center justify-center py-20 text-slate-600">
+        <div className="flex flex-col items-center justify-center py-20 text-slate-500">
           <Brain className="w-12 h-12 mb-3 opacity-30" />
           <span className="text-sm font-medium">No analytics data available</span>
           <span className="text-xs mt-1">Generate some sales first</span>

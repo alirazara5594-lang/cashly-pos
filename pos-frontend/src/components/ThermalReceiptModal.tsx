@@ -31,7 +31,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
       <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header Actions */}
         <div className="px-4 py-3 bg-slate-800/80 border-b border-slate-700 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+          <div className="flex items-center gap-2 text-teal-400 font-bold text-sm">
             <CheckCircle className="w-4 h-4" />
             <span>Order Completed Successfully</span>
           </div>
@@ -126,7 +126,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               <span className="font-bold uppercase">{order.paymentMethod}</span>
             </div>
             {order.paymentMethod !== 'Cash' && (
-              <div className="p-1 rounded bg-gray-100 text-[9px] text-emerald-800 font-semibold text-center mt-1">
+              <div className="p-1 rounded bg-gray-100 text-[9px] text-teal-800 font-semibold text-center mt-1">
                 * DIGITAL INCENTIVE: Saved 8% tax by paying digitally! *
               </div>
             )}
@@ -165,7 +165,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </button>
           <button
             onClick={handlePrint}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition shadow-lg shadow-emerald-600/30"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition shadow-lg shadow-teal-600/30"
           >
             <Printer className="w-3.5 h-3.5" />
             <span>Print Receipt</span>

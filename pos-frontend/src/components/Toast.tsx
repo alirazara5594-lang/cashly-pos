@@ -50,9 +50,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           <div
             key={toast.id}
             className={`flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl text-sm font-semibold animate-slideIn transition-all ${
-              toast.type === 'success' ? 'bg-emerald-600 text-white' :
+              toast.type === 'success' ? 'bg-teal-600 text-white' :
               toast.type === 'error' ? 'bg-red-600 text-white' :
-              toast.type === 'sync' ? 'bg-indigo-600 text-white' :
+              toast.type === 'sync' ? 'bg-teal-600 text-white' :
               'bg-slate-800 text-slate-100 border border-slate-700'
             }`}
           >

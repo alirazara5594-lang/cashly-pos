@@ -232,29 +232,29 @@ export const InventoryManagement: React.FC = () => {
   const finishedTotalValuationPKR = stocks.reduce((sum, s) => sum + (s.quantityOnHand * s.costPricePKR), 0);
 
   return (
-    <div className="flex-1 bg-slate-950 text-slate-100 overflow-y-auto p-4 lg:p-6">
+    <div className="flex-1 bg-slate-50 text-slate-900 overflow-y-auto p-4 lg:p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Header Bar */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xl">
           <div>
             <div className="flex items-center gap-2">
-              <Boxes className="w-6 h-6 text-emerald-400" />
-              <h1 className="text-xl font-black text-white tracking-tight">Kitchen & Store Inventory</h1>
+              <Boxes className="w-6 h-6 text-teal-500" />
+              <h1 className="text-xl font-black text-slate-900 tracking-tight">Kitchen & Store Inventory</h1>
             </div>
-            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5 text-emerald-500" />
-              Active Branch: <span className="text-emerald-400 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
+            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-teal-500" />
+              Active Branch: <span className="text-teal-600 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
             </p>
           </div>
 
           {/* Quick Tabs: Raw Ingredients (BOM) vs Finished Products */}
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button
               onClick={() => { setActiveTab('ingredients'); setSelectedCategory('all'); }}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === 'ingredients'
-                  ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/25'
+                  : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
               }`}
             >
               <Wheat className="w-3.5 h-3.5" />
@@ -265,8 +265,8 @@ export const InventoryManagement: React.FC = () => {
               onClick={() => { setActiveTab('finished'); setSelectedCategory('all'); }}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === 'finished'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                  : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
               }`}
             >
               <Boxes className="w-3.5 h-3.5" />
@@ -276,15 +276,15 @@ export const InventoryManagement: React.FC = () => {
 
           {/* Quick Stats Pills */}
           <div className="flex items-center gap-3">
-            <div className="px-3.5 py-2 bg-rose-950/40 border border-rose-800/60 rounded-xl text-right">
-              <div className="text-[10px] text-rose-300 font-medium">Low Stock Alerts</div>
-              <div className="text-sm font-black text-rose-400">
+            <div className="px-3.5 py-2 bg-rose-50 border border-rose-200 rounded-xl text-right">
+              <div className="text-[10px] text-rose-500 font-medium">Low Stock Alerts</div>
+              <div className="text-sm font-black text-rose-600">
                 {activeTab === 'ingredients' ? rawLowStockCount : finishedLowStockCount} Items
               </div>
             </div>
-            <div className="px-3.5 py-2 bg-emerald-950/40 border border-emerald-800/60 rounded-xl text-right">
-              <div className="text-[10px] text-emerald-300 font-medium">Stock Value</div>
-              <div className="text-sm font-black text-emerald-400">
+            <div className="px-3.5 py-2 bg-teal-50 border border-teal-200 rounded-xl text-right">
+              <div className="text-[10px] text-teal-500 font-medium">Stock Value</div>
+              <div className="text-sm font-black text-teal-600">
                 ₨{Math.round(activeTab === 'ingredients' ? rawTotalValuationPKR : finishedTotalValuationPKR).toLocaleString()}
               </div>
             </div>
@@ -293,14 +293,14 @@ export const InventoryManagement: React.FC = () => {
 
         {/* Success Alert Banner */}
         {actionSuccess && (
-          <div className="bg-emerald-950/80 border border-emerald-500 text-emerald-300 px-4 py-3 rounded-xl flex items-center gap-2 text-xs font-semibold animate-pulse shadow-lg">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <div className="bg-teal-50 border border-teal-300 text-teal-700 px-4 py-3 rounded-xl flex items-center gap-2 text-xs font-semibold animate-pulse shadow-lg">
+            <CheckCircle2 className="w-4 h-4 text-teal-500" />
             <span>{actionSuccess}</span>
           </div>
         )}
 
         {/* Filter & Search Bar */}
-        <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
+        <div className="bg-white border border-slate-200 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
           <div className="relative w-full md:w-80">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
@@ -308,7 +308,7 @@ export const InventoryManagement: React.FC = () => {
               placeholder={activeTab === 'ingredients' ? 'Search bun, patty, sauce, cheese...' : 'Search product, barcode, SKU...'}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
             />
           </div>
 
@@ -317,7 +317,7 @@ export const InventoryManagement: React.FC = () => {
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 focus:outline-none focus:border-emerald-500"
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
             >
               <option value="all">All Categories</option>
               {(activeTab === 'ingredients' ? ingCategories : finishedCategories).map(c => (
@@ -330,8 +330,8 @@ export const InventoryManagement: React.FC = () => {
               onClick={() => setFilterLowStockOnly(!filterLowStockOnly)}
               className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
                 filterLowStockOnly 
-                  ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30' 
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                  ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25' 
+                  : 'bg-slate-100 text-slate-600 hover:bg-teal-50 border border-slate-200'
               }`}
             >
               <AlertTriangle className="w-3.5 h-3.5" />
@@ -342,7 +342,7 @@ export const InventoryManagement: React.FC = () => {
             {activeTab === 'ingredients' && (
               <button
                 onClick={() => setIsNewIngOpen(true)}
-                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-amber-600/30"
+                className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-amber-500/25"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add New Ingredient</span>
@@ -353,7 +353,7 @@ export const InventoryManagement: React.FC = () => {
             {isMultiBranchChain && (
               <button
                 onClick={() => navigate('/transfers', { state: { tab: 'transfers', openRequisition: true } })}
-                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-emerald-600/30"
+                className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-teal-500/25"
                 title="Send Stock Requisition to Central Commissary"
               >
                 <Truck className="w-3.5 h-3.5" />
@@ -365,7 +365,7 @@ export const InventoryManagement: React.FC = () => {
             <button
               onClick={fetchInventory}
               disabled={loading}
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 transition"
+              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl border border-slate-200 transition"
               title="Refresh inventory"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -375,24 +375,24 @@ export const InventoryManagement: React.FC = () => {
 
         {/* TAB 1: RAW INGREDIENTS TABLE (BOM) */}
         {activeTab === 'ingredients' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-            <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h3 className="font-bold text-white text-sm flex items-center gap-2">
-                  <Wheat className="w-4 h-4 text-amber-400" />
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                  <Wheat className="w-4 h-4 text-amber-500" />
                   <span>Kitchen Raw Materials & Ingredient Consumption (Recipe BOM)</span>
                 </h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <p className="text-[11px] text-slate-500 mt-0.5">
                   Every time a burger, deal, or pizza is sold at the counter, ingredients (buns, patties, sauces, cheese) deduct automatically.
                 </p>
               </div>
-              <span className="text-xs text-amber-400 font-mono font-bold">{filteredIngredients.length} Items</span>
+              <span className="text-xs text-amber-600 font-mono font-bold">{filteredIngredients.length} Items</span>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-slate-850 border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Raw Ingredient</th>
                     <th className="py-3 px-3">Classification</th>
                     <th className="py-3 px-3 text-right">Cost Per Unit (₨)</th>
@@ -403,7 +403,7 @@ export const InventoryManagement: React.FC = () => {
                     <th className="py-3 px-4 text-center">Quick Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800">
+                <tbody className="divide-y divide-slate-100">
                   {filteredIngredients.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="py-12 text-center text-slate-500 font-medium">
@@ -412,43 +412,43 @@ export const InventoryManagement: React.FC = () => {
                     </tr>
                   ) : (
                     filteredIngredients.map((ing) => (
-                      <tr key={ing.id} className="hover:bg-slate-850/50 transition">
+                      <tr key={ing.id} className="hover:bg-slate-50 transition">
                         <td className="py-3 px-4">
-                          <div className="font-bold text-white text-sm">{ing.name}</div>
+                          <div className="font-bold text-slate-900 text-sm">{ing.name}</div>
                           <div className="text-[10px] text-slate-500">Unit: {ing.unit}</div>
                         </td>
                         <td className="py-3 px-3">
-                          <span className="px-2 py-0.5 rounded bg-slate-800 text-amber-300 text-[10px] font-semibold">
+                          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-semibold border border-amber-200">
                             {ing.category}
                           </span>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300">
+                        <td className="py-3 px-3 text-right font-mono text-slate-700">
                           ₨{ing.costPerUnitPKR.toLocaleString()} / {ing.unit}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
                             ing.isLowStock
-                              ? 'bg-rose-950/80 text-rose-300 border border-rose-700'
-                              : 'bg-emerald-950/50 text-emerald-300 border border-emerald-800'
+                              ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                              : 'bg-teal-50 text-teal-600 border border-teal-200'
                           }`}>
                             {ing.currentStock} {ing.unit}
                           </span>
                           <div className="text-[10px] text-slate-500 mt-0.5">Min Alert: {ing.minAlertLevel}</div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-emerald-400 font-bold">
+                        <td className="py-3 px-3 text-right font-mono text-teal-600 font-bold">
                           ₨{ing.totalValuationPKR.toLocaleString()}
                         </td>
-                        <td className="py-3 px-3 text-slate-400 font-medium">
+                        <td className="py-3 px-3 text-slate-600 font-medium">
                           {ing.supplierName || 'Local Supplier'}
                         </td>
                         <td className="py-3 px-3 text-center">
                           {ing.isLowStock ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-900/60 border border-rose-700 text-rose-300 text-[10px] font-bold">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-600 text-[10px] font-bold">
                               <AlertTriangle className="w-3 h-3" />
                               <span>REORDER NEEDED</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-700/60 text-emerald-400 text-[10px] font-semibold">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal-50 border border-teal-200 text-teal-600 text-[10px] font-semibold">
                               <CheckCircle2 className="w-3 h-3" />
                               <span>Sufficient</span>
                             </span>
@@ -462,7 +462,7 @@ export const InventoryManagement: React.FC = () => {
                               setRestockUnitCost(ing.costPerUnitPKR);
                               setRestockSupplier(ing.supplierName || '');
                             }}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-600/40 text-[11px] font-bold transition mx-auto"
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 text-[11px] font-bold transition mx-auto"
                             title="Inward / Purchase more of this ingredient"
                           >
                             <ArrowDownToLine className="w-3 h-3" />
@@ -480,24 +480,24 @@ export const InventoryManagement: React.FC = () => {
 
         {/* TAB 2: FINISHED PRODUCTS TABLE */}
         {activeTab === 'finished' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-            <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h3 className="font-bold text-white text-sm flex items-center gap-2">
-                  <Boxes className="w-4 h-4 text-emerald-400" />
+                <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                  <Boxes className="w-4 h-4 text-teal-500" />
                   <span>Finished Product Stock on Hand</span>
                 </h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <p className="text-[11px] text-slate-500 mt-0.5">
                   Stock levels for ready items, mart grocery items, and packaging cartons.
                 </p>
               </div>
-              <span className="text-xs text-emerald-400 font-mono font-bold">{filteredStocks.length} Items</span>
+              <span className="text-xs text-teal-600 font-mono font-bold">{filteredStocks.length} Items</span>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-slate-850 border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Item & Category</th>
                     <th className="py-3 px-3">Barcode / SKU</th>
                     <th className="py-3 px-3 text-right">Cost Price (₨)</th>
@@ -508,7 +508,7 @@ export const InventoryManagement: React.FC = () => {
                     <th className="py-3 px-4 text-center">Quick Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800">
+                <tbody className="divide-y divide-slate-100">
                   {filteredStocks.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="py-12 text-center text-slate-500 font-medium">
@@ -517,39 +517,39 @@ export const InventoryManagement: React.FC = () => {
                     </tr>
                   ) : (
                     filteredStocks.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-850/50 transition">
+                      <tr key={item.id} className="hover:bg-slate-50 transition">
                         <td className="py-3 px-4">
-                          <div className="font-bold text-white text-sm">{item.productName}</div>
-                          <div className="text-[11px] text-slate-400">{item.categoryName}</div>
+                          <div className="font-bold text-slate-900 text-sm">{item.productName}</div>
+                          <div className="text-[11px] text-slate-500">{item.categoryName}</div>
                         </td>
-                        <td className="py-3 px-3 font-mono text-[11px] text-slate-300">
+                        <td className="py-3 px-3 font-mono text-[11px] text-slate-700">
                           <div>{item.barcode || '—'}</div>
                           <div className="text-[10px] text-slate-500">{item.sku}</div>
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-slate-300">
+                        <td className="py-3 px-3 text-right font-mono text-slate-700">
                           ₨{item.costPricePKR.toLocaleString()}
                         </td>
-                        <td className="py-3 px-3 text-right font-mono text-emerald-400 font-bold">
+                        <td className="py-3 px-3 text-right font-mono text-teal-600 font-bold">
                           ₨{item.sellingPricePKR.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
                           <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
                             item.isLowStock
-                              ? 'bg-rose-950/80 text-rose-300 border border-rose-700'
-                              : 'bg-emerald-950/50 text-emerald-300 border border-emerald-800'
+                              ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                              : 'bg-teal-50 text-teal-600 border border-teal-200'
                           }`}>
                             {item.quantityOnHand} {item.unit}
                           </span>
                           <div className="text-[10px] text-slate-500 mt-0.5">Min: {item.minAlertLevel}</div>
                         </td>
-                        <td className="py-3 px-3 text-slate-400">
+                        <td className="py-3 px-3 text-slate-600">
                           {item.batchNumber ? (
-                            <div className="font-mono text-[11px] text-purple-300 font-semibold">{item.batchNumber}</div>
+                            <div className="font-mono text-[11px] text-purple-600 font-semibold">{item.batchNumber}</div>
                           ) : (
-                            <span className="text-[10px] text-slate-600">No Batch</span>
+                            <span className="text-[10px] text-slate-400">No Batch</span>
                           )}
                           {item.expiryDate && (
-                            <div className="text-[10px] text-amber-400 flex items-center gap-1">
+                            <div className="text-[10px] text-amber-600 flex items-center gap-1">
                               <Calendar className="w-2.5 h-2.5" />
                               <span>Exp: {item.expiryDate}</span>
                             </div>
@@ -557,12 +557,12 @@ export const InventoryManagement: React.FC = () => {
                         </td>
                         <td className="py-3 px-3 text-center">
                           {item.isLowStock ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-900/60 border border-rose-700 text-rose-300 text-[10px] font-bold">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-600 text-[10px] font-bold">
                               <AlertTriangle className="w-3 h-3" />
                               <span>LOW STOCK</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-700/60 text-emerald-400 text-[10px] font-semibold">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal-50 border border-teal-200 text-teal-600 text-[10px] font-semibold">
                               <CheckCircle2 className="w-3 h-3" />
                               <span>In Stock</span>
                             </span>
@@ -579,7 +579,7 @@ export const InventoryManagement: React.FC = () => {
                                 setBatchNo(item.batchNumber || '');
                                 setExpiryDate(item.expiryDate || '');
                               }}
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-600/40 text-[11px] font-bold transition"
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-600 border border-teal-200 text-[11px] font-bold transition"
                             >
                               <ArrowDownToLine className="w-3 h-3" />
                               <span>Stock In</span>
@@ -591,9 +591,9 @@ export const InventoryManagement: React.FC = () => {
                                 setAdjustQty(-1);
                                 setAdjustReason('Wastage / Kitchen Prep Loss');
                               }}
-                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-medium transition"
+                              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 text-[11px] font-medium transition"
                             >
-                              <SlidersHorizontal className="w-3 h-3 text-slate-400" />
+                              <SlidersHorizontal className="w-3 h-3 text-slate-500" />
                               <span>Adjust</span>
                             </button>
                           </div>
@@ -610,26 +610,26 @@ export const InventoryManagement: React.FC = () => {
 
       {/* Raw Ingredient Inward Modal */}
       {restockIng && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
-                <ArrowDownToLine className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-white text-base">Inward Raw Material Stock</h3>
+                <ArrowDownToLine className="w-5 h-5 text-amber-500" />
+                <h3 className="font-bold text-slate-900 text-base">Inward Raw Material Stock</h3>
               </div>
-              <button onClick={() => setRestockIng(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <button onClick={() => setRestockIng(null)} className="text-slate-400 hover:text-slate-900 text-sm">✕</button>
             </div>
 
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <div className="font-bold text-amber-400 text-sm">{restockIng.name}</div>
-              <div className="text-xs text-slate-400 mt-0.5">
-                Current Kitchen Stock: <span className="font-bold text-white">{restockIng.currentStock} {restockIng.unit}</span>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+              <div className="font-bold text-amber-600 text-sm">{restockIng.name}</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                Current Kitchen Stock: <span className="font-bold text-slate-900">{restockIng.currentStock} {restockIng.unit}</span>
               </div>
             </div>
 
             <form onSubmit={handleRestockIngSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">
+                <label className="block text-xs text-slate-500 font-medium mb-1">
                   Quantity Received ({restockIng.unit}) *
                 </label>
                 <input
@@ -639,47 +639,47 @@ export const InventoryManagement: React.FC = () => {
                   required
                   value={restockQty}
                   onChange={(e) => setRestockQty(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Supplier Name</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Supplier Name</label>
                   <input
                     type="text"
                     value={restockSupplier}
                     onChange={(e) => setRestockSupplier(e.target.value)}
                     placeholder="e.g. Dawn Bread / K&Ns"
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Cost Per {restockIng.unit} (₨)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Cost Per {restockIng.unit} (₨)</label>
                   <input
                     type="number"
                     min="0"
                     step="5"
                     value={restockUnitCost}
                     onChange={(e) => setRestockUnitCost(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-emerald-400 focus:outline-none focus:border-amber-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setRestockIng(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-amber-600 text-slate-950 text-xs font-black hover:bg-amber-500 transition shadow-lg shadow-amber-600/30 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-black hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Inwarding...' : 'Confirm Inward'}
                 </button>
@@ -691,36 +691,36 @@ export const InventoryManagement: React.FC = () => {
 
       {/* Add New Ingredient Modal */}
       {isNewIngOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
-                <Plus className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-white text-base">Add New Raw Ingredient</h3>
+                <Plus className="w-5 h-5 text-amber-500" />
+                <h3 className="font-bold text-slate-900 text-base">Add New Raw Ingredient</h3>
               </div>
-              <button onClick={() => setIsNewIngOpen(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <button onClick={() => setIsNewIngOpen(false)} className="text-slate-400 hover:text-slate-900 text-sm">✕</button>
             </div>
 
             <form onSubmit={handleCreateIngredientSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">Ingredient Name *</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Ingredient Name *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Sesame Burger Buns / Jalapeno Slices"
                   value={newIngName}
                   onChange={(e) => setNewIngName(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-bold text-white focus:outline-none focus:border-amber-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Classification</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Classification</label>
                   <select
                     value={newIngCategory}
                     onChange={(e) => setNewIngCategory(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   >
                     <option value="Buns & Bakery">Buns & Bakery</option>
                     <option value="Meat & Patties">Meat & Patties</option>
@@ -733,11 +733,11 @@ export const InventoryManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Measurement Unit</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Measurement Unit</label>
                   <select
                     value={newIngUnit}
                     onChange={(e) => setNewIngUnit(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   >
                     <option value="Piece">Piece / Bun / Patty</option>
                     <option value="Slice">Slice</option>
@@ -751,63 +751,63 @@ export const InventoryManagement: React.FC = () => {
 
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Cost / Unit (₨)</label>
+                  <label className="block text-[11px] text-slate-500 font-medium mb-1">Cost / Unit (₨)</label>
                   <input
                     type="number"
                     min="1"
                     required
                     value={newIngCost}
                     onChange={(e) => setNewIngCost(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-emerald-400 focus:outline-none"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Initial Stock</label>
+                  <label className="block text-[11px] text-slate-500 font-medium mb-1">Initial Stock</label>
                   <input
                     type="number"
                     min="0"
                     required
                     value={newIngStock}
                     onChange={(e) => setNewIngStock(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-none"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] text-slate-400 font-medium mb-1">Alert Below</label>
+                  <label className="block text-[11px] text-slate-500 font-medium mb-1">Alert Below</label>
                   <input
                     type="number"
                     min="1"
                     required
                     value={newIngMinAlert}
                     onChange={(e) => setNewIngMinAlert(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-rose-400 focus:outline-none"
+                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono text-rose-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">Supplier / Vendor</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Supplier / Vendor</label>
                 <input
                   type="text"
                   placeholder="e.g. Dawn Bread / K&Ns / Local Mandi"
                   value={newIngSupplier}
                   onChange={(e) => setNewIngSupplier(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-amber-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsNewIngOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-amber-600 text-slate-950 text-xs font-black hover:bg-amber-500 transition shadow-lg shadow-amber-600/30 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-black hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Saving...' : 'Save Ingredient'}
                 </button>
@@ -819,24 +819,24 @@ export const InventoryManagement: React.FC = () => {
 
       {/* Finished Product Stock-In Modal */}
       {stockInItem && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
-                <ArrowDownToLine className="w-5 h-5 text-emerald-400" />
-                <h3 className="font-bold text-white text-base">Receive Stock (Stock-In)</h3>
+                <ArrowDownToLine className="w-5 h-5 text-teal-500" />
+                <h3 className="font-bold text-slate-900 text-base">Receive Stock (Stock-In)</h3>
               </div>
-              <button onClick={() => setStockInItem(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <button onClick={() => setStockInItem(null)} className="text-slate-400 hover:text-slate-900 text-sm">✕</button>
             </div>
 
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <div className="font-bold text-emerald-400 text-sm">{stockInItem.productName}</div>
-              <div className="text-xs text-slate-400 mt-0.5">Current Stock: <span className="font-bold text-white">{stockInItem.quantityOnHand} {stockInItem.unit}</span></div>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+              <div className="font-bold text-teal-600 text-sm">{stockInItem.productName}</div>
+              <div className="text-xs text-slate-500 mt-0.5">Current Stock: <span className="font-bold text-slate-900">{stockInItem.quantityOnHand} {stockInItem.unit}</span></div>
             </div>
 
             <form onSubmit={handleStockInSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">Quantity to Inward ({stockInItem.unit}) *</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Quantity to Inward ({stockInItem.unit}) *</label>
                 <input
                   type="number"
                   min="1"
@@ -844,70 +844,70 @@ export const InventoryManagement: React.FC = () => {
                   required
                   value={stockInQty}
                   onChange={(e) => setStockInQty(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Supplier Name</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Supplier Name</label>
                   <input
                     type="text"
                     placeholder="e.g. Metro / Local Vendor"
                     value={supplierName}
                     onChange={(e) => setSupplierName(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Unit Cost Price (₨)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Unit Cost Price (₨)</label>
                   <input
                     type="number"
                     min="0"
                     step="10"
                     value={newCostPrice}
                     onChange={(e) => setNewCostPrice(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Batch Number</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Batch Number</label>
                   <input
                     type="text"
                     placeholder="e.g. B-9901"
                     value={batchNo}
                     onChange={(e) => setBatchNo(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Expiry Date</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Expiry Date</label>
                   <input
                     type="date"
                     value={expiryDate}
                     onChange={(e) => setExpiryDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setStockInItem(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-500 transition shadow-lg shadow-emerald-600/30 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 transition shadow-lg shadow-teal-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Receiving...' : 'Confirm Stock-In'}
                 </button>
@@ -919,43 +919,43 @@ export const InventoryManagement: React.FC = () => {
 
       {/* Finished Product Stock Adjustment Modal */}
       {adjustItem && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-5 h-5 text-amber-400" />
-                <h3 className="font-bold text-white text-base">Adjust Stock Level</h3>
+                <SlidersHorizontal className="w-5 h-5 text-amber-500" />
+                <h3 className="font-bold text-slate-900 text-base">Adjust Stock Level</h3>
               </div>
-              <button onClick={() => setAdjustItem(null)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <button onClick={() => setAdjustItem(null)} className="text-slate-400 hover:text-slate-900 text-sm">✕</button>
             </div>
 
-            <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-              <div className="font-bold text-amber-400 text-sm">{adjustItem.productName}</div>
-              <div className="text-xs text-slate-400 mt-0.5">Current Stock: <span className="font-bold text-white">{adjustItem.quantityOnHand} {adjustItem.unit}</span></div>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+              <div className="font-bold text-amber-600 text-sm">{adjustItem.productName}</div>
+              <div className="text-xs text-slate-500 mt-0.5">Current Stock: <span className="font-bold text-slate-900">{adjustItem.quantityOnHand} {adjustItem.unit}</span></div>
             </div>
 
             <form onSubmit={handleAdjustSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">Adjustment Quantity (use - for loss/waste) *</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Adjustment Quantity (use - for loss/waste) *</label>
                 <input
                   type="number"
                   step="1"
                   required
                   value={adjustQty}
                   onChange={(e) => setAdjustQty(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
-                <div className="text-[11px] text-slate-400 mt-1">
-                  Resulting Stock: <span className="font-bold text-white">{Math.max(0, adjustItem.quantityOnHand + adjustQty)} {adjustItem.unit}</span>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  Resulting Stock: <span className="font-bold text-slate-900">{Math.max(0, adjustItem.quantityOnHand + adjustQty)} {adjustItem.unit}</span>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">Reason for Adjustment</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Reason for Adjustment</label>
                 <select
                   value={adjustReason}
                   onChange={(e) => setAdjustReason(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none focus:border-amber-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 >
                   <option value="Wastage / Kitchen Prep Loss">Wastage / Kitchen Prep Loss</option>
                   <option value="Damage / Spoilage">Damage / Spoilage</option>
@@ -965,18 +965,18 @@ export const InventoryManagement: React.FC = () => {
                 </select>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setAdjustItem(null)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-500 transition shadow-lg shadow-amber-600/30 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Updating...' : 'Save Adjustment'}
                 </button>

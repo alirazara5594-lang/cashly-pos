@@ -152,31 +152,31 @@ export const UserManagement: React.FC = () => {
   const getRoleBadge = (r: string) => {
     switch (r) {
       case 'OwnerAdmin':
-        return <span className="px-2.5 py-1 rounded-lg bg-purple-900/60 text-purple-300 border border-purple-700 text-[11px] font-bold">Owner / Executive</span>;
+        return <span className="px-2.5 py-1 rounded-lg bg-purple-100 text-purple-700 border border-purple-200 text-[11px] font-bold">Owner / Executive</span>;
       case 'BranchManager':
-        return <span className="px-2.5 py-1 rounded-lg bg-sky-900/60 text-sky-300 border border-sky-700 text-[11px] font-bold">Branch Manager</span>;
+        return <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-700 border border-sky-200 text-[11px] font-bold">Branch Manager</span>;
       case 'KitchenChef':
-        return <span className="px-2.5 py-1 rounded-lg bg-amber-900/60 text-amber-300 border border-amber-700 text-[11px] font-bold">Kitchen Chef</span>;
+        return <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 border border-amber-200 text-[11px] font-bold">Kitchen Chef</span>;
       case 'Waiter':
-        return <span className="px-2.5 py-1 rounded-lg bg-indigo-900/60 text-indigo-300 border border-indigo-700 text-[11px] font-bold">Waiter / Tab Captain</span>;
+        return <span className="px-2.5 py-1 rounded-lg bg-teal-100 text-teal-700 border border-teal-200 text-[11px] font-bold">Waiter / Tab Captain</span>;
       default:
-        return <span className="px-2.5 py-1 rounded-lg bg-emerald-900/60 text-emerald-300 border border-emerald-700 text-[11px] font-bold">Counter Cashier</span>;
+        return <span className="px-2.5 py-1 rounded-lg bg-teal-100 text-teal-700 border border-teal-200 text-[11px] font-bold">Counter Cashier</span>;
     }
   };
 
   return (
-    <div className="flex-1 bg-slate-950 text-slate-100 overflow-y-auto p-4 lg:p-6">
+    <div className="flex-1 bg-slate-50 text-slate-900 overflow-y-auto p-4 lg:p-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Top Header */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
           <div>
             <div className="flex items-center gap-2">
-              <Users className="w-6 h-6 text-emerald-400" />
-              <h1 className="text-xl font-black text-white tracking-tight">Staff Accounts & Role Permissions</h1>
+              <Users className="w-6 h-6 text-teal-500" />
+              <h1 className="text-xl font-black text-slate-900 tracking-tight">Staff Accounts & Role Permissions</h1>
             </div>
-            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
-              <Building2 className="w-3.5 h-3.5 text-emerald-500" />
-              Restaurant: <span className="text-emerald-400 font-semibold">{selectedTenant?.name || 'Restaurant'}</span>
+            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-teal-500" />
+              Restaurant: <span className="text-teal-600 font-semibold">{selectedTenant?.name || 'Restaurant'}</span>
               {selectedBranch && <span> • Branch: {selectedBranch.name}</span>}
             </p>
           </div>
@@ -184,7 +184,7 @@ export const UserManagement: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsAddUserOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 text-xs font-black transition shadow-lg shadow-emerald-600/30"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-black transition shadow-lg shadow-teal-500/25"
             >
               <UserPlus className="w-4 h-4" />
               <span>Add Staff Account</span>
@@ -193,7 +193,7 @@ export const UserManagement: React.FC = () => {
             <button
               onClick={fetchUsers}
               disabled={loading}
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 transition"
+              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl border border-slate-200 transition"
               title="Refresh staff list"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -203,26 +203,26 @@ export const UserManagement: React.FC = () => {
 
         {/* Success Alert */}
         {actionSuccess && (
-          <div className="bg-emerald-950/80 border border-emerald-500 text-emerald-300 px-4 py-3 rounded-xl flex items-center gap-2 text-xs font-semibold animate-pulse shadow-lg">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <div className="bg-teal-50 border border-teal-500 text-teal-700 px-4 py-3 rounded-xl flex items-center gap-2 text-xs font-semibold animate-pulse shadow-lg">
+            <CheckCircle2 className="w-4 h-4 text-teal-500" />
             <span>{actionSuccess}</span>
           </div>
         )}
 
         {/* Staff Table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-4 border-b border-slate-200 flex items-center justify-between">
             <div>
-              <h3 className="font-bold text-white text-sm">Active Staff Members ({users.length})</h3>
-              <p className="text-[11px] text-slate-400">Controls who can log in to registers, waiter tabs, KDS, inventory, and reports.</p>
+              <h3 className="font-bold text-slate-900 text-sm">Active Staff Members ({users.length})</h3>
+              <p className="text-[11px] text-slate-500">Controls who can log in to registers, waiter tabs, KDS, inventory, and reports.</p>
             </div>
-            <span className="text-xs text-emerald-400 font-mono font-bold">Role-Based Access (RBAC)</span>
+            <span className="text-xs text-teal-600 font-mono font-bold">Role-Based Access (RBAC)</span>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="bg-slate-850 border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
+                <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                   <th className="py-3 px-4">Staff Name & Username</th>
                   <th className="py-3 px-3">Role</th>
                   <th className="py-3 px-3 text-center">Quick PIN</th>
@@ -232,26 +232,26 @@ export const UserManagement: React.FC = () => {
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-slate-100">
                 {users.map(u => (
-                  <tr key={u.id} className="hover:bg-slate-850/50 transition">
+                  <tr key={u.id} className="hover:bg-slate-50 transition">
                     <td className="py-3.5 px-4">
-                      <div className="font-bold text-white text-sm">{u.fullName}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">@{u.username}</div>
+                      <div className="font-bold text-slate-900 text-sm">{u.fullName}</div>
+                      <div className="text-[11px] text-slate-500 font-mono">@{u.username}</div>
                     </td>
                     <td className="py-3.5 px-3">
                       {getRoleBadge(u.role)}
                     </td>
                     <td className="py-3.5 px-3 text-center">
-                      <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono text-emerald-400 font-bold text-xs">
+                      <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200 font-mono text-teal-600 font-bold text-xs">
                         {u.pinCode}
                       </span>
                     </td>
-                    <td className="py-3.5 px-3 text-slate-300">
+                    <td className="py-3.5 px-3 text-slate-700">
                       {u.branchId ? (
-                        <span className="text-xs text-slate-300">Specific Branch</span>
+                        <span className="text-xs text-slate-700">Specific Branch</span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 text-[10px] font-bold">
+                        <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-700 border border-purple-200 text-[10px] font-bold">
                           All Branches / HQ
                         </span>
                       )}
@@ -259,27 +259,27 @@ export const UserManagement: React.FC = () => {
                     <td className="py-3.5 px-4">
                       <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-xs mx-auto">
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          u.permissions.canViewFinancialReports ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-950 text-slate-600'
+                          u.permissions.canViewFinancialReports ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-500'
                         }`}>
                           Reports
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          u.permissions.canManageInventory ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-950 text-slate-600'
+                          u.permissions.canManageInventory ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-500'
                         }`}>
                           Inventory
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          u.permissions.canManageMenuAndTax ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-950 text-slate-600'
+                          u.permissions.canManageMenuAndTax ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-500'
                         }`}>
                           Menu/Tax
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          u.permissions.canGiveDiscounts ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-950 text-slate-600'
+                          u.permissions.canGiveDiscounts ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-500'
                         }`}>
                           Discounts
                         </span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          u.permissions.canVoidOrders ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-950 text-slate-600'
+                          u.permissions.canVoidOrders ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-500'
                         }`}>
                           Void
                         </span>
@@ -289,7 +289,7 @@ export const UserManagement: React.FC = () => {
                       <button
                         onClick={() => handleToggleActive(u)}
                         className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition ${
-                          u.isActive ? 'bg-emerald-950 text-emerald-400 border border-emerald-700' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                          u.isActive ? 'bg-teal-100 text-teal-700 border border-teal-200' : 'bg-rose-100 text-rose-700 border border-rose-200'
                         }`}
                       >
                         {u.isActive ? 'Active' : 'Disabled'}
@@ -298,7 +298,7 @@ export const UserManagement: React.FC = () => {
                     <td className="py-3.5 px-4 text-right">
                       <button
                         onClick={() => handleDeleteUser(u.id, u.fullName)}
-                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/60 text-slate-400 hover:text-rose-400 transition"
+                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600 transition"
                         title="Delete User"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -314,50 +314,50 @@ export const UserManagement: React.FC = () => {
 
       {/* Add Staff Account Modal */}
       {isAddUserOpen && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div className="flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-emerald-400" />
-                <h3 className="font-bold text-white text-base">Register Staff Member</h3>
+                <UserPlus className="w-5 h-5 text-teal-500" />
+                <h3 className="font-bold text-slate-900 text-base">Register Staff Member</h3>
               </div>
-              <button onClick={() => setIsAddUserOpen(false)} className="text-slate-400 hover:text-white text-sm">✕</button>
+              <button onClick={() => setIsAddUserOpen(false)} className="text-slate-400 hover:text-slate-900 text-sm">✕</button>
             </div>
 
             <form onSubmit={handleCreateUserSubmit} className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Full Name *</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Full Name *</label>
                   <input
                     type="text"
                     required
                     placeholder="e.g. Asim Khan"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Login Username *</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Login Username *</label>
                   <input
                     type="text"
                     required
                     placeholder="e.g. cashier_asim"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Restaurant Role *</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Restaurant Role *</label>
                   <select
                     value={role}
                     onChange={(e) => handleRoleChange(e.target.value as UserRole)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   >
                     <option value="Cashier">Counter Cashier (POS Only)</option>
                     <option value="Waiter">Waiter / Tab Captain (Table Orders)</option>
@@ -368,11 +368,11 @@ export const UserManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Branch Assignment</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Branch Assignment</label>
                   <select
                     value={branchScope}
                     onChange={(e) => setBranchScope(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   >
                     <option value="current">Current Location ({selectedBranch?.name || 'Selected Branch'})</option>
                     <option value="all">Enterprise-wide (All Branches / Head Office)</option>
@@ -380,74 +380,74 @@ export const UserManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-400 font-medium mb-1">Quick Terminal PIN Code (4 Digits)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Quick Terminal PIN Code (4 Digits)</label>
                   <input
                     type="text"
                     maxLength={4}
                     value={pinCode}
                     onChange={(e) => setPinCode(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono font-bold text-emerald-400 focus:outline-none focus:border-emerald-500"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                   />
                 </div>
               </div>
 
               {/* Permission Checkboxes */}
-              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                <div className="text-xs font-bold text-slate-300">Custom Permission Overrides:</div>
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <div className="text-xs font-bold text-slate-700">Custom Permission Overrides:</div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={canViewReports}
                       onChange={(e) => setCanViewReports(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-emerald-500"
+                      className="rounded bg-white border-slate-300 text-teal-500"
                     />
                     <span>View Financial Reports</span>
                   </label>
 
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={canManageInventory}
                       onChange={(e) => setCanManageInventory(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-emerald-500"
+                      className="rounded bg-white border-slate-300 text-teal-500"
                     />
                     <span>Manage Kitchen Inventory</span>
                   </label>
 
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={canManageMenuAndTax}
                       onChange={(e) => setCanManageMenuAndTax(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-emerald-500"
+                      className="rounded bg-white border-slate-300 text-teal-500"
                     />
                     <span>Edit Menu & Tax Rates</span>
                   </label>
 
-                  <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={canGiveDiscounts}
                       onChange={(e) => setCanGiveDiscounts(e.target.checked)}
-                      className="rounded bg-slate-900 border-slate-700 text-emerald-500"
+                      className="rounded bg-white border-slate-300 text-teal-500"
                     />
                     <span>Authorize PKR Discounts</span>
                   </label>
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsAddUserOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-emerald-600 text-slate-950 text-xs font-black hover:bg-emerald-500 transition shadow-lg shadow-emerald-600/30"
+                  className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 transition shadow-lg shadow-teal-500/25"
                 >
                   Save Staff Account
                 </button>

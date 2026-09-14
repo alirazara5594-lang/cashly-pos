@@ -83,34 +83,34 @@ export const TenantSignup: React.FC = () => {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="w-full max-w-md text-center space-y-6">
-          <div className="w-16 h-16 rounded-2xl bg-emerald-500/20 flex items-center justify-center mx-auto">
-            <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+          <div className="w-16 h-16 rounded-2xl bg-teal-100 flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-8 h-8 text-teal-500" />
           </div>
           <div>
-            <h1 className="text-2xl font-black text-white mb-2">Restaurant Created!</h1>
-            <p className="text-sm text-slate-400">
-              <span className="font-bold text-white">{form.restaurantName}</span> is now live on Cashly POS.
+            <h1 className="text-2xl font-black text-slate-900 mb-2">Restaurant Created!</h1>
+            <p className="text-sm text-slate-600">
+              <span className="font-bold text-slate-900">{form.restaurantName}</span> is now live on Cashly POS.
             </p>
             <p className="text-xs text-slate-500 mt-2">
               Your 30-day free trial has started. No credit card required.
             </p>
           </div>
-          <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 text-left space-y-2">
-            <div className="text-xs text-slate-400">Login credentials:</div>
+          <div className="p-4 rounded-xl bg-white border border-slate-200 text-left space-y-2">
+            <div className="text-xs text-slate-500">Login credentials:</div>
             <div className="flex justify-between">
               <span className="text-xs text-slate-500">Username</span>
-              <span className="text-xs text-white font-mono font-bold">{form.adminUsername}</span>
+              <span className="text-xs text-slate-900 font-mono font-bold">{form.adminUsername}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-xs text-slate-500">PIN</span>
-              <span className="text-xs text-white font-mono font-bold">{form.adminPin}</span>
+              <span className="text-xs text-slate-900 font-mono font-bold">{form.adminPin}</span>
             </div>
           </div>
           <button
             onClick={() => navigate('/')}
-            className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition"
+            className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition shadow-lg shadow-teal-500/25"
           >
             Open POS Terminal
           </button>
@@ -120,15 +120,15 @@ export const TenantSignup: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="w-full max-w-lg space-y-6">
         {/* Header */}
         <div className="text-center space-y-2">
-          <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center mx-auto">
+          <div className="w-12 h-12 rounded-xl bg-teal-500 flex items-center justify-center mx-auto shadow-lg shadow-teal-500/25">
             <Store className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-2xl font-black text-white">Register Your Restaurant</h1>
-          <p className="text-sm text-slate-400">Start your 30-day free trial. No credit card required.</p>
+          <h1 className="text-2xl font-black text-slate-900">Register Your Restaurant</h1>
+          <p className="text-sm text-slate-600">Start your 30-day free trial. No credit card required.</p>
         </div>
 
         {/* Step Indicator */}
@@ -136,16 +136,16 @@ export const TenantSignup: React.FC = () => {
           {[1, 2, 3].map(s => (
             <div key={s} className="flex items-center gap-2">
               <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition ${
-                step >= s ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-500'
+                step >= s ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25' : 'bg-slate-100 text-slate-500'
               }`}>{s}</div>
-              {s < 3 && <div className={`w-8 h-0.5 ${step > s ? 'bg-blue-600' : 'bg-slate-800'}`} />}
+              {s < 3 && <div className={`w-8 h-0.5 ${step > s ? 'bg-teal-500' : 'bg-slate-200'}`} />}
             </div>
           ))}
         </div>
 
         {/* Error */}
         {error && (
-          <div className="flex items-center gap-2 p-3 rounded-xl bg-red-950 border border-red-800 text-red-400 text-xs">
+          <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-xs">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             {error}
           </div>
@@ -153,71 +153,71 @@ export const TenantSignup: React.FC = () => {
 
         {/* Step 1: Restaurant Info */}
         {step === 1 && (
-          <div className="space-y-4 p-5 rounded-2xl bg-slate-900 border border-slate-800">
-            <h2 className="text-sm font-black text-white uppercase tracking-wider">Restaurant Details</h2>
+          <div className="space-y-4 p-5 rounded-2xl bg-white border border-slate-200">
+            <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">Restaurant Details</h2>
 
             <div className="relative">
-              <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 value={form.restaurantName}
                 onChange={(e) => update('restaurantName', e.target.value)}
                 placeholder="Restaurant name"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             </div>
 
             <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 value={form.contactName}
                 onChange={(e) => update('contactName', e.target.value)}
                 placeholder="Your full name"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             </div>
 
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 type="email"
                 value={form.email}
                 onChange={(e) => update('email', e.target.value)}
                 placeholder="Email address"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             </div>
 
             <div className="relative">
-              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 value={form.phone}
                 onChange={(e) => update('phone', e.target.value)}
                 placeholder="Phone number (e.g. 0300-1234567)"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="relative">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   value={form.city}
                   onChange={(e) => update('city', e.target.value)}
                   placeholder="City"
-                  className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                  className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>
               <input
                 value={form.address}
                 onChange={(e) => update('address', e.target.value)}
                 placeholder="Address (optional)"
-                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             </div>
 
             <button
               onClick={handleNext}
-              className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition flex items-center justify-center gap-2"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
             >
               Continue <ArrowRight className="w-4 h-4" />
             </button>
@@ -226,54 +226,54 @@ export const TenantSignup: React.FC = () => {
 
         {/* Step 2: Admin Account */}
         {step === 2 && (
-          <div className="space-y-4 p-5 rounded-2xl bg-slate-900 border border-slate-800">
-            <h2 className="text-sm font-black text-white uppercase tracking-wider">Admin Login Setup</h2>
-            <p className="text-xs text-slate-400">This is the login you'll use to access Owner/Admin mode.</p>
+          <div className="space-y-4 p-5 rounded-2xl bg-white border border-slate-200">
+            <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">Admin Login Setup</h2>
+            <p className="text-xs text-slate-500">This is the login you'll use to access Owner/Admin mode.</p>
 
             <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 value={form.adminUsername}
                 onChange={(e) => update('adminUsername', e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
                 placeholder="Admin username (e.g. myrestaurant)"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
               />
             </div>
 
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 type="password"
                 maxLength={4}
                 value={form.adminPin}
                 onChange={(e) => update('adminPin', e.target.value.replace(/\D/g, ''))}
                 placeholder="4-digit PIN"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono tracking-[0.5em]"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono tracking-[0.5em]"
               />
             </div>
 
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
                 type="password"
                 maxLength={4}
                 value={form.adminPinConfirm}
                 onChange={(e) => update('adminPinConfirm', e.target.value.replace(/\D/g, ''))}
                 placeholder="Confirm 4-digit PIN"
-                className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono tracking-[0.5em]"
+                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono tracking-[0.5em]"
               />
             </div>
 
             <div className="flex gap-3">
               <button
                 onClick={() => setStep(1)}
-                className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition"
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
               </button>
               <button
                 onClick={handleNext}
-                className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition flex items-center justify-center gap-2"
+                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
               >
                 Continue <ArrowRight className="w-4 h-4" />
               </button>
@@ -283,8 +283,8 @@ export const TenantSignup: React.FC = () => {
 
         {/* Step 3: Review & Create */}
         {step === 3 && (
-          <div className="space-y-4 p-5 rounded-2xl bg-slate-900 border border-slate-800">
-            <h2 className="text-sm font-black text-white uppercase tracking-wider">Review & Create</h2>
+          <div className="space-y-4 p-5 rounded-2xl bg-white border border-slate-200">
+            <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">Review & Create</h2>
 
             <div className="space-y-2">
               {[
@@ -296,28 +296,28 @@ export const TenantSignup: React.FC = () => {
                 { label: 'Admin Username', value: form.adminUsername },
                 { label: 'Admin PIN', value: '••••' }
               ].map((item, i) => (
-                <div key={i} className="flex justify-between py-1.5 border-b border-slate-800 last:border-0">
+                <div key={i} className="flex justify-between py-1.5 border-b border-slate-100 last:border-0">
                   <span className="text-xs text-slate-500">{item.label}</span>
-                  <span className="text-xs text-white font-semibold">{item.value}</span>
+                  <span className="text-xs text-slate-900 font-semibold">{item.value}</span>
                 </div>
               ))}
             </div>
 
-            <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-800/40 text-xs text-blue-300">
+            <div className="p-3 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-700">
               <strong>Free Trial:</strong> 30 days, all features included. No credit card required.
             </div>
 
             <div className="flex gap-3">
               <button
                 onClick={() => setStep(2)}
-                className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition"
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
               </button>
               <button
                 onClick={handleSubmit}
                 disabled={loading}
-                className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm transition flex items-center justify-center gap-2"
+                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
               >
                 {loading ? (
                   <>
@@ -339,7 +339,7 @@ export const TenantSignup: React.FC = () => {
         <div className="text-center">
           <button
             onClick={() => navigate('/')}
-            className="text-xs text-slate-500 hover:text-slate-300 transition"
+            className="text-xs text-slate-500 hover:text-slate-900 transition"
           >
             Already have an account? Login
           </button>

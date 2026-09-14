@@ -153,33 +153,33 @@ export const StockRequests: React.FC = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'Pending': return 'bg-amber-950/60 text-amber-400 border-amber-800';
-      case 'Approved': return 'bg-emerald-950/60 text-emerald-400 border-emerald-800';
-      case 'Rejected': return 'bg-red-950/60 text-red-400 border-red-800';
-      case 'Ordered': return 'bg-blue-950/60 text-blue-400 border-blue-800';
-      case 'Fulfilled': return 'bg-purple-950/60 text-purple-400 border-purple-800';
-      default: return 'bg-slate-800 text-slate-400 border-slate-700';
+      case 'Pending': return 'bg-amber-100 text-amber-700 border-amber-200';
+      case 'Approved': return 'bg-teal-100 text-teal-700 border-teal-200';
+      case 'Rejected': return 'bg-red-100 text-red-700 border-red-200';
+      case 'Ordered': return 'bg-blue-100 text-blue-700 border-blue-200';
+      case 'Fulfilled': return 'bg-purple-100 text-purple-700 border-purple-200';
+      default: return 'bg-slate-100 text-slate-500 border-slate-200';
     }
   };
 
   const totalEstimated = requestItems.reduce((sum, i) => sum + (i.quantityRequested * i.unitCostPKR), 0);
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-y-auto bg-slate-950 text-slate-100 p-4 md:p-6 space-y-6">
+    <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-y-auto bg-slate-50 text-slate-900 p-4 md:p-6 space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-800">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl md:text-2xl font-black text-white tracking-tight flex items-center gap-2">
-            <Package className="w-6 h-6 text-blue-400" />
+          <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+            <Package className="w-6 h-6 text-blue-500" />
             Stock Requests
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-xs text-slate-500 mt-0.5">
             Request stock from Owner, Vendor, or HQ based on your deployment type
           </p>
         </div>
         <button
           onClick={() => setShowNewRequest(true)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-slate-950 font-bold text-xs transition"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs transition shadow-lg shadow-teal-500/25"
         >
           <Plus className="w-4 h-4" />
           New Stock Request
@@ -195,13 +195,13 @@ export const StockRequests: React.FC = () => {
             placeholder="Search by request #, creator, vendor..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
           />
         </div>
         <select
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
-          className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none"
+          className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none"
         >
           <option value="all">All Status</option>
           <option value="Pending">Pending</option>
@@ -214,24 +214,24 @@ export const StockRequests: React.FC = () => {
 
       {/* Requests List */}
       {loading ? (
-        <div className="text-center py-12 text-slate-400 text-xs">Loading...</div>
+        <div className="text-center py-12 text-slate-500 text-xs">Loading...</div>
       ) : filteredRequests.length === 0 ? (
-        <div className="text-center py-12 text-slate-400 bg-slate-900 rounded-2xl border border-slate-800">
-          <Package className="w-12 h-12 mx-auto mb-3 text-slate-700" />
+        <div className="text-center py-12 text-slate-500 bg-white rounded-2xl border border-slate-200">
+          <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
           <p className="text-xs">No stock requests found</p>
         </div>
       ) : (
         <div className="space-y-3">
           {filteredRequests.map(r => (
-            <div key={r.id} className="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+            <div key={r.id} className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <div className="px-2.5 py-1 rounded-lg bg-slate-800 text-xs font-mono font-bold text-white">
+                  <div className="px-2.5 py-1 rounded-lg bg-slate-100 text-xs font-mono font-bold text-slate-900">
                     {r.requestNumber}
                   </div>
                   <div>
-                    <div className="text-xs font-bold text-white">{r.requestType === 'ToVendor' ? `Vendor: ${r.vendorName}` : r.requestType === 'ToHQ' ? 'Request to HQ' : 'Request to Owner'}</div>
-                    <div className="text-[10px] text-slate-400">By {r.createdBy} • {new Date(r.createdAt).toLocaleDateString()}</div>
+                    <div className="text-xs font-bold text-slate-900">{r.requestType === 'ToVendor' ? `Vendor: ${r.vendorName}` : r.requestType === 'ToHQ' ? 'Request to HQ' : 'Request to Owner'}</div>
+                    <div className="text-[10px] text-slate-500">By {r.createdBy} • {new Date(r.createdAt).toLocaleDateString()}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -240,14 +240,14 @@ export const StockRequests: React.FC = () => {
                   </span>
                   <button
                     onClick={() => setViewRequest(r)}
-                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+                    className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition"
                   >
                     <Eye className="w-4 h-4" />
                   </button>
                   {r.status === 'Pending' && (
                     <button
                       onClick={() => handleDeleteRequest(r.id)}
-                      className="p-1.5 rounded-lg hover:bg-red-950 text-slate-400 hover:text-red-400 transition"
+                      className="p-1.5 rounded-lg hover:bg-red-50 text-slate-500 hover:text-red-600 transition"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -258,12 +258,12 @@ export const StockRequests: React.FC = () => {
               {/* Items Preview */}
               <div className="flex flex-wrap gap-2">
                 {r.items.slice(0, 4).map((item, idx) => (
-                  <span key={idx} className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300">
+                  <span key={idx} className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-700">
                     {item.ingredientName} × {item.quantityRequested} {item.unit}
                   </span>
                 ))}
                 {r.items.length > 4 && (
-                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-400">
+                  <span className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-500">
                     +{r.items.length - 4} more
                   </span>
                 )}
@@ -271,10 +271,10 @@ export const StockRequests: React.FC = () => {
 
               {/* Cost + Notes */}
               <div className="flex items-center justify-between text-[10px]">
-                <div className="text-slate-400">
+                <div className="text-slate-500">
                   {r.notes && <span>📝 {r.notes}</span>}
                 </div>
-                <div className="font-mono font-bold text-emerald-400">
+                <div className="font-mono font-bold text-teal-600">
                   ₨{r.estimatedCostPKR.toLocaleString()}
                 </div>
               </div>
@@ -285,14 +285,14 @@ export const StockRequests: React.FC = () => {
 
       {/* New Request Modal */}
       {showNewRequest && (
-        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="font-bold text-white text-base flex items-center gap-2">
-                <Send className="w-5 h-5 text-blue-400" />
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                <Send className="w-5 h-5 text-blue-500" />
                 New Stock Request
               </h3>
-              <button onClick={() => setShowNewRequest(false)} className="text-slate-400 hover:text-white text-sm cursor-pointer">✕</button>
+              <button onClick={() => setShowNewRequest(false)} className="text-slate-400 hover:text-slate-900 text-sm cursor-pointer">✕</button>
             </div>
 
             {/* Request Type */}
@@ -307,8 +307,8 @@ export const StockRequests: React.FC = () => {
                   onClick={() => setRequestType(opt.value as any)}
                   className={`p-3 rounded-xl border text-left transition ${
                     requestType === opt.value
-                      ? 'border-blue-500 bg-blue-950/30 text-blue-400'
-                      : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
+                      ? 'border-teal-500 bg-teal-50 text-teal-700'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'
                   }`}
                 >
                   <div className="text-xs font-bold">{opt.label}</div>
@@ -324,7 +324,7 @@ export const StockRequests: React.FC = () => {
                 placeholder="Vendor name (e.g., Fresh Supplies Co.)"
                 value={vendorName}
                 onChange={(e) => setVendorName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
               />
             )}
 
@@ -334,7 +334,7 @@ export const StockRequests: React.FC = () => {
               placeholder="Notes (optional)"
               value={requestNotes}
               onChange={(e) => setRequestNotes(e.target.value)}
-              className="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
             />
 
             {/* Add Item Row */}
@@ -342,7 +342,7 @@ export const StockRequests: React.FC = () => {
               <select
                 value={selectedIngredient}
                 onChange={(e) => setSelectedIngredient(e.target.value)}
-                className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none"
+                className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none"
               >
                 <option value="">Select ingredient...</option>
                 {ingredients.map(i => (
@@ -354,19 +354,19 @@ export const StockRequests: React.FC = () => {
                 placeholder="Qty"
                 value={addQty}
                 onChange={(e) => setAddQty(e.target.value)}
-                className="w-20 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none"
+                className="w-20 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none"
               />
               <input
                 type="number"
                 placeholder="Cost/Unit"
                 value={addCost}
                 onChange={(e) => setAddCost(e.target.value)}
-                className="w-24 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white focus:outline-none"
+                className="w-24 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none"
               />
               <button
                 onClick={handleAddItem}
                 disabled={!selectedIngredient || !addQty}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
+                className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white font-bold text-xs transition"
               >
                 Add
               </button>
@@ -375,29 +375,29 @@ export const StockRequests: React.FC = () => {
             {/* Items List */}
             <div className="flex-1 overflow-y-auto space-y-2">
               {requestItems.length === 0 ? (
-                <div className="p-6 text-center text-slate-400 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                <div className="p-6 text-center text-slate-500 bg-slate-50 rounded-xl border border-slate-200 text-xs">
                   Add items to your request above
                 </div>
               ) : (
                 requestItems.map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-3 p-3 bg-slate-950 rounded-xl border border-slate-800">
+                  <div key={idx} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
                     <div className="flex-1">
-                      <div className="text-xs font-bold text-white">{item.ingredientName}</div>
-                      <div className="text-[10px] text-slate-400">
+                      <div className="text-xs font-bold text-slate-900">{item.ingredientName}</div>
+                      <div className="text-[10px] text-slate-500">
                         Current: {item.currentStock} {item.unit} • ₨{item.unitCostPKR}/{item.unit}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="px-2.5 py-1 rounded-lg bg-amber-950/60 text-amber-300 border border-amber-800 text-xs font-mono font-bold">
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 border border-amber-200 text-xs font-mono font-bold">
                         {item.quantityRequested} {item.unit}
                       </span>
-                      <span className="text-xs font-mono text-emerald-400 font-semibold min-w-[70px] text-right">
+                      <span className="text-xs font-mono text-teal-600 font-semibold min-w-[70px] text-right">
                         ₨{(item.quantityRequested * item.unitCostPKR).toLocaleString()}
                       </span>
                     </div>
                     <button
                       onClick={() => handleRemoveItem(item.ingredientId)}
-                      className="text-slate-400 hover:text-red-400 transition"
+                      className="text-slate-400 hover:text-red-600 transition"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -407,21 +407,21 @@ export const StockRequests: React.FC = () => {
             </div>
 
             {/* Total + Submit */}
-            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
-              <div className="text-xs text-slate-400">
-                Total Estimated: <span className="font-bold text-emerald-400 font-mono">₨{totalEstimated.toLocaleString()}</span>
+            <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+              <div className="text-xs text-slate-500">
+                Total Estimated: <span className="font-bold text-teal-600 font-mono">₨{totalEstimated.toLocaleString()}</span>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowNewRequest(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSubmitRequest}
                   disabled={requestItems.length === 0 || submitting}
-                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition"
+                  className="px-5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white font-bold text-xs transition"
                 >
                   {submitting ? 'Sending...' : 'Send Request'}
                 </button>
@@ -433,50 +433,50 @@ export const StockRequests: React.FC = () => {
 
       {/* View Detail Modal */}
       {viewRequest && (
-        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
               <div>
-                <h3 className="font-bold text-white text-base flex items-center gap-2">
-                  <span className="font-mono text-blue-400">{viewRequest.requestNumber}</span>
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <span className="font-mono text-blue-600">{viewRequest.requestNumber}</span>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getStatusColor(viewRequest.status)}`}>
                     {viewRequest.status}
                   </span>
                 </h3>
-                <div className="text-xs text-slate-400 mt-0.5">
+                <div className="text-xs text-slate-500 mt-0.5">
                   {viewRequest.requestType === 'ToVendor' ? `Vendor: ${viewRequest.vendorName}` : viewRequest.requestType === 'ToHQ' ? 'Request to HQ' : 'Request to Owner'} • By {viewRequest.createdBy}
                 </div>
               </div>
-              <button onClick={() => setViewRequest(null)} className="text-slate-400 hover:text-white text-sm cursor-pointer">✕</button>
+              <button onClick={() => setViewRequest(null)} className="text-slate-400 hover:text-slate-900 text-sm cursor-pointer">✕</button>
             </div>
 
             {/* Items */}
             <div className="flex-1 overflow-y-auto space-y-2">
               {viewRequest.items.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between p-3 bg-slate-950 rounded-xl border border-slate-800">
+                <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
                   <div>
-                    <div className="text-xs font-bold text-white">{item.ingredientName}</div>
-                    <div className="text-[10px] text-slate-400">Current: {item.currentStock} {item.unit} • ₨{item.unitCostPKR}/{item.unit}</div>
+                    <div className="text-xs font-bold text-slate-900">{item.ingredientName}</div>
+                    <div className="text-[10px] text-slate-500">Current: {item.currentStock} {item.unit} • ₨{item.unitCostPKR}/{item.unit}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs font-mono font-bold text-amber-400">{item.quantityRequested} {item.unit}</div>
-                    <div className="text-[10px] font-mono text-emerald-400">₨{(item.quantityRequested * item.unitCostPKR).toLocaleString()}</div>
+                    <div className="text-xs font-mono font-bold text-amber-600">{item.quantityRequested} {item.unit}</div>
+                    <div className="text-[10px] font-mono text-teal-600">₨{(item.quantityRequested * item.unitCostPKR).toLocaleString()}</div>
                   </div>
                 </div>
               ))}
             </div>
 
             {/* Summary + Actions */}
-            <div className="pt-3 border-t border-slate-800 space-y-3">
+            <div className="pt-3 border-t border-slate-200 space-y-3">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Estimated Total:</span>
-                <span className="font-bold text-emerald-400 font-mono">₨{viewRequest.estimatedCostPKR.toLocaleString()}</span>
+                <span className="text-slate-500">Estimated Total:</span>
+                <span className="font-bold text-teal-600 font-mono">₨{viewRequest.estimatedCostPKR.toLocaleString()}</span>
               </div>
               {viewRequest.notes && (
-                <div className="text-xs text-slate-400">📝 {viewRequest.notes}</div>
+                <div className="text-xs text-slate-500">📝 {viewRequest.notes}</div>
               )}
               {viewRequest.reviewedBy && (
-                <div className="text-[10px] text-slate-400">
+                <div className="text-[10px] text-slate-500">
                   Reviewed by {viewRequest.reviewedBy} on {viewRequest.reviewedAt ? new Date(viewRequest.reviewedAt).toLocaleString() : 'N/A'}
                   {viewRequest.reviewNotes && ` — ${viewRequest.reviewNotes}`}
                 </div>
@@ -487,13 +487,13 @@ export const StockRequests: React.FC = () => {
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleReviewRequest(viewRequest.id, 'Approved')}
-                    className="flex-1 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs transition"
+                    className="flex-1 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs transition"
                   >
                     ✓ Approve
                   </button>
                   <button
                     onClick={() => handleReviewRequest(viewRequest.id, 'Rejected')}
-                    className="flex-1 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition"
+                    className="flex-1 px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs transition"
                   >
                     ✕ Reject
                   </button>
@@ -502,7 +502,7 @@ export const StockRequests: React.FC = () => {
 
               <button
                 onClick={() => setViewRequest(null)}
-                className="w-full px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold hover:bg-slate-700 transition cursor-pointer"
+                className="w-full px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition cursor-pointer"
               >
                 Close
               </button>

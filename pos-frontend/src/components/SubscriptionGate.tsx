@@ -60,8 +60,8 @@ export const SubscriptionGate: React.FC<{
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
-          <RefreshCw className="w-6 h-6 text-blue-400 animate-spin mx-auto mb-2" />
-          <p className="text-xs text-slate-400">Checking subscription...</p>
+          <RefreshCw className="w-6 h-6 text-teal-500 animate-spin mx-auto mb-2" />
+          <p className="text-xs text-slate-500">Checking subscription...</p>
         </div>
       </div>
     );
@@ -73,14 +73,14 @@ export const SubscriptionGate: React.FC<{
   if (isExpired) {
     return (
       <div className="flex items-center justify-center h-96">
-        <div className="text-center max-w-md p-8 rounded-2xl bg-slate-900 border border-red-800">
-          <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-4" />
-          <h2 className="text-lg font-black text-white mb-2">Subscription Expired</h2>
-          <p className="text-xs text-slate-400 mb-4">
-            Your <span className="text-blue-400 font-bold">{tier}</span> subscription has expired.
+        <div className="text-center max-w-md p-8 rounded-2xl bg-white border border-rose-200 shadow-lg">
+          <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto mb-4" />
+          <h2 className="text-lg font-black text-slate-900 mb-2">Subscription Expired</h2>
+          <p className="text-xs text-slate-600 mb-4">
+            Your <span className="text-teal-600 font-bold">{tier}</span> subscription has expired.
             Please renew to continue using the platform.
           </p>
-          <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300 mb-4">
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 mb-4">
             <p>Contact your platform administrator to renew your subscription.</p>
             {paidUntil && (
               <p className="text-slate-500 mt-1">Expired on: {new Date(paidUntil).toLocaleDateString()}</p>
@@ -88,7 +88,7 @@ export const SubscriptionGate: React.FC<{
           </div>
           <button
             onClick={refresh}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition mx-auto"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition mx-auto shadow-md shadow-teal-500/25"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             Check Again
@@ -101,19 +101,19 @@ export const SubscriptionGate: React.FC<{
   if (feature && !features.includes(feature)) {
     return (
       <div className="flex items-center justify-center h-96">
-        <div className="text-center max-w-md p-8 rounded-2xl bg-slate-900 border border-amber-800">
-          <Lock className="w-12 h-12 text-amber-400 mx-auto mb-4" />
-          <h2 className="text-lg font-black text-white mb-2">Upgrade Required</h2>
-          <p className="text-xs text-slate-400 mb-2">
-            The <span className="text-amber-400 font-bold">{feature.replace(/_/g, ' ')}</span> feature is not available in your current plan.
+        <div className="text-center max-w-md p-8 rounded-2xl bg-white border border-amber-200 shadow-lg">
+          <Lock className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+          <h2 className="text-lg font-black text-slate-900 mb-2">Upgrade Required</h2>
+          <p className="text-xs text-slate-600 mb-2">
+            The <span className="text-amber-600 font-bold">{feature.replace(/_/g, ' ')}</span> feature is not available in your current plan.
           </p>
           <p className="text-xs text-slate-500 mb-4">
-            You are on the <span className="text-blue-400 font-bold">{tier}</span> tier.
+            You are on the <span className="text-teal-600 font-bold">{tier}</span> tier.
             Upgrade to access this feature.
           </p>
           <button
             onClick={refresh}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition mx-auto"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition mx-auto shadow-md shadow-teal-500/25"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             Check Again

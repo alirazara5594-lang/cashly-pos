@@ -118,22 +118,22 @@ export const OrderTab: React.FC = () => {
   const filteredProducts = products.filter(p => selectedCategoryId === 'all' || p.categoryId === selectedCategoryId);
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row h-[calc(100vh-53px)] overflow-hidden bg-slate-950 text-slate-100">
+    <div className="flex-1 flex flex-col md:flex-row h-[calc(100vh-53px)] overflow-hidden bg-slate-50 text-slate-900">
       {/* Left Menu Section */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-800">
+      <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200">
         {/* Table & Floor Selector Strip */}
-        <div className="p-3 bg-slate-900 border-b border-slate-800 space-y-2">
+        <div className="p-3 bg-white border-b border-slate-200 space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Tablet className="w-5 h-5 text-purple-400" />
-              <span className="font-bold text-xs uppercase tracking-wider text-slate-300">Select Dining Table:</span>
+              <Tablet className="w-5 h-5 text-purple-500" />
+              <span className="font-bold text-xs uppercase tracking-wider text-slate-600">Select Dining Table:</span>
             </div>
             {tables.length > 0 && (
               <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[50vw]">
                 <button
                   onClick={() => setSelectedFloor('all')}
                   className={`px-2 py-0.5 rounded text-[10px] font-bold transition ${
-                    selectedFloor === 'all' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                    selectedFloor === 'all' ? 'bg-purple-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
                   }`}
                 >
                   All Floors
@@ -143,7 +143,7 @@ export const OrderTab: React.FC = () => {
                     key={fl}
                     onClick={() => setSelectedFloor(fl)}
                     className={`px-2 py-0.5 rounded text-[10px] font-bold transition whitespace-nowrap ${
-                      selectedFloor === fl ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                      selectedFloor === fl ? 'bg-purple-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
                     }`}
                   >
                     {fl}
@@ -163,26 +163,26 @@ export const OrderTab: React.FC = () => {
                 onClick={() => setActiveTable(t.tableNumber)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0 ${
                   activeTable === t.tableNumber
-                    ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+                    ? 'bg-purple-500 text-white shadow-md shadow-purple-500/25'
                     : t.isOccupied
-                    ? 'bg-rose-950/60 border border-rose-800 text-rose-300 hover:bg-rose-900/60'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    ? 'bg-rose-50 border border-rose-200 text-rose-600 hover:bg-rose-100'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 <span>{t.tableNumber}</span>
                 {t.section && <span className="text-[9px] opacity-70">({t.section})</span>}
-                {t.isOccupied && <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />}
+                {t.isOccupied && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />}
               </button>
             ))}
           </div>
         </div>
 
         {/* Categories */}
-        <div className="px-3 py-2 bg-slate-900/60 border-b border-slate-800 flex items-center gap-2 overflow-x-auto no-scrollbar">
+        <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center gap-2 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setSelectedCategoryId('all')}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-              selectedCategoryId === 'all' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+              selectedCategoryId === 'all' ? 'bg-purple-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
             }`}
           >
             All Items
@@ -192,7 +192,7 @@ export const OrderTab: React.FC = () => {
               key={c.id}
               onClick={() => setSelectedCategoryId(c.id)}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
-                selectedCategoryId === c.id ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                selectedCategoryId === c.id ? 'bg-purple-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
               }`}
             >
               {c.name}
@@ -206,15 +206,15 @@ export const OrderTab: React.FC = () => {
             <button
               key={p.id}
               onClick={() => addToTabCart(p)}
-              className="p-3 rounded-2xl bg-slate-900 border border-slate-800 hover:border-purple-500 text-left transition flex flex-col justify-between shadow-md group"
+              className="p-3 rounded-2xl bg-white border border-slate-200 hover:border-purple-500 text-left transition flex flex-col justify-between shadow-sm group"
             >
               <div>
-                <div className="font-bold text-xs text-white group-hover:text-purple-300 transition line-clamp-2">{p.name}</div>
-                {p.urduName && <div className="text-[11px] text-slate-400 font-sans mt-0.5">{p.urduName}</div>}
+                <div className="font-bold text-xs text-slate-900 group-hover:text-purple-600 transition line-clamp-2">{p.name}</div>
+                {p.urduName && <div className="text-[11px] text-slate-500 font-sans mt-0.5">{p.urduName}</div>}
               </div>
-              <div className="mt-3 pt-2 border-t border-slate-800 flex items-center justify-between">
-                <span className="text-emerald-400 font-black text-xs">₨{p.sellingPricePKR.toLocaleString()}</span>
-                <span className="w-6 h-6 rounded-lg bg-purple-600/20 text-purple-400 flex items-center justify-center font-bold text-xs group-hover:bg-purple-600 group-hover:text-white transition">
+              <div className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between">
+                <span className="text-teal-600 font-black text-xs">₨{p.sellingPricePKR.toLocaleString()}</span>
+                <span className="w-6 h-6 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center font-bold text-xs group-hover:bg-purple-500 group-hover:text-white transition">
                   +
                 </span>
               </div>
@@ -224,49 +224,49 @@ export const OrderTab: React.FC = () => {
       </div>
 
       {/* Right Waiter Ticket Panel */}
-      <div className="w-full md:w-80 flex flex-col bg-slate-900 border-l border-slate-800">
-        <div className="p-3 bg-slate-850 border-b border-slate-800 flex items-center justify-between">
+      <div className="w-full md:w-80 flex flex-col bg-white border-l border-slate-200">
+        <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <div className="text-xs font-bold text-purple-400 uppercase tracking-wider">Captain Order Mode</div>
-            <div className="text-sm font-black text-white">Table: {activeTable}</div>
+            <div className="text-xs font-bold text-purple-600 uppercase tracking-wider">Captain Order Mode</div>
+            <div className="text-sm font-black text-slate-900">Table: {activeTable}</div>
           </div>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-mono">
+          <span className="text-[10px] px-2 py-0.5 rounded bg-teal-50 text-teal-600 border border-teal-200 font-mono">
             MODE 1 DISPATCH
           </span>
         </div>
 
         {showSuccess && (
-          <div className="m-3 p-3 rounded-xl bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2 animate-bounce">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+          <div className="m-3 p-3 rounded-xl bg-teal-50 border border-teal-200 text-teal-600 text-xs flex items-center gap-2 animate-bounce">
+            <CheckCircle2 className="w-4 h-4 text-teal-500" />
             <span>Ticket sent to Kitchen & Counter live!</span>
           </div>
         )}
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {tabCart.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-600 space-y-1">
+            <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-1">
               <Utensils className="w-10 h-10 opacity-30" />
               <p className="text-xs">Tap menu items to add to table order</p>
             </div>
           ) : (
             tabCart.map(item => (
-              <div key={item.productId} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
+              <div key={item.productId} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-xs text-white truncate">{item.productName}</div>
-                  <div className="text-[10px] text-emerald-400">₨{item.unitPricePKR}</div>
+                  <div className="font-bold text-xs text-slate-900 truncate">{item.productName}</div>
+                  <div className="text-[10px] text-teal-600">₨{item.unitPricePKR}</div>
                 </div>
-                <div className="flex items-center gap-1.5 bg-slate-900 px-1.5 py-0.5 rounded-lg border border-slate-800">
-                  <button onClick={() => updateTabQty(item.productId, -1)} className="text-slate-400 p-0.5">
+                <div className="flex items-center gap-1.5 bg-white px-1.5 py-0.5 rounded-lg border border-slate-200">
+                  <button onClick={() => updateTabQty(item.productId, -1)} className="text-slate-500 p-0.5">
                     <Minus className="w-3 h-3" />
                   </button>
                   <span className="font-bold text-xs px-1">{item.quantity}</span>
-                  <button onClick={() => updateTabQty(item.productId, 1)} className="text-slate-400 p-0.5">
+                  <button onClick={() => updateTabQty(item.productId, 1)} className="text-slate-500 p-0.5">
                     <Plus className="w-3 h-3" />
                   </button>
                 </div>
                 <div className="text-right min-w-[50px]">
-                  <div className="font-bold text-xs text-white">₨{item.totalPricePKR}</div>
-                  <button onClick={() => removeFromTab(item.productId)} className="text-slate-500 hover:text-rose-400">
+                  <div className="font-bold text-xs text-slate-900">₨{item.totalPricePKR}</div>
+                  <button onClick={() => removeFromTab(item.productId)} className="text-slate-400 hover:text-rose-500">
                     <Trash2 className="w-3 h-3 ml-auto" />
                   </button>
                 </div>
@@ -275,25 +275,25 @@ export const OrderTab: React.FC = () => {
           )}
         </div>
 
-        <div className="p-3 bg-slate-900 border-t border-slate-800 space-y-3">
+        <div className="p-3 bg-white border-t border-slate-200 space-y-3">
           <div>
-            <label className="block text-[11px] font-semibold text-slate-400 mb-1">Kitchen Instructions</label>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Kitchen Instructions</label>
             <input
               type="text"
               placeholder="e.g. Mild spice, less ice, serve starters first"
               value={specialNote}
               onChange={(e) => setSpecialNote(e.target.value)}
-              className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white focus:outline-none"
+              className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
           <div className="flex justify-between items-center text-xs">
-            <span className="text-slate-400">Items Total:</span>
-            <span className="text-base font-black text-emerald-400">₨{totalTabPKR.toLocaleString()}</span>
+            <span className="text-slate-500">Items Total:</span>
+            <span className="text-base font-black text-teal-600">₨{totalTabPKR.toLocaleString()}</span>
           </div>
           <button
             onClick={handleSendOrderMode1}
             disabled={tabCart.length === 0 || isSending}
-            className="w-full py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs shadow-lg shadow-purple-600/30 transition flex items-center justify-center gap-2 disabled:opacity-40"
+            className="w-full py-3 rounded-xl bg-purple-500 hover:bg-purple-600 text-white font-black text-xs shadow-lg shadow-purple-500/25 transition flex items-center justify-center gap-2 disabled:opacity-40"
           >
             {isSending ? (
               <span>Firing to Kitchen...</span>

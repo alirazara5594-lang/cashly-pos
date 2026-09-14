@@ -75,7 +75,7 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <h3 className="font-bold text-white text-base flex items-center gap-2">
-            <User className="w-5 h-5 text-emerald-400" />
+            <User className="w-5 h-5 text-teal-400" />
             User Login
           </h3>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-sm cursor-pointer">✕</button>
@@ -83,10 +83,10 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
 
         {currentUser ? (
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-800">
-              <div className="text-xs text-emerald-300 font-bold">Logged in as:</div>
+            <div className="p-4 rounded-xl bg-teal-950/30 border border-teal-800">
+              <div className="text-xs text-teal-300 font-bold">Logged in as:</div>
               <div className="text-sm font-black text-white mt-1">{currentUser.fullName || currentUser.username}</div>
-              <div className="text-[10px] text-emerald-400 mt-0.5">{currentUser.role}</div>
+              <div className="text-[10px] text-teal-400 mt-0.5">{currentUser.role}</div>
             </div>
             <button
               onClick={handleLogout}
@@ -117,7 +117,7 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
                 placeholder="Enter username"
                 autoFocus
               />
@@ -128,7 +128,7 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
                 type="password"
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value)}
-                className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                className="w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
                 placeholder="Enter 4-digit PIN"
                 maxLength={6}
               />
@@ -143,7 +143,7 @@ export const UserLoginModal: React.FC<UserLoginModalProps> = ({
             <button
               type="submit"
               disabled={loading || !username || !pinCode}
-              className="w-full px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition flex items-center justify-center gap-2"
+              className="w-full px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-slate-950 font-bold text-xs transition flex items-center justify-center gap-2"
             >
               {loading ? 'Logging in...' : (
                 <>
