@@ -88,10 +88,8 @@ export const PosTerminal: React.FC = () => {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [tables, setTables] = useState<any[]>([]);
 
-  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [cashTendered, setCashTendered] = useState<number>(0);
-
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [cashTendered, setCashTendered] = useState<number>(0);
   const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [showParkedModal, setShowParkedModal] = useState(false);
@@ -164,11 +162,6 @@ export const PosTerminal: React.FC = () => {
   const subtotal = getSubTotal();
   const tax = getTaxAmount();
   const grandTotal = getTotal();
-  const changeDue = Math.max(0, cashTendered - grandTotal);
-
-  const setQuickCash = (amount: number) => {
-    setCashTendered(amount);
-  };
 
   const handleCompleteSale = async () => {
     if (cart.length === 0) return;
@@ -186,8 +179,8 @@ export const PosTerminal: React.FC = () => {
       taxPKR: tax,
       totalPKR: grandTotal,
       paymentMethod,
-      amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || grandTotal) : grandTotal,
-      changeDuePKR: paymentMethod === 'Cash' ? changeDue : 0,
+      amountPaidPKR: grandTotal,
+      changeDuePKR: 0,
       isPaid: true,
       cashierName: 'Counter 1 Cashier',
       createdByRole: 'Cashier',
@@ -222,7 +215,7 @@ export const PosTerminal: React.FC = () => {
           totalPKR: grandTotal,
           paymentMethod,
           amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || grandTotal) : grandTotal,
-          changeDuePKR: paymentMethod === 'Cash' ? changeDue : 0,
+          changeDuePKR: 0,
           isPaid: true,
           createdAt: new Date().toISOString(),
           items: [...cart]
@@ -261,7 +254,7 @@ export const PosTerminal: React.FC = () => {
           totalPKR: grandTotal,
           paymentMethod,
           amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || grandTotal) : grandTotal,
-          changeDuePKR: paymentMethod === 'Cash' ? changeDue : 0,
+          changeDuePKR: 0,
           isPaid: true,
           createdAt: new Date().toISOString(),
           items: [...cart]
@@ -270,10 +263,8 @@ export const PosTerminal: React.FC = () => {
         setCompletedOrder(newOrder);
       }
 
-      setIsCheckoutOpen(false);
       setIsReceiptOpen(true);
       clearCart();
-      setCashTendered(0);
     } catch (err) {
       console.error('Order submission error:', err);
       alert('Failed to submit order. Please check network.');
@@ -413,7 +404,7 @@ export const PosTerminal: React.FC = () => {
           </div>
         </div>
 
-        <div className="w-full lg:w-96 flex flex-col bg-white border-l border-slate-200">
+        <div className="w-full lg:w-96 flex flex-col bg-white border border-slate-200 rounded-2xl shadow-xl m-2 ml-0 overflow-hidden">
           <div className="p-4 border-b border-slate-100">
             <div className="flex items-center justify-between">
               <div>
@@ -537,6 +528,10 @@ export const PosTerminal: React.FC = () => {
                       {item.specialNotes && (
                         <p className="text-[10px] text-teal-500 italic truncate">*{item.specialNotes}</p>
                       )}
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-600 font-semibold border border-teal-200">Order Received</span>
+                        <span className="text-[9px] text-slate-400">Counter 1</span>
+                      </div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <button
                           onClick={() => updateQuantity(item.productId, -1)}
@@ -611,60 +606,91 @@ export const PosTerminal: React.FC = () => {
           <div className="p-4 border-t border-slate-100">
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
             <div className="grid grid-cols-3 gap-2 mb-3">
-              <button
-                onClick={() => setPaymentMethod('Cash')}
-                className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
-                  paymentMethod === 'Cash'
-                    ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
-                    : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
-                }`}
-              >
-                <Banknote className="w-3.5 h-3.5" />
-                <span>Cash</span>
-              </button>
-              <button
-                onClick={() => setPaymentMethod('Card')}
-                className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
-                  paymentMethod === 'Card'
-                    ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
-                    : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
-                }`}
-              >
-                <CreditCard className="w-3.5 h-3.5" />
-                <span>Card</span>
-              </button>
-              <button
-                onClick={() => setPaymentMethod('JazzCash')}
-                className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
-                  paymentMethod === 'JazzCash'
-                    ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
-                    : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
-                }`}
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>Wallet</span>
-              </button>
+              {[
+                { id: 'Cash', label: 'Cash', icon: Banknote },
+                { id: 'Card', label: 'Card', icon: CreditCard },
+                { id: 'JazzCash', label: 'JazzCash', icon: Smartphone },
+                { id: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
+                { id: 'Raast', label: 'Raast QR', icon: QrCode },
+                { id: 'CustomerKhata', label: 'Udhaar', icon: BookOpen },
+              ].map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  onClick={() => setPaymentMethod(id as PaymentMethod)}
+                  className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
+                    paymentMethod === id
+                      ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                      : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  <span>{label}</span>
+                </button>
+              ))}
             </div>
 
-            <div className="grid grid-cols-2 gap-2 mb-3">
+            {paymentMethod === 'Cash' && (
+              <div className="space-y-2 bg-slate-50 p-3 rounded-xl border border-slate-200 mb-3">
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-medium text-slate-500">Cash Received</label>
+                  <input
+                    type="number"
+                    value={cashTendered || ''}
+                    onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
+                    className="w-28 px-2 py-1 bg-white border border-slate-200 rounded-lg text-right font-black text-slate-900 text-xs focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[grandTotal, 500, 1000, 5000].map((amt, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setCashTendered(amt)}
+                      className="py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 text-center transition"
+                    >
+                      {i === 0 ? 'Exact' : `₨${amt}`}
+                    </button>
+                  ))}
+                </div>
+                {cashTendered > 0 && (
+                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-200">
+                    <span className="text-[11px] font-semibold text-slate-500">Change Due:</span>
+                    <span className="text-sm font-black text-teal-600">₨{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-2 mb-3">
               <button
                 onClick={() => parkCurrentBill()}
                 disabled={cart.length === 0}
                 className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
               >
                 <PauseCircle className="w-4 h-4" />
-                <span>Hold Tab</span>
+                <span>Hold</span>
+              </button>
+              <button
+                disabled={cart.length === 0}
+                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
+              >
+                <span>Print</span>
               </button>
               <button
                 onClick={() => {
                   setCashTendered(grandTotal);
-                  setIsCheckoutOpen(true);
+                  handleCompleteSale();
                 }}
-                disabled={cart.length === 0}
-                className="py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm shadow-lg shadow-teal-500/25 transition disabled:opacity-40 flex items-center justify-center gap-1.5"
+                disabled={cart.length === 0 || isSubmitting}
+                className="py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition disabled:opacity-40 flex items-center justify-center gap-1.5"
               >
-                <CreditCard className="w-4 h-4" />
-                <span>Pay ₨{grandTotal.toLocaleString()}</span>
+                {isSubmitting ? (
+                  <span>Charging...</span>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Charge ₨{grandTotal.toLocaleString()}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -718,97 +744,6 @@ export const PosTerminal: React.FC = () => {
           + Add Table
         </Link>
       </div>
-
-      {isCheckoutOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="font-bold text-slate-900 text-base">Tender & Settle Payment</h3>
-                <p className="text-xs text-slate-400">Order Total: <strong className="text-teal-600">₨{grandTotal.toLocaleString()}</strong></p>
-              </div>
-              <button onClick={() => setIsCheckoutOpen(false)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
-                Select Payment Mode
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'Cash', label: 'Cash', icon: Banknote },
-                  { id: 'Card', label: 'POS Card', icon: CreditCard },
-                  { id: 'JazzCash', label: 'JazzCash', icon: Smartphone },
-                  { id: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
-                  { id: 'Raast', label: 'Raast QR', icon: QrCode },
-                  { id: 'CustomerKhata', label: 'Udhaar / Khata', icon: BookOpen },
-                ].map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setPaymentMethod(id as PaymentMethod)}
-                    className={`p-2.5 rounded-xl border text-xs font-bold flex flex-col items-center gap-1 transition ${
-                      paymentMethod === id
-                        ? 'bg-teal-50 border-teal-500 text-teal-600 shadow-md'
-                        : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {paymentMethod === 'Cash' && (
-              <div className="space-y-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-medium text-slate-500">Cash Received (PKR):</label>
-                  <input
-                    type="number"
-                    value={cashTendered || ''}
-                    onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
-                    className="w-32 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-right font-black text-slate-900 text-sm focus:outline-none focus:border-teal-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-4 gap-1.5 pt-1">
-                  {[grandTotal, 500, 1000, 5000].map((amt, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setQuickCash(amt)}
-                      className="py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center transition"
-                    >
-                      {i === 0 ? 'Exact' : `₨${amt}`}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex justify-between items-center pt-2 border-t border-slate-200">
-                  <span className="text-xs font-semibold text-slate-500">Change Due to Customer:</span>
-                  <span className="text-lg font-black text-teal-600">₨{changeDue.toLocaleString()}</span>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={handleCompleteSale}
-              disabled={isSubmitting}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-sm shadow-xl shadow-teal-500/25 transition flex items-center justify-center gap-2"
-            >
-              {isSubmitting ? (
-                <span>Dispatching Order...</span>
-              ) : (
-                <>
-                  <Check className="w-5 h-5" />
-                  <span>Confirm Sale & Print Receipt</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
 
       {showParkedModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
