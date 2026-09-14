@@ -346,6 +346,49 @@ using (var scope = app.Services.CreateScope())
             );
         ");
 
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""TenantSettings"" (
+                ""Id"" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                ""TenantId"" uuid NOT NULL,
+                ""CountryCode"" text NOT NULL DEFAULT 'PK',
+                ""CurrencyCode"" text NOT NULL DEFAULT 'PKR',
+                ""CurrencySymbol"" text NOT NULL DEFAULT E'\u20A8',
+                ""DecimalPlaces"" integer NOT NULL DEFAULT 0,
+                ""TaxAuthorityName"" text NOT NULL DEFAULT 'FBR',
+                ""DefaultTaxRate"" numeric(18,2) NOT NULL DEFAULT 16,
+                ""UseDualTaxRate"" boolean NOT NULL DEFAULT true,
+                ""DigitalTaxRate"" numeric(18,2) NOT NULL DEFAULT 8,
+                ""PhoneCode"" text NOT NULL DEFAULT '+92',
+                ""DefaultCity"" text NOT NULL DEFAULT 'Islamabad',
+                ""DateFormat"" text NOT NULL DEFAULT 'dd/MM/yyyy',
+                ""ReceiptFooter"" text NOT NULL DEFAULT 'Thank you for your visit!',
+                ""AllowedPaymentMethods"" text NOT NULL DEFAULT 'Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata'
+            );
+        ");
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TenantSettings_TenantId') THEN
+                    CREATE UNIQUE INDEX ""IX_TenantSettings_TenantId"" ON ""TenantSettings"" (""TenantId"");
+                END IF;
+            END $$;
+        ");
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_tenantsettings_tenants') THEN
+                    ALTER TABLE ""TenantSettings"" ADD CONSTRAINT ""fk_tenantsettings_tenants"" FOREIGN KEY (""TenantId"") REFERENCES ""Tenants""(""Id"") ON DELETE CASCADE;
+                END IF;
+            END $$;
+        ");
+
+        // Add LocalName to Categories if not exists
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Categories' AND column_name = 'LocalName') THEN
+                    ALTER TABLE ""Categories"" ADD COLUMN ""LocalName"" text NULL;
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }

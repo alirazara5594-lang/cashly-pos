@@ -279,6 +279,18 @@ export const PosTerminal: React.FC = () => {
     return cat?.name;
   };
 
+  const allPaymentMethods = [
+    { key: 'Cash', label: 'Cash', icon: Banknote },
+    { key: 'Card', label: 'Card', icon: CreditCard },
+    { key: 'JazzCash', label: 'JazzCash', icon: Smartphone },
+    { key: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
+    { key: 'Raast', label: 'Raast QR', icon: QrCode },
+    { key: 'CustomerKhata', label: 'Khata', icon: BookOpen },
+  ];
+
+  const allowedMethods = tenantSettings?.allowedPaymentMethods?.split(',').map(m => m.trim()) || allPaymentMethods.map(m => m.key);
+  const visiblePaymentMethods = allPaymentMethods.filter(m => allowedMethods.includes(m.key));
+
   return (
     <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-hidden bg-slate-50">
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
@@ -809,19 +821,7 @@ export const PosTerminal: React.FC = () => {
               <div className="space-y-1.5">
                 {activeProductForModifier.modifiers?.map((mod) => {
                   const isChecked = selectedModifiers.some(m => m.id === mod.id);
-  const allPaymentMethods = [
-    { key: 'Cash', label: 'Cash', icon: Banknote },
-    { key: 'Card', label: 'Card', icon: CreditCard },
-    { key: 'JazzCash', label: 'JazzCash', icon: Smartphone },
-    { key: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
-    { key: 'Raast', label: 'Raast QR', icon: QrCode },
-    { key: 'CustomerKhata', label: 'Khata', icon: BookOpen },
-  ];
-
-  const allowedMethods = tenantSettings?.allowedPaymentMethods?.split(',').map(m => m.trim()) || allPaymentMethods.map(m => m.key);
-  const visiblePaymentMethods = allPaymentMethods.filter(m => allowedMethods.includes(m.key));
-
-  return (
+                  return (
                     <button
                       key={mod.id}
                       onClick={() => {
