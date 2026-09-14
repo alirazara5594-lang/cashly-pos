@@ -55,6 +55,7 @@ export interface Category {
   id: string;
   tenantId: string;
   name: string;
+  localName?: string;
   icon: string;
   sortOrder: number;
 }

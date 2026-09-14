@@ -49,6 +49,7 @@ export const MenuManagement: React.FC = () => {
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [catFormName, setCatFormName] = useState('');
+  const [catFormLocalName, setCatFormLocalName] = useState('');
   const [catFormSort, setCatFormSort] = useState(0);
   const [catSaving, setCatSaving] = useState(false);
   const [catDeleteId, setCatDeleteId] = useState<string | null>(null);
@@ -100,6 +101,7 @@ export const MenuManagement: React.FC = () => {
   const openAddCategory = () => {
     setEditingCategory(null);
     setCatFormName('');
+    setCatFormLocalName('');
     setCatFormSort(categories.length);
     setShowCategoryModal(true);
   };
@@ -107,6 +109,7 @@ export const MenuManagement: React.FC = () => {
   const openEditCategory = (cat: Category) => {
     setEditingCategory(cat);
     setCatFormName(cat.name);
+    setCatFormLocalName(cat.localName || '');
     setCatFormSort(cat.sortOrder);
     setShowCategoryModal(true);
   };
@@ -119,6 +122,7 @@ export const MenuManagement: React.FC = () => {
         await posApi.updateCategory(editingCategory.id, {
           tenantId: selectedTenant.id,
           name: catFormName.trim(),
+          localName: catFormLocalName.trim() || undefined,
           icon: 'utensils',
           sortOrder: catFormSort
         });
@@ -126,6 +130,7 @@ export const MenuManagement: React.FC = () => {
         await posApi.createCategory({
           tenantId: selectedTenant.id,
           name: catFormName.trim(),
+          localName: catFormLocalName.trim() || undefined,
           icon: 'utensils',
           sortOrder: catFormSort
         });
@@ -134,6 +139,7 @@ export const MenuManagement: React.FC = () => {
       setShowCategoryModal(false);
       setEditingCategory(null);
       setCatFormName('');
+      setCatFormLocalName('');
     } catch (err) {
       console.error('Failed to save category:', err);
     } finally {
@@ -278,6 +284,7 @@ export const MenuManagement: React.FC = () => {
                   return (
                     <div key={c.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 min-w-[140px]">
                       <div className="font-bold text-xs text-slate-900">{c.name}</div>
+                      {c.localName && <div className="text-[10px] text-slate-500 font-medium">{c.localName}</div>}
                       <div className="text-[10px] text-slate-500">{count} items</div>
                     </div>
                   );
@@ -415,6 +422,7 @@ export const MenuManagement: React.FC = () => {
                   <tr className="border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider">
                     <th className="pb-3 w-8">#</th>
                     <th className="pb-3">Category Name</th>
+                    <th className="pb-3">Local Name</th>
                     <th className="pb-3 text-center">Products</th>
                     <th className="pb-3 text-right">Sort Order</th>
                     <th className="pb-3 text-right">Actions</th>
@@ -428,6 +436,13 @@ export const MenuManagement: React.FC = () => {
                         <td className="py-3 text-slate-400 font-mono">{idx + 1}</td>
                         <td className="py-3">
                           <div className="font-bold text-slate-900 text-sm">{cat.name}</div>
+                        </td>
+                        <td className="py-3">
+                          {cat.localName ? (
+                            <div className="text-sm text-slate-600 font-medium">{cat.localName}</div>
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
                         </td>
                         <td className="py-3 text-center">
                           <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold">
@@ -485,6 +500,16 @@ export const MenuManagement: React.FC = () => {
                   onChange={(e) => setCatFormName(e.target.value)}
                   placeholder="e.g. Burgers & Sandwiches"
                   autoFocus
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Local Name <span className="text-slate-400 normal-case">(optional)</span></label>
+                <input
+                  type="text"
+                  value={catFormLocalName}
+                  onChange={(e) => setCatFormLocalName(e.target.value)}
+                  placeholder="e.g. برگرز"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
               </div>

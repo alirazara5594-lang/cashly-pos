@@ -78,7 +78,8 @@ export const PosTerminal: React.FC = () => {
     paymentMethod,
     setPaymentMethod,
     taxMode,
-    getEffectiveTaxRate
+    getEffectiveTaxRate,
+    tenantSettings
   } = usePosStore();
 
   const [categories, setCategories] = useState<Category[]>([]);
@@ -287,7 +288,7 @@ export const PosTerminal: React.FC = () => {
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
                 type="text"
-                placeholder="Search product name, Urdu name, or SKU..."
+                placeholder="Search product name, local name, or SKU..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition"
@@ -338,7 +339,8 @@ export const PosTerminal: React.FC = () => {
                     : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
                 }`}
               >
-                {cat.name}
+                <span>{cat.name}</span>
+                {cat.localName && <span className="text-[9px] block opacity-60">{cat.localName}</span>}
               </button>
             ))}
           </div>
@@ -606,19 +608,12 @@ export const PosTerminal: React.FC = () => {
           <div className="p-4 border-t border-slate-100">
             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
             <div className="grid grid-cols-3 gap-2 mb-3">
-              {[
-                { id: 'Cash', label: 'Cash', icon: Banknote },
-                { id: 'Card', label: 'Card', icon: CreditCard },
-                { id: 'JazzCash', label: 'JazzCash', icon: Smartphone },
-                { id: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
-                { id: 'Raast', label: 'Raast QR', icon: QrCode },
-                { id: 'CustomerKhata', label: 'Udhaar', icon: BookOpen },
-              ].map(({ id, label, icon: Icon }) => (
+              {visiblePaymentMethods.map(({ key, label, icon: Icon }) => (
                 <button
-                  key={id}
-                  onClick={() => setPaymentMethod(id as PaymentMethod)}
+                  key={key}
+                  onClick={() => setPaymentMethod(key as PaymentMethod)}
                   className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
-                    paymentMethod === id
+                    paymentMethod === key
                       ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
                       : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
                   }`}
@@ -814,7 +809,19 @@ export const PosTerminal: React.FC = () => {
               <div className="space-y-1.5">
                 {activeProductForModifier.modifiers?.map((mod) => {
                   const isChecked = selectedModifiers.some(m => m.id === mod.id);
-                  return (
+  const allPaymentMethods = [
+    { key: 'Cash', label: 'Cash', icon: Banknote },
+    { key: 'Card', label: 'Card', icon: CreditCard },
+    { key: 'JazzCash', label: 'JazzCash', icon: Smartphone },
+    { key: 'EasyPaisa', label: 'EasyPaisa', icon: Smartphone },
+    { key: 'Raast', label: 'Raast QR', icon: QrCode },
+    { key: 'CustomerKhata', label: 'Khata', icon: BookOpen },
+  ];
+
+  const allowedMethods = tenantSettings?.allowedPaymentMethods?.split(',').map(m => m.trim()) || allPaymentMethods.map(m => m.key);
+  const visiblePaymentMethods = allPaymentMethods.filter(m => allowedMethods.includes(m.key));
+
+  return (
                     <button
                       key={mod.id}
                       onClick={() => {

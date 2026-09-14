@@ -714,18 +714,19 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     var tenantSettings = new TenantSettings
     {
         TenantId = tenant.Id,
-        CurrencyCode = "PKR",
-        CurrencySymbol = "₨",
-        DecimalPlaces = 0,
-        TaxAuthorityName = "FBR",
-        DefaultTaxRate = 16,
-        UseDualTaxRate = true,
-        DigitalTaxRate = 8,
-        PhoneCode = "+92",
-        DefaultCity = "Islamabad",
+        CountryCode = dto.CountryCode ?? "PK",
+        CurrencyCode = dto.CurrencyCode ?? "PKR",
+        CurrencySymbol = dto.CurrencySymbol ?? "₨",
+        DecimalPlaces = dto.DecimalPlaces ?? 0,
+        TaxAuthorityName = dto.TaxAuthorityName ?? "FBR",
+        DefaultTaxRate = dto.DefaultTaxRate ?? 16,
+        UseDualTaxRate = dto.UseDualTaxRate ?? true,
+        DigitalTaxRate = dto.DigitalTaxRate ?? 8,
+        PhoneCode = dto.PhoneCode ?? "+92",
+        DefaultCity = dto.City ?? "Islamabad",
         DateFormat = "dd/MM/yyyy",
         ReceiptFooter = "Thank you for your visit!",
-        AllowedPaymentMethods = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
+        AllowedPaymentMethods = dto.AllowedPaymentMethods ?? "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
     };
     db.TenantSettings.Add(tenantSettings);
 
@@ -930,7 +931,7 @@ api.MapGet("/catalog/categories", async (AppDbContext db, Guid? tenantId) =>
 
 api.MapPost("/catalog/categories", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
 {
-    var cat = new Category { TenantId = dto.TenantId, Name = dto.Name, Icon = dto.Icon ?? "utensils", SortOrder = dto.SortOrder };
+    var cat = new Category { TenantId = dto.TenantId, Name = dto.Name, LocalName = dto.LocalName, Icon = dto.Icon ?? "utensils", SortOrder = dto.SortOrder };
     db.Categories.Add(cat);
     await db.SaveChangesAsync();
     return Results.Ok(cat);
@@ -941,6 +942,7 @@ api.MapPut("/catalog/categories/{id}", async (AppDbContext db, Guid id, [Microso
     var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
     if (cat == null) return Results.NotFound();
     cat.Name = dto.Name;
+    cat.LocalName = dto.LocalName ?? cat.LocalName;
     cat.Icon = dto.Icon ?? cat.Icon;
     cat.SortOrder = dto.SortOrder;
     await db.SaveChangesAsync();
@@ -1953,12 +1955,15 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime?
 api.MapGet("/reports/sales-by-category", async (AppDbContext db, Guid? branchId, int? days) =>
 {
     var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    var taxDivisor = settings != null ? (1 + settings.DefaultTaxRate / 100m) : 1.16m;
     var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
     var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     var totalRevenue = items.Sum(i => i.TotalPricePKR);
     return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
-        .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / 1.16m, 2), taxPKR = Math.Round(gross - (gross / 1.16m), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
+        .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / taxDivisor, 2), taxPKR = Math.Round(gross - (gross / taxDivisor), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.grossSalesPKR).ToList());
 });
 
@@ -1976,6 +1981,10 @@ api.MapGet("/reports/item-performance", async (AppDbContext db, Guid? branchId, 
 api.MapGet("/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
 {
     var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    var primaryTaxRate = settings?.DefaultTaxRate ?? 16;
+    var secondaryTaxRate = settings?.DigitalTaxRate ?? 8;
     var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
     var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
     var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
@@ -1987,8 +1996,8 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? da
         startDate = start.ToString("yyyy-MM-dd"), endDate = end.ToString("yyyy-MM-dd"), totalInvoices = orders.Count,
         totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR), totalNetSalesPKR = (cashOrders.Sum(o => o.TotalPKR) - cashOrders.Sum(o => o.TaxPKR)) + (cardOrders.Sum(o => o.TotalPKR) - cardOrders.Sum(o => o.TaxPKR)),
         totalTaxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) + cardOrders.Sum(o => o.TaxPKR),
-        cashSegment = new { taxRatePercent = 16, invoiceCount = cashOrders.Count, grossSalesPKR = cashOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) },
-        cardSegment = new { taxRatePercent = 8, invoiceCount = cardOrders.Count, grossSalesPKR = cardOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cardOrders.Sum(o => o.TaxPKR) }
+        cashSegment = new { taxRatePercent = primaryTaxRate, invoiceCount = cashOrders.Count, grossSalesPKR = cashOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) },
+        cardSegment = new { taxRatePercent = secondaryTaxRate, invoiceCount = cardOrders.Count, grossSalesPKR = cardOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cardOrders.Sum(o => o.TaxPKR) }
     });
 });
 
@@ -3165,6 +3174,7 @@ app.MapPut("/api/tenant/settings", async (Guid tenantId, TenantSettingsDto dto, 
         settings = new TenantSettings { TenantId = tenantId };
         db.TenantSettings.Add(settings);
     }
+    settings.CountryCode = dto.CountryCode ?? settings.CountryCode;
     settings.CurrencyCode = dto.CurrencyCode ?? settings.CurrencyCode;
     settings.CurrencySymbol = dto.CurrencySymbol ?? settings.CurrencySymbol;
     settings.DecimalPlaces = dto.DecimalPlaces;
@@ -3193,7 +3203,7 @@ public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal Exp
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
 public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers);
 public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station);
-public record CreateCategoryDto(Guid TenantId, string Name, string? Icon, int SortOrder);
+public record CreateCategoryDto(Guid TenantId, string Name, string? LocalName, string? Icon, int SortOrder);
 public record CreateProductModifierDto(string Name, decimal PricePKR);
 public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate);
 public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
@@ -3221,6 +3231,14 @@ public record SetupInitDto(
     string RestaurantName,
     BusinessType? BusinessType,
     string? CountryCode,
+    string? CurrencyCode,
+    string? CurrencySymbol,
+    int? DecimalPlaces,
+    string? TaxAuthorityName,
+    decimal? DefaultTaxRate,
+    bool? UseDualTaxRate,
+    decimal? DigitalTaxRate,
+    string? PhoneCode,
     string? City,
     string? Address,
     string? Phone,
@@ -3232,6 +3250,7 @@ public record SetupInitDto(
     string? AdminUsername,
     string? AdminPin,
     bool SeedStarterMenu,
+    string? AllowedPaymentMethods,
     List<BranchInitDto>? Branches
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
@@ -3252,6 +3271,7 @@ public record CreatePackageDto(string PackageKey, string DisplayName, decimal Mo
 public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
 public record UpdateModulePermissionDto(string ModuleKey, string SubModuleKey, bool CanView, bool CanEdit, bool CanDelete, bool CanExport);
 public record TenantSettingsDto(
+    string? CountryCode,
     string? CurrencyCode,
     string? CurrencySymbol,
     int DecimalPlaces,

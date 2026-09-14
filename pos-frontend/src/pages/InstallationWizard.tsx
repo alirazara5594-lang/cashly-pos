@@ -24,6 +24,7 @@ import {
   Zap
 } from 'lucide-react';
 import { posApi } from '../services/api';
+import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { offlineDb } from '../services/offlineDb';
 import { usePosStore } from '../store/posStore';
 import type { BusinessType, DeploymentMode, BranchInitPayload } from '../types';
@@ -41,6 +42,7 @@ export const InstallationWizard: React.FC = () => {
   const [restaurantName, setRestaurantName] = useState('My Restaurant');
   const [businessType, setBusinessType] = useState<BusinessType>('Restaurant');
   const [currency, setCurrency] = useState('PKR');
+  const [countryCode, setCountryCode] = useState('PK');
   const [city, setCity] = useState('Islamabad');
   const [address, setAddress] = useState('Main Commercial Area');
   const [phone, setPhone] = useState('051-1234567');
@@ -92,6 +94,15 @@ export const InstallationWizard: React.FC = () => {
     setSelectedPlan(plan.key);
     setAllowedCounters(plan.counters);
     setAllowedOrderTabs(plan.tablets);
+  };
+
+  const handleCountryChange = (code: string) => {
+    const preset = getCountryByCode(code);
+    if (!preset) return;
+    setCountryCode(code);
+    setCurrency(preset.currencyCode);
+    setCity(preset.defaultCity);
+    setPhone(preset.phoneCode + '-');
   };
 
   // Multi-Branch Settings
@@ -181,6 +192,16 @@ export const InstallationWizard: React.FC = () => {
         deploymentMode,
         restaurantName,
         businessType,
+        countryCode,
+        currencyCode: getCountryByCode(countryCode)?.currencyCode || currency,
+        currencySymbol: getCountryByCode(countryCode)?.currencySymbol || '₨',
+        decimalPlaces: getCountryByCode(countryCode)?.decimals || 0,
+        taxAuthorityName: getCountryByCode(countryCode)?.taxAuthority || 'FBR',
+        defaultTaxRate: getCountryByCode(countryCode)?.defaultTaxRate ?? 16,
+        useDualTaxRate: getCountryByCode(countryCode)?.useDualTaxRate ?? true,
+        digitalTaxRate: getCountryByCode(countryCode)?.digitalTaxRate ?? 8,
+        phoneCode: getCountryByCode(countryCode)?.phoneCode || '+92',
+        allowedPaymentMethods: getCountryByCode(countryCode)?.paymentMethods || 'Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata',
         city,
         address,
         phone,
@@ -497,18 +518,16 @@ export const InstallationWizard: React.FC = () => {
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <DollarSign className="w-3.5 h-3.5 text-emerald-600" /> Operating Currency
+                    <DollarSign className="w-3.5 h-3.5 text-emerald-600" /> Country & Currency
                   </label>
                   <select 
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
+                    value={countryCode}
+                    onChange={(e) => handleCountryChange(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   >
-                    <option value="PKR">PKR (Pakistani Rupee)</option>
-                    <option value="USD">USD ($)</option>
-                    <option value="AED">AED (Dirham)</option>
-                    <option value="SAR">SAR (Riyal)</option>
-                    <option value="EUR">EUR (€)</option>
+                    {COUNTRIES.map(c => (
+                      <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.currencyCode} {c.currencySymbol})</option>
+                    ))}
                   </select>
                 </div>
               </div>
