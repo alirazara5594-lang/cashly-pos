@@ -43,8 +43,14 @@ dbConnection ??= "Host=localhost;Port=5432;Database=cashly_pos_db;Username=postg
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // Keep claim names exactly as issued. Without this, .NET rewrites "role" to the
+        // long WS-Federation schema URI, so FindFirst("role") silently returns null and
+        // every IsSuperAdmin() check evaluates false.
+        options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
         {
+            RoleClaimType = "role",
+            NameClaimType = "userId",
             ValidateIssuer = false,
             ValidateAudience = false,
             ValidateLifetime = true,

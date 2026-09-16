@@ -19,34 +19,32 @@ public class TenantIsolationMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Extract tenantId from JWT claims
+        // Each claim is extracted independently. A SuperAdmin's tenantId is Guid.Empty, so
+        // nesting these inside a tenant check would drop its role and lock it out entirely.
         var tenantIdClaim = context.User?.FindFirst("tenantId");
         if (tenantIdClaim != null && Guid.TryParse(tenantIdClaim.Value, out var tenantId))
         {
             context.Items["TenantId"] = tenantId;
+        }
 
-            // Also extract role for authorization checks
-            var roleClaim = context.User?.FindFirst("role");
-            if (roleClaim != null)
-            {
-                context.Items["UserRole"] = roleClaim.Value;
-            }
+        var roleClaim = context.User?.FindFirst("role") ?? context.User?.FindFirst(ClaimTypes.Role);
+        if (roleClaim != null)
+        {
+            context.Items["UserRole"] = roleClaim.Value;
+        }
 
-            // Extract userId
-            var userIdClaim = context.User?.FindFirst("userId");
-            if (userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId))
-            {
-                context.Items["UserId"] = userId;
-            }
+        var userIdClaim = context.User?.FindFirst("userId");
+        if (userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId))
+        {
+            context.Items["UserId"] = userId;
+        }
 
-            // Extract branchId. Owner/HeadOffice/SuperAdmin tokens carry "" here, meaning
-            // "not pinned to a single branch" — those users must supply a branchId explicitly
-            // and it gets validated against their tenant.
-            var branchIdClaim = context.User?.FindFirst("branchId");
-            if (branchIdClaim != null && Guid.TryParse(branchIdClaim.Value, out var branchId) && branchId != Guid.Empty)
-            {
-                context.Items["BranchId"] = branchId;
-            }
+        // Owner/HeadOffice/SuperAdmin tokens carry "" here, meaning "not pinned to a single
+        // branch" — those users must supply a branchId explicitly, validated against their tenant.
+        var branchIdClaim = context.User?.FindFirst("branchId");
+        if (branchIdClaim != null && Guid.TryParse(branchIdClaim.Value, out var branchId) && branchId != Guid.Empty)
+        {
+            context.Items["BranchId"] = branchId;
         }
 
         await _next(context);
@@ -67,7 +65,9 @@ public static class TenantContext
 
     public static string? GetUserRole(this HttpContext context)
     {
-        return context.Items["UserRole"] as string;
+        return context.Items["UserRole"] as string
+            ?? context.User?.FindFirst("role")?.Value
+            ?? context.User?.FindFirst(ClaimTypes.Role)?.Value;
     }
 
     public static Guid? GetUserId(this HttpContext context)
