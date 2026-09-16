@@ -11,9 +11,14 @@ import {
   MessageSquare,
   ToggleLeft,
   ToggleRight,
-  Building2
+  Building2,
+  Lock,
+  KeyRound,
+  ShieldCheck
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
+import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
 interface PackageData {
   id: string;
@@ -48,6 +53,20 @@ const AVAILABLE_FEATURES = [
 ];
 
 export const PricingAdmin: React.FC = () => {
+  const currentUser = usePosStore(s => s.currentUser);
+  const permissions = usePosStore(s => s.permissions);
+  const modulePermissions = usePosStore(s => s.modulePermissions);
+
+  // Package pricing is a platform-admin surface; the server rejects writes from
+  // anyone without it regardless of what this flag says.
+  const canEditPricing =
+    hasModuleAccess(currentUser?.role, modulePermissions, 'admin', 'edit') ||
+    !!permissions?.canManageMenuAndTax;
+
+  const [override, setOverride] = useState<ManagerOverrideResult | null>(null);
+  const [isOverrideOpen, setIsOverrideOpen] = useState(false);
+  const isUnlocked = canEditPricing || !!override;
+
   const [packages, setPackages] = useState<PackageData[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -104,10 +123,12 @@ export const PricingAdmin: React.FC = () => {
   useEffect(() => { loadData(); }, []);
 
   const updatePackage = (id: string, field: keyof PackageData, value: any) => {
+    if (!isUnlocked) return;
     setPackages(packages.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
 
   const toggleFeature = (pkgId: string, feature: string) => {
+    if (!isUnlocked) return;
     setPackages(packages.map(p => {
       if (p.id !== pkgId) return p;
       const features = p.features.includes(feature)
@@ -118,15 +139,25 @@ export const PricingAdmin: React.FC = () => {
   };
 
   const handleSaveAll = async () => {
+    if (!isUnlocked) return;
     setSaving(true);
     setMessage(null);
     try {
       for (const pkg of packages) {
-        await posApi.updatePackage(pkg.id, pkg);
+        await posApi.updatePackage(pkg.id, {
+          ...pkg,
+          authorizedByUserId: override?.authorizedByUserId
+        });
       }
-      setMessage({ type: 'success', text: 'All packages updated successfully' });
+      setMessage({
+        type: 'success',
+        text: override?.authorizedByName
+          ? `All packages updated — authorized by ${override.authorizedByName}`
+          : 'All packages updated successfully'
+      });
+      setOverride(null);
     } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to save some packages' });
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to save some packages') });
     } finally {
       setSaving(false);
     }
@@ -167,15 +198,47 @@ export const PricingAdmin: React.FC = () => {
             <p className="text-xs text-slate-500">Manage subscription tiers, limits, and features</p>
           </div>
         </div>
-        <button
-          onClick={handleSaveAll}
-          disabled={saving}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
-        >
-          <Save className="w-4 h-4" />
-          {saving ? 'Saving...' : 'Save All Changes'}
-        </button>
+        {isUnlocked ? (
+          <button
+            onClick={handleSaveAll}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50 cursor-pointer"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? 'Saving...' : 'Save All Changes'}
+          </button>
+        ) : (
+          <button
+            onClick={() => setIsOverrideOpen(true)}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition cursor-pointer"
+            title="You do not have permission to change package pricing — a manager can authorize this"
+          >
+            <KeyRound className="w-4 h-4" />
+            Manager Override
+          </button>
+        )}
       </div>
+
+      {!canEditPricing && (
+        <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold border ${
+          override
+            ? 'bg-teal-50 text-teal-700 border-teal-200'
+            : 'bg-slate-50 text-slate-600 border-slate-200'
+        }`}>
+          {override ? <ShieldCheck className="w-4 h-4 text-teal-600" /> : <Lock className="w-4 h-4 text-slate-400" />}
+          {override
+            ? `Override active — ${override.authorizedByName || 'a manager'} authorized these changes. It expires once you save.`
+            : 'View only: your account cannot change package pricing. Use Manager Override to unlock.'}
+        </div>
+      )}
+
+      <ManagerOverrideModal
+        isOpen={isOverrideOpen}
+        onClose={() => setIsOverrideOpen(false)}
+        requiredPermission="canManageMenuAndTax"
+        actionLabel="Change subscription package pricing, limits, and features"
+        onAuthorized={(result) => setOverride(result)}
+      />
 
       {message && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold ${
@@ -186,7 +249,11 @@ export const PricingAdmin: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      {/* fieldset disables every input at once while the page is permission-locked */}
+      <fieldset
+        disabled={!isUnlocked}
+        className="grid grid-cols-1 lg:grid-cols-3 gap-5 min-w-0 border-0 p-0 m-0 disabled:opacity-90"
+      >
         {packages.map((pkg) => (
           <div
             key={pkg.id}
@@ -314,7 +381,7 @@ export const PricingAdmin: React.FC = () => {
             </div>
           </div>
         ))}
-      </div>
+      </fieldset>
     </div>
   );
 };

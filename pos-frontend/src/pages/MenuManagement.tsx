@@ -12,22 +12,45 @@ import {
   Edit,
   X,
   FolderOpen,
-  Hash
+  Hash,
+  ShieldCheck,
+  KeyRound
 } from 'lucide-react';
 
-import { posApi } from '../services/api';
-import { usePosStore } from '../store/posStore';
+import { posApi, getApiErrorMessage } from '../services/api';
+import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import type { Product, Category, ProductRecipeItem } from '../types';
 
 
 export const MenuManagement: React.FC = () => {
-  const { 
-    selectedTenant, 
-    cashTaxRatePercent, 
-    cardTaxRatePercent, 
-    taxMode, 
-    setTaxSettings
+  const {
+    selectedTenant,
+    cashTaxRatePercent,
+    cardTaxRatePercent,
+    taxMode,
+    setTaxSettings,
+    currentUser,
+    permissions,
+    modulePermissions
   } = usePosStore();
+
+  // Own permission to change prices / tax. The backend independently re-checks
+  // this on every write — unlocking here only reveals the inputs.
+  const canEditPricing =
+    !!permissions?.canManageMenuAndTax ||
+    hasModuleAccess(currentUser?.role, modulePermissions, 'menu', 'edit');
+
+  // Manager Override: another user authorized a single price edit.
+  const [override, setOverride] = useState<ManagerOverrideResult | null>(null);
+  const [overrideTarget, setOverrideTarget] = useState<Product | null>(null);
+  const [isOverrideOpen, setIsOverrideOpen] = useState(false);
+
+  // Inline price editing
+  const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState<number>(0);
+  const [priceSaving, setPriceSaving] = useState(false);
+  const [priceMessage, setPriceMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [activeTab, setActiveTab] = useState<'overview' | 'categories'>('overview');
   const [products, setProducts] = useState<Product[]>([]);
@@ -70,6 +93,7 @@ export const MenuManagement: React.FC = () => {
   }, [selectedTenant?.id]);
 
   const handleSaveTaxSettings = () => {
+    if (!canEditPricing && !override) return;
     setTaxSettings({
       cashRate: localCashTax,
       cardRate: localCardTax,
@@ -77,6 +101,73 @@ export const MenuManagement: React.FC = () => {
     });
     setTaxSaved(true);
     setTimeout(() => setTaxSaved(false), 2500);
+  };
+
+  /** Open the inline price editor, prompting for a manager override if needed. */
+  const startPriceEdit = (product: Product) => {
+    if (!canEditPricing && !override) {
+      setOverrideTarget(product);
+      setIsOverrideOpen(true);
+      return;
+    }
+    setEditingPriceId(product.id);
+    setPriceDraft(product.sellingPricePKR);
+    setPriceMessage(null);
+  };
+
+  const handleOverrideAuthorized = (result: ManagerOverrideResult) => {
+    setOverride(result);
+    if (overrideTarget) {
+      setEditingPriceId(overrideTarget.id);
+      setPriceDraft(overrideTarget.sellingPricePKR);
+      setOverrideTarget(null);
+    }
+  };
+
+  const handleSavePrice = async (product: Product) => {
+    if (priceDraft < 0 || Number.isNaN(priceDraft)) {
+      setPriceMessage({ type: 'error', text: 'Enter a valid price' });
+      return;
+    }
+    setPriceSaving(true);
+    setPriceMessage(null);
+    try {
+      await posApi.updateProduct(product.id, {
+        tenantId: product.tenantId,
+        categoryId: product.categoryId,
+        sku: product.sku,
+        barcode: product.barcode,
+        name: product.name,
+        urduName: product.urduName,
+        description: product.description,
+        costPricePKR: product.costPricePKR,
+        sellingPricePKR: priceDraft,
+        unit: product.unit,
+        station: product.station,
+        isActive: product.isActive,
+        // Attached so the server can record who authorized an override edit. It
+        // re-verifies independently; a forged value here changes nothing.
+        authorizedByUserId: override?.authorizedByUserId
+      });
+      await fetchCatalog();
+      setEditingPriceId(null);
+      setPriceMessage({
+        type: 'success',
+        text: override?.authorizedByName
+          ? `Price updated — authorized by ${override.authorizedByName}`
+          : 'Price updated'
+      });
+      // An override unlocks exactly one edit.
+      setOverride(null);
+      setTimeout(() => setPriceMessage(null), 3500);
+    } catch (err) {
+      setPriceMessage({
+        type: 'error',
+        text: getApiErrorMessage(err, 'Not authorized to change this price')
+      });
+    } finally {
+      setPriceSaving(false);
+    }
   };
 
   const handleViewRecipe = async (product: Product) => {
@@ -192,17 +283,55 @@ export const MenuManagement: React.FC = () => {
         ))}
       </div>
 
+      {/* Pricing permission banner */}
+      {!canEditPricing && (
+        <div className={`p-3.5 rounded-2xl border text-xs flex items-center gap-3 ${
+          override
+            ? 'bg-teal-50 border-teal-200 text-teal-800'
+            : 'bg-slate-50 border-slate-200 text-slate-600'
+        }`}>
+          {override ? <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0" /> : <Lock className="w-4 h-4 text-slate-400 shrink-0" />}
+          <span>
+            {override ? (
+              <>
+                <strong>Override active:</strong> {override.authorizedByName || 'A manager'} authorized one
+                price or tax change. It expires after you save.
+              </>
+            ) : (
+              <>
+                <strong>View only:</strong> your account cannot change prices or tax rules. Click a price
+                to request a manager override.
+              </>
+            )}
+          </span>
+        </div>
+      )}
+
+      {priceMessage && (
+        <div className={`px-4 py-2.5 rounded-2xl text-xs font-semibold border ${
+          priceMessage.type === 'success'
+            ? 'bg-teal-50 text-teal-700 border-teal-200'
+            : 'bg-rose-50 text-rose-700 border-rose-200'
+        }`}>
+          {priceMessage.text}
+        </div>
+      )}
+
+      <ManagerOverrideModal
+        isOpen={isOverrideOpen}
+        onClose={() => { setIsOverrideOpen(false); setOverrideTarget(null); }}
+        requiredPermission="canManageMenuAndTax"
+        actionLabel={
+          overrideTarget
+            ? `Change the price of "${overrideTarget.name}"`
+            : 'Change menu prices or tax configuration'
+        }
+        onAuthorized={handleOverrideAuthorized}
+      />
+
       {/* ═══════ OVERVIEW TAB ═══════ */}
       {activeTab === 'overview' && (
         <>
-          {/* Managed Menu Banner */}
-          <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-700 flex items-center gap-3">
-            <Lock className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>
-              <strong>Managed Menu Service Active:</strong> Menu items, prices, and recipes are managed and updated by the platform. Contact support for any menu changes.
-            </span>
-          </div>
-
           {/* Tax & Business Type Engine Configuration Card */}
           <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-4 shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
@@ -216,13 +345,24 @@ export const MenuManagement: React.FC = () => {
                 </p>
               </div>
 
-              <button
-                onClick={handleSaveTaxSettings}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow transition"
-              >
-                {taxSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                <span>{taxSaved ? 'Tax Rates Saved!' : 'Save Tax Rules'}</span>
-              </button>
+              {canEditPricing || override ? (
+                <button
+                  onClick={handleSaveTaxSettings}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow transition cursor-pointer"
+                >
+                  {taxSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
+                  <span>{taxSaved ? 'Tax Rates Saved!' : 'Save Tax Rules'}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setOverrideTarget(null); setIsOverrideOpen(true); }}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow transition cursor-pointer"
+                  title="You do not have permission to change tax rules — a manager can authorize this"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>Manager Override</span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -232,8 +372,9 @@ export const MenuManagement: React.FC = () => {
                   <input
                     type="number"
                     value={localCashTax}
+                    disabled={!canEditPricing && !override}
                     onChange={(e) => setLocalCashTax(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                   <span className="text-slate-400 font-mono font-bold">%</span>
                 </div>
@@ -246,8 +387,9 @@ export const MenuManagement: React.FC = () => {
                   <input
                     type="number"
                     value={localCardTax}
+                    disabled={!canEditPricing && !override}
                     onChange={(e) => setLocalCardTax(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-teal-600 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-teal-600 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                   <span className="text-slate-400 font-mono font-bold">%</span>
                 </div>
@@ -258,8 +400,9 @@ export const MenuManagement: React.FC = () => {
                 <label className="block text-xs font-bold text-slate-700">Pricing Tax Mode:</label>
                 <select
                   value={localTaxMode}
+                  disabled={!canEditPricing && !override}
                   onChange={(e) => setLocalTaxMode(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Exclusive">Tax Exclusive (Added on top at checkout)</option>
                   <option value="Inclusive">Tax Inclusive (Included inside shelf price)</option>
@@ -370,7 +513,48 @@ export const MenuManagement: React.FC = () => {
                         </span>
                       </td>
                       <td className="py-3 text-right text-slate-500">{p.costPricePKR.toLocaleString()}</td>
-                      <td className="py-3 text-right font-black text-teal-600 text-sm">{p.sellingPricePKR.toLocaleString()}</td>
+                      <td className="py-3 text-right">
+                        {editingPriceId === p.id ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <input
+                              type="number"
+                              min="0"
+                              autoFocus
+                              value={priceDraft}
+                              onChange={(e) => setPriceDraft(Number(e.target.value))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSavePrice(p);
+                                if (e.key === 'Escape') setEditingPriceId(null);
+                              }}
+                              className="w-24 px-2 py-1 bg-white border border-teal-400 rounded-lg text-right text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
+                            />
+                            <button
+                              onClick={() => handleSavePrice(p)}
+                              disabled={priceSaving}
+                              className="p-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white transition cursor-pointer"
+                              title="Save price"
+                            >
+                              <Check className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => setEditingPriceId(null)}
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500 transition cursor-pointer"
+                              title="Cancel"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => startPriceEdit(p)}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg font-black text-teal-600 text-sm hover:bg-teal-50 transition cursor-pointer"
+                            title={canEditPricing || override ? 'Click to edit price' : 'Requires manager authorization'}
+                          >
+                            {!canEditPricing && !override && <Lock className="w-3 h-3 text-amber-500" />}
+                            {p.sellingPricePKR.toLocaleString()}
+                          </button>
+                        )}
+                      </td>
                       <td className="py-3 text-right">
                         <button
                           onClick={() => handleViewRecipe(p)}

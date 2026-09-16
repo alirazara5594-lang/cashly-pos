@@ -13,6 +13,26 @@ export interface TenantSettings {
   dateFormat: string;
   receiptFooter: string;
   allowedPaymentMethods: string;
+  /**
+   * When true the server computes checkout tax from the branch's regionCode
+   * TaxJurisdiction (cash vs digital rate). When false it falls back to the
+   * flat per-tenant defaultTaxRate / digitalTaxRate above.
+   */
+  useProvincialTax?: boolean;
+}
+
+/**
+ * A provincial / regional tax authority row (Pakistan: PRA, SRB, KPRA, BRA, FBR).
+ * Served by GET /api/settings/tax-jurisdictions.
+ */
+export interface TaxJurisdiction {
+  id: string;
+  countryCode: string;
+  regionCode: string;
+  authorityName: string;
+  cashTaxRate: number;
+  digitalTaxRate: number;
+  isActive: boolean;
 }
 
 export type BusinessType = 'Restaurant' | 'Retail' | 'CashAndCarry' | 'Hybrid';
@@ -98,6 +118,18 @@ export interface Order {
   cashierName?: string;
   createdByRole?: string;
   createdAt: string;
+
+  // Stage timestamps (nullable ISO date strings stamped server-side as the order moves)
+  inKitchenAt?: string | null;
+  readyAt?: string | null;
+  outForDeliveryAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
+
+  // Fiscal / invoice integration
+  fiscalInvoiceNumber?: string | null;
+  fiscalQrPayload?: string | null;
+
   items: CartItem[];
 }
 
@@ -142,6 +174,8 @@ export interface Branch {
   isHeadOffice: boolean;
   allowedCounters: number;
   allowedOrderTabs: number;
+  /** TaxJurisdiction this branch belongs to, e.g. "PK-PB". Null until assigned. */
+  regionCode?: string | null;
 }
 
 export interface Tenant {
@@ -261,7 +295,68 @@ export interface ProductRecipeItem {
   };
 }
 
-export type UserRole = 'OwnerAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter';
+export type UserRole = 'OwnerAdmin' | 'SuperAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter';
+
+/**
+ * Module keys actually enforced by the backend permission layer.
+ * Kept in sync with ModuleBaseline on the server.
+ */
+export type ModuleKey =
+  | 'pos'
+  | 'kitchen'
+  | 'delivery'
+  | 'menu'
+  | 'inventory'
+  | 'reports'
+  | 'accounts'
+  | 'supplychain'
+  | 'admin'
+  | 'users';
+
+export type PermissionAction = 'view' | 'edit' | 'delete' | 'export';
+
+/** A single per-user ModulePermission row returned by GET /api/permissions/my. */
+export interface ModulePermission {
+  moduleKey: string;
+  subModuleKey: string;
+  canView: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  canExport: boolean;
+}
+
+/** Boolean action flags carried on the user record itself. */
+export interface AuthPermissions {
+  canViewFinancialReports: boolean;
+  canManageInventory: boolean;
+  canManageMenuAndTax: boolean;
+  canGiveDiscounts: boolean;
+  canVoidOrders: boolean;
+}
+
+/** Permission keys accepted by POST /api/auth/verify-pin. */
+export type OverridePermissionKey = keyof AuthPermissions;
+
+/** The logged-in identity persisted by the pos store. */
+export interface CurrentUser {
+  id: string;
+  fullName: string;
+  username: string;
+  role: UserRole;
+  tenantId?: string | null;
+  branchId?: string | null;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: CurrentUser & { permissions?: AuthPermissions };
+}
+
+export interface VerifyPinResponse {
+  authorized: boolean;
+  authorizedByUserId?: string;
+  authorizedByName?: string;
+}
 
 export interface AppUser {
   id: string;

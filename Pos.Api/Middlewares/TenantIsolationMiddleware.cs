@@ -38,6 +38,15 @@ public class TenantIsolationMiddleware
             {
                 context.Items["UserId"] = userId;
             }
+
+            // Extract branchId. Owner/HeadOffice/SuperAdmin tokens carry "" here, meaning
+            // "not pinned to a single branch" — those users must supply a branchId explicitly
+            // and it gets validated against their tenant.
+            var branchIdClaim = context.User?.FindFirst("branchId");
+            if (branchIdClaim != null && Guid.TryParse(branchIdClaim.Value, out var branchId) && branchId != Guid.Empty)
+            {
+                context.Items["BranchId"] = branchId;
+            }
         }
 
         await _next(context);
@@ -68,8 +77,27 @@ public static class TenantContext
         return null;
     }
 
+    /// <summary>
+    /// The branch this user is pinned to, or null for Owner/HeadOffice/SuperAdmin (all branches).
+    /// </summary>
+    public static Guid? GetBranchId(this HttpContext context)
+    {
+        if (context.Items["BranchId"] is Guid branchId)
+            return branchId;
+        return null;
+    }
+
     public static bool IsSuperAdmin(this HttpContext context)
     {
         return GetUserRole(context) == "SuperAdmin";
+    }
+
+    /// <summary>
+    /// Fast, token-only permission check (no DB round trip). For anything that must be
+    /// authoritative, use RequirePermissionFilter which re-reads the user from the database.
+    /// </summary>
+    public static bool HasPermission(this HttpContext context, string claimName)
+    {
+        return context.User?.FindFirst(claimName)?.Value == "true";
     }
 }

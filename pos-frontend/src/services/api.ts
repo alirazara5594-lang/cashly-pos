@@ -27,7 +27,12 @@ import type {
   SetupInitPayload,
   SetupStatusResponse,
   BranchPairingInfo,
-  BranchPairResponse
+  BranchPairResponse,
+  LoginResponse,
+  ModulePermission,
+  OverridePermissionKey,
+  TaxJurisdiction,
+  VerifyPinResponse
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -48,14 +53,74 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/**
+ * Endpoints the backend leaves open (no bearer token required). A 401 from any
+ * of these is a credential/setup problem, not an expired session, so it must NOT
+ * tear down the current session.
+ */
+const PUBLIC_ENDPOINTS = [
+  '/api/auth/login',
+  '/api/auth/signup',
+  '/api/auth/super-admin-login',
+  '/api/setup/status',
+  '/api/setup/initialize',
+  '/api/setup/pairing-info',
+  '/api/setup/pair-branch'
+];
+
+function isPublicEndpoint(url?: string): boolean {
+  if (!url) return false;
+  return PUBLIC_ENDPOINTS.some(p => url.startsWith(p));
+}
+
+/** Pull the server's message off an axios rejection, falling back to `fallback`. */
+export function getApiErrorMessage(err: unknown, fallback: string): string {
+  const data = (err as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
+  return data?.message || data?.error || fallback;
+}
+
+/** HTTP status of an axios rejection, when there is one. */
+export function getApiErrorStatus(err: unknown): number | undefined {
+  return (err as { response?: { status?: number } })?.response?.status;
+}
+
+/**
+ * Session teardown + router-aware redirect for expired tokens.
+ *
+ * `api.ts` is imported BY the store, so it cannot import the store back without
+ * a cycle. Instead App.tsx registers a handler at mount that calls
+ * `posStore.logout()` and navigates back to the login gate.
+ */
+type UnauthorizedHandler = () => void;
+let onUnauthorized: UnauthorizedHandler | null = null;
+
+export function registerAuthRedirect(fn: UnauthorizedHandler | null) {
+  onUnauthorized = fn;
+}
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // NOTE: Do NOT redirect on 401 here — this causes an infinite reload loop
-    // because the POS app doesn't use a login screen and the API doesn't require auth tokens.
-    // If token auth is needed in future, add a login page first.
-    if (error.response?.status === 401) {
-      console.warn('API 401 Unauthorized — token may be missing or expired. Not redirecting to avoid reload loop.');
+    // Every /api/* endpoint except the public ones above now requires a valid JWT.
+    // A 401 therefore means the session is invalid or expired: drop it and send
+    // the user back to the mandatory login gate.
+    if (error.response?.status === 401 && !isPublicEndpoint(error.config?.url)) {
+      // Only tear down when a token was actually sent. A 401 on a request that
+      // carried no token just means we're not signed in yet (e.g. the setup
+      // wizard probing tenants) — tearing down there would eject the user from
+      // the installation flow.
+      const sentToken = !!error.config?.headers?.Authorization;
+      if (sentToken) {
+        // Clear the raw keys first so the request interceptor stops sending a
+        // dead token even if the handler below is not registered yet.
+        localStorage.removeItem('cashly_pos_token');
+        localStorage.removeItem('cashly_pos_user');
+        try {
+          onUnauthorized?.();
+        } catch {
+          // best-effort; the login gate renders as soon as the store clears
+        }
+      }
     }
     return Promise.reject(error);
   }
@@ -64,7 +129,7 @@ api.interceptors.response.use(
 export const posApi = {
   // Auth
   login: async (username: string, pinCode: string) => {
-    const res = await api.post<{ token: string; user: any }>('/api/auth/login', { username, pinCode });
+    const res = await api.post<LoginResponse>('/api/auth/login', { username, pinCode });
     if (res.data.token) {
       localStorage.setItem('cashly_pos_token', res.data.token);
       localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
@@ -76,6 +141,24 @@ export const posApi = {
     localStorage.removeItem('cashly_pos_user');
   },
 
+  /**
+   * Manager Override: a logged-in user who lacks `requiredPermission` asks another
+   * user (typically a manager) to authorize a single action with their PIN — no
+   * session switch. The backend re-checks the permission; a true here only unlocks UI.
+   */
+  verifyManagerPin: async (
+    username: string,
+    pinCode: string,
+    requiredPermission: OverridePermissionKey | null
+  ) => {
+    const res = await api.post<VerifyPinResponse>('/api/auth/verify-pin', {
+      username,
+      pinCode,
+      requiredPermission
+    });
+    return res.data;
+  },
+
   // Tenancy
   getTenants: async () => {
     const res = await api.get<Tenant[]>('/api/tenants');
@@ -83,6 +166,17 @@ export const posApi = {
   },
   getBranches: async (tenantId?: string) => {
     const res = await api.get<Branch[]>('/api/branches', { params: { tenantId } });
+    return res.data;
+  },
+  updateBranch: async (id: string, data: {
+    name?: string;
+    city?: string;
+    address?: string;
+    phone?: string;
+    /** TaxJurisdiction regionCode, e.g. "PK-PB" */
+    regionCode?: string | null;
+  }) => {
+    const res = await api.put<Branch>(`/api/branches/${id}`, data);
     return res.data;
   },
 
@@ -712,7 +806,22 @@ export const posApi = {
     return res.data;
   },
   getMyPermissions: async () => {
-    const res = await api.get('/api/permissions/my');
+    const res = await api.get<ModulePermission[]>('/api/permissions/my');
+    return res.data;
+  },
+
+  // Provincial / Regional Tax Jurisdictions (PRA, SRB, KPRA, BRA, FBR)
+  getTaxJurisdictions: async () => {
+    const res = await api.get<TaxJurisdiction[]>('/api/settings/tax-jurisdictions');
+    return res.data;
+  },
+  updateTaxJurisdiction: async (id: string, data: {
+    authorityName?: string;
+    cashTaxRate?: number;
+    digitalTaxRate?: number;
+    isActive?: boolean;
+  }) => {
+    const res = await api.put<TaxJurisdiction>(`/api/settings/tax-jurisdictions/${id}`, data);
     return res.data;
   },
 

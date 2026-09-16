@@ -29,16 +29,17 @@ interface TopHeaderProps {
   onToggleSidebar?: () => void;
   isSidebarOpen?: boolean;
   currentUser?: any;
-  onOpenLogin?: () => void;
+  /** Fast handoff: end this session and return to the login gate. */
+  onSwitchUser?: () => void;
   onLogout?: () => void;
 }
 
-export const TopHeader: React.FC<TopHeaderProps> = ({ 
-  onOpenCallOrder, 
+export const TopHeader: React.FC<TopHeaderProps> = ({
+  onOpenCallOrder,
   onToggleSidebar,
   isSidebarOpen,
   currentUser,
-  onOpenLogin,
+  onSwitchUser,
   onLogout
 }) => {
   const { 
@@ -260,33 +261,27 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             )
           )}
 
-          {currentUser ? (
+          {currentUser && (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={onOpenLogin}
+                onClick={onSwitchUser}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 text-xs font-semibold transition cursor-pointer"
-                title="Switch User"
+                title="Switch User — sign out and hand the terminal to the next staff member"
               >
                 <User className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{currentUser.fullName || currentUser.username}</span>
+                <span className="hidden lg:inline text-[9px] px-1.5 py-0.5 rounded bg-white text-teal-600 border border-slate-200 font-bold uppercase tracking-wider">
+                  {currentUser.role || 'Staff'}
+                </span>
               </button>
               <button
                 onClick={onLogout}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs font-semibold transition cursor-pointer"
-                title="Logout"
+                title="Sign out"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
             </div>
-          ) : (
-            <button
-              onClick={onOpenLogin}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 text-xs font-semibold transition cursor-pointer"
-              title="Login"
-            >
-              <User className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Login</span>
-            </button>
           )}
 
           <button

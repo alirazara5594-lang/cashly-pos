@@ -36,6 +36,26 @@ interface UserOption {
   role: number;
 }
 
+/**
+ * Module keys enforced by the backend permission layer. The empty-string
+ * sub-module is the MODULE-LEVEL grant — that is the row `hasModuleAccess` (and
+ * the server's ModuleBaseline) reads, so it must always be offered first.
+ */
+const WHOLE_MODULE_KEY = '';
+
+const DEFAULT_MODULES: ModuleDef[] = [
+  { key: 'pos', label: 'POS Terminal', subModules: [{ key: 'billing', label: 'Billing & Checkout' }, { key: 'order_management', label: 'Order Management' }] },
+  { key: 'kitchen', label: 'Kitchen Display', subModules: [{ key: 'kds', label: 'Kitchen Display System' }] },
+  { key: 'delivery', label: 'Delivery Board', subModules: [{ key: 'dispatch', label: 'Dispatch & Riders' }, { key: 'cod', label: 'COD Settlement' }] },
+  { key: 'menu', label: 'Menu, Catalog & Pricing', subModules: [{ key: 'catalog', label: 'Menu & Categories' }, { key: 'pricing', label: 'Item Prices' }, { key: 'tax', label: 'Tax Configuration' }, { key: 'floors', label: 'Floor & Tables' }] },
+  { key: 'inventory', label: 'Inventory & Stock', subModules: [{ key: 'ingredients', label: 'Raw Ingredients' }, { key: 'finished', label: 'Finished Stock' }, { key: 'recipes', label: 'Recipes & BOM' }, { key: 'requests', label: 'Stock Requests' }] },
+  { key: 'reports', label: 'Reports & Analytics', subModules: [{ key: 'financial', label: 'Financial Reports' }, { key: 'sales', label: 'Sales Analytics' }, { key: 'tax', label: 'Tax Audit' }] },
+  { key: 'accounts', label: 'Accounts & Settings', subModules: [{ key: 'settings', label: 'System Settings' }, { key: 'taxrates', label: 'Tax Jurisdictions' }, { key: 'cashflow', label: 'Cash & Shifts' }] },
+  { key: 'supplychain', label: 'Supply Chain', subModules: [{ key: 'transfers', label: 'Inter-Branch Transfers' }, { key: 'procurement', label: 'Vendor Procurement' }] },
+  { key: 'users', label: 'Staff & Permissions', subModules: [{ key: 'staff', label: 'Staff Accounts' }, { key: 'permissions', label: 'Module Permissions' }] },
+  { key: 'admin', label: 'Platform Admin', subModules: [{ key: 'tenants', label: 'Tenant Management' }, { key: 'packages', label: 'Packages & Pricing' }, { key: 'whatsapp', label: 'WhatsApp Config' }] },
+];
+
 export const ModulePermissions: React.FC = () => {
   const [modules, setModules] = useState<ModuleDef[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -52,16 +72,7 @@ export const ModulePermissions: React.FC = () => {
         posApi.getModuleCatalog().catch(() => []),
         posApi.getAdminTenants().catch(() => [])
       ]);
-      setModules(Array.isArray(modulesData) ? modulesData : [
-        { key: 'pos', label: 'POS Terminal', subModules: [{ key: 'billing', label: 'Billing & Checkout' }, { key: 'order_management', label: 'Order Management' }] },
-        { key: 'kitchen', label: 'Kitchen Display', subModules: [{ key: 'kds', label: 'Kitchen Display System' }] },
-        { key: 'delivery', label: 'Delivery Board', subModules: [{ key: 'dispatch', label: 'Dispatch & Riders' }, { key: 'cod', label: 'COD Settlement' }] },
-        { key: 'inventory', label: 'Inventory', subModules: [{ key: 'ingredients', label: 'Raw Ingredients' }, { key: 'finished', label: 'Finished Stock' }, { key: 'recipes', label: 'Recipes & BOM' }] },
-        { key: 'supply_chain', label: 'Supply Chain', subModules: [{ key: 'transfers', label: 'Inter-Branch Transfers' }, { key: 'procurement', label: 'Vendor Procurement' }] },
-        { key: 'reports', label: 'Reports', subModules: [{ key: 'financial', label: 'Financial Reports' }, { key: 'sales', label: 'Sales Analytics' }, { key: 'tax', label: 'Tax Audit' }] },
-        { key: 'management', label: 'Management', subModules: [{ key: 'menu', label: 'Menu & Catalog' }, { key: 'staff', label: 'Staff Management' }, { key: 'floors', label: 'Floor & Tables' }, { key: 'settings', label: 'Settings' }] },
-        { key: 'admin', label: 'Platform Admin', subModules: [{ key: 'tenants', label: 'Tenant Management' }, { key: 'packages', label: 'Packages & Pricing' }, { key: 'whatsapp', label: 'WhatsApp Config' }, { key: 'permissions', label: 'Module Permissions' }] },
-      ]);
+      setModules(Array.isArray(modulesData) && modulesData.length > 0 ? modulesData : DEFAULT_MODULES);
 
       const tenants = Array.isArray(usersData) ? usersData : [];
       const flatUsers: UserOption[] = [];
@@ -157,7 +168,10 @@ export const ModulePermissions: React.FC = () => {
           </div>
           <div>
             <h1 className="text-lg font-black text-slate-900">Module Permissions</h1>
-            <p className="text-xs text-slate-500">Control what each staff member can access</p>
+            <p className="text-xs text-slate-500">
+              Control what each staff member can access. The <strong>Whole Module</strong> row is what
+              gates the sidebar and screens; sub-modules refine it.
+            </p>
           </div>
         </div>
         <button
@@ -208,9 +222,16 @@ export const ModulePermissions: React.FC = () => {
                 <h3 className="text-xs font-bold text-slate-900">{mod.label}</h3>
               </div>
               <div className="divide-y divide-slate-100">
-                {mod.subModules.map((sub) => (
-                  <div key={sub.key} className="px-5 py-3 flex items-center gap-4">
-                    <span className="text-[11px] text-slate-700 font-medium min-w-[140px]">{sub.label}</span>
+                {[{ key: WHOLE_MODULE_KEY, label: 'Whole Module (grants access)' }, ...mod.subModules].map((sub) => (
+                  <div
+                    key={sub.key || '__module__'}
+                    className={`px-5 py-3 flex items-center gap-4 ${sub.key === WHOLE_MODULE_KEY ? 'bg-teal-50/40' : ''}`}
+                  >
+                    <span className={`text-[11px] font-medium min-w-[140px] ${
+                      sub.key === WHOLE_MODULE_KEY ? 'text-teal-800 font-bold' : 'text-slate-700'
+                    }`}>
+                      {sub.label}
+                    </span>
                     <div className="flex items-center gap-3 flex-1">
                       {[
                         { field: 'canView' as const, icon: Eye, label: 'View' },

@@ -40,6 +40,8 @@ public class AppDbContext : DbContext
     public DbSet<ModulePermission> ModulePermissions => Set<ModulePermission>();
     public DbSet<SmartAlert> SmartAlerts => Set<SmartAlert>();
     public DbSet<TenantSettings> TenantSettings => Set<TenantSettings>();
+    public DbSet<TaxJurisdiction> TaxJurisdictions => Set<TaxJurisdiction>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -133,6 +135,13 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<TenantSettings>()
             .HasIndex(ts => ts.TenantId)
             .IsUnique();
+
+        modelBuilder.Entity<TaxJurisdiction>()
+            .HasIndex(tj => new { tj.CountryCode, tj.RegionCode })
+            .IsUnique();
+
+        modelBuilder.Entity<AuditLog>()
+            .HasIndex(al => new { al.TenantId, al.CreatedAt });
 
         // Unique constraints for document numbers (prevent duplicates from race conditions)
         modelBuilder.Entity<Order>()

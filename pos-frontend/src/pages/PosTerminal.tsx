@@ -15,7 +15,8 @@ import {
   BookOpen,
   Check,
   X,
-  ShoppingBag
+  ShoppingBag,
+  Lock
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
@@ -23,6 +24,7 @@ import { posApi } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import type { Product, Category, PaymentMethod, OrderType, Order } from '../types';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
+import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
 const productEmojis: Record<string, string> = {
   burger: '🍔',
@@ -79,8 +81,16 @@ export const PosTerminal: React.FC = () => {
     setPaymentMethod,
     taxMode,
     getEffectiveTaxRate,
-    tenantSettings
+    tenantSettings,
+    permissions
   } = usePosStore();
+
+  // Discounts are a gated action. If this cashier lacks the flag they can still
+  // apply one, but only after a manager authorizes it with their own PIN. The
+  // server re-verifies the authorization before honouring the discount.
+  const [discountOverride, setDiscountOverride] = useState<ManagerOverrideResult | null>(null);
+  const [isDiscountOverrideOpen, setIsDiscountOverrideOpen] = useState(false);
+  const canGiveDiscounts = !!permissions?.canGiveDiscounts || !!discountOverride;
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -185,6 +195,8 @@ export const PosTerminal: React.FC = () => {
       isPaid: true,
       cashierName: 'Counter 1 Cashier',
       createdByRole: 'Cashier',
+      // Set when a manager authorized a discount this cashier can't normally give.
+      discountAuthorizedByUserId: discountOverride?.authorizedByUserId,
       items: cart.map(i => ({
         productId: i.productId,
         productName: i.productName,
@@ -199,6 +211,16 @@ export const PosTerminal: React.FC = () => {
     try {
       if (isOnline) {
         const res = await posApi.createOrder(orderPayload);
+
+        // The server ignores client-sent money fields and recomputes tax/totals
+        // from DB prices (and, with provincial tax on, from the branch's
+        // jurisdiction). Always print what it returns — the local figures were
+        // only ever a live estimate for the cart UI.
+        const serverSubTotal = res.subTotalPKR ?? subtotal;
+        const serverDiscount = res.discountPKR ?? discountPKR;
+        const serverTax = res.taxPKR ?? tax;
+        const serverTotal = res.totalPKR ?? grandTotal;
+
         const newOrder: Order = {
           id: res.orderId,
           tenantId: selectedTenant?.id || '',
@@ -210,15 +232,18 @@ export const PosTerminal: React.FC = () => {
           customerName,
           customerPhone,
           deliveryAddress,
-          subTotalPKR: subtotal,
-          discountPKR,
-          taxPKR: tax,
-          totalPKR: grandTotal,
+          subTotalPKR: serverSubTotal,
+          discountPKR: serverDiscount,
+          taxPKR: serverTax,
+          totalPKR: serverTotal,
           paymentMethod,
-          amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || grandTotal) : grandTotal,
-          changeDuePKR: 0,
+          amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || serverTotal) : serverTotal,
+          changeDuePKR: paymentMethod === 'Cash' ? Math.max(0, (cashTendered || serverTotal) - serverTotal) : 0,
           isPaid: true,
-          createdAt: new Date().toISOString(),
+          createdAt: res.createdAt ?? new Date().toISOString(),
+          inKitchenAt: res.inKitchenAt ?? null,
+          fiscalInvoiceNumber: res.fiscalInvoiceNumber ?? null,
+          fiscalQrPayload: res.fiscalQrPayload ?? null,
           items: [...cart]
         };
 
@@ -266,6 +291,8 @@ export const PosTerminal: React.FC = () => {
 
       setIsReceiptOpen(true);
       clearCart();
+      // A manager override authorizes one bill only.
+      setDiscountOverride(null);
     } catch (err) {
       console.error('Order submission error:', err);
       alert('Failed to submit order. Please check network.');
@@ -595,15 +622,36 @@ export const PosTerminal: React.FC = () => {
               </div>
             )}
             <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>Discount</span>
-              <input
-                type="number"
-                min="0"
-                value={discountPKR || ''}
-                onChange={(e) => setDiscount(Number(e.target.value) || 0)}
-                placeholder="0"
-                className="w-20 px-2 py-0.5 bg-slate-50 border border-slate-200 rounded-lg text-right text-xs text-slate-900 focus:outline-none focus:border-teal-500"
-              />
+              <span className="flex items-center gap-1">
+                Discount
+                {discountOverride && (
+                  <span
+                    className="text-[9px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 font-bold"
+                    title={`Authorized by ${discountOverride.authorizedByName || 'a manager'}`}
+                  >
+                    OVERRIDE
+                  </span>
+                )}
+              </span>
+              {canGiveDiscounts ? (
+                <input
+                  type="number"
+                  min="0"
+                  value={discountPKR || ''}
+                  onChange={(e) => setDiscount(Number(e.target.value) || 0)}
+                  placeholder="0"
+                  className="w-20 px-2 py-0.5 bg-slate-50 border border-slate-200 rounded-lg text-right text-xs text-slate-900 focus:outline-none focus:border-teal-500"
+                />
+              ) : (
+                <button
+                  onClick={() => setIsDiscountOverrideOpen(true)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 text-[10px] font-bold transition cursor-pointer"
+                  title="You are not authorized to give discounts — a manager can approve this one"
+                >
+                  <Lock className="w-3 h-3" />
+                  Manager
+                </button>
+              )}
             </div>
             {paymentMethod !== 'Cash' && (
               <div className="p-1.5 rounded-lg bg-teal-50 border border-teal-200 text-[10px] text-teal-600 font-semibold flex items-center justify-between">
@@ -876,6 +924,14 @@ export const PosTerminal: React.FC = () => {
         branchName={selectedBranch?.name || selectedTenant?.name}
         branchAddress={selectedBranch?.address}
         branchPhone={selectedBranch?.phone}
+      />
+
+      <ManagerOverrideModal
+        isOpen={isDiscountOverrideOpen}
+        onClose={() => setIsDiscountOverrideOpen(false)}
+        requiredPermission="canGiveDiscounts"
+        actionLabel="Apply a discount to this bill"
+        onAuthorized={(result) => setDiscountOverride(result)}
       />
     </div>
   );

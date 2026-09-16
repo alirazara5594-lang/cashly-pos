@@ -102,6 +102,44 @@ public class TenantSettings
     public string DateFormat { get; set; } = "dd/MM/yyyy";
     public string ReceiptFooter { get; set; } = "Thank you for your visit!";
     public string AllowedPaymentMethods { get; set; } = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata";
+
+    /// <summary>
+    /// When true, tax rates are resolved per-branch from <see cref="TaxJurisdiction"/> using
+    /// Branch.RegionCode. When false, the flat per-tenant DefaultTaxRate/DigitalTaxRate apply.
+    /// </summary>
+    public bool UseProvincialTax { get; set; } = false;
+}
+
+/// <summary>
+/// Editable provincial/state tax jurisdiction rates. Seeded with Pakistan defaults — these are
+/// editable defaults for convenience, NOT verified legal advice.
+/// </summary>
+public class TaxJurisdiction
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string CountryCode { get; set; } = "PK";
+    public string RegionCode { get; set; } = string.Empty; // e.g. PK-PB, PK-SD, PK-KP, PK-BA, PK-ICT
+    public string AuthorityName { get; set; } = string.Empty;
+    public decimal CashTaxRate { get; set; }
+    public decimal DigitalTaxRate { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+/// <summary>
+/// Immutable trail of security/finance-sensitive actions (price changes, voids, overrides).
+/// </summary>
+public class AuditLog
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid UserId { get; set; }
+    public string UserName { get; set; } = string.Empty; // denormalized for display
+    public string Action { get; set; } = string.Empty;   // PriceChanged, OrderVoided, PermissionChanged, ManagerOverride, ...
+    public string EntityType { get; set; } = string.Empty;
+    public Guid? EntityId { get; set; }
+    public string? OldValue { get; set; }
+    public string? NewValue { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class Branch
@@ -115,6 +153,7 @@ public class Branch
     public string City { get; set; } = "Islamabad";
     public string Phone { get; set; } = string.Empty;
     public bool IsHeadOffice { get; set; } = false;
+    public string? RegionCode { get; set; } // e.g. PK-PB, PK-SD, PK-KP, PK-BA, PK-ICT — resolves provincial tax jurisdiction
 
     // Quotas (Starter: 1, Standard: 3, Pro: 5 base + add-ons)
     public int AllowedCounters { get; set; } = 5;
@@ -278,6 +317,17 @@ public class Order
     public string? CashierName { get; set; }
     public string? CreatedByRole { get; set; } // Cashier, WaiterTab, OnlineWeb, CallCenter
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // Stage timestamps (for prep-time / SLA analytics)
+    public DateTime? InKitchenAt { get; set; }
+    public DateTime? ReadyAt { get; set; }
+    public DateTime? OutForDeliveryAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public DateTime? CancelledAt { get; set; }
+
+    // Fiscal / tax-authority e-invoicing (populated by IFiscalInvoiceProvider; null until configured)
+    public string? FiscalInvoiceNumber { get; set; }
+    public string? FiscalQrPayload { get; set; }
 
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public ICollection<KitchenTicket> KitchenTickets { get; set; } = new List<KitchenTicket>();

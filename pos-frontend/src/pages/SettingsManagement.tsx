@@ -20,14 +20,79 @@ import {
   Users, 
   DollarSign, 
   Percent, 
-  Sliders, 
-  Truck
+  Sliders,
+  Truck,
+  MapPin,
+  AlertTriangle,
+  Save,
+  Landmark
 } from 'lucide-react';
-import { usePosStore } from '../store/posStore';
-import { posApi } from '../services/api';
+import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { posApi, getApiErrorMessage } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
-import type { BranchPairingInfo } from '../types';
+import type { BranchPairingInfo, DepartmentRole, ModuleKey, TaxJurisdiction } from '../types';
 import { useNavigate } from 'react-router-dom';
+
+const TAX_DISCLAIMER =
+  'Tax rates are editable defaults — please verify current rates with your tax authority ' +
+  '(PRA/SRB/KPRA/BRA/FBR) before relying on them.';
+
+/**
+ * Department profiles a user can switch their session view to. Each maps to the
+ * module that actually backs it, so a user only sees the profiles they hold
+ * `view` access for — this is no longer a free self-select.
+ */
+const DEPARTMENT_PROFILES: {
+  id: DepartmentRole;
+  module: ModuleKey;
+  title: string;
+  subtitle: string;
+  accent: 'blue' | 'purple' | 'teal';
+  capabilities: string[];
+  restriction?: string;
+}[] = [
+  {
+    id: 'Accounts',
+    module: 'accounts',
+    title: 'Accounts & Finance Dept',
+    subtitle: 'Audits, P&L, Tax & Cashflow',
+    accent: 'blue',
+    capabilities: [
+      'Consolidated P&L Analytics',
+      'End-of-Day Z-Reports',
+      'Tax Audit & Compliance',
+      'Payment Tender Mix'
+    ],
+    restriction: 'POS & Kitchen Hidden'
+  },
+  {
+    id: 'Procurement',
+    module: 'supplychain',
+    title: 'Purchase & Supply Chain',
+    subtitle: 'Central Warehouse & Transfers',
+    accent: 'purple',
+    capabilities: [
+      'Central Commissary Stock',
+      'Inter-Branch Transfers Dispatch',
+      'Vendor Purchase Orders (PO)',
+      'Raw Material Inward'
+    ],
+    restriction: 'Sales P&L Hidden'
+  },
+  {
+    id: 'Owner',
+    module: 'admin',
+    title: 'Director & Owner Admin',
+    subtitle: 'Full Master Privilege',
+    accent: 'teal',
+    capabilities: [
+      'Executive Director Dashboard',
+      'All Reports & Financials',
+      'Menu, Recipes, Prices & Tax',
+      'Branch Switching & Quotas'
+    ]
+  }
+];
 
 export const SettingsManagement: React.FC = () => {
   const navigate = useNavigate();
@@ -50,8 +115,21 @@ export const SettingsManagement: React.FC = () => {
     cashTaxRatePercent,
     cardTaxRatePercent,
     taxMode,
-    setTaxSettings
+    setTaxSettings,
+    currentUser,
+    modulePermissions,
+    selectBranch,
+    tenantSettings
   } = usePosStore();
+
+  const can = (moduleKey: ModuleKey, action: 'view' | 'edit' = 'view') =>
+    hasModuleAccess(currentUser?.role, modulePermissions, moduleKey, action);
+
+  // Only Owner / SuperAdmin may change the provincial tax rates themselves.
+  const canEditTaxJurisdictions = can('admin', 'edit');
+
+  /** Department profiles this user is actually allowed to switch into. */
+  const availableDepartments = DEPARTMENT_PROFILES.filter(d => can(d.module));
 
   const [activeTab, setActiveTab] = useState<'profile' | 'provisioning' | 'terminal' | 'departments' | 'sync' | 'devices'>('terminal');
 
@@ -75,11 +153,122 @@ export const SettingsManagement: React.FC = () => {
   const [editingTabName, setEditingTabName] = useState('');
   const [tabMessage, setTabMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Tax jurisdictions (provincial authorities) & branch region assignment
+  const [jurisdictions, setJurisdictions] = useState<TaxJurisdiction[]>([]);
+  const [jurisdictionDrafts, setJurisdictionDrafts] = useState<Record<string, { cashTaxRate: number; digitalTaxRate: number }>>({});
+  const [savingJurisdictionId, setSavingJurisdictionId] = useState<string | null>(null);
+  const [regionCode, setRegionCode] = useState<string>('');
+  const [savingRegion, setSavingRegion] = useState(false);
+  const [useProvincialTax, setUseProvincialTax] = useState(false);
+  const [savingProvincialToggle, setSavingProvincialToggle] = useState(false);
+  const [taxMessage, setTaxMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const loadJurisdictions = async () => {
+    try {
+      const data = await posApi.getTaxJurisdictions();
+      const rows = Array.isArray(data) ? data : [];
+      setJurisdictions(rows);
+      setJurisdictionDrafts(
+        Object.fromEntries(rows.map(j => [j.id, { cashTaxRate: j.cashTaxRate, digitalTaxRate: j.digitalTaxRate }]))
+      );
+    } catch (err) {
+      console.warn('Failed to load tax jurisdictions:', err);
+    }
+  };
+
   useEffect(() => {
     loadPairingInfo();
     loadDbStats();
     loadTerminals();
+    loadJurisdictions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Mirror persisted values into the local drafts when they change. Adjusting
+  // during render (instead of in an effect) avoids a cascading re-render.
+  const persistedRegionCode = selectedBranch?.regionCode || '';
+  const [lastPersistedRegion, setLastPersistedRegion] = useState(persistedRegionCode);
+  if (persistedRegionCode !== lastPersistedRegion) {
+    setLastPersistedRegion(persistedRegionCode);
+    setRegionCode(persistedRegionCode);
+  }
+
+  const persistedProvincialTax = !!tenantSettings?.useProvincialTax;
+  const [lastPersistedProvincialTax, setLastPersistedProvincialTax] = useState(persistedProvincialTax);
+  if (persistedProvincialTax !== lastPersistedProvincialTax) {
+    setLastPersistedProvincialTax(persistedProvincialTax);
+    setUseProvincialTax(persistedProvincialTax);
+  }
+
+  // Snap the department profile to something this user is actually allowed to
+  // see — the old switcher let anyone self-select any profile. This writes to the
+  // zustand store (an external system), so it belongs in an effect.
+  const allowedDepartmentId = availableDepartments[0]?.id;
+  const departmentIsAllowed = availableDepartments.some(d => d.id === activeDepartment);
+  useEffect(() => {
+    if (allowedDepartmentId && !departmentIsAllowed) {
+      setActiveDepartment(allowedDepartmentId);
+    }
+  }, [allowedDepartmentId, departmentIsAllowed, setActiveDepartment]);
+
+  const handleSaveRegion = async () => {
+    if (!selectedBranch?.id) return;
+    setSavingRegion(true);
+    setTaxMessage(null);
+    try {
+      const updated = await posApi.updateBranch(selectedBranch.id, { regionCode: regionCode || null });
+      selectBranch({ ...selectedBranch, ...updated, regionCode: regionCode || null });
+      setTaxMessage({ type: 'success', text: 'Branch tax region updated' });
+    } catch (err) {
+      setTaxMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to update branch tax region') });
+    } finally {
+      setSavingRegion(false);
+      setTimeout(() => setTaxMessage(null), 4000);
+    }
+  };
+
+  const handleToggleProvincialTax = async (next: boolean) => {
+    if (!selectedTenant?.id) return;
+    setUseProvincialTax(next);
+    setSavingProvincialToggle(true);
+    setTaxMessage(null);
+    try {
+      await posApi.updateTenantSettings(selectedTenant.id, { ...(tenantSettings || {}), useProvincialTax: next });
+      await usePosStore.getState().loadTenantSettings();
+      setTaxMessage({
+        type: 'success',
+        text: next
+          ? 'Provincial tax enabled — checkout tax now comes from the branch jurisdiction'
+          : 'Provincial tax disabled — using the flat per-tenant rate'
+      });
+    } catch (err) {
+      setUseProvincialTax(!next);
+      setTaxMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to update tax mode') });
+    } finally {
+      setSavingProvincialToggle(false);
+      setTimeout(() => setTaxMessage(null), 4000);
+    }
+  };
+
+  const handleSaveJurisdiction = async (j: TaxJurisdiction) => {
+    const draft = jurisdictionDrafts[j.id];
+    if (!draft) return;
+    setSavingJurisdictionId(j.id);
+    setTaxMessage(null);
+    try {
+      const updated = await posApi.updateTaxJurisdiction(j.id, {
+        cashTaxRate: draft.cashTaxRate,
+        digitalTaxRate: draft.digitalTaxRate
+      });
+      setJurisdictions(prev => prev.map(row => (row.id === j.id ? { ...row, ...updated } : row)));
+      setTaxMessage({ type: 'success', text: `${j.authorityName} rates saved` });
+    } catch (err) {
+      setTaxMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to save tax rates') });
+    } finally {
+      setSavingJurisdictionId(null);
+      setTimeout(() => setTaxMessage(null), 4000);
+    }
+  };
 
   const loadPairingInfo = async () => {
     try {
@@ -634,107 +823,92 @@ export const SettingsManagement: React.FC = () => {
                   Head Office & Branch Department Role Views
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Select which department profile to view in this session. Each department is restricted exclusively to its operational modules.
+                  Switch the department view for this session. Only the profiles your account has been
+                  granted are shown — assignments come from Module Permissions, not from this screen.
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Department: Accounts & Finance */}
-                <div 
-                  onClick={() => setActiveDepartment('Accounts')}
-                  className={`p-4 rounded-xl border-2 cursor-pointer transition flex flex-col justify-between ${
-                    activeDepartment === 'Accounts' 
-                      ? 'border-blue-500 bg-blue-50 shadow-lg shadow-blue-500/10' 
-                      : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
-                      <DollarSign className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">Accounts & Finance Dept</h3>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Audits, P&L, Tax & Cashflow</p>
-                    </div>
-                    <ul className="text-[11px] text-slate-700 space-y-1 pt-2 border-t border-slate-200">
-                      <li className="text-blue-600">✓ Consolidated P&L Analytics</li>
-                      <li className="text-blue-600">✓ End-of-Day Z-Reports</li>
-                      <li className="text-blue-600">✓ Tax Audit & Compliance</li>
-                      <li className="text-blue-600">✓ Payment Tender Mix</li>
-                      <li className="text-rose-500 font-semibold">🔒 POS & Kitchen Hidden</li>
-                    </ul>
+              {availableDepartments.length === 0 ? (
+                <div className="p-5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-start gap-3">
+                  <Lock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-900 block">No department profiles assigned</strong>
+                    Your account has no back-office module access. Ask an owner to grant you the
+                    relevant modules under Module Permissions.
                   </div>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mt-3 inline-block ${
-                    activeDepartment === 'Accounts' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-500'
-                  }`}>
-                    {activeDepartment === 'Accounts' ? 'ACTIVE PROFILE' : 'Switch to Accounts'}
-                  </span>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {availableDepartments.map(dept => {
+                      const isActive = activeDepartment === dept.id;
+                      const accentText =
+                        dept.accent === 'blue' ? 'text-blue-600'
+                        : dept.accent === 'purple' ? 'text-purple-600'
+                        : 'text-teal-600';
+                      const accentBorder =
+                        dept.accent === 'blue' ? 'border-blue-500 bg-blue-50 shadow-lg shadow-blue-500/10'
+                        : dept.accent === 'purple' ? 'border-purple-500 bg-purple-50 shadow-lg shadow-purple-500/10'
+                        : 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10';
+                      const accentBadge =
+                        dept.accent === 'blue' ? 'bg-blue-500 text-white'
+                        : dept.accent === 'purple' ? 'bg-purple-500 text-white'
+                        : 'bg-teal-500 text-white';
+                      const accentIconBox =
+                        dept.accent === 'blue' ? 'bg-blue-50 border-blue-200 text-blue-600'
+                        : dept.accent === 'purple' ? 'bg-purple-50 border-purple-200 text-purple-600'
+                        : 'bg-teal-50 border-teal-200 text-teal-600';
+                      const Icon = dept.id === 'Accounts' ? DollarSign : dept.id === 'Procurement' ? Truck : ShieldCheck;
 
-                {/* Department: Purchase & Procurement */}
-                <div 
-                  onClick={() => setActiveDepartment('Procurement')}
-                  className={`p-4 rounded-xl border-2 cursor-pointer transition flex flex-col justify-between ${
-                    activeDepartment === 'Procurement' 
-                      ? 'border-purple-500 bg-purple-50 shadow-lg shadow-purple-500/10' 
-                      : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-purple-50 border border-purple-200 flex items-center justify-center text-purple-600">
-                      <Truck className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">Purchase & Supply Chain</h3>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Central Warehouse & Transfers</p>
-                    </div>
-                    <ul className="text-[11px] text-slate-700 space-y-1 pt-2 border-t border-slate-200">
-                      <li className="text-purple-600">✓ Central Commissary Stock</li>
-                      <li className="text-purple-600">✓ Inter-Branch Transfers Dispatch</li>
-                      <li className="text-purple-600">✓ Vendor Purchase Orders (PO)</li>
-                      <li className="text-purple-600">✓ Raw Material Inward</li>
-                      <li className="text-rose-500 font-semibold">🔒 Sales P&L Hidden</li>
-                    </ul>
+                      return (
+                        <div
+                          key={dept.id}
+                          onClick={() => setActiveDepartment(dept.id)}
+                          className={`p-4 rounded-xl border-2 cursor-pointer transition flex flex-col justify-between ${
+                            isActive ? accentBorder : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="space-y-2">
+                            <div className={`w-10 h-10 rounded-lg border flex items-center justify-center ${accentIconBox}`}>
+                              <Icon className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-bold text-slate-900">{dept.title}</h3>
+                              <p className="text-[11px] text-slate-500 mt-0.5">{dept.subtitle}</p>
+                            </div>
+                            <ul className="text-[11px] text-slate-700 space-y-1 pt-2 border-t border-slate-200">
+                              {dept.capabilities.map(c => (
+                                <li key={c} className={accentText}>✓ {c}</li>
+                              ))}
+                              {dept.restriction && (
+                                <li className="text-rose-500 font-semibold">🔒 {dept.restriction}</li>
+                              )}
+                              <li className="text-slate-400 font-mono text-[10px] pt-1">
+                                module: {dept.module}{can(dept.module, 'edit') ? ' (edit)' : ' (view only)'}
+                              </li>
+                            </ul>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mt-3 inline-block ${
+                            isActive ? accentBadge : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            {isActive ? 'ACTIVE PROFILE' : `Switch to ${dept.title.split(' ')[0]}`}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mt-3 inline-block ${
-                    activeDepartment === 'Procurement' ? 'bg-purple-500 text-white' : 'bg-slate-100 text-slate-500'
-                  }`}>
-                    {activeDepartment === 'Procurement' ? 'ACTIVE PROFILE' : 'Switch to Supply Chain'}
-                  </span>
-                </div>
 
-                {/* Department: Owner / Master Admin */}
-                <div 
-                  onClick={() => setActiveDepartment('Owner')}
-                  className={`p-4 rounded-xl border-2 cursor-pointer transition flex flex-col justify-between ${
-                    activeDepartment === 'Owner' 
-                      ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10' 
-                      : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="w-10 h-10 rounded-lg bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600">
-                      <ShieldCheck className="w-5 h-5" />
+                  {availableDepartments.length < DEPARTMENT_PROFILES.length && (
+                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-500 flex items-start gap-2.5">
+                      <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <span>
+                        {DEPARTMENT_PROFILES.length - availableDepartments.length} further department
+                        profile(s) are hidden because your account does not have access to their modules.
+                      </span>
                     </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">Director & Owner Admin</h3>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Full Master Privilege</p>
-                    </div>
-                    <ul className="text-[11px] text-slate-700 space-y-1 pt-2 border-t border-slate-200">
-                      <li className="text-teal-600">✓ Executive Director Dashboard</li>
-                      <li className="text-teal-600">✓ All Reports & Financials</li>
-                      <li className="text-teal-600">✓ Menu, Recipes, Prices & Tax</li>
-                      <li className="text-teal-600">✓ Branch Switching & Quotas</li>
-                      <li className="text-teal-600 font-semibold">★ Full Unrestricted Access</li>
-                    </ul>
-                  </div>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mt-3 inline-block ${
-                    activeDepartment === 'Owner' ? 'bg-teal-500 text-white' : 'bg-slate-100 text-slate-500'
-                  }`}>
-                    {activeDepartment === 'Owner' ? 'ACTIVE PROFILE' : 'Switch to Owner'}
-                  </span>
-                </div>
-              </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -785,14 +959,118 @@ export const SettingsManagement: React.FC = () => {
                 </div>
               </div>
 
+              {/* Branch Tax Region (jurisdiction assignment) */}
+              <div className="pt-4 border-t border-slate-200 space-y-3">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-amber-600" />
+                  Branch Tax Region
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Which provincial tax authority this outlet falls under. Used to pick the correct
+                  cash / digital rate at checkout when provincial tax is enabled.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-xs font-semibold text-slate-600">
+                      Tax Jurisdiction for {selectedBranch?.name || 'this branch'}
+                    </label>
+                    <select
+                      value={regionCode}
+                      onChange={(e) => setRegionCode(e.target.value)}
+                      disabled={!selectedBranch?.id}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 disabled:opacity-60"
+                    >
+                      <option value="">— Not assigned —</option>
+                      {Object.entries(
+                        jurisdictions.reduce<Record<string, TaxJurisdiction[]>>((groups, j) => {
+                          (groups[j.authorityName] ||= []).push(j);
+                          return groups;
+                        }, {})
+                      ).map(([authority, rows]) => (
+                        <optgroup key={authority} label={authority}>
+                          {rows.map(j => (
+                            <option key={j.id} value={j.regionCode}>
+                              {j.regionCode} — {j.authorityName} ({j.cashTaxRate}% cash / {j.digitalTaxRate}% digital)
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                    {jurisdictions.length === 0 && (
+                      <p className="text-[11px] text-slate-400">
+                        No tax jurisdictions available yet.
+                      </p>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={handleSaveRegion}
+                    disabled={savingRegion || !selectedBranch?.id || regionCode === (selectedBranch?.regionCode || '')}
+                    className="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white font-bold text-xs transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    {savingRegion ? 'Saving…' : 'Save Region'}
+                  </button>
+                </div>
+              </div>
+
               {/* Tax Settings */}
               <div className="pt-4 border-t border-slate-200 space-y-4">
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <Percent className="w-4 h-4 text-amber-600" />
                   Tax Rate Configuration
                 </h3>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+                <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-800 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                  <span>{TAX_DISCLAIMER}</span>
+                </div>
+
+                {taxMessage && (
+                  <div className={`px-3.5 py-2.5 rounded-xl text-xs font-semibold border ${
+                    taxMessage.type === 'success'
+                      ? 'bg-teal-50 text-teal-700 border-teal-200'
+                      : 'bg-rose-50 text-rose-700 border-rose-200'
+                  }`}>
+                    {taxMessage.text}
+                  </div>
+                )}
+
+                {/* Provincial tax master switch */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Landmark className="w-4 h-4 text-teal-600" />
+                      <span className="text-sm font-bold text-slate-900">Use Provincial Tax Rates</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                        useProvincialTax
+                          ? 'bg-teal-50 text-teal-700 border border-teal-200'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}>
+                        {useProvincialTax ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 max-w-xl">
+                      When on, checkout tax is computed server-side from this branch's tax region
+                      (cash vs digital payment picks the matching rate). When off, the flat rates
+                      below apply to every branch.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleToggleProvincialTax(!useProvincialTax)}
+                    disabled={savingProvincialToggle || !selectedTenant?.id}
+                    className={`px-4 py-2 rounded-xl font-bold text-xs transition disabled:opacity-40 cursor-pointer ${
+                      useProvincialTax
+                        ? 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+                        : 'bg-teal-500 hover:bg-teal-600 text-white'
+                    }`}
+                  >
+                    {savingProvincialToggle ? 'Saving…' : useProvincialTax ? 'Turn Off' : 'Turn On'}
+                  </button>
+                </div>
+
+                <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${useProvincialTax ? 'opacity-60' : ''}`}>
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600">Cash Payment Tax Rate (%)</label>
                     <input 
@@ -826,6 +1104,88 @@ export const SettingsManagement: React.FC = () => {
                   </div>
                 </div>
               </div>
+
+              {/* Provincial tax jurisdiction rate editor — Owner / SuperAdmin only */}
+              {canEditTaxJurisdictions && jurisdictions.length > 0 && (
+                <div className="pt-4 border-t border-slate-200 space-y-3">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Landmark className="w-4 h-4 text-teal-600" />
+                      Provincial Tax Authority Rates
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Rates applied per region when provincial tax is enabled. {TAX_DISCLAIMER}
+                    </p>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs min-w-[640px]">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
+                          <th className="pb-2">Region</th>
+                          <th className="pb-2">Authority</th>
+                          <th className="pb-2 text-right">Cash Rate (%)</th>
+                          <th className="pb-2 text-right">Digital Rate (%)</th>
+                          <th className="pb-2 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {jurisdictions.map(j => {
+                          const draft = jurisdictionDrafts[j.id] || { cashTaxRate: j.cashTaxRate, digitalTaxRate: j.digitalTaxRate };
+                          const isDirty =
+                            draft.cashTaxRate !== j.cashTaxRate || draft.digitalTaxRate !== j.digitalTaxRate;
+                          return (
+                            <tr key={j.id} className={selectedBranch?.regionCode === j.regionCode ? 'bg-teal-50/40' : ''}>
+                              <td className="py-2.5">
+                                <span className="font-mono font-bold text-slate-900">{j.regionCode}</span>
+                                {selectedBranch?.regionCode === j.regionCode && (
+                                  <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">
+                                    THIS BRANCH
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 text-slate-700">{j.authorityName}</td>
+                              <td className="py-2.5 text-right">
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  value={draft.cashTaxRate}
+                                  onChange={(e) => setJurisdictionDrafts(prev => ({
+                                    ...prev,
+                                    [j.id]: { ...draft, cashTaxRate: parseFloat(e.target.value) || 0 }
+                                  }))}
+                                  className="w-24 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-right text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
+                                />
+                              </td>
+                              <td className="py-2.5 text-right">
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  value={draft.digitalTaxRate}
+                                  onChange={(e) => setJurisdictionDrafts(prev => ({
+                                    ...prev,
+                                    [j.id]: { ...draft, digitalTaxRate: parseFloat(e.target.value) || 0 }
+                                  }))}
+                                  className="w-24 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-right text-xs font-bold text-teal-600 focus:outline-none focus:border-teal-500"
+                                />
+                              </td>
+                              <td className="py-2.5 text-right">
+                                <button
+                                  onClick={() => handleSaveJurisdiction(j)}
+                                  disabled={!isDirty || savingJurisdictionId === j.id}
+                                  className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white font-bold text-[11px] transition cursor-pointer"
+                                >
+                                  {savingJurisdictionId === j.id ? 'Saving…' : 'Save'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

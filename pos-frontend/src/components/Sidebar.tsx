@@ -32,7 +32,8 @@ import {
   Shield,
   Brain
 } from 'lucide-react';
-import { usePosStore } from '../store/posStore';
+import { usePosStore, hasModuleAccess } from '../store/posStore';
+import type { ModuleKey, PermissionAction } from '../types';
 
 interface SidebarProps {
   isCollapsed: boolean;
@@ -69,17 +70,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile
 }) => {
   const location = useLocation();
-  const { 
-    selectedTenant, 
-    selectedBranch, 
-    terminalMode, 
-    activeDepartment, 
-    isAdminUnlocked 
+  const {
+    selectedTenant,
+    selectedBranch,
+    terminalMode,
+    currentUser,
+    modulePermissions
   } = usePosStore();
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
-  const isOwnerOrUnlocked = terminalMode === 'OwnerAdmin' || isAdminUnlocked || activeDepartment === 'Owner';
+
+  // Menu visibility is driven by the signed-in user's real ModulePermission rows
+  // (plus the role baseline), not by which terminal profile this PC is set to.
+  const can = React.useCallback(
+    (moduleKey: ModuleKey, action: PermissionAction = 'view') =>
+      hasModuleAccess(currentUser?.role, modulePermissions, moduleKey, action),
+    [currentUser?.role, modulePermissions]
+  );
+
+  const isOwnerOrUnlocked = can('admin') || can('accounts', 'edit');
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
     pos: true,
@@ -96,44 +106,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navSections = useMemo<NavSection[]>(() => {
     const sections: NavSection[] = [];
 
-    if (terminalMode === 'CounterPOS' || terminalMode === 'OwnerAdmin') {
-      const posSubItems: SubMenuItem[] = [
-        { label: 'POS Terminal (Register)', path: '/', icon: Store }
-      ];
-      if (terminalMode === 'OwnerAdmin') {
-        posSubItems.push({ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat });
-        posSubItems.push({ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet });
-      }
-      posSubItems.push({ label: 'Delivery & COD Board', path: '/delivery', icon: Bike });
-
-      sections.push({
-        title: 'Operations & Dining',
-        items: [{
-          id: 'pos',
-          label: 'POS & Orders',
-          path: '/',
-          icon: Store,
-          subItems: posSubItems
-        }]
-      });
-    }
-
-    if (terminalMode === 'WaiterTab') {
-      sections.push({
-        title: 'Waiter Operations',
-        items: [{
-          id: 'pos',
-          label: 'Dining & Orders',
-          path: '/order-tab',
-          icon: Tablet,
-          subItems: [
-            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
-            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
-          ]
-        }]
-      });
-    }
-
+    // ── Operational screens: visible to ANY signed-in user. These are not module
+    // gated (per the role baseline); the terminal profile only decides which of
+    // them this particular device is set up to show.
     if (terminalMode === 'KitchenKDS') {
       sections.push({
         title: 'Kitchen Operations',
@@ -147,56 +122,91 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ]
         }]
       });
+    } else if (terminalMode === 'WaiterTab') {
+      sections.push({
+        title: 'Waiter Operations',
+        items: [{
+          id: 'pos',
+          label: 'Dining & Orders',
+          path: '/order-tab',
+          icon: Tablet,
+          subItems: [
+            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
+            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+          ]
+        }]
+      });
+    } else {
+      sections.push({
+        title: 'Operations & Dining',
+        items: [{
+          id: 'pos',
+          label: 'POS & Orders',
+          path: '/',
+          icon: Store,
+          subItems: [
+            { label: 'POS Terminal (Register)', path: '/', icon: Store },
+            { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat },
+            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
+            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+          ]
+        }]
+      });
     }
 
-    if (terminalMode === 'OwnerAdmin') {
-      if (!isHeadOffice) {
-        sections.push({
-          title: 'Inventory & Stock',
-          items: [{
-            id: 'inventory',
-            label: 'Stock Management',
-            path: '/inventory',
-            icon: Boxes,
-            subItems: [
-              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
-              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes },
-              { label: 'Request Stock to Head Office', path: '/transfers', state: { tab: 'request' }, icon: Send }
-            ]
-          }]
-        });
-      } else {
-        const invItems: NavItem[] = [
-          {
-            id: 'inventory',
-            label: 'Stock Management',
-            path: '/inventory',
-            icon: Boxes,
-            subItems: [
+    // ── Inventory & stock → `inventory` module
+    const inventoryItems: NavItem[] = [];
+    if (can('inventory')) {
+      inventoryItems.push({
+        id: 'inventory',
+        label: 'Stock Management',
+        path: '/inventory',
+        icon: Boxes,
+        subItems: isHeadOffice
+          ? [
               { label: 'Raw Ingredients & BOM', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
               { label: 'Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
             ]
-          },
-          {
-            id: 'supplyChain',
-            label: 'Supply Chain',
-            path: '/transfers',
-            icon: Truck,
-            badge: 'Commissary',
-            subItems: [
-              { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
-              { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
+          : [
+              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
+              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
             ]
-          }
-        ];
-        sections.push({
-          title: 'Commissary & Logistics',
-          items: invItems
-        });
-      }
+      });
+      inventoryItems.push({
+        id: 'stockRequests',
+        label: 'Stock Requests',
+        path: '/stock-requests',
+        icon: Send,
+        subItems: [
+          { label: 'Request Stock (Owner/Vendor/HQ)', path: '/stock-requests', icon: Send }
+        ]
+      });
     }
 
-    if (terminalMode === 'OwnerAdmin') {
+    // ── Commissary transfers & vendor procurement → `supplychain` module
+    if (can('supplychain')) {
+      inventoryItems.push({
+        id: 'supplyChain',
+        label: 'Supply Chain',
+        path: '/transfers',
+        icon: Truck,
+        badge: isHeadOffice ? 'Commissary' : undefined,
+        subItems: [
+          { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
+          { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
+        ]
+      });
+    }
+
+    if (inventoryItems.length > 0) {
+      sections.push({
+        title: isHeadOffice ? 'Commissary & Logistics' : 'Inventory & Stock',
+        items: inventoryItems
+      });
+    }
+
+    // ── Reporting & analytics → `reports` module
+    if (can('reports')) {
       sections.push({
         title: 'Reporting & Analytics',
         items: [
@@ -218,15 +228,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ]
           },
           {
-            id: 'stockRequests',
-            label: 'Stock Requests',
-            path: '/stock-requests',
-            icon: Send,
-            subItems: [
-              { label: 'Request Stock (Owner/Vendor/HQ)', path: '/stock-requests', icon: Send }
-            ]
-          },
-          {
             id: 'director',
             label: 'Executive Dashboard',
             path: '/director',
@@ -242,91 +243,72 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
     }
 
-    if (terminalMode === 'OwnerAdmin') {
+    // ── System & administration. Each entry maps to the module it represents:
+    // menu → `menu`, staff → `users`, platform screens → `admin`, settings → `accounts`.
+    const adminItems: NavItem[] = [];
+
+    const menuSubItems: SubMenuItem[] = [];
+    if (can('menu')) {
+      menuSubItems.push({ label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen });
+      menuSubItems.push({ label: 'Floor & Table Setup', path: '/floors', icon: Armchair });
+      menuSubItems.push({ label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent });
+    }
+    if (can('users')) {
+      menuSubItems.push({ label: 'Staff & Pin Access', path: '/users', icon: Users });
+    }
+    if (menuSubItems.length > 0) {
+      adminItems.push({
+        id: 'management',
+        label: can('menu') ? 'Menu & Setup' : 'Staff Setup',
+        path: menuSubItems[0].path,
+        icon: BookOpen,
+        subItems: menuSubItems
+      });
+    }
+
+    if (can('admin')) {
+      const platformSubItems: SubMenuItem[] = [
+        { label: 'Tenant Management', path: '/super-admin', icon: Building2 },
+        { label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard },
+        { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare }
+      ];
+      if (can('users', 'edit')) {
+        platformSubItems.push({ label: 'Permissions', path: '/permissions', icon: Shield });
+      }
+      adminItems.push({
+        id: 'platformAdmin',
+        label: 'Platform Admin',
+        path: '/super-admin',
+        icon: ShieldCheck,
+        subItems: platformSubItems
+      });
+    } else if (can('users', 'edit')) {
+      adminItems.push({
+        id: 'permissions',
+        label: 'Module Permissions',
+        path: '/permissions',
+        icon: Shield
+      });
+    }
+
+    if (can('accounts')) {
+      adminItems.push({
+        id: 'settings',
+        label: 'System Settings & HQ Hub',
+        path: '/settings',
+        icon: Building2
+      });
+    }
+
+    if (adminItems.length > 0) {
       sections.push({
         title: 'System & Administration',
-        items: [
-          {
-            id: 'management',
-            label: 'Menu & Setup',
-            path: '/menu',
-            icon: BookOpen,
-            subItems: [
-              { label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen },
-              { label: 'Floor & Table Setup', path: '/floors', icon: Armchair },
-              { label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent },
-              { label: 'Staff & Pin Access', path: '/users', icon: Users },
-              { label: 'Platform Admin', path: '/super-admin', icon: ShieldCheck }
-            ]
-          },
-          {
-            id: 'platformAdmin',
-            label: 'Platform Admin',
-            path: '/super-admin',
-            icon: ShieldCheck,
-            subItems: [
-              { label: 'Tenant Management', path: '/super-admin', icon: Building2 },
-              { label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard },
-              { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare },
-              { label: 'Permissions', path: '/permissions', icon: Shield }
-            ]
-          },
-          {
-            id: 'settings',
-            label: 'System Settings & HQ Hub',
-            path: '/settings',
-            icon: Building2
-          }
-        ]
-      });
-    }
-
-    if (activeDepartment === 'BranchManager') {
-      sections.push({
-        title: 'Stock & Requests',
-        items: [
-          {
-            id: 'inventory',
-            label: 'Inventory & Stock',
-            path: '/inventory',
-            icon: Boxes,
-            subItems: [
-              { label: 'View Ingredients & Stock', path: '/inventory', state: { tab: 'ingredients' }, icon: Wheat },
-              { label: 'View Finished Food Stock', path: '/inventory', state: { tab: 'finished' }, icon: Boxes }
-            ]
-          },
-          {
-            id: 'stockRequests',
-            label: 'Stock Requests',
-            path: '/stock-requests',
-            icon: Send,
-            subItems: [
-              { label: 'Request Stock (Owner/Vendor/HQ)', path: '/stock-requests', icon: Send }
-            ]
-          }
-        ]
-      });
-    }
-
-    if (activeDepartment === 'Cashier' && terminalMode !== 'OwnerAdmin') {
-      sections.push({
-        title: 'Cashier Operations',
-        items: [
-          {
-            id: 'pos',
-            label: 'POS Terminal',
-            path: '/',
-            icon: Store,
-            subItems: [
-              { label: 'Billing & Checkout', path: '/', icon: Store }
-            ]
-          }
-        ]
+        items: adminItems
       });
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode, activeDepartment]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, can]);
 
   return (
     <>

@@ -102,6 +102,12 @@ builder.Services.AddRateLimiter(options =>
 
 builder.Services.AddOpenApi();
 
+// --- Security / tenancy services ---
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<Pos.Api.Services.ITenantProvider, Pos.Api.Services.TenantProvider>();
+builder.Services.AddScoped<Pos.Api.Middlewares.ICurrentUserAccessor, Pos.Api.Middlewares.CurrentUserAccessor>();
+builder.Services.AddSingleton<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.NullFiscalInvoiceProvider>();
+
 var app = builder.Build();
 
 // --- Global Exception Handler ---
@@ -389,6 +395,52 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // --- Security / tax hardening schema (AddTaxRbacHardening) ---
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""TaxJurisdictions"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""CountryCode"" text NOT NULL,
+                ""RegionCode"" text NOT NULL,
+                ""AuthorityName"" text NOT NULL,
+                ""CashTaxRate"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""DigitalTaxRate"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""IsActive"" boolean NOT NULL DEFAULT true
+            );
+            CREATE TABLE IF NOT EXISTS ""AuditLogs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""UserId"" uuid NOT NULL,
+                ""UserName"" text NOT NULL DEFAULT '',
+                ""Action"" text NOT NULL DEFAULT '',
+                ""EntityType"" text NOT NULL DEFAULT '',
+                ""EntityId"" uuid,
+                ""OldValue"" text,
+                ""NewValue"" text,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""RegionCode"" text;
+            ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""UseProvincialTax"" boolean NOT NULL DEFAULT false;
+
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""InKitchenAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""ReadyAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""OutForDeliveryAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""CompletedAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""CancelledAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""FiscalInvoiceNumber"" text;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""FiscalQrPayload"" text;
+        ");
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TaxJurisdictions_CountryCode_RegionCode') THEN
+                    CREATE UNIQUE INDEX ""IX_TaxJurisdictions_CountryCode_RegionCode"" ON ""TaxJurisdictions"" (""CountryCode"", ""RegionCode"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_AuditLogs_TenantId_CreatedAt') THEN
+                    CREATE INDEX ""IX_AuditLogs_TenantId_CreatedAt"" ON ""AuditLogs"" (""TenantId"", ""CreatedAt"");
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -482,6 +534,176 @@ static async Task<string> GeneratePONumberAsync(AppDbContext db)
 }
 
 // ============================================================
+// SECURITY HELPERS — tenant / branch scoping, server-side pricing, audit
+// ============================================================
+
+// Tenant scope: always prefer the JWT tenant. Only a SuperAdmin (whose token carries
+// tenantId = Guid.Empty) may target a tenant supplied by the client.
+static Guid? ResolveTenantScope(HttpContext http, Guid? clientSuppliedTenantId)
+{
+    var tokenTenantId = http.GetTenantId();
+    if (tokenTenantId != null && tokenTenantId.Value != Guid.Empty) return tokenTenantId;
+    return http.IsSuperAdmin() ? clientSuppliedTenantId : null;
+}
+
+static async Task<(Guid? BranchId, IResult? Error)> ResolveBranchScopeAsync(HttpContext http, AppDbContext db, Guid tenantId, Guid? requestedBranchId)
+{
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null)
+    {
+        if (requestedBranchId != null && requestedBranchId != Guid.Empty && requestedBranchId != userBranchId)
+            return (null, Results.Json(new { message = "You can only access your own branch." }, statusCode: 403));
+        return (userBranchId, null);
+    }
+    if (requestedBranchId == null || requestedBranchId == Guid.Empty) return (null, Results.BadRequest(new { message = "branchId is required." }));
+    var belongs = http.IsSuperAdmin() || await db.Branches.AnyAsync(b => b.Id == requestedBranchId.Value && b.TenantId == tenantId);
+    if (!belongs) return (null, Results.Json(new { message = "Branch not found for this tenant." }, statusCode: 403));
+    return (requestedBranchId, null);
+}
+
+// Combined helper: resolves tenant then branch in one shot for the common endpoint shape.
+static async Task<(Guid? TenantId, Guid? BranchId, IResult? Error)> ResolveScopeAsync(HttpContext http, AppDbContext db, Guid? clientTenantId, Guid? requestedBranchId)
+{
+    var tenantId = ResolveTenantScope(http, clientTenantId);
+    if (tenantId == null)
+    {
+        // SuperAdmin without an explicit tenantId: derive it from the requested branch if possible.
+        if (http.IsSuperAdmin() && requestedBranchId != null && requestedBranchId != Guid.Empty)
+        {
+            var derived = await db.Branches.Where(b => b.Id == requestedBranchId.Value).Select(b => (Guid?)b.TenantId).FirstOrDefaultAsync();
+            if (derived != null) tenantId = derived;
+        }
+        if (tenantId == null) return (null, null, Results.Unauthorized());
+    }
+    var (branchId, error) = await ResolveBranchScopeAsync(http, db, tenantId.Value, requestedBranchId);
+    if (error != null) return (tenantId, null, error);
+    return (tenantId, branchId, null);
+}
+
+static async Task WriteAuditAsync(AppDbContext db, Guid tenantId, AppUser? user, string action, string entityType, Guid? entityId, string? oldValue, string? newValue)
+{
+    db.AuditLogs.Add(new AuditLog
+    {
+        TenantId = tenantId,
+        UserId = user?.Id ?? Guid.Empty,
+        UserName = user?.FullName ?? "System",
+        Action = action,
+        EntityType = entityType,
+        EntityId = entityId,
+        OldValue = oldValue,
+        NewValue = newValue,
+        CreatedAt = DateTime.UtcNow
+    });
+}
+
+// --- Helper: resolve the applicable tax rates for a branch ---
+static async Task<(decimal CashRate, decimal DigitalRate, int DecimalPlaces)> ResolveTaxRatesAsync(AppDbContext db, Branch branch)
+{
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == branch.TenantId);
+    var decimals = settings?.DecimalPlaces ?? 2;
+    var cashRate = settings?.DefaultTaxRate ?? 16m;
+    var digitalRate = (settings != null && settings.UseDualTaxRate) ? settings.DigitalTaxRate : cashRate;
+
+    // Provincial override: only when the tenant opted in AND the branch declares a region.
+    // Everyone else (non-PK tenants, PK tenants with no region set) keeps the flat tenant rate.
+    if (settings != null && settings.UseProvincialTax && !string.IsNullOrWhiteSpace(branch.RegionCode))
+    {
+        var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j =>
+            j.CountryCode == settings.CountryCode && j.RegionCode == branch.RegionCode && j.IsActive);
+        if (jurisdiction != null)
+        {
+            cashRate = jurisdiction.CashTaxRate;
+            digitalRate = jurisdiction.DigitalTaxRate;
+        }
+    }
+    return (cashRate, digitalRate, decimals);
+}
+
+static decimal PickTaxRate(PaymentMethod method, decimal cashRate, decimal digitalRate) => method switch
+{
+    PaymentMethod.Cash => cashRate,
+    PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => digitalRate,
+    // Split / CustomerKhata are settled partly or wholly in cash, so we apply the cash rate
+    // as the conservative default (cash rate is >= digital rate under dual-rate regimes).
+    _ => cashRate
+};
+
+// --- Helper: recompute an order's money from DB prices. NEVER trusts client totals. ---
+static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch branch, CreateOrderDto dto, Guid orderId, AppUser? actingUser)
+{
+    var result = new ServerPricedOrder();
+
+    var productIds = dto.Items.Select(i => i.ProductId).Distinct().ToList();
+    var products = await db.Products
+        .Where(p => productIds.Contains(p.Id) && p.TenantId == branch.TenantId)
+        .ToDictionaryAsync(p => p.Id);
+
+    decimal subTotal = 0m;
+    foreach (var item in dto.Items)
+    {
+        if (!products.TryGetValue(item.ProductId, out var product))
+        {
+            result.Error = $"Unknown or cross-tenant product in order: {item.ProductName}";
+            return result;
+        }
+        if (item.Quantity <= 0)
+        {
+            result.Error = $"Invalid quantity for {product.Name}.";
+            return result;
+        }
+
+        // Base unit price is ALWAYS sourced from the database, never from the client payload.
+        var unitPrice = product.SellingPricePKR;
+        var lineTotal = unitPrice * item.Quantity;
+        subTotal += lineTotal;
+
+        result.Items.Add(new OrderItem
+        {
+            OrderId = orderId,
+            ProductId = product.Id,
+            ProductName = product.Name,
+            Quantity = item.Quantity,
+            UnitPricePKR = unitPrice,
+            TotalPricePKR = lineTotal,
+            ModifiersSummary = item.ModifiersSummary,
+            SpecialNotes = item.SpecialNotes,
+            Station = product.Station
+        });
+    }
+
+    // Discount is only honoured when the acting user is actually allowed to give one.
+    // An unauthorised discount is zeroed and flagged rather than failing the whole sale.
+    var discount = dto.DiscountPKR;
+    if (discount < 0) discount = 0m;
+    if (discount > 0)
+    {
+        var mayDiscount = actingUser != null &&
+            (actingUser.Role == UserRole.OwnerAdmin || actingUser.Role == UserRole.SuperAdmin || actingUser.CanGiveDiscounts);
+        if (!mayDiscount)
+        {
+            result.DiscountRejected = true;
+            result.AttemptedDiscountPKR = discount;
+            discount = 0m;
+        }
+    }
+    if (discount > subTotal) discount = subTotal;
+
+    var (cashRate, digitalRate, decimals) = await ResolveTaxRatesAsync(db, branch);
+    var rate = PickTaxRate(dto.PaymentMethod, cashRate, digitalRate);
+
+    subTotal = Math.Round(subTotal, decimals, MidpointRounding.AwayFromZero);
+    discount = Math.Round(discount, decimals, MidpointRounding.AwayFromZero);
+    var tax = Math.Round((subTotal - discount) * (rate / 100m), decimals, MidpointRounding.AwayFromZero);
+
+    result.SubTotalPKR = subTotal;
+    result.DiscountPKR = discount;
+    result.TaxPKR = tax;
+    result.TotalPKR = subTotal - discount + tax;
+    result.TaxRatePercent = rate;
+    return result;
+}
+
+// ============================================================
 // PUBLIC ENDPOINTS (no auth required)
 // ============================================================
 
@@ -518,6 +740,13 @@ authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
             { "tenantId", user.TenantId.ToString() },
             { "branchId", user.BranchId?.ToString() ?? "" },
             { "role", user.Role.ToString() },
+            // Explicit per-permission claims so the client (and HttpContext.HasPermission) can
+            // read them without parsing the legacy JSON blob. The DB remains authoritative.
+            { "canViewFinancialReports", user.CanViewFinancialReports.ToString().ToLower() },
+            { "canManageInventory", user.CanManageInventory.ToString().ToLower() },
+            { "canManageMenuAndTax", user.CanManageMenuAndTax.ToString().ToLower() },
+            { "canGiveDiscounts", user.CanGiveDiscounts.ToString().ToLower() },
+            { "canVoidOrders", user.CanVoidOrders.ToString().ToLower() },
             { "permissions", System.Text.Json.JsonSerializer.Serialize(new
             {
                 user.CanViewFinancialReports,
@@ -555,10 +784,69 @@ authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
 
 // ============================================================
 // CORE API ENDPOINTS
-// NOTE: Authorization removed — POS terminal operates without a login screen.
-// To re-enable JWT auth in future, add .RequireAuthorization() back and build a login page first.
+// Every endpoint in this group requires a valid JWT. The only exceptions are the four
+// setup/installation-wizard endpoints below, which must bootstrap the system before any
+// user exists — they are each explicitly marked .AllowAnonymous().
 // ============================================================
-var api = app.MapGroup("/api");
+var api = app.MapGroup("/api").RequireAuthorization();
+
+// --- Manager Override: verify ANOTHER user's PIN for a privileged action ---
+// The caller must already be authenticated. This does NOT log the caller in as that user;
+// it only confirms a supervisor physically approved the action, and records it.
+api.MapPost("/auth/verify-pin", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, VerifyPinDto dto) =>
+{
+    var callerTenantId = http.GetTenantId();
+    if (callerTenantId == null) return Results.Unauthorized();
+
+    if (string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.PinCode))
+        return Results.BadRequest(new { message = "Username and PIN are required." });
+
+    var username = dto.Username.ToLower().Trim();
+    var approver = await db.Users.FirstOrDefaultAsync(u =>
+        u.Username == username && u.IsActive &&
+        (u.TenantId == callerTenantId.Value || u.Role == UserRole.SuperAdmin));
+
+    if (approver == null) return Results.NotFound(new { authorized = false, message = "No active user with that username in this restaurant." });
+
+    if (!BCrypt.Net.BCrypt.Verify(dto.PinCode, approver.PinCodeHash))
+        return Results.Ok(new { authorized = false, message = "Incorrect PIN." });
+
+    var isOwner = approver.Role == UserRole.OwnerAdmin || approver.Role == UserRole.SuperAdmin;
+    bool permitted;
+    if (string.IsNullOrWhiteSpace(dto.RequiredPermission))
+    {
+        permitted = isOwner || approver.Role == UserRole.BranchManager;
+    }
+    else
+    {
+        permitted = isOwner || dto.RequiredPermission.Trim().ToLowerInvariant() switch
+        {
+            "canviewfinancialreports" => approver.CanViewFinancialReports,
+            "canmanageinventory" => approver.CanManageInventory,
+            "canmanagemenuandtax" => approver.CanManageMenuAndTax,
+            "cangivediscounts" => approver.CanGiveDiscounts,
+            "canvoidorders" => approver.CanVoidOrders,
+            _ => false
+        };
+    }
+
+    if (!permitted)
+        return Results.Ok(new { authorized = false, message = $"{approver.FullName} is not authorised to approve this action." });
+
+    var caller = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, callerTenantId.Value, approver, "ManagerOverride", "AppUser", caller?.Id,
+        oldValue: dto.RequiredPermission ?? "identity",
+        newValue: $"approved for {caller?.FullName ?? "unknown user"}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        authorized = true,
+        authorizedByUserId = approver.Id,
+        authorizedByName = approver.FullName,
+        authorizedByRole = approver.Role.ToString()
+    });
+}).RequireRateLimiting("auth");
 
 // --- Setup & Installation Wizard ---
 api.MapGet("/setup/status", async (AppDbContext db) =>
@@ -585,7 +873,7 @@ api.MapGet("/setup/status", async (AppDbContext db) =>
         tenantCount,
         tenants
     });
-});
+}).AllowAnonymous(); // bootstrap: must be reachable before any user exists
 
 api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 {
@@ -609,6 +897,22 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         SubscriptionPaidUntil = DateTime.UtcNow.AddYears(1),
         CreatedAt = DateTime.UtcNow
     };
+    // Enforce the subscription tier's branch quota before provisioning anything.
+    // Tenants are keyed to a package by Tier.ToString() == SaaSPackageConfig.PackageKey.
+    var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString() && p.IsActive);
+    if (package != null)
+    {
+        if (dto.DeploymentMode == "MultiBranch" && !package.HasMultiBranch)
+            return Results.BadRequest(new { message = $"The {package.DisplayName} package does not include multi-branch deployment. Please upgrade." });
+
+        // HQ counts as a branch in MultiBranch mode; Single mode provisions exactly one.
+        var requestedBranchCount = dto.DeploymentMode == "MultiBranch"
+            ? 1 + Math.Max(1, dto.Branches?.Count ?? 1)
+            : 1;
+        if (requestedBranchCount > package.MaxBranches)
+            return Results.BadRequest(new { message = $"The {package.DisplayName} package allows a maximum of {package.MaxBranches} branch(es); {requestedBranchCount} were requested. Please upgrade or reduce the branch list." });
+    }
+
     db.Tenants.Add(tenant);
 
     var createdBranches = new List<Branch>();
@@ -792,16 +1096,35 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         deploymentMode = dto.DeploymentMode,
         branches = createdBranches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice })
     });
-});
+}).AllowAnonymous(); // bootstrap: creates the very first tenant + owner account
 
 // --- Offline Batch Sync ---
-api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> ordersList) =>
+// Offline orders were rung up without a live price check, so every one is RE-PRICED here
+// against current DB prices/tax rates. Where the recomputed subtotal drifts >2% from what the
+// terminal submitted, a SmartAlert is raised so an owner can review rather than the difference
+// being silently overwritten.
+api.MapPost("/sync/batch-orders", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal,
+    List<CreateOrderDto> ordersList) =>
 {
+    var callerTenantId = http.GetTenantId();
+    if (callerTenantId == null) return Results.Unauthorized();
+    var actingUser = await accessor.GetCurrentUserAsync(http);
     var syncedResults = new List<object>();
 
     foreach (var dto in ordersList)
     {
-        var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
+        var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+        if (scopeError != null || scopedBranchId == null)
+        {
+            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Branch not accessible for this user." });
+            continue;
+        }
+
+        var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
         if (branch == null) continue;
 
         var orderNumber = await GenerateOrderNumberAsync(db);
@@ -818,10 +1141,6 @@ api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> o
             CustomerName = dto.CustomerName,
             CustomerPhone = dto.CustomerPhone,
             DeliveryAddress = dto.DeliveryAddress,
-            SubTotalPKR = dto.SubTotalPKR,
-            DiscountPKR = dto.DiscountPKR,
-            TaxPKR = dto.TaxPKR,
-            TotalPKR = dto.TotalPKR,
             PaymentMethod = dto.PaymentMethod,
             AmountPaidPKR = dto.AmountPaidPKR,
             ChangeDuePKR = dto.ChangeDuePKR,
@@ -831,20 +1150,51 @@ api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> o
             CreatedAt = DateTime.UtcNow
         };
 
-        foreach (var item in dto.Items)
+        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
+        if (priced.Error != null)
         {
-            order.Items.Add(new OrderItem
+            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = priced.Error });
+            continue;
+        }
+
+        order.SubTotalPKR = priced.SubTotalPKR;
+        order.DiscountPKR = priced.DiscountPKR;
+        order.TaxPKR = priced.TaxPKR;
+        order.TotalPKR = priced.TotalPKR;
+        foreach (var line in priced.Items) order.Items.Add(line);
+        if (order.Status == OrderStatus.InKitchen) order.InKitchenAt = DateTime.UtcNow;
+
+        // Flag suspicious drift between the offline terminal's arithmetic and the server's.
+        if (dto.SubTotalPKR > 0)
+        {
+            var drift = Math.Abs(priced.SubTotalPKR - dto.SubTotalPKR) / dto.SubTotalPKR;
+            if (drift > 0.02m)
             {
-                OrderId = order.Id,
-                ProductId = item.ProductId,
-                ProductName = item.ProductName,
-                Quantity = item.Quantity,
-                UnitPricePKR = item.UnitPricePKR,
-                TotalPricePKR = item.UnitPricePKR * item.Quantity,
-                ModifiersSummary = item.ModifiersSummary,
-                SpecialNotes = item.SpecialNotes,
-                Station = item.Station
-            });
+                db.SmartAlerts.Add(new SmartAlert
+                {
+                    TenantId = branch.TenantId,
+                    BranchId = branch.Id,
+                    AlertType = "price_mismatch_offline_sync",
+                    Severity = "warning",
+                    Title = $"Price mismatch on synced order {order.OrderNumber}",
+                    Message = $"Offline terminal submitted a subtotal of {dto.SubTotalPKR:N2} but current menu prices give {priced.SubTotalPKR:N2} ({drift:P1} difference). The server figure was saved — please review.",
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        orderId = order.Id,
+                        orderNumber = order.OrderNumber,
+                        submittedSubTotal = dto.SubTotalPKR,
+                        recomputedSubTotal = priced.SubTotalPKR,
+                        submittedTotal = dto.TotalPKR,
+                        recomputedTotal = priced.TotalPKR
+                    })
+                });
+            }
+        }
+
+        if (priced.DiscountRejected)
+        {
+            await WriteAuditAsync(db, branch.TenantId, actingUser, "DiscountRejected", "Order", order.Id,
+                oldValue: priced.AttemptedDiscountPKR.ToString("0.##"), newValue: "0");
         }
 
         var stationGroups = order.Items.GroupBy(i => i.Station);
@@ -873,16 +1223,29 @@ api.MapPost("/sync/batch-orders", async (AppDbContext db, List<CreateOrderDto> o
             var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
             if (activeShift != null)
             {
-                activeShift.CashSalesPKR += dto.TotalPKR;
+                activeShift.CashSalesPKR += order.TotalPKR;
                 activeShift.ExpectedCashPKR = activeShift.OpeningFloatPKR + activeShift.CashSalesPKR;
             }
         }
 
         db.Orders.Add(order);
-        syncedResults.Add(new { orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced" });
+        syncedResults.Add(new { orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced", totalPKR = order.TotalPKR });
     }
 
     await db.SaveChangesAsync();
+
+    // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
+    foreach (var order in db.ChangeTracker.Entries<Order>().Select(e => e.Entity).ToList())
+    {
+        var (invoiceNumber, qr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
+        if (invoiceNumber != null || qr != null)
+        {
+            order.FiscalInvoiceNumber = invoiceNumber;
+            order.FiscalQrPayload = qr;
+        }
+    }
+    await db.SaveChangesAsync();
+
     return Results.Ok(new { count = syncedResults.Count, orders = syncedResults });
 });
 
@@ -907,7 +1270,7 @@ api.MapGet("/setup/pairing-info", async (AppDbContext db) =>
         .ToListAsync();
 
     return Results.Ok(branches);
-});
+}).AllowAnonymous(); // bootstrap: a fresh terminal has no token yet
 
 api.MapPost("/setup/pair-branch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] PairBranchDto dto) =>
 {
@@ -945,44 +1308,80 @@ api.MapPost("/setup/pair-branch", async (AppDbContext db, [Microsoft.AspNetCore.
         products,
         diningTables = tables
     });
-});
+}).AllowAnonymous(); // bootstrap: a fresh terminal pairs itself before login
 
 // --- Tenancy & Hierarchy ---
-api.MapGet("/tenants", async (AppDbContext db) =>
+// SuperAdmin sees every tenant; everyone else sees only their own.
+api.MapGet("/tenants", async (AppDbContext db, HttpContext http) =>
 {
-    var tenants = await db.Tenants
+    var query = db.Tenants
         .Include(t => t.Branches).ThenInclude(b => b.Terminals)
         .Include(t => t.AddOns)
-        .ToListAsync();
-    return Results.Ok(tenants);
-});
-
-api.MapGet("/branches", async (AppDbContext db, Guid? tenantId) =>
-{
-    var query = db.Branches.Include(b => b.Terminals).AsQueryable();
-    if (tenantId.HasValue) query = query.Where(b => b.TenantId == tenantId.Value);
+        .AsQueryable();
+    if (!http.IsSuperAdmin())
+    {
+        var tenantId = http.GetTenantId();
+        if (tenantId == null) return Results.Unauthorized();
+        query = query.Where(t => t.Id == tenantId.Value);
+    }
     return Results.Ok(await query.ToListAsync());
 });
+
+api.MapGet("/branches", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Branches.Include(b => b.Terminals).Where(b => b.TenantId == scopedTenantId.Value).AsQueryable();
+    // Branch-pinned staff only ever see their own branch.
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null) query = query.Where(b => b.Id == userBranchId.Value);
+    return Results.Ok(await query.ToListAsync());
+});
+
+// Update a branch (incl. RegionCode, which selects the provincial tax jurisdiction).
+api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id && (http.IsSuperAdmin() || b.TenantId == tenantId!.Value));
+    if (branch == null) return Results.NotFound(new { message = "Branch not found" });
+
+    if (!string.IsNullOrWhiteSpace(dto.Name)) branch.Name = dto.Name.Trim();
+    if (dto.Address != null) branch.Address = dto.Address;
+    if (!string.IsNullOrWhiteSpace(dto.City)) branch.City = dto.City.Trim();
+    if (dto.Phone != null) branch.Phone = dto.Phone;
+    if (dto.RegionCode != null) branch.RegionCode = string.IsNullOrWhiteSpace(dto.RegionCode) ? null : dto.RegionCode.Trim().ToUpperInvariant();
+    if (dto.AllowedCounters.HasValue && http.IsSuperAdmin()) branch.AllowedCounters = dto.AllowedCounters.Value;
+    if (dto.AllowedOrderTabs.HasValue && http.IsSuperAdmin()) branch.AllowedOrderTabs = dto.AllowedOrderTabs.Value;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(branch);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
 // --- Catalog ---
-api.MapGet("/catalog/categories", async (AppDbContext db, Guid? tenantId) =>
+api.MapGet("/catalog/categories", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
 {
-    var query = db.Categories.OrderBy(c => c.SortOrder).AsQueryable();
-    if (tenantId.HasValue) query = query.Where(c => c.TenantId == tenantId.Value);
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Categories.Where(c => c.TenantId == scopedTenantId.Value).OrderBy(c => c.SortOrder).AsQueryable();
     return Results.Ok(await query.ToListAsync());
 });
 
-api.MapPost("/catalog/categories", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
+api.MapPost("/catalog/categories", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
 {
-    var cat = new Category { TenantId = dto.TenantId, Name = dto.Name, LocalName = dto.LocalName, Icon = dto.Icon ?? "utensils", SortOrder = dto.SortOrder };
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var cat = new Category { TenantId = scopedTenantId.Value, Name = dto.Name, LocalName = dto.LocalName, Icon = dto.Icon ?? "utensils", SortOrder = dto.SortOrder };
     db.Categories.Add(cat);
     await db.SaveChangesAsync();
     return Results.Ok(cat);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
 
-api.MapPut("/catalog/categories/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
+api.MapPut("/catalog/categories/{id}", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
 {
-    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == scopedTenantId.Value);
     if (cat == null) return Results.NotFound();
     cat.Name = dto.Name;
     cat.LocalName = dto.LocalName ?? cat.LocalName;
@@ -990,21 +1389,25 @@ api.MapPut("/catalog/categories/{id}", async (AppDbContext db, Guid id, [Microso
     cat.SortOrder = dto.SortOrder;
     await db.SaveChangesAsync();
     return Results.Ok(cat);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
 
-api.MapDelete("/catalog/categories/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/catalog/categories/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
-    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var cat = await db.Categories.FirstOrDefaultAsync(c => c.Id == id && (http.IsSuperAdmin() || c.TenantId == scopedTenantId!.Value));
     if (cat == null) return Results.NotFound();
     db.Categories.Remove(cat);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Category deleted successfully" });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
 
-api.MapGet("/catalog/products", async (AppDbContext db, Guid? tenantId, Guid? categoryId, string? search, string? barcode) =>
+api.MapGet("/catalog/products", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? categoryId, string? search, string? barcode) =>
 {
-    var query = db.Products.Include(p => p.Modifiers).Include(p => p.Category).Where(p => p.IsActive).AsQueryable();
-    if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Products.Include(p => p.Modifiers).Include(p => p.Category)
+        .Where(p => p.IsActive && p.TenantId == scopedTenantId.Value).AsQueryable();
     if (categoryId.HasValue) query = query.Where(p => p.CategoryId == categoryId.Value);
     if (!string.IsNullOrWhiteSpace(barcode)) query = query.Where(p => p.Barcode == barcode.Trim());
     if (!string.IsNullOrWhiteSpace(search))
@@ -1015,11 +1418,15 @@ api.MapGet("/catalog/products", async (AppDbContext db, Guid? tenantId, Guid? ca
     return Results.Ok(await query.ToListAsync());
 });
 
-api.MapPost("/catalog/products", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
+api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+
     var product = new Product
     {
-        TenantId = dto.TenantId, CategoryId = dto.CategoryId, Name = dto.Name, UrduName = dto.UrduName,
+        TenantId = scopedTenantId.Value, CategoryId = dto.CategoryId, Name = dto.Name, UrduName = dto.UrduName,
         SKU = string.IsNullOrWhiteSpace(dto.SKU) ? $"SKU-{Random.Shared.Next(1000, 9999)}" : dto.SKU,
         Barcode = string.IsNullOrWhiteSpace(dto.Barcode) ? $"{Random.Shared.NextInt64(1000000000, 9999999999)}" : dto.Barcode,
         Description = dto.Description ?? string.Empty, CostPricePKR = dto.CostPricePKR, SellingPricePKR = dto.SellingPricePKR,
@@ -1031,14 +1438,22 @@ api.MapPost("/catalog/products", async (AppDbContext db, [Microsoft.AspNetCore.M
             product.Modifiers.Add(new ProductModifier { Name = mod.Name, PricePKR = mod.PricePKR });
     }
     db.Products.Add(product);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "ProductCreated", "Product", product.Id, null, product.SellingPricePKR.ToString("0.##"));
     await db.SaveChangesAsync();
     return Results.Ok(product);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to add menu items or change prices."));
 
-api.MapPut("/catalog/products/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
+api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
 {
-    var product = await db.Products.Include(p => p.Modifiers).FirstOrDefaultAsync(p => p.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+
+    var product = await db.Products.Include(p => p.Modifiers)
+        .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (product == null) return Results.NotFound();
+
+    var oldPrice = product.SellingPricePKR;
+
     product.Name = dto.Name ?? product.Name;
     product.UrduName = dto.UrduName ?? product.UrduName;
     product.SellingPricePKR = dto.SellingPricePKR;
@@ -1046,35 +1461,51 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, Guid id, [Microsoft
     product.Barcode = dto.Barcode ?? product.Barcode;
     product.CategoryId = dto.CategoryId;
     product.Station = dto.Station;
+
+    if (oldPrice != product.SellingPricePKR)
+    {
+        var currentUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, product.TenantId, currentUser, "PriceChanged", "Product", product.Id,
+            oldValue: oldPrice.ToString("0.##"), newValue: product.SellingPricePKR.ToString("0.##"));
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(product);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu prices."));
 
-api.MapDelete("/catalog/products/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
 {
-    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (product == null) return Results.NotFound();
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, product.TenantId, currentUser, "ProductDeleted", "Product", product.Id, product.Name, null);
     db.Products.Remove(product);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Product deleted successfully" });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."));
 
 // --- Dining Tables ---
-api.MapGet("/tables", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/tables", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
-    var tables = await db.DiningTables.Where(t => t.BranchId == branchId).OrderBy(t => t.Section).ThenBy(t => t.TableNumber).ToListAsync();
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
+    var tables = await db.DiningTables.Where(t => t.BranchId == scopedBranchId!.Value).OrderBy(t => t.Section).ThenBy(t => t.TableNumber).ToListAsync();
     return Results.Ok(tables);
 });
 
-api.MapPost("/tables", async (AppDbContext db, CreateTableDto dto) =>
+api.MapPost("/tables", async (AppDbContext db, HttpContext http, CreateTableDto dto) =>
 {
-    var branch = await db.Branches.FindAsync(dto.BranchId);
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (error != null) return error;
+    var branch = await db.Branches.FindAsync(scopedBranchId!.Value);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
-    var existing = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == dto.BranchId && t.TableNumber.ToLower() == dto.TableNumber.ToLower());
+    var existing = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == branch.Id && t.TableNumber.ToLower() == dto.TableNumber.ToLower());
     if (existing != null) return Results.BadRequest(new { message = $"Table '{dto.TableNumber}' already exists in this branch" });
     var table = new DiningTable
     {
-        BranchId = dto.BranchId, TableNumber = dto.TableNumber.Trim().ToUpper(),
+        BranchId = branch.Id, TableNumber = dto.TableNumber.Trim().ToUpper(),
         Section = string.IsNullOrWhiteSpace(dto.Section) ? "Main Hall" : dto.Section.Trim(),
         Capacity = dto.Capacity > 0 ? dto.Capacity : 4, IsOccupied = false
     };
@@ -1083,10 +1514,12 @@ api.MapPost("/tables", async (AppDbContext db, CreateTableDto dto) =>
     return Results.Created($"/api/tables/{table.Id}", table);
 });
 
-api.MapPut("/tables/{id:guid}", async (AppDbContext db, Guid id, UpdateTableDto dto) =>
+api.MapPut("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateTableDto dto) =>
 {
     var table = await db.DiningTables.FindAsync(id);
     if (table == null) return Results.NotFound(new { message = "Table not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, table.BranchId);
+    if (scopeError != null) return scopeError;
     if (!string.IsNullOrWhiteSpace(dto.TableNumber)) table.TableNumber = dto.TableNumber.Trim().ToUpper();
     if (!string.IsNullOrWhiteSpace(dto.Section)) table.Section = dto.Section.Trim();
     if (dto.Capacity.HasValue && dto.Capacity.Value > 0) table.Capacity = dto.Capacity.Value;
@@ -1095,20 +1528,39 @@ api.MapPut("/tables/{id:guid}", async (AppDbContext db, Guid id, UpdateTableDto 
     return Results.Ok(table);
 });
 
-api.MapDelete("/tables/{id:guid}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
     var table = await db.DiningTables.FindAsync(id);
     if (table == null) return Results.NotFound(new { message = "Table not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, table.BranchId);
+    if (scopeError != null) return scopeError;
     db.DiningTables.Remove(table);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Table deleted successfully" });
 });
 
 // --- Orders (Mode 1 Parallel Dispatch) ---
-api.MapPost("/orders", async (AppDbContext db, CreateOrderDto dto) =>
+// SECURITY: all money on this order is computed server-side from DB product prices and the
+// branch's resolved tax jurisdiction. dto.SubTotalPKR / TaxPKR / TotalPKR / item.UnitPricePKR
+// are ignored entirely.
+api.MapPost("/orders", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal,
+    CreateOrderDto dto) =>
 {
-    var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var branch = await db.Branches.Include(b => b.Tenant)
+        .FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
+
+    if (dto.Items == null || dto.Items.Count == 0)
+        return Results.BadRequest(new { message = "An order must contain at least one item." });
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
 
     var orderNumber = await GenerateOrderNumberAsync(db);
     var order = new Order
@@ -1119,22 +1571,29 @@ api.MapPost("/orders", async (AppDbContext db, CreateOrderDto dto) =>
                  (dto.OrderType == OrderType.Delivery || dto.OrderType == OrderType.CallOrder) ? OrderStatus.InKitchen :
                  OrderStatus.ReadyForDispatch,
         TableNumber = dto.TableNumber, CustomerName = dto.CustomerName, CustomerPhone = dto.CustomerPhone,
-        DeliveryAddress = dto.DeliveryAddress, SubTotalPKR = dto.SubTotalPKR, DiscountPKR = dto.DiscountPKR,
-        TaxPKR = dto.TaxPKR, TotalPKR = dto.TotalPKR, PaymentMethod = dto.PaymentMethod,
+        DeliveryAddress = dto.DeliveryAddress, PaymentMethod = dto.PaymentMethod,
         AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = dto.IsPaid,
-        CashierName = dto.CashierName ?? "Counter 1 Cashier", CreatedByRole = dto.CreatedByRole ?? "Cashier",
+        CashierName = actingUser?.FullName ?? dto.CashierName ?? "Counter 1 Cashier",
+        CreatedByRole = actingUser?.Role.ToString() ?? dto.CreatedByRole ?? "Cashier",
         CreatedAt = DateTime.UtcNow
     };
 
-    foreach (var item in dto.Items)
+    var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
+    if (priced.Error != null) return Results.BadRequest(new { message = priced.Error });
+
+    order.SubTotalPKR = priced.SubTotalPKR;
+    order.DiscountPKR = priced.DiscountPKR;
+    order.TaxPKR = priced.TaxPKR;
+    order.TotalPKR = priced.TotalPKR;
+    foreach (var line in priced.Items) order.Items.Add(line);
+    if (order.Status == OrderStatus.InKitchen) order.InKitchenAt = DateTime.UtcNow;
+
+    // A discount attempted without permission is rejected (not applied) but does not block the
+    // sale — the attempt is recorded so an owner can follow up.
+    if (priced.DiscountRejected)
     {
-        order.Items.Add(new OrderItem
-        {
-            OrderId = order.Id, ProductId = item.ProductId, ProductName = item.ProductName,
-            Quantity = item.Quantity, UnitPricePKR = item.UnitPricePKR,
-            TotalPricePKR = item.UnitPricePKR * item.Quantity,
-            ModifiersSummary = item.ModifiersSummary, SpecialNotes = item.SpecialNotes, Station = item.Station
-        });
+        await WriteAuditAsync(db, branch.TenantId, actingUser, "DiscountRejected", "Order", order.Id,
+            oldValue: priced.AttemptedDiscountPKR.ToString("0.##"), newValue: "0");
     }
 
     // KOTs per station
@@ -1157,13 +1616,13 @@ api.MapPost("/orders", async (AppDbContext db, CreateOrderDto dto) =>
         if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
     }
 
-    // Update cash shift
+    // Update cash shift (using the server-computed total, not the client's)
     if (dto.IsPaid && dto.PaymentMethod == PaymentMethod.Cash)
     {
         var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
         if (activeShift != null)
         {
-            activeShift.CashSalesPKR += dto.TotalPKR;
+            activeShift.CashSalesPKR += order.TotalPKR;
             activeShift.ExpectedCashPKR = activeShift.OpeningFloatPKR + activeShift.CashSalesPKR;
         }
     }
@@ -1213,31 +1672,49 @@ api.MapPost("/orders", async (AppDbContext db, CreateOrderDto dto) =>
     db.Orders.Add(order);
     await db.SaveChangesAsync();
 
+    // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
+    var (fiscalNumber, fiscalQr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
+    if (fiscalNumber != null || fiscalQr != null)
+    {
+        order.FiscalInvoiceNumber = fiscalNumber;
+        order.FiscalQrPayload = fiscalQr;
+        await db.SaveChangesAsync();
+    }
+
     return Results.Ok(new
     {
         message = "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
         orderId = order.Id, orderNumber = order.OrderNumber,
         kitchenTicketsCount = order.KitchenTickets.Count,
-        status = order.Status.ToString(), totalPKR = order.TotalPKR
+        status = order.Status.ToString(),
+        subTotalPKR = order.SubTotalPKR, discountPKR = order.DiscountPKR,
+        taxPKR = order.TaxPKR, taxRatePercent = priced.TaxRatePercent, totalPKR = order.TotalPKR,
+        discountRejected = priced.DiscountRejected,
+        fiscalInvoiceNumber = order.FiscalInvoiceNumber
     });
 });
 
-api.MapGet("/orders", async (AppDbContext db, Guid branchId, OrderStatus? status, int limit = 30) =>
+api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, OrderStatus? status, int limit = 30) =>
 {
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
     var query = db.Orders.Include(o => o.Items).Include(o => o.AssignedRider)
-        .Where(o => o.BranchId == branchId).OrderByDescending(o => o.CreatedAt).AsQueryable();
+        .Where(o => o.BranchId == scopedBranchId!.Value).OrderByDescending(o => o.CreatedAt).AsQueryable();
     if (status.HasValue) query = query.Where(o => o.Status == status.Value);
-    return Results.Ok(await query.Take(limit).ToListAsync());
+    return Results.Ok(await query.Take(Math.Clamp(limit, 1, 200)).ToListAsync());
 });
 
-// --- Void Order ---
-api.MapPost("/orders/{id}/void", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
+// --- Void Order (requires CanVoidOrders; always audited) ---
+api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
 {
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
     if (order == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
     if (order.Status == OrderStatus.Cancelled) return Results.BadRequest(new { message = "Order already cancelled" });
 
     order.Status = OrderStatus.Cancelled;
+    order.CancelledAt = DateTime.UtcNow;
 
     // Restore stock
     var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
@@ -1250,37 +1727,51 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, Guid id, [Microsoft.Asp
             stock.QuantityOnHand += item.Quantity;
     }
 
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, order.TenantId, currentUser, "OrderVoided", "Order", order.Id,
+        oldValue: $"{order.OrderNumber} / {order.TotalPKR:0.##}", newValue: dto?.Reason ?? "(no reason given)");
+
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Order voided and stock restored", orderId = order.Id });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to void orders. Ask a manager to approve."));
 
 // --- Kitchen Display ---
-api.MapGet("/kitchen/tickets", async (AppDbContext db, Guid branchId, KitchenStation? station) =>
+api.MapGet("/kitchen/tickets", async (AppDbContext db, HttpContext http, Guid branchId, KitchenStation? station) =>
 {
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
     var query = db.KitchenTickets
         .Include(k => k.Order).ThenInclude(o => o!.Items)
-        .Where(k => k.BranchId == branchId && k.Status != "Completed")
+        .Where(k => k.BranchId == scopedBranchId!.Value && k.Status != "Completed")
         .OrderBy(k => k.CreatedAt).AsQueryable();
     if (station.HasValue) query = query.Where(k => k.Station == station.Value);
     return Results.Ok(await query.ToListAsync());
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
 
-api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
+api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
 {
     var ticket = await db.KitchenTickets.Include(k => k.Order).FirstOrDefaultAsync(k => k.Id == id);
     if (ticket == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, ticket.BranchId);
+    if (scopeError != null) return scopeError;
+
     ticket.Status = dto.Status;
     if (dto.Status == "Ready" && ticket.Order != null)
+    {
         ticket.Order.Status = OrderStatus.ReadyForDispatch;
+        ticket.Order.ReadyAt ??= DateTime.UtcNow;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(ticket);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
 
 // --- Delivery ---
-api.MapGet("/delivery/board", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/delivery/board", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
     var orders = await db.Orders.Include(o => o.Items).Include(o => o.AssignedRider)
-        .Where(o => o.BranchId == branchId && (o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder))
+        .Where(o => o.BranchId == scopedBranchId!.Value && (o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder))
         .OrderByDescending(o => o.CreatedAt).ToListAsync();
     return Results.Ok(new
     {
@@ -1291,38 +1782,50 @@ api.MapGet("/delivery/board", async (AppDbContext db, Guid branchId) =>
     });
 });
 
-api.MapPost("/delivery/assign-rider", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] AssignRiderDto dto) =>
+api.MapPost("/delivery/assign-rider", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] AssignRiderDto dto) =>
 {
     var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == dto.OrderId);
     if (order == null) return Results.NotFound(new { message = "Order not found" });
-    var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId);
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+    var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId && r.BranchId == scopedBranchId!.Value);
     if (rider == null) return Results.NotFound(new { message = "Rider not found" });
     order.AssignedRiderId = rider.Id;
     order.Status = OrderStatus.OutForDelivery;
+    order.OutForDeliveryAt = DateTime.UtcNow;
     rider.IsAvailable = false;
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Order assigned to {rider.Name}", order });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
-api.MapPost("/delivery/mark-delivered", async (AppDbContext db, Guid orderId) =>
+api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http, Guid orderId) =>
 {
     var order = await db.Orders.Include(o => o.AssignedRider).FirstOrDefaultAsync(o => o.Id == orderId);
     if (order == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
     order.Status = OrderStatus.Completed;
+    order.CompletedAt = DateTime.UtcNow;
     order.IsPaid = true;
     if (order.AssignedRider != null) order.AssignedRider.IsAvailable = true;
     await db.SaveChangesAsync();
     return Results.Ok(order);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
 // --- Riders ---
-api.MapGet("/riders", async (AppDbContext db, Guid branchId) =>
-    Results.Ok(await db.Riders.Where(r => r.BranchId == branchId).ToListAsync()));
+api.MapGet("/riders", async (AppDbContext db, HttpContext http, Guid branchId) =>
+{
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
+    return Results.Ok(await db.Riders.Where(r => r.BranchId == scopedBranchId!.Value).ToListAsync());
+});
 
-api.MapGet("/riders/{id}/pending-cod", async (AppDbContext db, Guid id) =>
+api.MapGet("/riders/{id}/pending-cod", async (AppDbContext db, HttpContext http, Guid id) =>
 {
     var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == id);
     if (rider == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, rider.BranchId);
+    if (scopeError != null) return scopeError;
     var activeOrders = await db.Orders
         .Where(o => o.AssignedRiderId == id && o.PaymentMethod == PaymentMethod.Cash && o.CreatedAt.Date == DateTime.UtcNow.Date)
         .ToListAsync();
@@ -1337,10 +1840,12 @@ api.MapGet("/riders/{id}/pending-cod", async (AppDbContext db, Guid id) =>
     });
 });
 
-api.MapPost("/riders/settle", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] SettleRiderDto dto) =>
+api.MapPost("/riders/settle", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] SettleRiderDto dto) =>
 {
     var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId);
     if (rider == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, rider.BranchId);
+    if (scopeError != null) return scopeError;
     var variance = dto.CashCollectedPKR - dto.ExpectedCODPKR;
     var settlement = new RiderSettlement
     {
@@ -1355,16 +1860,22 @@ api.MapPost("/riders/settle", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.
     return Results.Ok(new { message = "Rider COD settled", settlementId = settlement.Id, variancePKR = variance, isReconciled = variance == 0 });
 });
 
-api.MapGet("/delivery/settlements", async (AppDbContext db, Guid branchId) =>
-    Results.Ok(await db.RiderSettlements.Include(s => s.Rider).Where(s => s.BranchId == branchId)
-        .OrderByDescending(s => s.SettledAt).Take(30).ToListAsync()));
+api.MapGet("/delivery/settlements", async (AppDbContext db, HttpContext http, Guid branchId) =>
+{
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
+    return Results.Ok(await db.RiderSettlements.Include(s => s.Rider).Where(s => s.BranchId == scopedBranchId!.Value)
+        .OrderByDescending(s => s.SettledAt).Take(30).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
 
 // --- Call Order Lookup ---
-api.MapGet("/call-order/lookup", async (AppDbContext db, string phone) =>
+api.MapGet("/call-order/lookup", async (AppDbContext db, HttpContext http, string phone) =>
 {
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
     var cleanPhone = phone.Trim();
     var pastOrders = await db.Orders.Include(o => o.Items)
-        .Where(o => o.CustomerPhone != null && o.CustomerPhone.Contains(cleanPhone))
+        .Where(o => o.TenantId == tenantId.Value && o.CustomerPhone != null && o.CustomerPhone.Contains(cleanPhone))
         .OrderByDescending(o => o.CreatedAt).Take(5).ToListAsync();
     var customer = pastOrders.FirstOrDefault();
     if (customer == null) return Results.Ok(new { found = false, phone = cleanPhone });
@@ -1379,15 +1890,23 @@ api.MapGet("/call-order/lookup", async (AppDbContext db, string phone) =>
 });
 
 // --- Director KPIs (fixed N+1) ---
-api.MapGet("/director/kpis", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+api.MapGet("/director/kpis", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? branchId) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    // Branch-pinned staff are forced to their own branch regardless of what they asked for.
+    var userBranchId = http.GetBranchId();
+    var effectiveBranchId = userBranchId ?? branchId;
+
     var today = DateTime.UtcNow.Date;
-    var ordersQuery = db.Orders.Where(o => o.CreatedAt >= today);
-    if (tenantId.HasValue) ordersQuery = ordersQuery.Where(o => o.TenantId == tenantId.Value);
-    if (branchId.HasValue) ordersQuery = ordersQuery.Where(o => o.BranchId == branchId.Value);
+    var ordersQuery = db.Orders.Where(o => o.CreatedAt >= today && o.TenantId == scopedTenantId.Value);
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty)
+        ordersQuery = ordersQuery.Where(o => o.BranchId == effectiveBranchId.Value);
 
     var todayOrders = await ordersQuery.ToListAsync();
-    var branches = await db.Branches.Where(b => !b.IsHeadOffice).ToListAsync();
+    var branchesQuery = db.Branches.Where(b => !b.IsHeadOffice && b.TenantId == scopedTenantId.Value);
+    if (userBranchId != null) branchesQuery = branchesQuery.Where(b => b.Id == userBranchId.Value);
+    var branches = await branchesQuery.ToListAsync();
     var branchIds = branches.Select(b => b.Id).ToList();
 
     // Batch load branch data to avoid N+1
@@ -1415,11 +1934,13 @@ api.MapGet("/director/kpis", async (AppDbContext db, Guid? tenantId, Guid? branc
         completedOrders = todayOrders.Count(o => o.Status == OrderStatus.Completed),
         branchComparison = branchSales
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDirectorDashboard)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view the director dashboard."));
 
 // --- Super Admin ---
-api.MapPost("/super-admin/update-limits", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
+api.MapPost("/super-admin/update-limits", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
 {
+    if (!http.IsSuperAdmin()) return Results.Forbid();
     var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
     if (branch == null) return Results.NotFound();
     branch.AllowedCounters = dto.AllowedCounters;
@@ -1430,10 +1951,21 @@ api.MapPost("/super-admin/update-limits", async (AppDbContext db, [Microsoft.Asp
 });
 
 // --- Terminal Device Management (Counters, Order Tabs, Kitchen Displays) ---
-api.MapGet("/terminals", async (AppDbContext db, Guid? branchId) =>
+api.MapGet("/terminals", async (AppDbContext db, HttpContext http, Guid? branchId) =>
 {
+    var (scopedTenantId, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    // A head-office user with no branchId still gets their whole tenant's terminals.
     var q = db.Terminals.AsQueryable();
-    if (branchId.HasValue) q = q.Where(t => t.BranchId == branchId.Value);
+    if (error != null)
+    {
+        var tenantId = ResolveTenantScope(http, null);
+        if (tenantId == null) return Results.Unauthorized();
+        q = q.Where(t => db.Branches.Any(b => b.Id == t.BranchId && b.TenantId == tenantId.Value));
+    }
+    else
+    {
+        q = q.Where(t => t.BranchId == scopedBranchId!.Value);
+    }
     var terminals = await q.OrderByDescending(t => t.LastSeenAt).ToListAsync();
     return Results.Ok(terminals.Select(t => new
     {
@@ -1441,20 +1973,28 @@ api.MapGet("/terminals", async (AppDbContext db, Guid? branchId) =>
     }));
 });
 
-api.MapPost("/terminals", async (AppDbContext db, CreateTerminalDto dto) =>
+api.MapPost("/terminals", async (AppDbContext db, HttpContext http, CreateTerminalDto dto) =>
 {
-    var branch = await db.Branches.FindAsync(dto.BranchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var branch = await db.Branches.FindAsync(scopedBranchId!.Value);
     if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
 
-    var terminalCount = await db.Terminals.CountAsync(t => t.BranchId == dto.BranchId && t.TerminalType == dto.TerminalType);
-    var limit = dto.TerminalType == TerminalType.OrderTab ? branch.AllowedOrderTabs : branch.AllowedCounters;
+    var terminalCount = await db.Terminals.CountAsync(t => t.BranchId == branch.Id && t.TerminalType == dto.TerminalType);
+    // Branch quota AND the tenant's SaaS package ceiling both apply — take the lower.
+    var branchLimit = dto.TerminalType == TerminalType.OrderTab ? branch.AllowedOrderTabs : branch.AllowedCounters;
+    var tenantTier = await db.Tenants.Where(t => t.Id == branch.TenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
+    var pkg = tenantTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenantTier.Value.ToString());
+    var packageLimit = pkg == null ? int.MaxValue : (dto.TerminalType == TerminalType.OrderTab ? pkg.MaxOrderTabs : pkg.MaxCounters);
+    var limit = Math.Min(branchLimit, packageLimit);
     if (terminalCount >= limit)
         return Results.BadRequest(new { error = $"Branch limit reached: max {limit} {dto.TerminalType} devices allowed" });
 
     var terminal = new Terminal
     {
         Id = Guid.NewGuid(),
-        BranchId = dto.BranchId,
+        BranchId = branch.Id,
         TerminalName = dto.TerminalName.Trim(),
         TerminalType = dto.TerminalType,
         DeviceToken = Guid.NewGuid().ToString("N"),
@@ -1466,10 +2006,12 @@ api.MapPost("/terminals", async (AppDbContext db, CreateTerminalDto dto) =>
     return Results.Ok(new { message = "Terminal created", terminal.Id, terminal.TerminalName, terminal.DeviceToken });
 });
 
-api.MapPut("/terminals/{id}", async (AppDbContext db, Guid id, UpdateTerminalDto dto) =>
+api.MapPut("/terminals/{id}", async (AppDbContext db, HttpContext http, Guid id, UpdateTerminalDto dto) =>
 {
     var terminal = await db.Terminals.FindAsync(id);
     if (terminal == null) return Results.NotFound(new { error = "Terminal not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, terminal.BranchId);
+    if (scopeError != null) return scopeError;
 
     if (!string.IsNullOrWhiteSpace(dto.TerminalName)) terminal.TerminalName = dto.TerminalName.Trim();
     if (dto.IsActive.HasValue) terminal.IsActive = dto.IsActive.Value;
@@ -1478,10 +2020,12 @@ api.MapPut("/terminals/{id}", async (AppDbContext db, Guid id, UpdateTerminalDto
     return Results.Ok(new { message = "Terminal updated", terminal.Id, terminal.TerminalName, terminal.IsActive });
 });
 
-api.MapDelete("/terminals/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/terminals/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
     var terminal = await db.Terminals.FindAsync(id);
     if (terminal == null) return Results.NotFound(new { error = "Terminal not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, terminal.BranchId);
+    if (scopeError != null) return scopeError;
     db.Terminals.Remove(terminal);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Terminal deleted" });
@@ -1497,12 +2041,20 @@ api.MapPost("/terminals/heartbeat", async (AppDbContext db, TerminalHeartbeatDto
 });
 
 // --- Offline Batch Sync (fixed order numbers) ---
-api.MapPost("/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] List<CreateOrderDto> offlineOrders) =>
+// Same rule as /sync/batch-orders: totals are recomputed from current DB prices and tax rates.
+api.MapPost("/sync/offline-batch", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    [Microsoft.AspNetCore.Mvc.FromBody] List<CreateOrderDto> offlineOrders) =>
 {
+    var actingUser = await accessor.GetCurrentUserAsync(http);
     int syncedCount = 0;
     foreach (var dto in offlineOrders)
     {
-        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == dto.BranchId);
+        var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+        if (scopeError != null || scopedBranchId == null) continue;
+        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
         if (branch == null) continue;
 
         var order = new Order
@@ -1511,19 +2063,31 @@ api.MapPost("/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore
             OrderNumber = await GenerateOrderNumberAsync(db, "OFFLINE"),
             OrderType = dto.OrderType, Status = OrderStatus.Completed,
             TableNumber = dto.TableNumber, CustomerName = dto.CustomerName, CustomerPhone = dto.CustomerPhone,
-            DeliveryAddress = dto.DeliveryAddress, SubTotalPKR = dto.SubTotalPKR, DiscountPKR = dto.DiscountPKR,
-            TaxPKR = dto.TaxPKR, TotalPKR = dto.TotalPKR, PaymentMethod = dto.PaymentMethod,
+            DeliveryAddress = dto.DeliveryAddress, PaymentMethod = dto.PaymentMethod,
             AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = true,
-            CashierName = dto.CashierName ?? "Offline Cashier", CreatedByRole = "OfflineSync", CreatedAt = DateTime.UtcNow
+            CashierName = dto.CashierName ?? "Offline Cashier", CreatedByRole = "OfflineSync", CreatedAt = DateTime.UtcNow,
+            CompletedAt = DateTime.UtcNow
         };
 
-        foreach (var item in dto.Items)
+        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
+        if (priced.Error != null) continue;
+        order.SubTotalPKR = priced.SubTotalPKR;
+        order.DiscountPKR = priced.DiscountPKR;
+        order.TaxPKR = priced.TaxPKR;
+        order.TotalPKR = priced.TotalPKR;
+        foreach (var line in priced.Items) order.Items.Add(line);
+
+        if (dto.SubTotalPKR > 0 && Math.Abs(priced.SubTotalPKR - dto.SubTotalPKR) / dto.SubTotalPKR > 0.02m)
         {
-            order.Items.Add(new OrderItem
+            db.SmartAlerts.Add(new SmartAlert
             {
-                OrderId = order.Id, ProductId = item.ProductId, ProductName = item.ProductName,
-                Quantity = item.Quantity, UnitPricePKR = item.UnitPricePKR,
-                TotalPricePKR = item.UnitPricePKR * item.Quantity, Station = item.Station
+                TenantId = branch.TenantId,
+                BranchId = branch.Id,
+                AlertType = "price_mismatch_offline_sync",
+                Severity = "warning",
+                Title = $"Price mismatch on synced order {order.OrderNumber}",
+                Message = $"Offline terminal submitted {dto.SubTotalPKR:N2}; current menu prices give {priced.SubTotalPKR:N2}. The server figure was saved — please review.",
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { orderId = order.Id, submittedSubTotal = dto.SubTotalPKR, recomputedSubTotal = priced.SubTotalPKR })
             });
         }
 
@@ -1541,20 +2105,24 @@ api.MapPost("/sync/offline-batch", async (AppDbContext db, [Microsoft.AspNetCore
 });
 
 // --- Cash Shifts ---
-api.MapGet("/cash-shifts", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/cash-shifts", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
-    var shifts = await db.CashShifts.Where(s => s.BranchId == branchId).OrderByDescending(s => s.OpenedAt).Take(20).ToListAsync();
+    var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
+    if (error != null) return error;
+    var shifts = await db.CashShifts.Where(s => s.BranchId == scopedBranchId!.Value).OrderByDescending(s => s.OpenedAt).Take(20).ToListAsync();
     return Results.Ok(shifts);
 });
 
-api.MapPost("/cash-shifts/open", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] OpenCashShiftDto dto) =>
+api.MapPost("/cash-shifts/open", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] OpenCashShiftDto dto) =>
 {
-    var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && !s.IsClosed);
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == scopedBranchId!.Value && !s.IsClosed);
     if (activeShift != null) return Results.BadRequest(new { message = "An active shift already exists. Close it first." });
 
     var shift = new CashShift
     {
-        BranchId = dto.BranchId, TerminalName = dto.TerminalName, CashierName = dto.CashierName,
+        BranchId = scopedBranchId!.Value, TerminalName = dto.TerminalName, CashierName = dto.CashierName,
         OpeningFloatPKR = dto.OpeningFloatPKR, OpenedAt = DateTime.UtcNow, IsClosed = false
     };
     db.CashShifts.Add(shift);
@@ -1562,10 +2130,12 @@ api.MapPost("/cash-shifts/open", async (AppDbContext db, [Microsoft.AspNetCore.M
     return Results.Ok(shift);
 });
 
-api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CloseCashShiftDto dto) =>
+api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CloseCashShiftDto dto) =>
 {
     var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.Id == id);
     if (shift == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
+    if (scopeError != null) return scopeError;
     if (shift.IsClosed) return Results.BadRequest(new { message = "Shift already closed" });
 
     shift.ActualCashCountedPKR = dto.ActualCashCounted;
@@ -1578,10 +2148,12 @@ api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, Guid id, [Microso
 });
 
 // --- Cash Entry (Paid Out / Received) ---
-api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shiftId, CreateCashEntryDto dto) =>
+api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, HttpContext http, Guid shiftId, CreateCashEntryDto dto) =>
 {
     var shift = await db.CashShifts.FindAsync(shiftId);
     if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
+    if (scopeError != null) return scopeError;
     if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot add entries to a closed shift" });
 
     var entry = new CashEntry
@@ -1607,8 +2179,12 @@ api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shift
     return Results.Ok(new { message = "Cash entry added", entry.Id });
 });
 
-api.MapGet("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shiftId) =>
+api.MapGet("/cash-shifts/{shiftId}/entries", async (AppDbContext db, HttpContext http, Guid shiftId) =>
 {
+    var shift = await db.CashShifts.FindAsync(shiftId);
+    if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
+    if (scopeError != null) return scopeError;
     var entries = await db.CashEntries
         .Where(e => e.CashShiftId == shiftId)
         .OrderByDescending(e => e.CreatedAt)
@@ -1616,10 +2192,12 @@ api.MapGet("/cash-shifts/{shiftId}/entries", async (AppDbContext db, Guid shiftI
     return Results.Ok(entries);
 });
 
-api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db, Guid shiftId, Guid entryId) =>
+api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db, HttpContext http, Guid shiftId, Guid entryId) =>
 {
     var shift = await db.CashShifts.FindAsync(shiftId);
     if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
+    if (scopeError != null) return scopeError;
     if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot delete entries from a closed shift" });
 
     var entry = await db.CashEntries.FindAsync(entryId);
@@ -1637,8 +2215,12 @@ api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db
 });
 
 // --- Cash Sale Report ---
-api.MapGet("/reports/cash-sales", async (AppDbContext db, Guid branchId, string date) =>
+api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid branchId, string date) =>
 {
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    branchId = scopedBranchId!.Value;
+
     if (!DateTime.TryParse(date, out var reportDate))
         reportDate = DateTime.UtcNow.Date;
 
@@ -1661,11 +2243,15 @@ api.MapGet("/reports/cash-sales", async (AppDbContext db, Guid branchId, string 
             o.TableNumber, o.CashierName, o.CreatedAt
         })
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
 
 // --- Card / Digital Sale Report ---
-api.MapGet("/reports/card-sales", async (AppDbContext db, Guid branchId, string date) =>
+api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid branchId, string date) =>
 {
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    branchId = scopedBranchId!.Value;
+
     if (!DateTime.TryParse(date, out var reportDate))
         reportDate = DateTime.UtcNow.Date;
 
@@ -1695,15 +2281,17 @@ api.MapGet("/reports/card-sales", async (AppDbContext db, Guid branchId, string 
             o.TableNumber, o.CashierName, o.CreatedAt
         })
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
 
 // --- Cash Tally (End-of-Day Summary) ---
-api.MapGet("/cash-shifts/{shiftId}/tally", async (AppDbContext db, Guid shiftId) =>
+api.MapGet("/cash-shifts/{shiftId}/tally", async (AppDbContext db, HttpContext http, Guid shiftId) =>
 {
     var shift = await db.CashShifts
         .Include(s => s.Entries)
         .FirstOrDefaultAsync(s => s.Id == shiftId);
     if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
+    if (scopeError != null) return scopeError;
 
     var cashSales = await db.Orders
         .Where(o => o.BranchId == shift.BranchId && o.CreatedAt >= shift.OpenedAt 
@@ -1736,8 +2324,12 @@ api.MapGet("/cash-shifts/{shiftId}/tally", async (AppDbContext db, Guid shiftId)
 });
 
 // --- Inventory ---
-api.MapGet("/inventory", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    branchId = scopedBranchId!.Value;
+
     var stocks = await db.BranchStocks.Include(s => s.Product).ThenInclude(p => p!.Category)
         .Where(s => s.BranchId == branchId).OrderBy(s => s.Product!.Name).ToListAsync();
 
@@ -1766,14 +2358,19 @@ api.MapGet("/inventory", async (AppDbContext db, Guid branchId) =>
         minAlertLevel = s.MinAlertLevel, batchNumber = s.BatchNumber,
         expiryDate = s.ExpiryDate?.ToString("yyyy-MM-dd"), isLowStock = s.QuantityOnHand <= s.MinAlertLevel
     }));
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
-api.MapPost("/inventory/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
+api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
 {
-    var stock = await db.BranchStocks.Include(s => s.Product).FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && s.ProductId == dto.ProductId);
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    var branchId = scopedBranchId!.Value;
+
+    var stock = await db.BranchStocks.Include(s => s.Product).FirstOrDefaultAsync(s => s.BranchId == branchId && s.ProductId == dto.ProductId);
     if (stock == null)
     {
-        stock = new BranchStock { BranchId = dto.BranchId, ProductId = dto.ProductId, QuantityOnHand = dto.Quantity, MinAlertLevel = 10, BatchNumber = dto.BatchNumber, ExpiryDate = dto.ExpiryDate };
+        stock = new BranchStock { BranchId = branchId, ProductId = dto.ProductId, QuantityOnHand = dto.Quantity, MinAlertLevel = 10, BatchNumber = dto.BatchNumber, ExpiryDate = dto.ExpiryDate };
         db.BranchStocks.Add(stock);
     }
     else
@@ -1786,20 +2383,35 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, [Microsoft.AspNetCore
         stock.Product.CostPricePKR = dto.CostPricePKR.Value;
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Received {dto.Quantity} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock."));
 
-api.MapPost("/inventory/adjust", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] StockAdjustmentDto dto) =>
+api.MapPost("/inventory/adjust", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] StockAdjustmentDto dto) =>
 {
-    var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == dto.BranchId && s.ProductId == dto.ProductId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == scopedBranchId!.Value && s.ProductId == dto.ProductId);
     if (stock == null) return Results.NotFound();
+    var oldQty = stock.QuantityOnHand;
     stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand + dto.AdjustmentQty);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId!.Value, currentUser, "StockAdjusted", "BranchStock", stock.Id,
+        oldValue: oldQty.ToString("0.##"), newValue: $"{stock.QuantityOnHand:0.##} ({dto.Reason})");
+
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Stock adjusted: {dto.Reason}", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to adjust stock."));
 
 // --- Raw Ingredients ---
-api.MapGet("/inventory/ingredients", async (AppDbContext db, Guid branchId) =>
+api.MapGet("/inventory/ingredients", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    branchId = scopedBranchId!.Value;
+
     var ingredients = await db.Ingredients.Where(i => i.BranchId == branchId).OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
     if (!ingredients.Any())
     {
@@ -1832,24 +2444,32 @@ api.MapGet("/inventory/ingredients", async (AppDbContext db, Guid branchId) =>
         supplierName = i.SupplierName, isLowStock = i.CurrentStock <= i.MinAlertLevel,
         totalValuationPKR = Math.Round(i.CurrentStock * i.CostPerUnitPKR, 2)
     }));
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
-api.MapPost("/inventory/ingredients/stock-in", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] IngredientStockInDto dto) =>
+api.MapPost("/inventory/ingredients/stock-in", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] IngredientStockInDto dto) =>
 {
-    var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == dto.IngredientId && i.BranchId == dto.BranchId);
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == dto.IngredientId && i.BranchId == scopedBranchId!.Value);
     if (ingredient == null) return Results.NotFound();
     ingredient.CurrentStock += dto.QuantityReceived;
     if (dto.NewCostPerUnitPKR.HasValue && dto.NewCostPerUnitPKR.Value > 0) ingredient.CostPerUnitPKR = dto.NewCostPerUnitPKR.Value;
     if (!string.IsNullOrEmpty(dto.SupplierName)) ingredient.SupplierName = dto.SupplierName;
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Added +{dto.QuantityReceived} {ingredient.Unit} to {ingredient.Name}", ingredientId = ingredient.Id, newStock = ingredient.CurrentStock });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive ingredients."));
 
-api.MapPost("/inventory/ingredients", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateIngredientDto dto) =>
+api.MapPost("/inventory/ingredients", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] CreateIngredientDto dto) =>
 {
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
     var ingredient = new Ingredient
     {
-        BranchId = dto.BranchId, TenantId = dto.TenantId, Name = dto.Name,
+        BranchId = scopedBranchId!.Value, TenantId = scopedTenantId!.Value, Name = dto.Name,
         Category = dto.Category ?? "General", Unit = dto.Unit ?? "Piece",
         CostPerUnitPKR = dto.CostPerUnitPKR, CurrentStock = dto.InitialStock,
         MinAlertLevel = dto.MinAlertLevel, SupplierName = dto.SupplierName
@@ -1857,11 +2477,16 @@ api.MapPost("/inventory/ingredients", async (AppDbContext db, [Microsoft.AspNetC
     db.Ingredients.Add(ingredient);
     await db.SaveChangesAsync();
     return Results.Ok(ingredient);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to create ingredients."));
 
 // --- Recipes ---
-api.MapGet("/recipes/{productId}", async (AppDbContext db, Guid productId) =>
+api.MapGet("/recipes/{productId}", async (AppDbContext db, HttpContext http, Guid productId) =>
 {
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var productExists = http.IsSuperAdmin() || await db.Products.AnyAsync(p => p.Id == productId && p.TenantId == tenantId!.Value);
+    if (!productExists) return Results.NotFound();
     var recipe = await db.ProductRecipeItems.Include(r => r.Ingredient).Where(r => r.ProductId == productId).ToListAsync();
     return Results.Ok(recipe.Select(r => new
     {
@@ -1870,10 +2495,15 @@ api.MapGet("/recipes/{productId}", async (AppDbContext db, Guid productId) =>
         quantityRequired = r.QuantityRequired, unit = r.Unit, costPerUnitPKR = r.Ingredient?.CostPerUnitPKR ?? 0,
         estimatedCostPKR = Math.Round(r.QuantityRequired * (r.Ingredient?.CostPerUnitPKR ?? 0), 2)
     }));
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
-api.MapPost("/recipes/{productId}", async (AppDbContext db, Guid productId, [Microsoft.AspNetCore.Mvc.FromBody] List<RecipeItemInputDto> items) =>
+api.MapPost("/recipes/{productId}", async (AppDbContext db, HttpContext http, Guid productId, [Microsoft.AspNetCore.Mvc.FromBody] List<RecipeItemInputDto> items) =>
 {
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var owned = http.IsSuperAdmin() || await db.Products.AnyAsync(p => p.Id == productId && p.TenantId == tenantId!.Value);
+    if (!owned) return Results.NotFound();
+
     var existing = await db.ProductRecipeItems.Where(r => r.ProductId == productId).ToListAsync();
     db.ProductRecipeItems.RemoveRange(existing);
     decimal calculatedCost = 0;
@@ -1891,11 +2521,16 @@ api.MapPost("/recipes/{productId}", async (AppDbContext db, Guid productId, [Mic
     if (product != null && calculatedCost > 0) product.CostPricePKR = Math.Round(calculatedCost, 2);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Recipe updated with {items.Count} ingredients. Cost: ₨{Math.Round(calculatedCost, 2)}", productId, calculatedCostPKR = Math.Round(calculatedCost, 2) });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit recipes."));
 
 // --- Users (with PIN hashing) ---
-api.MapGet("/users", async (AppDbContext db, Guid tenantId, Guid? branchId) =>
+api.MapGet("/users", async (AppDbContext db, HttpContext http, Guid tenantId, Guid? branchId) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    tenantId = scopedTenantId.Value;
+    branchId = http.GetBranchId() ?? branchId;
+
     var query = db.Users.Where(u => u.TenantId == tenantId);
     if (branchId.HasValue) query = query.Where(u => u.BranchId == null || u.BranchId == branchId.Value);
     var users = await query.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync();
@@ -1921,13 +2556,33 @@ api.MapGet("/users", async (AppDbContext db, Guid tenantId, Guid? branchId) =>
         role = u.Role.ToString(), isActive = u.IsActive, createdAt = u.CreatedAt,
         permissions = new { u.CanViewFinancialReports, u.CanManageInventory, u.CanManageMenuAndTax, u.CanGiveDiscounts, u.CanVoidOrders }
     }));
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "view"));
 
-api.MapPost("/users", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
+api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    // Nobody may mint a SuperAdmin except a SuperAdmin.
+    if (dto.Role == UserRole.SuperAdmin && !http.IsSuperAdmin())
+        return Results.Json(new { message = "You cannot create a platform SuperAdmin." }, statusCode: 403);
+
+    if (await db.Users.AnyAsync(u => u.TenantId == scopedTenantId.Value && u.Username == dto.Username.ToLower().Trim()))
+        return Results.BadRequest(new { message = "That username is already taken in this restaurant." });
+
+    // Enforce the package's user quota.
+    var tier = await db.Tenants.Where(t => t.Id == scopedTenantId.Value).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
+    var pkg = tier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tier.Value.ToString());
+    if (pkg != null)
+    {
+        var userCount = await db.Users.CountAsync(u => u.TenantId == scopedTenantId.Value);
+        if (userCount >= pkg.MaxUsers)
+            return Results.BadRequest(new { message = $"Your {pkg.DisplayName} package allows a maximum of {pkg.MaxUsers} users. Please upgrade." });
+    }
+
     var user = new AppUser
     {
-        TenantId = dto.TenantId, BranchId = dto.BranchId, FullName = dto.FullName,
+        TenantId = scopedTenantId.Value, BranchId = dto.BranchId, FullName = dto.FullName,
         Username = dto.Username.ToLower().Trim(),
         PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode ?? "1234"),
         Role = dto.Role, IsActive = true,
@@ -1935,14 +2590,25 @@ api.MapPost("/users", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody
         CanManageMenuAndTax = dto.CanManageMenuAndTax, CanGiveDiscounts = dto.CanGiveDiscounts, CanVoidOrders = dto.CanVoidOrders
     };
     db.Users.Add(user);
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "UserCreated", "AppUser", user.Id, null, $"{user.Username} ({user.Role})");
     await db.SaveChangesAsync();
     return Results.Ok(new { user.Id, user.Username, user.Role });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
-api.MapPut("/users/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
+api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
 {
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id && (http.IsSuperAdmin() || u.TenantId == scopedTenantId!.Value));
     if (user == null) return Results.NotFound();
+
+    if (dto.Role == UserRole.SuperAdmin && !http.IsSuperAdmin())
+        return Results.Json(new { message = "You cannot promote anyone to platform SuperAdmin." }, statusCode: 403);
+
+    var before = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
+
     if (!string.IsNullOrEmpty(dto.FullName)) user.FullName = dto.FullName;
     if (dto.Role.HasValue) user.Role = dto.Role.Value;
     if (!string.IsNullOrEmpty(dto.PinCode)) user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode);
@@ -1952,23 +2618,46 @@ api.MapPut("/users/{id}", async (AppDbContext db, Guid id, [Microsoft.AspNetCore
     if (dto.CanManageMenuAndTax.HasValue) user.CanManageMenuAndTax = dto.CanManageMenuAndTax.Value;
     if (dto.CanGiveDiscounts.HasValue) user.CanGiveDiscounts = dto.CanGiveDiscounts.Value;
     if (dto.CanVoidOrders.HasValue) user.CanVoidOrders = dto.CanVoidOrders.Value;
+
+    var after = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
+    if (before != after)
+    {
+        var currentUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, user.TenantId, currentUser, "PermissionChanged", "AppUser", user.Id, before, after);
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(user);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
-api.MapDelete("/users/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
 {
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id && (http.IsSuperAdmin() || u.TenantId == scopedTenantId!.Value));
     if (user == null) return Results.NotFound();
+    if (user.Role == UserRole.SuperAdmin && !http.IsSuperAdmin()) return Results.Json(new { message = "You cannot delete a platform SuperAdmin." }, statusCode: 403);
+    if (http.GetUserId() == user.Id) return Results.BadRequest(new { message = "You cannot delete your own account." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, user.TenantId, currentUser, "UserDeleted", "AppUser", user.Id, $"{user.Username} ({user.Role})", null);
     db.Users.Remove(user);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "User deleted successfully", id });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "delete"));
 
 // --- Reports ---
-api.MapGet("/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime? date) =>
+api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? date) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return Results.Unauthorized();
+    var targetBranchId = http.GetBranchId()
+        ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (targetBranchId == Guid.Empty)
+        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
+    if (branchError != null) return branchError;
+
     var targetDate = (date ?? DateTime.UtcNow).Date;
     var nextDate = targetDate.AddDays(1);
     var orders = await db.Orders.Include(o => o.Items)
@@ -1993,11 +2682,19 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, Guid? branchId, DateTime?
         takeawaySalesPKR = orders.Where(o => o.OrderType == OrderType.Takeaway).Sum(o => o.TotalPKR),
         deliverySalesPKR = orders.Where(o => o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder).Sum(o => o.TotalPKR)
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
 
-api.MapGet("/reports/sales-by-category", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return Results.Unauthorized();
+    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (targetBranchId == Guid.Empty)
+        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
+    if (branchError != null) return branchError;
+
     var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
     var taxDivisor = settings != null ? (1 + settings.DefaultTaxRate / 100m) : 1.16m;
@@ -2008,26 +2705,47 @@ api.MapGet("/reports/sales-by-category", async (AppDbContext db, Guid? branchId,
     return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
         .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / taxDivisor, 2), taxPKR = Math.Round(gross - (gross / taxDivisor), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.grossSalesPKR).ToList());
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
-api.MapGet("/reports/item-performance", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return Results.Unauthorized();
+    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (targetBranchId == Guid.Empty)
+        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
+    if (branchError != null) return branchError;
+
     var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
     var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", CostPrice = i.Product?.CostPricePKR ?? 0 })
         .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.CostPrice * qty; var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.revenuePKR).Take(25).ToList());
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
-api.MapGet("/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
+api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return Results.Unauthorized();
+    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (targetBranchId == Guid.Empty)
+        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
+    if (branchError != null) return branchError;
+
     var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    var branchEntity = await db.Branches.FirstOrDefaultAsync(b => b.Id == targetBranchId);
     var primaryTaxRate = settings?.DefaultTaxRate ?? 16;
     var secondaryTaxRate = settings?.DigitalTaxRate ?? 8;
+    if (branchEntity != null)
+    {
+        var (cashRate, digitalRate, _) = await ResolveTaxRatesAsync(db, branchEntity);
+        primaryTaxRate = cashRate;
+        secondaryTaxRate = digitalRate;
+    }
     var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
     var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
     var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
@@ -2042,11 +2760,19 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, Guid? branchId, int? da
         cashSegment = new { taxRatePercent = primaryTaxRate, invoiceCount = cashOrders.Count, grossSalesPKR = cashOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) },
         cardSegment = new { taxRatePercent = secondaryTaxRate, invoiceCount = cardOrders.Count, grossSalesPKR = cardOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cardOrders.Sum(o => o.TaxPKR) }
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view tax reports."));
 
-api.MapGet("/reports/payment-methods", async (AppDbContext db, Guid? branchId, int? days) =>
+api.MapGet("/reports/payment-methods", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
 {
-    var targetBranchId = branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : await db.Branches.Select(b => b.Id).FirstOrDefaultAsync();
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return Results.Unauthorized();
+    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (targetBranchId == Guid.Empty)
+        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
+    if (branchError != null) return branchError;
+
     var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
     var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid).ToListAsync();
     var grandTotal = orders.Sum(o => o.TotalPKR);
@@ -2055,11 +2781,13 @@ api.MapGet("/reports/payment-methods", async (AppDbContext db, Guid? branchId, i
         totalRevenuePKR = grandTotal, totalTransactions = orders.Count,
         tenders = orders.GroupBy(o => o.PaymentMethod).Select(g => { var total = g.Sum(x => x.TotalPKR); var count = g.Count(); return new { method = g.Key.ToString(), transactionCount = count, totalAmountPKR = total, percentageOfTotal = grandTotal > 0 ? Math.Round((total / grandTotal) * 100, 1) : 0, avgTicketPKR = count > 0 ? Math.Round(total / count, 2) : 0 }; }).OrderByDescending(x => x.totalAmountPKR).ToList()
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
-api.MapGet("/reports/consolidated", async (AppDbContext db, Guid? tenantId, int? days) =>
+api.MapGet("/reports/consolidated", async (AppDbContext db, HttpContext http, Guid? tenantId, int? days) =>
 {
-    var targetTenantId = tenantId.HasValue && tenantId.Value != Guid.Empty ? tenantId.Value : await db.Tenants.Select(t => t.Id).FirstOrDefaultAsync();
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var targetTenantId = scopedTenantId.Value;
     var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
     var branches = await db.Branches.Where(b => b.TenantId == targetTenantId).ToListAsync();
     var branchIds = branches.Select(b => b.Id).ToList();
@@ -2081,23 +2809,43 @@ api.MapGet("/reports/consolidated", async (AppDbContext db, Guid? tenantId, int?
         chainCostPKR = branchSummaries.Sum(x => x.estimatedCostPKR), chainNetProfitPKR = chainProfit,
         chainProfitMargin = chainGross > 0 ? Math.Round((chainProfit / chainGross) * 100, 1) : 0, branches = branchSummaries
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasConsolidatedReports)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view consolidated reports."));
 
 // --- Supply Chain ---
-api.MapGet("/transfers", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+api.MapGet("/transfers", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? branchId) =>
 {
-    var query = db.StockTransferOrders.Include(t => t.SourceBranch).Include(t => t.DestinationBranch).Include(t => t.Items).AsQueryable();
-    if (tenantId.HasValue) query = query.Where(t => t.TenantId == tenantId.Value);
-    if (branchId.HasValue) query = query.Where(t => t.SourceBranchId == branchId.Value || t.DestinationBranchId == branchId.Value);
-    return Results.Ok(await query.OrderByDescending(t => t.RequestedAt).ToListAsync());
-});
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var effectiveBranchId = http.GetBranchId() ?? branchId;
 
-api.MapPost("/transfers", async (AppDbContext db, CreateTransferOrderDto dto) =>
+    var query = db.StockTransferOrders.Include(t => t.SourceBranch).Include(t => t.DestinationBranch).Include(t => t.Items)
+        .Where(t => t.TenantId == scopedTenantId.Value).AsQueryable();
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty)
+        query = query.Where(t => t.SourceBranchId == effectiveBranchId.Value || t.DestinationBranchId == effectiveBranchId.Value);
+    return Results.Ok(await query.OrderByDescending(t => t.RequestedAt).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "view"));
+
+api.MapPost("/transfers", async (AppDbContext db, HttpContext http, CreateTransferOrderDto dto) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    // Both ends of the transfer must belong to the caller's tenant.
+    var endpointsOk = await db.Branches.CountAsync(b => b.TenantId == scopedTenantId.Value &&
+        (b.Id == dto.SourceBranchId || b.Id == dto.DestinationBranchId)) == 2;
+    if (!endpointsOk) return Results.Json(new { message = "Source or destination branch does not belong to this tenant." }, statusCode: 403);
+
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null && dto.SourceBranchId != userBranchId && dto.DestinationBranchId != userBranchId)
+        return Results.Json(new { message = "You can only create transfers involving your own branch." }, statusCode: 403);
+
     var transferNumber = await GenerateTransferNumberAsync(db);
     var order = new StockTransferOrder
     {
-        TenantId = dto.TenantId, TransferNumber = transferNumber, SourceBranchId = dto.SourceBranchId,
+        TenantId = scopedTenantId.Value, TransferNumber = transferNumber, SourceBranchId = dto.SourceBranchId,
         DestinationBranchId = dto.DestinationBranchId, Status = TransferStatus.Requested,
         RequestedAt = DateTime.UtcNow, VehicleOrDriver = dto.VehicleOrDriver, Notes = dto.Notes
     };
@@ -2118,11 +2866,15 @@ api.MapPost("/transfers", async (AppDbContext db, CreateTransferOrderDto dto) =>
     db.StockTransferOrders.Add(order);
     await db.SaveChangesAsync();
     return Results.Ok(order);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to create stock transfers."));
 
-api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, Guid id, DispatchTransferDto dto) =>
+api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http, Guid id, DispatchTransferDto dto) =>
 {
-    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var order = await db.StockTransferOrders.Include(t => t.Items)
+        .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
     if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch in {order.Status} state");
     foreach (var item in order.Items)
@@ -2138,11 +2890,15 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, Guid id, Dispatc
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = dto.Notes;
     await db.SaveChangesAsync();
     return Results.Ok(order);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to dispatch stock."));
 
-api.MapPost("/transfers/{id}/receive", async (AppDbContext db, Guid id, ReceiveTransferDto dto) =>
+api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http, Guid id, ReceiveTransferDto dto) =>
 {
-    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var order = await db.StockTransferOrders.Include(t => t.Items)
+        .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
     if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive in {order.Status} state");
     foreach (var item in order.Items)
@@ -2159,11 +2915,15 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, Guid id, ReceiveT
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
     await db.SaveChangesAsync();
     return Results.Ok(order);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock transfers."));
 
-api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, Guid id) =>
+api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, Guid id) =>
 {
-    var order = await db.StockTransferOrders.Include(t => t.Items).FirstOrDefaultAsync(t => t.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var order = await db.StockTransferOrders.Include(t => t.Items)
+        .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
     if (order.Status == TransferStatus.InTransit)
     {
@@ -2176,23 +2936,32 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, Guid id) =>
     order.Status = TransferStatus.Cancelled;
     await db.SaveChangesAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to cancel stock transfers."));
 
 // --- Procurement ---
-api.MapGet("/procurement/purchase-orders", async (AppDbContext db, Guid? tenantId, Guid? branchId) =>
+api.MapGet("/procurement/purchase-orders", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? branchId) =>
 {
-    var query = db.PurchaseOrders.Include(p => p.Branch).Include(p => p.Items).AsQueryable();
-    if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
-    if (branchId.HasValue) query = query.Where(p => p.BranchId == branchId.Value);
-    return Results.Ok(await query.OrderByDescending(p => p.CreatedAt).ToListAsync());
-});
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var effectiveBranchId = http.GetBranchId() ?? branchId;
 
-api.MapPost("/procurement/purchase-orders", async (AppDbContext db, CreatePODto dto) =>
+    var query = db.PurchaseOrders.Include(p => p.Branch).Include(p => p.Items)
+        .Where(p => p.TenantId == scopedTenantId.Value).AsQueryable();
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty)
+        query = query.Where(p => p.BranchId == effectiveBranchId.Value);
+    return Results.Ok(await query.OrderByDescending(p => p.CreatedAt).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "view"));
+
+api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext http, CreatePODto dto) =>
 {
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
     var poNumber = await GeneratePONumberAsync(db);
     var po = new PurchaseOrder
     {
-        TenantId = dto.TenantId, BranchId = dto.BranchId, PONumber = poNumber,
+        TenantId = scopedTenantId!.Value, BranchId = scopedBranchId!.Value, PONumber = poNumber,
         SupplierName = dto.SupplierName, Status = POStatus.Ordered, CreatedAt = DateTime.UtcNow, Notes = dto.Notes
     };
     decimal totalCost = 0;
@@ -2210,11 +2979,14 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, CreatePODto 
     db.PurchaseOrders.Add(po);
     await db.SaveChangesAsync();
     return Results.Ok(po);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to raise purchase orders."));
 
-api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db, Guid id, ReceivePODto dto) =>
+api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db, HttpContext http, Guid id, ReceivePODto dto) =>
 {
-    var po = await db.PurchaseOrders.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var po = await db.PurchaseOrders.Include(p => p.Items)
+        .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
     if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
     foreach (var item in po.Items)
@@ -2229,25 +3001,32 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     if (!string.IsNullOrEmpty(dto.Notes)) po.Notes = (po.Notes != null ? po.Notes + " • " : "") + dto.Notes;
     await db.SaveChangesAsync();
     return Results.Ok(po);
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive purchase orders."));
 
-api.MapPost("/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, Guid id) =>
+api.MapPost("/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, HttpContext http, Guid id) =>
 {
-    var po = await db.PurchaseOrders.FindAsync(id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var po = await db.PurchaseOrders.FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
     po.Status = POStatus.Cancelled;
     await db.SaveChangesAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to cancel purchase orders."));
 
 // --- Stock Request (Branch Manager -> Owner / Vendor / HQ) ---
-api.MapGet("/stock-requests", async (AppDbContext db, Guid? branchId, string? status) =>
+api.MapGet("/stock-requests", async (AppDbContext db, HttpContext http, Guid? branchId, string? status) =>
 {
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var effectiveBranchId = http.GetBranchId() ?? branchId;
+
     var q = db.StockRequests
         .Include(sr => sr.Items)
         .ThenInclude(i => i.Ingredient)
+        .Where(sr => sr.TenantId == scopedTenantId.Value)
         .AsQueryable();
-    if (branchId.HasValue) q = q.Where(sr => sr.BranchId == branchId.Value);
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty) q = q.Where(sr => sr.BranchId == effectiveBranchId.Value);
     if (!string.IsNullOrEmpty(status) && Enum.TryParse<StockRequestStatus>(status, out var st))
         q = q.Where(sr => sr.Status == st);
     var requests = await q.OrderByDescending(sr => sr.CreatedAt).ToListAsync();
@@ -2263,26 +3042,30 @@ api.MapGet("/stock-requests", async (AppDbContext db, Guid? branchId, string? st
             i.QuantityRequested, i.CurrentStock, i.UnitCostPKR
         })
     }));
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "view"));
 
-api.MapPost("/stock-requests", async (AppDbContext db, CreateStockRequestDto dto) =>
+api.MapPost("/stock-requests", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateStockRequestDto dto) =>
 {
-    var branch = await db.Branches.FindAsync(dto.BranchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
+    var currentUser = await accessor.GetCurrentUserAsync(http);
 
     var seq = await db.StockRequests.CountAsync(sr => sr.TenantId == branch.TenantId) + 1;
     var request = new StockRequest
     {
         Id = Guid.NewGuid(),
         TenantId = branch.TenantId,
-        BranchId = dto.BranchId,
+        BranchId = branch.Id,
         RequestNumber = $"SR-{seq:0000}",
         RequestType = dto.RequestType,
         VendorName = dto.VendorName,
         Notes = dto.Notes,
         EstimatedCostPKR = dto.Items.Sum(i => i.QuantityRequested * i.UnitCostPKR),
-        CreatedBy = dto.CreatedBy,
-        CreatedByUserId = dto.CreatedByUserId,
+        CreatedBy = currentUser?.FullName ?? dto.CreatedBy,
+        CreatedByUserId = currentUser?.Id ?? dto.CreatedByUserId,
         CreatedAt = DateTime.UtcNow
     };
 
@@ -2305,22 +3088,29 @@ api.MapPost("/stock-requests", async (AppDbContext db, CreateStockRequestDto dto
     return Results.Ok(new { message = "Stock request created", request.Id, request.RequestNumber });
 });
 
-api.MapPut("/stock-requests/{id}/review", async (AppDbContext db, Guid id, ReviewStockRequestDto dto) =>
+// Approving/rejecting a stock request is an owner/manager action, not a request-raiser action.
+api.MapPut("/stock-requests/{id}/review", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, ReviewStockRequestDto dto) =>
 {
-    var request = await db.StockRequests.FindAsync(id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var request = await db.StockRequests.FirstOrDefaultAsync(sr => sr.Id == id && (http.IsSuperAdmin() || sr.TenantId == scopedTenantId!.Value));
     if (request == null) return Results.NotFound(new { error = "Stock request not found" });
 
+    var currentUser = await accessor.GetCurrentUserAsync(http);
     request.Status = dto.Status;
-    request.ReviewedBy = dto.ReviewedBy;
+    request.ReviewedBy = currentUser?.FullName ?? dto.ReviewedBy;
     request.ReviewedAt = DateTime.UtcNow;
     request.ReviewNotes = dto.ReviewNotes;
+    await WriteAuditAsync(db, request.TenantId, currentUser, "StockRequestReviewed", "StockRequest", request.Id, null, dto.Status.ToString());
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Request {dto.Status}", request.Id, request.Status });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "edit"));
 
-api.MapDelete("/stock-requests/{id}", async (AppDbContext db, Guid id) =>
+api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
-    var request = await db.StockRequests.FindAsync(id);
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var request = await db.StockRequests.FirstOrDefaultAsync(sr => sr.Id == id && (http.IsSuperAdmin() || sr.TenantId == scopedTenantId!.Value));
     if (request == null) return Results.NotFound(new { error = "Stock request not found" });
     if (request.Status != StockRequestStatus.Pending)
         return Results.BadRequest(new { error = "Only pending requests can be deleted" });
@@ -2595,7 +3385,9 @@ app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http) =>
     if (tenantId == null) return Results.Unauthorized();
     var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
     return Results.Ok(config);
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
 app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, WhatsAppConfigDto dto) =>
 {
@@ -2632,16 +3424,19 @@ app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Wh
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "WhatsApp config saved" });
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
 app.MapGet("/api/whatsapp/logs", async (AppDbContext db, HttpContext http, int? limit) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null) return Results.Unauthorized();
     var query = db.NotificationLogs.Where(n => n.TenantId == tenantId.Value).OrderByDescending(n => n.SentAt);
-    var logs = await query.Take(limit ?? 100).ToListAsync();
+    var logs = await query.Take(Math.Clamp(limit ?? 100, 1, 500)).ToListAsync();
     return Results.Ok(logs);
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)));
 
 app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, TestWhatsAppDto dto) =>
 {
@@ -2663,22 +3458,31 @@ app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, Test
     db.NotificationLogs.Add(log);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Test message sent", logId = log.Id });
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)));
 
-// Internal endpoint called by order creation/update
-app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, OrderNotificationDto dto) =>
+// Called by order creation/update. Authenticated; the tenant comes from the caller's token,
+// never from the body (a client could otherwise burn another tenant's message quota).
+app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, HttpContext http, OrderNotificationDto dto) =>
 {
+    var callerTenantId = http.GetTenantId();
+    if (callerTenantId == null || callerTenantId == Guid.Empty) return Results.Unauthorized();
+    var scopedTenantId = callerTenantId.Value;
+
     // Find tenant WhatsApp config
-    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == dto.TenantId && w.IsEnabled);
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == scopedTenantId && w.IsEnabled);
     if (config == null) return Results.Ok(new { skipped = true, reason = "WhatsApp not configured" });
 
-    // Check monthly limit
-    var packageConfig = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == dto.PackageTier);
+    // Check monthly limit against the tenant's OWN tier, not a client-declared one.
+    var actualTier = await db.Tenants.Where(t => t.Id == scopedTenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
+    var packageConfig = actualTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == actualTier.Value.ToString());
+    if (packageConfig != null && !packageConfig.HasWhatsAppMessaging)
+        return Results.Ok(new { skipped = true, reason = "WhatsApp messaging is not included in this package" });
     if (packageConfig != null && packageConfig.WhatsAppMessagesPerMonth != -1)
     {
-        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
-        var countThisMonth = await db.NotificationLogs.CountAsync(n => 
-            n.TenantId == dto.TenantId && n.SentAt >= startOfMonth && n.Status != "failed");
+        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var countThisMonth = await db.NotificationLogs.CountAsync(n =>
+            n.TenantId == scopedTenantId && n.SentAt >= startOfMonth && n.Status != "failed");
         if (countThisMonth >= packageConfig.WhatsAppMessagesPerMonth)
             return Results.Ok(new { skipped = true, reason = "Monthly limit reached" });
     }
@@ -2696,7 +3500,7 @@ app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, OrderNoti
 
     var log = new NotificationLog
     {
-        TenantId = dto.TenantId,
+        TenantId = scopedTenantId,
         OrderId = dto.OrderId,
         Channel = "whatsapp",
         RecipientPhone = dto.PhoneNumber,
@@ -2708,7 +3512,7 @@ app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, OrderNoti
     db.NotificationLogs.Add(log);
     await db.SaveChangesAsync();
     return Results.Ok(new { sent = true, logId = log.Id });
-});
+}).RequireAuthorization();
 
 // ============================================================
 // SAAS PACKAGE CONFIGURATION (Platform Owner sets prices)
@@ -2900,18 +3704,38 @@ app.MapGet("/api/permissions/modules", async () =>
             new { key = "cashier.tally", name = "Cash Tally" }
         }}
     });
-});
+}).RequireAuthorization();
 
-app.MapGet("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db) =>
+app.MapGet("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db, HttpContext http) =>
 {
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    // A user may always read their own permissions; reading someone else's needs users:view.
+    if (http.GetUserId() != userId)
+    {
+        var target = await db.Users.FirstOrDefaultAsync(u => u.Id == userId && (http.IsSuperAdmin() || u.TenantId == tenantId!.Value));
+        if (target == null) return Results.NotFound();
+    }
     var perms = await db.ModulePermissions.Where(m => m.UserId == userId).ToListAsync();
     return Results.Ok(perms);
 }).RequireAuthorization();
 
-app.MapPut("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db, List<UpdateModulePermissionDto> dto) =>
+app.MapPut("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, List<UpdateModulePermissionDto> dto) =>
 {
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+
+    var target = await db.Users.FirstOrDefaultAsync(u => u.Id == userId && (http.IsSuperAdmin() || u.TenantId == tenantId!.Value));
+    if (target == null) return Results.NotFound(new { message = "User not found in this restaurant." });
+    if (http.GetUserId() == userId) return Results.BadRequest(new { message = "You cannot edit your own permissions." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+
     // Remove existing
     var existing = await db.ModulePermissions.Where(m => m.UserId == userId).ToListAsync();
+    await WriteAuditAsync(db, target.TenantId, currentUser, "PermissionChanged", "ModulePermission", userId,
+        oldValue: string.Join(", ", existing.Select(e => $"{e.ModuleKey}/{e.SubModuleKey}:v{(e.CanView ? 1 : 0)}e{(e.CanEdit ? 1 : 0)}d{(e.CanDelete ? 1 : 0)}x{(e.CanExport ? 1 : 0)}")),
+        newValue: string.Join(", ", dto.Select(p => $"{p.ModuleKey}/{p.SubModuleKey}:v{(p.CanView ? 1 : 0)}e{(p.CanEdit ? 1 : 0)}d{(p.CanDelete ? 1 : 0)}x{(p.CanExport ? 1 : 0)}")));
     db.ModulePermissions.RemoveRange(existing);
 
     // Add new
@@ -2930,7 +3754,8 @@ app.MapPut("/api/permissions/{userId:guid}", async (Guid userId, AppDbContext db
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Permissions updated" });
-}).RequireAuthorization();
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
 // Get effective permissions for current user
 app.MapGet("/api/permissions/my", async (AppDbContext db, HttpContext http) =>
@@ -2968,7 +3793,9 @@ app.MapGet("/api/alerts", async (AppDbContext db, HttpContext http, bool? unread
 // Mark alert as read
 app.MapPut("/api/alerts/{id:guid}/read", async (Guid id, AppDbContext db, HttpContext http) =>
 {
-    var alert = await db.SmartAlerts.FindAsync(id);
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var alert = await db.SmartAlerts.FirstOrDefaultAsync(a => a.Id == id && (http.IsSuperAdmin() || a.TenantId == tenantId.Value));
     if (alert == null) return Results.NotFound();
     alert.IsRead = true;
     await db.SaveChangesAsync();
@@ -2978,7 +3805,9 @@ app.MapPut("/api/alerts/{id:guid}/read", async (Guid id, AppDbContext db, HttpCo
 // Dismiss alert
 app.MapPut("/api/alerts/{id:guid}/dismiss", async (Guid id, AppDbContext db, HttpContext http) =>
 {
-    var alert = await db.SmartAlerts.FindAsync(id);
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var alert = await db.SmartAlerts.FirstOrDefaultAsync(a => a.Id == id && (http.IsSuperAdmin() || a.TenantId == tenantId.Value));
     if (alert == null) return Results.NotFound();
     alert.IsDismissed = true;
     await db.SaveChangesAsync();
@@ -3001,7 +3830,8 @@ app.MapPost("/api/alerts/generate", async (AppDbContext db, HttpContext http) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null) return Results.Unauthorized();
-    var branchId = http.GetUserId() != null ? db.Users.FirstOrDefault(u => u.Id == http.GetUserId().Value)?.BranchId : null;
+    var currentUserId = http.GetUserId();
+    var branchId = currentUserId != null ? db.Users.FirstOrDefault(u => u.Id == currentUserId.Value)?.BranchId : null;
     var createdAlerts = new List<SmartAlert>();
 
     // 1. Low Stock Alerts
@@ -3077,9 +3907,11 @@ app.MapPost("/api/alerts/generate", async (AppDbContext db, HttpContext http) =>
     // 3. Daily Summary Alert (if it's evening and no Z-Report run)
     if (DateTime.UtcNow.Hour >= 20) // 8pm
     {
-        var hasTodayZReport = await db.CashShifts.AnyAsync(s => 
-            s.BranchId != null &&
-            s.ClosedAt != null && 
+        // Scope the Z-report check to THIS tenant's branches (previously it looked at every
+        // tenant's shifts, so one restaurant closing its day suppressed everyone's reminder).
+        var hasTodayZReport = await db.CashShifts.AnyAsync(s =>
+            db.Branches.Any(b => b.Id == s.BranchId && b.TenantId == tenantId.Value) &&
+            s.ClosedAt != null &&
             s.ClosedAt >= today);
         if (!hasTodayZReport)
         {
@@ -3197,26 +4029,34 @@ app.MapGet("/api/analytics/smart", async (AppDbContext db, HttpContext http, int
 }).RequireAuthorization();
 
 // ── Tenant Settings CRUD ──
-app.MapGet("/api/tenant/settings", async (Guid tenantId, AppDbContext db) =>
+app.MapGet("/api/tenant/settings", async (Guid? tenantId, AppDbContext db, HttpContext http) =>
 {
-    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == scopedTenantId.Value);
     if (settings == null)
     {
-        settings = new TenantSettings { TenantId = tenantId };
+        settings = new TenantSettings { TenantId = scopedTenantId.Value };
         db.TenantSettings.Add(settings);
         await db.SaveChangesAsync();
     }
     return Results.Ok(settings);
-});
+}).RequireAuthorization();
 
-app.MapPut("/api/tenant/settings", async (Guid tenantId, TenantSettingsDto dto, AppDbContext db) =>
+// Tax + currency configuration is a menu/tax-level privilege.
+app.MapPut("/api/tenant/settings", async (Guid? tenantId, TenantSettingsDto dto, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
 {
-    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == scopedTenantId.Value);
     if (settings == null)
     {
-        settings = new TenantSettings { TenantId = tenantId };
+        settings = new TenantSettings { TenantId = scopedTenantId.Value };
         db.TenantSettings.Add(settings);
     }
+
+    var oldTax = $"default={settings.DefaultTaxRate}; digital={settings.DigitalTaxRate}; dual={settings.UseDualTaxRate}; provincial={settings.UseProvincialTax}";
+
     settings.CountryCode = dto.CountryCode ?? settings.CountryCode;
     settings.CurrencyCode = dto.CurrencyCode ?? settings.CurrencyCode;
     settings.CurrencySymbol = dto.CurrencySymbol ?? settings.CurrencySymbol;
@@ -3230,14 +4070,115 @@ app.MapPut("/api/tenant/settings", async (Guid tenantId, TenantSettingsDto dto, 
     settings.DateFormat = dto.DateFormat ?? settings.DateFormat;
     settings.ReceiptFooter = dto.ReceiptFooter ?? settings.ReceiptFooter;
     settings.AllowedPaymentMethods = dto.AllowedPaymentMethods ?? settings.AllowedPaymentMethods;
+    if (dto.UseProvincialTax.HasValue) settings.UseProvincialTax = dto.UseProvincialTax.Value;
+
+    var newTax = $"default={settings.DefaultTaxRate}; digital={settings.DigitalTaxRate}; dual={settings.UseDualTaxRate}; provincial={settings.UseProvincialTax}";
+    if (oldTax != newTax)
+    {
+        var currentUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "TaxSettingsChanged", "TenantSettings", settings.Id, oldTax, newTax);
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(settings);
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change tax or currency settings."));
+
+// ============================================================
+// TAX JURISDICTIONS (provincial rates — editable defaults, not legal advice)
+// ============================================================
+
+// Any authenticated user may read the rate table (receipts/UI need it).
+api.MapGet("/settings/tax-jurisdictions", async (AppDbContext db) =>
+{
+    var rows = await db.TaxJurisdictions.OrderBy(j => j.CountryCode).ThenBy(j => j.RegionCode).ToListAsync();
+    return Results.Ok(new
+    {
+        disclaimer = "These rates are editable defaults provided for convenience and are not verified tax or legal advice. Confirm current rates with your tax authority.",
+        jurisdictions = rows
+    });
 });
+
+// Only the Owner or a platform SuperAdmin may change the rates.
+api.MapPut("/settings/tax-jurisdictions/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTaxJurisdictionDto dto) =>
+{
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    if (currentUser == null) return Results.Unauthorized();
+    if (!(http.IsSuperAdmin() || currentUser.Role == UserRole.OwnerAdmin || currentUser.Role == UserRole.SuperAdmin))
+        return Results.Json(new { message = "Only the restaurant owner can change tax jurisdiction rates." }, statusCode: 403);
+
+    var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j => j.Id == id);
+    if (jurisdiction == null) return Results.NotFound();
+
+    var oldValue = $"cash={jurisdiction.CashTaxRate}; digital={jurisdiction.DigitalTaxRate}; active={jurisdiction.IsActive}";
+
+    if (!string.IsNullOrWhiteSpace(dto.AuthorityName)) jurisdiction.AuthorityName = dto.AuthorityName.Trim();
+    if (dto.CashTaxRate.HasValue)
+    {
+        if (dto.CashTaxRate.Value < 0 || dto.CashTaxRate.Value > 100) return Results.BadRequest(new { message = "Cash tax rate must be between 0 and 100." });
+        jurisdiction.CashTaxRate = dto.CashTaxRate.Value;
+    }
+    if (dto.DigitalTaxRate.HasValue)
+    {
+        if (dto.DigitalTaxRate.Value < 0 || dto.DigitalTaxRate.Value > 100) return Results.BadRequest(new { message = "Digital tax rate must be between 0 and 100." });
+        jurisdiction.DigitalTaxRate = dto.DigitalTaxRate.Value;
+    }
+    if (dto.IsActive.HasValue) jurisdiction.IsActive = dto.IsActive.Value;
+
+    var newValue = $"cash={jurisdiction.CashTaxRate}; digital={jurisdiction.DigitalTaxRate}; active={jurisdiction.IsActive}";
+    await WriteAuditAsync(db, currentUser.TenantId, currentUser, "TaxJurisdictionChanged", "TaxJurisdiction", jurisdiction.Id, oldValue, newValue);
+
+    await db.SaveChangesAsync();
+    return Results.Ok(jurisdiction);
+});
+
+// ============================================================
+// AUDIT LOG (Owner / SuperAdmin only)
+// ============================================================
+app.MapGet("/api/admin/audit-log", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid? tenantId, string? action, int page = 1, int pageSize = 50) =>
+{
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    if (currentUser == null) return Results.Unauthorized();
+    if (!(http.IsSuperAdmin() || currentUser.Role == UserRole.OwnerAdmin || currentUser.Role == UserRole.SuperAdmin))
+        return Results.Json(new { message = "Only the restaurant owner can view the audit log." }, statusCode: 403);
+
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    page = Math.Max(page, 1);
+    pageSize = Math.Clamp(pageSize, 1, 200);
+
+    var query = db.AuditLogs.Where(a => a.TenantId == scopedTenantId.Value);
+    if (!string.IsNullOrWhiteSpace(action)) query = query.Where(a => a.Action == action);
+
+    var total = await query.CountAsync();
+    var rows = await query.OrderByDescending(a => a.CreatedAt)
+        .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+    return Results.Ok(new { page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize), entries = rows });
+}).RequireAuthorization();
 
 app.Run();
 
 
+/// <summary>Result of server-side re-pricing of an order. Client-supplied money is never used.</summary>
+public class ServerPricedOrder
+{
+    public List<OrderItem> Items { get; set; } = new();
+    public decimal SubTotalPKR { get; set; }
+    public decimal DiscountPKR { get; set; }
+    public decimal TaxPKR { get; set; }
+    public decimal TotalPKR { get; set; }
+    public decimal TaxRatePercent { get; set; }
+    public bool DiscountRejected { get; set; }
+    public decimal AttemptedDiscountPKR { get; set; }
+    public string? Error { get; set; }
+}
+
 // DTOs
+public record VerifyPinDto(string Username, string PinCode, string? RequiredPermission);
+public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRate, decimal? DigitalTaxRate, bool? IsActive);
+public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs);
 public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items);
 public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station);
 public record UpdateTicketStatusDto(string Status);
@@ -3326,7 +4267,8 @@ public record TenantSettingsDto(
     string? DefaultCity,
     string? DateFormat,
     string? ReceiptFooter,
-    string? AllowedPaymentMethods
+    string? AllowedPaymentMethods,
+    bool? UseProvincialTax = null
 );
 
 

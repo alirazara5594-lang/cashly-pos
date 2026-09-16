@@ -1,19 +1,120 @@
 import { create } from 'zustand';
-import type { 
-  Tenant, 
-  Branch, 
-  Product, 
-  CartItem, 
-  OrderType, 
-  PaymentMethod, 
+import type {
+  Tenant,
+  Branch,
+  Product,
+  CartItem,
+  OrderType,
+  PaymentMethod,
   SubscriptionTier,
   TerminalOperatingMode,
   DepartmentRole,
-  TenantSettings
+  TenantSettings,
+  CurrentUser,
+  AuthPermissions,
+  ModulePermission,
+  ModuleKey,
+  PermissionAction,
+  UserRole
 } from '../types';
 
 import { offlineDb } from '../services/offlineDb';
 import { posApi } from '../services/api';
+
+export const AUTH_USER_STORAGE_KEY = 'cashly_pos_user';
+export const AUTH_TOKEN_STORAGE_KEY = 'cashly_pos_token';
+const AUTH_PERMISSIONS_STORAGE_KEY = 'cashly_pos_permissions';
+const AUTH_MODULE_PERMISSIONS_STORAGE_KEY = 'cashly_pos_module_permissions';
+
+/** Backend AppRole enum ordinal -> role name. Mirrors UserManagement's roleNumberMap. */
+const ROLE_BY_ORDINAL: Record<number, UserRole> = {
+  0: 'SuperAdmin',
+  1: 'OwnerAdmin',
+  2: 'BranchManager',
+  3: 'Cashier',
+  4: 'KitchenChef',
+  5: 'Waiter'
+};
+
+/**
+ * The API may serialize `role` either as the enum name or as its numeric ordinal
+ * depending on the endpoint — normalize both into a UserRole string.
+ */
+export function normalizeRole(role: unknown): UserRole | null {
+  if (typeof role === 'number') return ROLE_BY_ORDINAL[role] ?? null;
+  if (typeof role === 'string') {
+    if (role.trim() === '') return null;
+    const asNumber = Number(role);
+    if (!Number.isNaN(asNumber) && ROLE_BY_ORDINAL[asNumber]) return ROLE_BY_ORDINAL[asNumber];
+    return role as UserRole;
+  }
+  return null;
+}
+
+/** Roles that bypass every module check (mirrors the backend's ModuleBaseline). */
+const FULL_ACCESS_ROLES: UserRole[] = ['OwnerAdmin', 'SuperAdmin'];
+
+/** Modules a BranchManager can VIEW (but not edit) with no explicit permission row. */
+const BRANCH_MANAGER_VIEW_MODULES: ModuleKey[] = [
+  'menu',
+  'inventory',
+  'reports',
+  'accounts',
+  'supplychain'
+];
+
+const ACTION_FIELD: Record<PermissionAction, keyof ModulePermission> = {
+  view: 'canView',
+  edit: 'canEdit',
+  delete: 'canDelete',
+  export: 'canExport'
+};
+
+/**
+ * Client-side mirror of the backend's ModuleBaseline.GetBaseline.
+ *
+ * NOTE: this exists purely so the UI can react instantly (hide links, show
+ * "Access Denied"). The server independently enforces the same rules on every
+ * request — never treat a `true` here as authorization.
+ */
+export function hasModuleAccess(
+  role: UserRole | string | number | null | undefined,
+  modulePermissions: ModulePermission[] | null | undefined,
+  moduleKey: ModuleKey | string,
+  action: PermissionAction = 'view'
+): boolean {
+  const normalized = normalizeRole(role);
+  if (!normalized) return false;
+  if (FULL_ACCESS_ROLES.includes(normalized)) return true;
+
+  // An explicit module-level row (subModuleKey === '') always wins over the baseline.
+  const explicit = (modulePermissions || []).find(
+    p => p.moduleKey === moduleKey && (p.subModuleKey ?? '') === ''
+  );
+  if (explicit) return !!explicit[ACTION_FIELD[action]];
+
+  if (normalized === 'BranchManager' && BRANCH_MANAGER_VIEW_MODULES.includes(moduleKey as ModuleKey)) {
+    return action === 'view';
+  }
+
+  return false;
+}
+
+function readStoredJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredUser(): CurrentUser | null {
+  const raw = readStoredJson<any>(AUTH_USER_STORAGE_KEY, null);
+  if (!raw || !raw.id) return null;
+  return { ...raw, role: normalizeRole(raw.role) ?? 'Cashier' } as CurrentUser;
+}
 
 // Retry with exponential backoff
 async function syncWithRetry(
@@ -63,6 +164,17 @@ interface PosState {
   activeDepartment: DepartmentRole;
   isAdminUnlocked: boolean;
   adminMasterPin: string;
+
+  // Authenticated session (mandatory — the route tree is gated on this)
+  currentUser: CurrentUser | null;
+  token: string | null;
+  permissions: AuthPermissions | null;
+  modulePermissions: ModulePermission[];
+  login: (user: CurrentUser, token: string, permissions: AuthPermissions | null) => void;
+  logout: () => void;
+  setModulePermissions: (list: ModulePermission[]) => void;
+  loadMyModulePermissions: () => Promise<void>;
+  can: (moduleKey: ModuleKey | string, action?: PermissionAction) => boolean;
 
   // Network & Sync
   isOnline: boolean;
@@ -158,6 +270,11 @@ export const usePosStore = create<PosState>((set, get) => ({
   isAdminUnlocked: false,
   adminMasterPin: localStorage.getItem('cashly_admin_pin') || '1234',
 
+  currentUser: readStoredUser(),
+  token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
+  permissions: readStoredJson<AuthPermissions | null>(AUTH_PERMISSIONS_STORAGE_KEY, null),
+  modulePermissions: readStoredJson<ModulePermission[]>(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, []),
+
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isSyncing: false,
   offlinePendingCount: 0,
@@ -188,6 +305,58 @@ export const usePosStore = create<PosState>((set, get) => ({
     const next = get().theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('cashly_pos_theme', next);
     set({ theme: next });
+  },
+
+  login: (user, token, permissions) => {
+    const normalized: CurrentUser = { ...user, role: normalizeRole(user.role) ?? 'Cashier' };
+    // The axios request interceptor reads the token straight out of localStorage,
+    // so these two keys must stay in sync with the store.
+    localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(normalized));
+    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    if (permissions) {
+      localStorage.setItem(AUTH_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
+    } else {
+      localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+    }
+    set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [] });
+  },
+
+  logout: () => {
+    localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+    localStorage.removeItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY);
+    set({
+      currentUser: null,
+      token: null,
+      permissions: null,
+      modulePermissions: [],
+      isAdminUnlocked: false
+    });
+  },
+
+  setModulePermissions: (list) => {
+    const safe = Array.isArray(list) ? list : [];
+    try {
+      localStorage.setItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, JSON.stringify(safe));
+    } catch {
+      // storage full / unavailable — in-memory copy is still fine
+    }
+    set({ modulePermissions: safe });
+  },
+
+  loadMyModulePermissions: async () => {
+    try {
+      const data = await posApi.getMyPermissions();
+      get().setModulePermissions(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.warn('Failed to load module permissions:', err);
+    }
+  },
+
+  can: (moduleKey, action = 'view') => {
+    const { currentUser, modulePermissions } = get();
+    return hasModuleAccess(currentUser?.role, modulePermissions, moduleKey, action);
   },
 
   setTerminalMode: (mode) => {

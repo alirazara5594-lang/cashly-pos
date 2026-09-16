@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
 import { CallOrderModal } from './components/CallOrderModal';
@@ -23,34 +23,75 @@ import { WhatsAppConfig } from './pages/WhatsAppConfig';
 import { PricingAdmin } from './pages/PricingAdmin';
 import { ModulePermissions } from './pages/ModulePermissions';
 import { SmartAnalytics } from './pages/SmartAnalytics';
-import { UserLoginModal } from './components/UserLoginModal';
+import { LoginGate } from './components/LoginGate';
+import { RequireModule } from './components/RequireModule';
 import { usePosStore } from './store/posStore';
-import { posApi } from './services/api';
+import { posApi, registerAuthRedirect } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
 
 function MainLayoutInner() {
   const location = useLocation();
-  const { setTenants, theme, setIsOnline, refreshOfflineCount, isInstalled, checkInstallationStatus, autoSyncOnReconnect } = usePosStore();
+  const navigate = useNavigate();
+  const {
+    setTenants,
+    theme,
+    setIsOnline,
+    refreshOfflineCount,
+    isInstalled,
+    checkInstallationStatus,
+    autoSyncOnReconnect,
+    currentUser,
+    token,
+    logout,
+    loadMyModulePermissions
+  } = usePosStore();
   const { addToast } = useToast();
   const [isCallOrderOpen, setIsCallOrderOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
-  const [currentUser, setCurrentUser] = useState<any>(() => {
-    const saved = localStorage.getItem('cashly_pos_user');
-    return saved ? JSON.parse(saved) : null;
-  });
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
+  const isAuthenticated = !!currentUser && !!token;
+
+  // Teach the axios 401 handler how to end the session and return to the gate.
+  useEffect(() => {
+    registerAuthRedirect(() => {
+      usePosStore.getState().logout();
+      navigate('/', { replace: true });
+    });
+    return () => registerAuthRedirect(null);
+  }, [navigate]);
+
+  // Refresh module permissions whenever a session becomes active (e.g. after a
+  // reload that restored the token from localStorage).
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadMyModulePermissions();
+    }
+  }, [isAuthenticated, currentUser?.id, loadMyModulePermissions]);
+
+  // Tenants / branches now require a bearer token, so they load only once a
+  // session exists — not during the pre-login setup check.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const loadTenantData = async () => {
+      try {
+        const tenants = await posApi.getTenants();
+        setTenants(tenants);
+        await usePosStore.getState().loadTenantSettings();
+      } catch (err) {
+        console.error('Failed to load tenant data:', err);
+      }
+    };
+    loadTenantData();
+  }, [isAuthenticated, currentUser?.id, setTenants]);
 
   useEffect(() => {
     const initializeData = async () => {
       try {
-        const configured = await checkInstallationStatus();
-        if (configured) {
-          const tenants = await posApi.getTenants();
-          setTenants(tenants);
-        }
+        // Public endpoint — must run before any login so first-run setup works.
+        await checkInstallationStatus();
         await refreshOfflineCount();
       } catch (err) {
         console.error('Failed to load initial data:', err);
@@ -81,16 +122,43 @@ function MainLayoutInner() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [setTenants, setIsOnline, refreshOfflineCount, checkInstallationStatus, autoSyncOnReconnect, addToast]);
+  }, [setIsOnline, refreshOfflineCount, checkInstallationStatus, autoSyncOnReconnect, addToast]);
 
   // Full-screen dedicated view for Installation Wizard
   if (location.pathname === '/setup') {
     return <InstallationWizard />;
   }
 
-  // If first-time run with zero configuration and not on setup, redirect to setup
+  // If first-time run with zero configuration and not on setup, redirect to setup.
+  // This MUST stay ahead of the login gate — installation happens with no login.
   if (!isCheckingSetup && !isInstalled && location.pathname !== '/setup') {
     return <Navigate to="/setup" replace />;
+  }
+
+  // Public self-serve signup must stay reachable without a session.
+  if (location.pathname === '/signup') {
+    return <TenantSignup />;
+  }
+
+  // Hold the route tree back until the setup check resolves, so an unauthenticated
+  // user never sees application screens flash before the gate.
+  if (isCheckingSetup) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-teal-500 to-purple-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-teal-500/25 animate-pulse">
+            C
+          </div>
+          <p className="text-xs text-slate-500 font-semibold">Starting Cashly POS…</p>
+        </div>
+      </div>
+    );
+  }
+
+  // MANDATORY LOGIN GATE — runs after installation checks, before the route tree.
+  // No application screen is reachable by URL without an authenticated session.
+  if (!isAuthenticated) {
+    return <LoginGate />;
   }
 
   return (
@@ -115,35 +183,55 @@ function MainLayoutInner() {
           onToggleSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
           isSidebarOpen={isMobileSidebarOpen}
           currentUser={currentUser}
-          onOpenLogin={() => setIsLoginModalOpen(true)}
+          onSwitchUser={() => {
+            // Fast cashier handoff: drop the session and fall straight back to the
+            // login gate on the next render — no full page reload.
+            logout();
+            navigate('/', { replace: true });
+          }}
           onLogout={() => {
-            setCurrentUser(null);
-            localStorage.removeItem('cashly_pos_user');
-            localStorage.removeItem('cashly_pos_token');
+            logout();
+            navigate('/', { replace: true });
           }}
         />
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <Routes>
+            {/* Operational screens — open to any signed-in active user (no module gate). */}
             <Route path="/" element={<PosTerminal />} />
-            <Route path="/floors" element={<FloorManagement />} />
             <Route path="/kitchen" element={<KitchenDisplay />} />
             <Route path="/order-tab" element={<OrderTab />} />
             <Route path="/delivery" element={<DeliveryBoard />} />
-            <Route path="/inventory" element={<InventoryManagement />} />
-            <Route path="/transfers" element={<SupplyChainManagement />} />
-            <Route path="/reports" element={<ReportsManagement />} />
-            <Route path="/users" element={<UserManagement />} />
-            <Route path="/menu" element={<MenuManagement />} />
-            <Route path="/director" element={<DirectorDashboard />} />
-            <Route path="/super-admin" element={<SuperAdmin />} />
+
+            {/* Menu / catalog / pricing → `menu` module */}
+            <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />
+            <Route path="/floors" element={<RequireModule module="menu"><FloorManagement /></RequireModule>} />
+
+            {/* Stock → `inventory` module */}
+            <Route path="/inventory" element={<RequireModule module="inventory"><InventoryManagement /></RequireModule>} />
+            <Route path="/stock-requests" element={<RequireModule module="inventory"><StockRequests /></RequireModule>} />
+
+            {/* Commissary / procurement → `supplychain` module */}
+            <Route path="/transfers" element={<RequireModule module="supplychain"><SupplyChainManagement /></RequireModule>} />
+
+            {/* Reporting & analytics → `reports` module */}
+            <Route path="/reports" element={<RequireModule module="reports"><ReportsManagement /></RequireModule>} />
+            <Route path="/director" element={<RequireModule module="reports"><DirectorDashboard /></RequireModule>} />
+            <Route path="/analytics" element={<RequireModule module="reports"><SmartAnalytics /></RequireModule>} />
+
+            {/* Financial settings & tax configuration → `accounts` module */}
+            <Route path="/settings" element={<RequireModule module="accounts"><SettingsManagement /></RequireModule>} />
+
+            {/* Staff administration → `users` module */}
+            <Route path="/users" element={<RequireModule module="users"><UserManagement /></RequireModule>} />
+            <Route path="/permissions" element={<RequireModule module="users" action="edit"><ModulePermissions /></RequireModule>} />
+
+            {/* Platform / super-admin surface → `admin` module */}
+            <Route path="/super-admin" element={<RequireModule module="admin"><SuperAdmin /></RequireModule>} />
+            <Route path="/pricing-admin" element={<RequireModule module="admin"><PricingAdmin /></RequireModule>} />
+            <Route path="/whatsapp-config" element={<RequireModule module="admin"><WhatsAppConfig /></RequireModule>} />
+
             <Route path="/signup" element={<TenantSignup />} />
-            <Route path="/settings" element={<SettingsManagement />} />
-            <Route path="/stock-requests" element={<StockRequests />} />
-            <Route path="/whatsapp-config" element={<WhatsAppConfig />} />
-            <Route path="/pricing-admin" element={<PricingAdmin />} />
-            <Route path="/permissions" element={<ModulePermissions />} />
-            <Route path="/analytics" element={<SmartAnalytics />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -153,21 +241,6 @@ function MainLayoutInner() {
       <CallOrderModal
         isOpen={isCallOrderOpen}
         onClose={() => setIsCallOrderOpen(false)}
-      />
-
-      <UserLoginModal
-        isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
-        onLogin={(user) => {
-          setCurrentUser(user);
-          localStorage.setItem('cashly_pos_user', JSON.stringify(user));
-        }}
-        onLogout={() => {
-          setCurrentUser(null);
-          localStorage.removeItem('cashly_pos_user');
-          localStorage.removeItem('cashly_pos_token');
-        }}
-        currentUser={currentUser}
       />
     </div>
   );

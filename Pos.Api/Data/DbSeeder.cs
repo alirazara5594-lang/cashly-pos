@@ -107,5 +107,21 @@ public static class DbSeeder
             );
             await db.SaveChangesAsync();
         }
+
+        // Seed default Pakistan provincial tax jurisdictions.
+        // NOTE: these are EDITABLE DEFAULTS for convenience, not verified legal/tax advice.
+        // Owners must confirm current rates with their provincial authority and edit via
+        // Settings -> Tax Jurisdictions.
+        if (!await db.TaxJurisdictions.AnyAsync())
+        {
+            db.TaxJurisdictions.AddRange(
+                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-PB", AuthorityName = "PRA (Punjab)", CashTaxRate = 16, DigitalTaxRate = 16, IsActive = true },
+                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-SD", AuthorityName = "SRB (Sindh)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
+                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-KP", AuthorityName = "KPRA (Khyber Pakhtunkhwa)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
+                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-BA", AuthorityName = "BRA (Balochistan)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
+                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-ICT", AuthorityName = "FBR (Islamabad Capital Territory)", CashTaxRate = 16, DigitalTaxRate = 16, IsActive = true }
+            );
+            await db.SaveChangesAsync();
+        }
     }
 }

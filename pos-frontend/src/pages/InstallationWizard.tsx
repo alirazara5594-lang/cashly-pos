@@ -170,8 +170,13 @@ export const InstallationWizard: React.FC = () => {
           await offlineDb.products.bulkPut(res.products);
         }
 
-        const tenants = await posApi.getTenants();
-        setTenants(tenants);
+        // Tenants now require a session. This is best-effort here — App reloads
+        // them properly once the user signs in at the login gate.
+        try {
+          setTenants(await posApi.getTenants());
+        } catch {
+          console.info('Tenant list will load after sign-in.');
+        }
 
         navigate('/');
       }
@@ -226,11 +231,17 @@ export const InstallationWizard: React.FC = () => {
       localStorage.setItem('cashly_offline_enabled', enableOfflineDb ? 'true' : 'false');
       localStorage.setItem('cashly_api_url', apiUrl);
 
-      // Fetch fresh tenants list to refresh store
-      const tenants = await posApi.getTenants();
-      setTenants(tenants);
+      // Fetch fresh tenants list to refresh store. Best-effort: this endpoint now
+      // requires a session, and the admin created above has not signed in yet —
+      // App reloads tenants right after login.
+      try {
+        setTenants(await posApi.getTenants());
+      } catch {
+        console.info('Tenant list will load after sign-in.');
+      }
 
-      // Navigate to destination
+      // Navigate to destination. Unauthenticated, this lands on the login gate,
+      // which is exactly where a freshly-installed system should start.
       if (deploymentMode === 'MultiBranch') {
         navigate('/director');
       } else {

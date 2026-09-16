@@ -93,6 +93,7 @@ export const UserManagement: React.FC = () => {
     if (!selectedTenant?.id || !fullName.trim() || !username.trim()) return;
 
     const roleNumberMap: Record<UserRole, number> = {
+      SuperAdmin: 0,
       OwnerAdmin: 1,
       BranchManager: 2,
       Cashier: 3,

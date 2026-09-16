@@ -8,6 +8,14 @@ export const KitchenDisplay: React.FC = () => {
   const { selectedBranch } = usePosStore();
   const [tickets, setTickets] = useState<KitchenTicket[]>([]);
   const [selectedStation, setSelectedStation] = useState<string>('all');
+  // Ticking clock so the elapsed badges keep counting up between polls, without
+  // reading Date.now() during render.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
 
 
   const fetchTickets = async () => {
@@ -38,9 +46,36 @@ export const KitchenDisplay: React.FC = () => {
     }
   };
 
-  const getElapsedTimeMinutes = (createdAt: string) => {
-    const diff = Date.now() - new Date(createdAt).getTime();
-    return Math.floor(diff / (1000 * 60));
+  const minutesBetween = (from: string, to: number | string) => {
+    const start = new Date(from).getTime();
+    const end = typeof to === 'number' ? to : new Date(to).getTime();
+    if (Number.isNaN(start) || Number.isNaN(end)) return 0;
+    return Math.max(0, Math.floor((end - start) / (1000 * 60)));
+  };
+
+  /**
+   * Kitchen clock for a ticket.
+   *
+   * Prefers the order's server-stamped `inKitchenAt` (when it actually hit the
+   * line) over the ticket's own createdAt, and freezes the counter at `readyAt`
+   * so a plated ticket stops ageing on screen.
+   */
+  const getTicketTiming = (ticket: KitchenTicket) => {
+    const startedAt = ticket.order?.inKitchenAt || ticket.createdAt;
+    const readyAt = ticket.order?.readyAt;
+
+    if (readyAt) {
+      return {
+        minutes: minutesBetween(startedAt, readyAt),
+        isDone: true,
+        sinceReady: minutesBetween(readyAt, now)
+      };
+    }
+    return {
+      minutes: minutesBetween(startedAt, now),
+      isDone: false,
+      sinceReady: 0
+    };
   };
 
   return (
@@ -106,9 +141,10 @@ export const KitchenDisplay: React.FC = () => {
           </div>
         ) : (
           tickets.map((ticket) => {
-            const elapsed = getElapsedTimeMinutes(ticket.createdAt);
-            const isLate = elapsed > 15;
-            const isWarning = elapsed > 10 && elapsed <= 15;
+            const timing = getTicketTiming(ticket);
+            const elapsed = timing.minutes;
+            const isLate = !timing.isDone && elapsed > 15;
+            const isWarning = !timing.isDone && elapsed > 10 && elapsed <= 15;
 
             return (
               <div
@@ -141,16 +177,42 @@ export const KitchenDisplay: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Timer Badge */}
-                  <div className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
-                    isLate
-                      ? 'bg-rose-500 text-white animate-pulse'
-                      : isWarning
-                      ? 'bg-amber-500 text-white'
-                      : 'bg-slate-100 text-teal-600 border border-slate-200'
-                  }`}>
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>{elapsed}m</span>
+                  {/* Timer Badge — minutes on the line, frozen once plated */}
+                  <div className="flex flex-col items-end gap-0.5">
+                    <div
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
+                        timing.isDone
+                          ? 'bg-teal-100 text-teal-700 border border-teal-200'
+                          : isLate
+                          ? 'bg-rose-500 text-white animate-pulse'
+                          : isWarning
+                          ? 'bg-amber-500 text-white'
+                          : 'bg-slate-100 text-teal-600 border border-slate-200'
+                      }`}
+                      title={
+                        timing.isDone
+                          ? `Cooked in ${elapsed} min`
+                          : `${elapsed} min in kitchen${isLate ? ' — over the 15 min target' : ''}`
+                      }
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>{elapsed}m</span>
+                    </div>
+                    <span className={`text-[9px] font-bold uppercase tracking-wider ${
+                      timing.isDone
+                        ? 'text-teal-600'
+                        : isLate
+                        ? 'text-rose-600'
+                        : isWarning
+                        ? 'text-amber-600'
+                        : 'text-slate-400'
+                    }`}>
+                      {timing.isDone
+                        ? (timing.sinceReady > 0 ? `ready ${timing.sinceReady}m ago` : 'ready now')
+                        : isLate
+                        ? 'overdue'
+                        : 'in kitchen'}
+                    </span>
                   </div>
                 </div>
 
