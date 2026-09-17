@@ -283,6 +283,22 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""SubscriptionPaidUntil"" timestamp with time zone;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Tier"" integer NOT NULL DEFAULT 1;
 
+            -- Pre-existing schema drift: CashShift gained these columns after some dev
+            -- databases already had the table created, so EnsureCreatedAsync() never added them.
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""TerminalName"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""CashierName"" text NOT NULL DEFAULT '';
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""OpenedAt"" timestamp with time zone NOT NULL DEFAULT NOW();
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""ClosedAt"" timestamp with time zone;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""OpeningFloatPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""CashSalesPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""CashReceivedPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""CashPaidOutPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""ExpectedCashPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""ActualCashCountedPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""VariancePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""Notes"" text;
+            ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""IsClosed"" boolean NOT NULL DEFAULT false;
+
             CREATE TABLE IF NOT EXISTS ""NotificationLogs"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
