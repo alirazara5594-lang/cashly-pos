@@ -166,7 +166,7 @@ export const ReportsManagement: React.FC = () => {
 
   // Export Tax Audit to CSV
   const handleExportTaxCSV = () => {
-    if (!taxAudit || taxAudit.invoices.length === 0) return;
+    if (!taxAudit?.invoices?.length) return;
     const headers = ['OrderNumber,Date,OrderType,PaymentMethod,Cashier,NetAmountPKR,TaxRatePercent,TaxAmountPKR,TotalAmountPKR'];
     const rows = taxAudit.invoices.map(inv => 
       `"${inv.orderNumber}","${new Date(inv.createdAt).toLocaleString()}","${inv.orderType}","${inv.paymentMethod}","${inv.cashierName}",${inv.netAmountPKR},${inv.taxRatePercent}%,${inv.taxAmountPKR},${inv.totalAmountPKR}`

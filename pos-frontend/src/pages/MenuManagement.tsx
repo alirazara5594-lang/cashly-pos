@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Search, 
-  Lock, 
-  Save, 
-  Check, 
-  Percent,
+import {
+  Search,
+  Lock,
+  Check,
   Wheat,
   Eye,
   Plus,
@@ -13,8 +11,7 @@ import {
   X,
   FolderOpen,
   Hash,
-  ShieldCheck,
-  KeyRound
+  ShieldCheck
 } from 'lucide-react';
 
 import { posApi, getApiErrorMessage } from '../services/api';
@@ -26,10 +23,6 @@ import type { Product, Category, ProductRecipeItem } from '../types';
 export const MenuManagement: React.FC = () => {
   const {
     selectedTenant,
-    cashTaxRatePercent,
-    cardTaxRatePercent,
-    taxMode,
-    setTaxSettings,
     currentUser,
     permissions,
     modulePermissions
@@ -58,12 +51,6 @@ export const MenuManagement: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
 
-  // Tax form state
-  const [localCashTax, setLocalCashTax] = useState(cashTaxRatePercent);
-  const [localCardTax, setLocalCardTax] = useState(cardTaxRatePercent);
-  const [localTaxMode, setLocalTaxMode] = useState<'Exclusive' | 'Inclusive'>(taxMode);
-  const [taxSaved, setTaxSaved] = useState(false);
-
   // Recipe (BOM) Modal states
   const [recipeProduct, setRecipeProduct] = useState<Product | null>(null);
   const [recipeItems, setRecipeItems] = useState<ProductRecipeItem[]>([]);
@@ -91,17 +78,6 @@ export const MenuManagement: React.FC = () => {
   useEffect(() => {
     fetchCatalog();
   }, [selectedTenant?.id]);
-
-  const handleSaveTaxSettings = () => {
-    if (!canEditPricing && !override) return;
-    setTaxSettings({
-      cashRate: localCashTax,
-      cardRate: localCardTax,
-      mode: localTaxMode
-    });
-    setTaxSaved(true);
-    setTimeout(() => setTaxSaved(false), 2500);
-  };
 
   /** Open the inline price editor, prompting for a manager override if needed. */
   const startPriceEdit = (product: Product) => {
@@ -255,10 +231,10 @@ export const MenuManagement: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <span>Menu, Catalog & Tax Setup Portal</span>
+            <span>Menu & Catalog Setup Portal</span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            View menu items, prices in PKR, and tax configuration.
+            Manage menu items, categories, kitchen routing, and prices in PKR.
           </p>
         </div>
       </div>
@@ -332,86 +308,6 @@ export const MenuManagement: React.FC = () => {
       {/* ═══════ OVERVIEW TAB ═══════ */}
       {activeTab === 'overview' && (
         <>
-          {/* Tax & Business Type Engine Configuration Card */}
-          <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-4 shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div>
-                <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider flex items-center gap-2">
-                  <Percent className="w-4 h-4 text-teal-500" />
-                  <span>Tax Configuration Engine (Cash vs Card Differentiated Rates)</span>
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Tax rates automatically adjust based on customer payment mode and business type
-                </p>
-              </div>
-
-              {canEditPricing || override ? (
-                <button
-                  onClick={handleSaveTaxSettings}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow transition cursor-pointer"
-                >
-                  {taxSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                  <span>{taxSaved ? 'Tax Rates Saved!' : 'Save Tax Rules'}</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => { setOverrideTarget(null); setIsOverrideOpen(true); }}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow transition cursor-pointer"
-                  title="You do not have permission to change tax rules — a manager can authorize this"
-                >
-                  <KeyRound className="w-4 h-4" />
-                  <span>Manager Override</span>
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Cash Sales Tax Rate (%):</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    value={localCashTax}
-                    disabled={!canEditPricing && !override}
-                    onChange={(e) => setLocalCashTax(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                  <span className="text-slate-400 font-mono font-bold">%</span>
-                </div>
-                <p className="text-[10px] text-slate-500">Standard rate for cash tender (Default 16%)</p>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Card / Digital Sales Tax Rate (%):</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    value={localCardTax}
-                    disabled={!canEditPricing && !override}
-                    onChange={(e) => setLocalCardTax(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-black text-teal-600 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                  <span className="text-slate-400 font-mono font-bold">%</span>
-                </div>
-                <p className="text-[10px] text-teal-600">Reduced digital payment rate (Default 8%)</p>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Pricing Tax Mode:</label>
-                <select
-                  value={localTaxMode}
-                  disabled={!canEditPricing && !override}
-                  onChange={(e) => setLocalTaxMode(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  <option value="Exclusive">Tax Exclusive (Added on top at checkout)</option>
-                  <option value="Inclusive">Tax Inclusive (Included inside shelf price)</option>
-                </select>
-                <p className="text-[10px] text-slate-500">Exclusive is standard for Restaurants, Inclusive for Retail</p>
-              </div>
-            </div>
-          </div>
-
           {/* Categories & Kitchen Stations Display */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-sm">

@@ -3390,13 +3390,34 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
         .OrderByDescending(o => o.CreatedAt).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod != PaymentMethod.Cash).ToList();
+    static object BuildSegment(List<Order> segOrders, decimal ratePercent) => new
+    {
+        taxRatePercent = ratePercent,
+        invoiceCount = segOrders.Count,
+        grossSalesPKR = segOrders.Sum(o => o.TotalPKR),
+        netTaxableSalesPKR = segOrders.Sum(o => o.TotalPKR) - segOrders.Sum(o => o.TaxPKR),
+        taxCollectedPKR = segOrders.Sum(o => o.TaxPKR)
+    };
     return Results.Ok(new
     {
         startDate = start.ToString("yyyy-MM-dd"), endDate = end.ToString("yyyy-MM-dd"), totalInvoices = orders.Count,
         totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR), totalNetSalesPKR = (cashOrders.Sum(o => o.TotalPKR) - cashOrders.Sum(o => o.TaxPKR)) + (cardOrders.Sum(o => o.TotalPKR) - cardOrders.Sum(o => o.TaxPKR)),
         totalTaxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) + cardOrders.Sum(o => o.TaxPKR),
-        cashSegment = new { taxRatePercent = primaryTaxRate, invoiceCount = cashOrders.Count, grossSalesPKR = cashOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) },
-        cardSegment = new { taxRatePercent = secondaryTaxRate, invoiceCount = cardOrders.Count, grossSalesPKR = cardOrders.Sum(o => o.TotalPKR), taxCollectedPKR = cardOrders.Sum(o => o.TaxPKR) }
+        cashSegment = BuildSegment(cashOrders, primaryTaxRate),
+        cardSegment = BuildSegment(cardOrders, secondaryTaxRate),
+        invoices = orders.Select(o => new
+        {
+            orderId = o.Id,
+            orderNumber = o.OrderNumber,
+            createdAt = o.CreatedAt,
+            orderType = o.OrderType.ToString(),
+            paymentMethod = o.PaymentMethod.ToString(),
+            cashierName = o.CashierName ?? "—",
+            netAmountPKR = o.TotalPKR - o.TaxPKR,
+            taxRatePercent = o.PaymentMethod == PaymentMethod.Cash ? primaryTaxRate : secondaryTaxRate,
+            taxAmountPKR = o.TaxPKR,
+            totalAmountPKR = o.TotalPKR
+        }).ToList()
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view tax reports."));

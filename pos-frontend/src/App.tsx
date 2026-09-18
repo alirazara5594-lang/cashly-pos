@@ -8,6 +8,7 @@ import { KitchenDisplay } from './pages/KitchenDisplay';
 import { OrderTab } from './pages/OrderTab';
 import { DeliveryBoard } from './pages/DeliveryBoard';
 import { MenuManagement } from './pages/MenuManagement';
+import { TaxConfiguration } from './pages/TaxConfiguration';
 import { DirectorDashboard } from './pages/DirectorDashboard';
 import { SuperAdmin } from './pages/SuperAdmin';
 import { InventoryManagement } from './pages/InventoryManagement';
@@ -215,6 +216,7 @@ function MainLayoutInner() {
 
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />
+            <Route path="/tax-configuration" element={<RequireModule module="accounts"><TaxConfiguration /></RequireModule>} />
             <Route path="/floors" element={<RequireModule module="menu"><FloorManagement /></RequireModule>} />
 
             {/* Stock → `inventory` module */}

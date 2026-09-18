@@ -304,7 +304,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (can('menu')) {
       menuSubItems.push({ label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen });
       menuSubItems.push({ label: 'Floor & Table Setup', path: '/floors', icon: Armchair });
-      menuSubItems.push({ label: 'Tax Configuration', path: '/menu', state: { tab: 'tax' }, icon: Percent });
+    }
+    if (can('accounts')) {
+      menuSubItems.push({ label: 'Tax Configuration', path: '/tax-configuration', icon: Percent });
     }
     if (can('users')) {
       menuSubItems.push({ label: 'Staff & Pin Access', path: '/users', icon: Users });

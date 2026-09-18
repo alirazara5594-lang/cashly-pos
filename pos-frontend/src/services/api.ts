@@ -834,8 +834,8 @@ export const posApi = {
 
   // Provincial / Regional Tax Jurisdictions (PRA, SRB, KPRA, BRA, FBR)
   getTaxJurisdictions: async () => {
-    const res = await api.get<TaxJurisdiction[]>('/api/settings/tax-jurisdictions');
-    return res.data;
+    const res = await api.get<{ disclaimer: string; jurisdictions: TaxJurisdiction[] }>('/api/settings/tax-jurisdictions');
+    return res.data.jurisdictions;
   },
   updateTaxJurisdiction: async (id: string, data: {
     authorityName?: string;
