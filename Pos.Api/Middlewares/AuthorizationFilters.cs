@@ -92,6 +92,10 @@ public static class ModuleBaseline
     {
         if (role == UserRole.BranchManager)
         {
+            // Rostering and clocking staff is ordinary branch-manager work, not a request-only
+            // back-office function, so "labor" gets edit as well as view by baseline.
+            if (moduleKey == "labor")
+                return action is "view" or "edit";
             if (ReadOnlyByDefaultModules.Contains(moduleKey))
                 return action == "view"; // read/request-only until Owner grants more via ModulePermission UI
             return false; // "admin", "users" modules: no baseline access for BranchManager

@@ -30,7 +30,11 @@ import {
   Wallet,
   MessageSquare,
   Shield,
-  Brain
+  Brain,
+  Gift,
+  CalendarClock,
+  Clock,
+  Plug
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import type { ModuleKey, PermissionAction } from '../types';
@@ -238,8 +242,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
             label: 'Smart Analytics',
             path: '/analytics',
             icon: Brain
+          },
+          {
+            id: 'menuEngineering',
+            label: 'Menu Engineering',
+            path: '/menu-engineering',
+            icon: TrendingUp
           }
         ]
+      });
+    }
+
+    // ── CRM, loyalty & promotions. Customer lookup is part of taking an order, so
+    // it stays visible to everyone; the money-rules screens are `admin` only.
+    const crmItems: NavItem[] = [
+      {
+        id: 'customers',
+        label: 'Customers',
+        path: '/customers',
+        icon: Users
+      }
+    ];
+    if (can('admin')) {
+      crmItems.push({
+        id: 'loyalty',
+        label: 'Loyalty & Gift Cards',
+        path: '/loyalty',
+        icon: Gift
+      });
+      crmItems.push({
+        id: 'promoCodes',
+        label: 'Promo Codes',
+        path: '/promo-codes',
+        icon: Percent
+      });
+    }
+    sections.push({ title: 'Customers & Loyalty', items: crmItems });
+
+    // ── Staff scheduling & time clock → `labor` module
+    if (can('labor')) {
+      sections.push({
+        title: 'Staff & Labor',
+        items: [{
+          id: 'labor',
+          label: 'Labor & Scheduling',
+          path: '/labor',
+          icon: CalendarClock,
+          subItems: [
+            { label: 'Shift Schedule', path: '/labor', icon: CalendarClock },
+            { label: 'Time Clock & Timesheet', path: '/labor', state: { tab: 'timeclock' }, icon: Clock }
+          ]
+        }]
       });
     }
 
@@ -270,7 +323,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       const platformSubItems: SubMenuItem[] = [
         { label: 'Tenant Management', path: '/super-admin', icon: Building2 },
         { label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard },
-        { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare }
+        { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare },
+        { label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard },
+        { label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug }
       ];
       if (can('users', 'edit')) {
         platformSubItems.push({ label: 'Permissions', path: '/permissions', icon: Shield });

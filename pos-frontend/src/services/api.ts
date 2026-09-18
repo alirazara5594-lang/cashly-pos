@@ -32,7 +32,20 @@ import type {
   ModulePermission,
   OverridePermissionKey,
   TaxJurisdiction,
-  VerifyPinResponse
+  VerifyPinResponse,
+  Customer,
+  LoyaltyProgramConfig,
+  LoyaltyRedeemPreview,
+  GiftCard,
+  PromoCode,
+  PromoDiscountType,
+  PaymentProvider,
+  PaymentInitiateResponse,
+  PaymentStatusResponse,
+  DeliveryIntegrationConfig,
+  StaffShiftSchedule,
+  TimeClockEntry,
+  MenuEngineeringReport
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -250,6 +263,15 @@ export const posApi = {
     isPaid: boolean;
     cashierName?: string;
     createdByRole?: string;
+    /**
+     * CRM / loyalty extras. All optional and additive — a checkout that omits
+     * them behaves exactly as it did before these fields existed.
+     */
+    customerId?: string;
+    promoCode?: string;
+    giftCardCode?: string;
+    giftCardRedeemAmount?: number;
+    loyaltyPointsToRedeem?: number;
     items: {
       productId: string;
       productName: string;
@@ -857,6 +879,196 @@ export const posApi = {
   },
   updateTenantSettings: async (tenantId: string, settings: any) => {
     const res = await api.put('/api/tenant/settings', settings, { params: { tenantId } });
+    return res.data;
+  },
+
+  // ── CRM — Customer profiles
+  getCustomers: async (search?: string) => {
+    const res = await api.get<Customer[]>('/api/customers', { params: { search } });
+    return res.data;
+  },
+  /** Phone lookup used at checkout. Returns null when no profile exists yet. */
+  lookupCustomer: async (phone: string) => {
+    const res = await api.get<Customer | null>('/api/customers/lookup', { params: { phone } });
+    return res.data || null;
+  },
+  createCustomer: async (data: { fullName: string; phone: string; email?: string }) => {
+    const res = await api.post<Customer>('/api/customers', data);
+    return res.data;
+  },
+  updateCustomer: async (id: string, data: { fullName?: string; phone?: string; email?: string }) => {
+    const res = await api.put<Customer>(`/api/customers/${id}`, data);
+    return res.data;
+  },
+
+  // ── Loyalty program
+  getLoyaltyConfig: async () => {
+    const res = await api.get<LoyaltyProgramConfig>('/api/loyalty/config');
+    return res.data;
+  },
+  updateLoyaltyConfig: async (data: {
+    isEnabled: boolean;
+    pointsPerPKRSpent: number;
+    pkrValuePerPoint: number;
+    minRedeemPoints: number;
+  }) => {
+    const res = await api.put<LoyaltyProgramConfig>('/api/loyalty/config', data);
+    return res.data;
+  },
+  /**
+   * PREVIEW ONLY — tells you what `pointsToRedeem` would be worth. Points are
+   * actually burned when the order carrying them is submitted.
+   */
+  previewLoyaltyRedemption: async (customerId: string, pointsToRedeem: number) => {
+    const res = await api.post<LoyaltyRedeemPreview>('/api/loyalty/redeem', { customerId, pointsToRedeem });
+    return res.data;
+  },
+
+  // ── Gift cards
+  issueGiftCard: async (data: {
+    initialBalancePKR: number;
+    issuedToCustomerId?: string;
+    expiresAt?: string;
+  }) => {
+    const res = await api.post<GiftCard>('/api/gift-cards/issue', data);
+    return res.data;
+  },
+  getGiftCardBalance: async (code: string) => {
+    const res = await api.get<GiftCard>(`/api/gift-cards/${encodeURIComponent(code)}/balance`);
+    return res.data;
+  },
+  /** Optional listing — the backend may not expose it; callers should tolerate a 404. */
+  getGiftCards: async () => {
+    const res = await api.get<GiftCard[]>('/api/gift-cards');
+    return res.data;
+  },
+
+  // ── Promo codes
+  getPromoCodes: async () => {
+    const res = await api.get<PromoCode[]>('/api/promo-codes');
+    return res.data;
+  },
+  createPromoCode: async (data: {
+    code: string;
+    discountType: PromoDiscountType;
+    discountValue: number;
+    minOrderAmountPKR: number;
+    maxUsesTotal?: number | null;
+    maxUsesPerCustomer?: number | null;
+    validFrom: string;
+    validUntil?: string | null;
+    isActive: boolean;
+  }) => {
+    const res = await api.post<PromoCode>('/api/promo-codes', data);
+    return res.data;
+  },
+  updatePromoCode: async (id: string, data: Partial<{
+    code: string;
+    discountType: PromoDiscountType;
+    discountValue: number;
+    minOrderAmountPKR: number;
+    maxUsesTotal?: number | null;
+    maxUsesPerCustomer?: number | null;
+    validFrom: string;
+    validUntil?: string | null;
+    isActive: boolean;
+  }>) => {
+    const res = await api.put<PromoCode>(`/api/promo-codes/${id}`, data);
+    return res.data;
+  },
+  deletePromoCode: async (id: string) => {
+    const res = await api.delete(`/api/promo-codes/${id}`);
+    return res.data;
+  },
+
+  // ── Payment gateway layer (server-configured credentials)
+  initiatePayment: async (orderId: string, provider: PaymentProvider) => {
+    const res = await api.post<PaymentInitiateResponse>('/api/payments/initiate', { orderId, provider });
+    return res.data;
+  },
+  getPaymentStatus: async (orderId: string) => {
+    const res = await api.get<PaymentStatusResponse>(`/api/payments/${orderId}/status`);
+    return res.data;
+  },
+  /**
+   * Optional: some builds expose which providers have server credentials wired.
+   * There is no contract guarantee for this route, so PaymentSettings falls back
+   * to a static "configure via server environment" note when it 404s.
+   */
+  getPaymentProviderStatus: async () => {
+    const res = await api.get<Array<{ provider: PaymentProvider; isConfigured: boolean; note?: string }>>(
+      '/api/payments/providers'
+    );
+    return res.data;
+  },
+
+  // ── Delivery platform integrations
+  getDeliveryIntegrationConfig: async (platform: string) => {
+    const res = await api.get<DeliveryIntegrationConfig>(`/api/integrations/delivery/${platform}/config`);
+    return res.data;
+  },
+  updateDeliveryIntegrationConfig: async (platform: string, config: DeliveryIntegrationConfig) => {
+    const res = await api.put<DeliveryIntegrationConfig>(`/api/integrations/delivery/${platform}/config`, config);
+    return res.data;
+  },
+
+  // ── Labor — shift scheduling
+  getShiftSchedules: async (params?: { branchId?: string; userId?: string; from?: string; to?: string }) => {
+    const res = await api.get<StaffShiftSchedule[]>('/api/labor/schedules', { params });
+    return res.data;
+  },
+  createShiftSchedule: async (data: {
+    branchId: string;
+    userId: string;
+    scheduledStart: string;
+    scheduledEnd: string;
+    position: string;
+    notes?: string;
+  }) => {
+    const res = await api.post<StaffShiftSchedule>('/api/labor/schedules', data);
+    return res.data;
+  },
+  updateShiftSchedule: async (id: string, data: Partial<{
+    branchId: string;
+    userId: string;
+    scheduledStart: string;
+    scheduledEnd: string;
+    position: string;
+    notes?: string;
+  }>) => {
+    const res = await api.put<StaffShiftSchedule>(`/api/labor/schedules/${id}`, data);
+    return res.data;
+  },
+  deleteShiftSchedule: async (id: string) => {
+    const res = await api.delete(`/api/labor/schedules/${id}`);
+    return res.data;
+  },
+
+  // ── Labor — time clock
+  clockIn: async (userId: string) => {
+    const res = await api.post<TimeClockEntry>('/api/labor/clock-in', { userId });
+    return res.data;
+  },
+  clockOut: async (timeClockEntryId: string) => {
+    const res = await api.post<TimeClockEntry>('/api/labor/clock-out', { timeClockEntryId });
+    return res.data;
+  },
+  getTimesheet: async (params?: { userId?: string; branchId?: string; from?: string; to?: string }) => {
+    const res = await api.get<TimeClockEntry[]>('/api/labor/timesheet', { params });
+    return res.data;
+  },
+  /**
+   * CSV export. Fetched as a blob rather than opened in a new tab so the bearer
+   * token still rides along (a plain window.open would be unauthenticated).
+   */
+  exportTimesheetCsv: async (params?: { userId?: string; branchId?: string; from?: string; to?: string }) => {
+    const res = await api.get('/api/labor/timesheet/export', { params, responseType: 'blob' });
+    return res.data as Blob;
+  },
+
+  // ── Menu engineering analytics
+  getMenuEngineering: async (params?: { branchId?: string; from?: string; to?: string }) => {
+    const res = await api.get<MenuEngineeringReport | any>('/api/analytics/menu-engineering', { params });
     return res.data;
   },
 };

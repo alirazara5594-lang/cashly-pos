@@ -10,9 +10,6 @@ import {
   X,
   Sun,
   Moon,
-  Lock,
-  Unlock,
-  Key,
   Monitor,
   Laptop,
   Tablet,
@@ -56,47 +53,19 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     theme,
     toggleTheme,
     terminalMode,
-    setTerminalMode,
-    isAdminUnlocked,
-    unlockWithAdminPin,
-    lockAdmin
+    setTerminalMode
   } = usePosStore();
 
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
-  const [pendingMode, setPendingMode] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  
-  const [showPinModal, setShowPinModal] = useState(false);
-  const [enteredPin, setEnteredPin] = useState('');
-  const [pinError, setPinError] = useState(false);
 
+  // Terminal mode is just this device's screen profile (which nav layout to show) —
+  // it carries no authorization. Access to any given screen is decided by the real
+  // signed-in user's role/permissions (RequireModule), so switching it never needs a PIN.
   const handleModeSwitch = (mode: string) => {
-    if (mode === 'OwnerAdmin') {
-      setPendingMode(mode);
-      setShowModeDropdown(false);
-      setShowPinModal(true);
-      setEnteredPin('');
-      setPinError(false);
-    } else {
-      setTerminalMode(mode as any);
-      setShowModeDropdown(false);
-    }
-  };
-
-  const handlePinSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const success = unlockWithAdminPin(enteredPin);
-    if (success && pendingMode) {
-      setTerminalMode(pendingMode as any);
-      setShowPinModal(false);
-      setPendingMode(null);
-      setEnteredPin('');
-      setPinError(false);
-    } else {
-      setPinError(true);
-      setEnteredPin('');
-    }
+    setTerminalMode(mode as any);
+    setShowModeDropdown(false);
   };
 
   const handleManualSync = async () => {
@@ -239,28 +208,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             )}
           </div>
 
-          {terminalMode === 'CounterPOS' && (
-            isAdminUnlocked ? (
-              <button
-                onClick={lockAdmin}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-600 border border-teal-200 text-xs font-semibold transition cursor-pointer"
-                title="Click to lock back to cashier mode"
-              >
-                <Unlock className="w-3 h-3 text-teal-600" />
-                <span className="hidden sm:inline">Admin Unlocked</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => setShowPinModal(true)}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-600 border border-amber-200 text-xs font-semibold transition cursor-pointer"
-                title="Owner Master PIN Unlock"
-              >
-                <Lock className="w-3 h-3" />
-                <span className="hidden sm:inline">Admin Unlock</span>
-              </button>
-            )
-          )}
-
           {currentUser && (
             <div className="flex items-center gap-1.5">
               <button
@@ -351,85 +298,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           </div>
         </div>
       </header>
-
-      {showPinModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
-                  <Key className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    {pendingMode === 'OwnerAdmin' ? 'Switch to Owner Mode' : 'Owner Master PIN'}
-                  </h3>
-                  <p className="text-[11px] text-slate-500">
-                    {pendingMode === 'OwnerAdmin'
-                      ? 'Enter admin PIN to access full back office'
-                      : 'Unlock owner screens on this counter'}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setShowPinModal(false);
-                  setPendingMode(null);
-                  setEnteredPin('');
-                  setPinError(false);
-                }}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-900 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handlePinSubmit} className="space-y-4">
-              <div className="space-y-1 text-center">
-                <input 
-                  type="password"
-                  maxLength={6}
-                  autoFocus
-                  value={enteredPin}
-                  onChange={(e) => {
-                    setEnteredPin(e.target.value);
-                    setPinError(false);
-                  }}
-                  placeholder="••••"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center text-2xl tracking-[0.5em] font-mono text-slate-900 focus:outline-none focus:border-amber-500"
-                />
-                {pinError && (
-                  <p className="text-xs text-rose-500 font-semibold pt-1">Incorrect PIN. Try again.</p>
-                )}
-                <p className="text-[11px] text-slate-500 pt-1">Default PIN: 1234</p>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 'Clear', 0, 'Enter'].map((val, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => {
-                      if (val === 'Clear') setEnteredPin('');
-                      else if (val === 'Enter') handlePinSubmit(new Event('submit') as any);
-                      else setEnteredPin(prev => prev + val.toString());
-                    }}
-                    className={`py-3 rounded-xl font-bold text-sm transition cursor-pointer ${
-                      val === 'Enter' 
-                        ? 'bg-teal-500 text-white hover:bg-teal-600 font-extrabold col-span-1' 
-                        : val === 'Clear' 
-                        ? 'bg-slate-100 text-rose-500 hover:bg-slate-200 text-xs' 
-                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                    }`}
-                  >
-                    {val}
-                  </button>
-                ))}
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </>
   );
 };

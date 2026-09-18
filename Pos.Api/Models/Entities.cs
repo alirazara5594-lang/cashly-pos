@@ -329,6 +329,18 @@ public class Order
     public string? FiscalInvoiceNumber { get; set; }
     public string? FiscalQrPayload { get; set; }
 
+    // CRM / loyalty / gift-card linkage. All optional — a walk-in order with no linked Customer
+    // record behaves exactly as before; CustomerName/CustomerPhone above remain the free-text fields.
+    public Guid? CustomerId { get; set; }
+    public Customer? Customer { get; set; }
+    public Guid? PromoCodeId { get; set; }
+    public PromoCode? PromoCode { get; set; }
+    /// <summary>
+    /// Amount settled by gift card. Applied AFTER tax — it reduces what is owed through the
+    /// order's payment method, it is not a tax-affecting discount.
+    /// </summary>
+    public decimal GiftCardRedeemedPKR { get; set; } = 0;
+
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public ICollection<KitchenTicket> KitchenTickets { get; set; } = new List<KitchenTicket>();
 }
@@ -540,6 +552,10 @@ public class AppUser
     public bool CanManageMenuAndTax { get; set; } = false;
     public bool CanGiveDiscounts { get; set; } = false;
     public bool CanVoidOrders { get; set; } = false;
+
+    // Account lockout after repeated failed PIN attempts (see /api/auth/login).
+    public int FailedLoginAttempts { get; set; } = 0;
+    public DateTime? LockedUntil { get; set; }
 }
 
 public enum TransferStatus
@@ -679,3 +695,180 @@ public class StockRequestItem
     public decimal UnitCostPKR { get; set; }
 }
 
+
+// ============================================================
+// CRM / Loyalty / Gift cards / Promotions
+// ============================================================
+
+public class Customer
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public int LoyaltyPoints { get; set; } = 0;
+    public int TotalVisits { get; set; } = 0;
+    public decimal TotalSpentPKR { get; set; } = 0;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? LastVisitAt { get; set; }
+}
+
+public class GiftCard
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string CardCode { get; set; } = string.Empty; // 8-16 char alphanumeric, globally unique
+    public decimal InitialBalancePKR { get; set; }
+    public decimal CurrentBalancePKR { get; set; }
+    public Guid? IssuedToCustomerId { get; set; }
+    public DateTime IssuedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ExpiresAt { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+public enum GiftCardTransactionType
+{
+    Issue = 1,
+    Redeem = 2,
+    Reload = 3,
+    Adjustment = 4
+}
+
+public class GiftCardTransaction
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid GiftCardId { get; set; }
+    public GiftCard? GiftCard { get; set; }
+    public Guid? OrderId { get; set; }
+    public GiftCardTransactionType Type { get; set; } = GiftCardTransactionType.Issue;
+    public decimal AmountPKR { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string CreatedBy { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One row per tenant (like <see cref="TenantSettings"/>), lazily created on first access.
+/// Units: PointsPerPKRSpent is "points earned per 100 PKR spent"; PKRValuePerPoint is the
+/// redemption value of a single point in PKR.
+/// </summary>
+public class LoyaltyProgramConfig
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public bool IsEnabled { get; set; } = false;
+    public decimal PointsPerPKRSpent { get; set; } = 1;  // 1 point per 100 PKR spent
+    public decimal PKRValuePerPoint { get; set; } = 1;   // 1 point = 1 PKR off
+    public int MinRedeemPoints { get; set; } = 100;
+}
+
+public enum PromoDiscountType
+{
+    Percent = 1,
+    Fixed = 2
+}
+
+public class PromoCode
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Code { get; set; } = string.Empty; // stored uppercase, unique per tenant
+    public PromoDiscountType DiscountType { get; set; } = PromoDiscountType.Percent;
+    public decimal DiscountValue { get; set; }
+    public decimal MinOrderAmountPKR { get; set; } = 0;
+    public int? MaxUsesTotal { get; set; }
+    public int? MaxUsesPerCustomer { get; set; }
+    public int UsesCount { get; set; } = 0;
+    public DateTime ValidFrom { get; set; } = DateTime.UtcNow;
+    public DateTime? ValidUntil { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
+// ============================================================
+// Payments
+// ============================================================
+
+public enum PaymentProvider
+{
+    JazzCash = 1,
+    EasyPaisa = 2,
+    Card = 3,
+    Cash = 4
+}
+
+public enum PaymentTransactionStatus
+{
+    Pending = 1,
+    Completed = 2,
+    Failed = 3,
+    Refunded = 4
+}
+
+public class PaymentTransaction
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid OrderId { get; set; }
+    public PaymentProvider Provider { get; set; } = PaymentProvider.Cash;
+    public string? ProviderTransactionId { get; set; }
+    public PaymentTransactionStatus Status { get; set; } = PaymentTransactionStatus.Pending;
+    public decimal AmountPKR { get; set; }
+    public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? CompletedAt { get; set; }
+    public string? RawResponsePayload { get; set; }
+    public string? FailureReason { get; set; }
+}
+
+// ============================================================
+// Delivery-platform integration
+// ============================================================
+
+public enum DeliveryPlatform
+{
+    Foodpanda = 1,
+    Other = 99
+}
+
+public class ExternalOrderMapping
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public DeliveryPlatform Platform { get; set; } = DeliveryPlatform.Foodpanda;
+    public string ExternalOrderId { get; set; } = string.Empty;
+    public Guid InternalOrderId { get; set; }
+    public string RawPayload { get; set; } = string.Empty;
+    public DateTime ReceivedAt { get; set; } = DateTime.UtcNow;
+}
+
+// ============================================================
+// Labor: scheduling + time clock
+// ============================================================
+
+public class StaffShiftSchedule
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    public DateTime ScheduledStart { get; set; }
+    public DateTime ScheduledEnd { get; set; }
+    public string Position { get; set; } = string.Empty; // Cashier, Chef, Waiter, Rider, ...
+    public string? Notes { get; set; }
+    public string CreatedBy { get; set; } = string.Empty;
+}
+
+public class TimeClockEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    public DateTime ClockInAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ClockOutAt { get; set; }
+    public Guid? LinkedCashShiftId { get; set; }
+    public decimal? HoursWorked { get; set; }
+}

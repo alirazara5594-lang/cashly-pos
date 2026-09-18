@@ -9,9 +9,8 @@ import {
   Copy, 
   Check, 
   X,
-  Download, 
-  Key, 
-  Lock, 
+  Download,
+  Lock,
   Unlock, 
   Laptop, 
   Monitor, 
@@ -99,17 +98,13 @@ export const SettingsManagement: React.FC = () => {
   const { 
     selectedTenant, 
     selectedBranch, 
-    deploymentMode, 
-    terminalMode, 
-    activeDepartment, 
-    isAdminUnlocked, 
-    adminMasterPin, 
+    deploymentMode,
+    terminalMode,
+    activeDepartment,
     isOnline,
     offlinePendingCount,
-    setTerminalMode, 
-    setActiveDepartment, 
-    setAdminMasterPin, 
-    lockAdmin,
+    setTerminalMode,
+    setActiveDepartment,
     refreshOfflineCount,
     syncPendingOrders,
     cashTaxRatePercent,
@@ -137,10 +132,6 @@ export const SettingsManagement: React.FC = () => {
   const [pairingBranches, setPairingBranches] = useState<BranchPairingInfo[]>([]);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [hqUrl, setHqUrl] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288');
-
-  // PIN modal state
-  const [newAdminPin, setNewAdminPin] = useState(adminMasterPin);
-  const [pinChangeMessage, setPinChangeMessage] = useState<string | null>(null);
 
   // Sync Diagnostics state
   const [dbStats, setDbStats] = useState<{ products: number; categories: number; offlineOrders: number }>({ products: 0, categories: 0, offlineOrders: 0 });
@@ -388,14 +379,6 @@ export const SettingsManagement: React.FC = () => {
     a.download = `cashly-branch-config-${branch.branchCode.toLowerCase()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  };
-
-  const handleSavePin = () => {
-    if (newAdminPin.trim().length >= 4) {
-      setAdminMasterPin(newAdminPin.trim());
-      setPinChangeMessage('Master Admin PIN successfully updated!');
-      setTimeout(() => setPinChangeMessage(null), 3000);
-    }
   };
 
   const handleForceSync = async () => {
@@ -652,58 +635,6 @@ export const SettingsManagement: React.FC = () => {
                 </div>
               </div>
 
-              {/* Master Admin PIN Override Setting */}
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Key className="w-4 h-4 text-teal-600" />
-                    <span className="text-sm font-bold text-slate-900">Master Admin Override PIN</span>
-                    {isAdminUnlocked ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-teal-50 text-teal-600 border border-teal-200 font-bold flex items-center gap-1">
-                        <Unlock className="w-3 h-3" /> TEMPORARILY UNLOCKED
-                      </span>
-                    ) : (
-                      <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-500 font-bold flex items-center gap-1">
-                        <Lock className="w-3 h-3" /> LOCKED
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    Allows the restaurant owner to temporarily unlock admin screens directly on the cashier counter PC without switching computers.
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2 w-full md:w-auto">
-                  <input 
-                    type="password"
-                    maxLength={6}
-                    value={newAdminPin}
-                    onChange={(e) => setNewAdminPin(e.target.value)}
-                    placeholder="New PIN (e.g. 1234)"
-                    className="w-28 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 text-center font-mono focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-                  />
-                  <button
-                    onClick={handleSavePin}
-                    className="px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs transition"
-                  >
-                    Update PIN
-                  </button>
-                  {isAdminUnlocked && (
-                    <button
-                      onClick={lockAdmin}
-                      className="px-3 py-1.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold transition"
-                    >
-                      Lock Now
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {pinChangeMessage && (
-                <div className="p-3 rounded-xl bg-teal-50 border border-teal-200 text-teal-600 text-xs flex items-center gap-2">
-                  <Check className="w-4 h-4" /> {pinChangeMessage}
-                </div>
-              )}
             </div>
           </div>
         )}

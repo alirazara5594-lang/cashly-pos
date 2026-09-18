@@ -23,6 +23,13 @@ import { WhatsAppConfig } from './pages/WhatsAppConfig';
 import { PricingAdmin } from './pages/PricingAdmin';
 import { ModulePermissions } from './pages/ModulePermissions';
 import { SmartAnalytics } from './pages/SmartAnalytics';
+import { CustomerManagement } from './pages/CustomerManagement';
+import { LoyaltyGiftCards } from './pages/LoyaltyGiftCards';
+import { PromoCodes } from './pages/PromoCodes';
+import { LaborManagement } from './pages/LaborManagement';
+import { MenuEngineering } from './pages/MenuEngineering';
+import { PaymentSettings } from './pages/PaymentSettings';
+import { DeliveryIntegrationSettings } from './pages/DeliveryIntegrationSettings';
 import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
 import { usePosStore } from './store/posStore';
@@ -202,6 +209,9 @@ function MainLayoutInner() {
             <Route path="/kitchen" element={<KitchenDisplay />} />
             <Route path="/order-tab" element={<OrderTab />} />
             <Route path="/delivery" element={<DeliveryBoard />} />
+            {/* Customer lookup is part of taking an order, so viewing stays open to
+                any signed-in user; the page itself gates creating/editing on `admin` edit. */}
+            <Route path="/customers" element={<CustomerManagement />} />
 
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />
@@ -218,6 +228,10 @@ function MainLayoutInner() {
             <Route path="/reports" element={<RequireModule module="reports"><ReportsManagement /></RequireModule>} />
             <Route path="/director" element={<RequireModule module="reports"><DirectorDashboard /></RequireModule>} />
             <Route path="/analytics" element={<RequireModule module="reports"><SmartAnalytics /></RequireModule>} />
+            <Route path="/menu-engineering" element={<RequireModule module="reports"><MenuEngineering /></RequireModule>} />
+
+            {/* Staff scheduling & time clock → `labor` module (BranchManager-editable baseline) */}
+            <Route path="/labor" element={<RequireModule module="labor"><LaborManagement /></RequireModule>} />
 
             {/* Financial settings & tax configuration → `accounts` module */}
             <Route path="/settings" element={<RequireModule module="accounts"><SettingsManagement /></RequireModule>} />
@@ -230,6 +244,12 @@ function MainLayoutInner() {
             <Route path="/super-admin" element={<RequireModule module="admin"><SuperAdmin /></RequireModule>} />
             <Route path="/pricing-admin" element={<RequireModule module="admin"><PricingAdmin /></RequireModule>} />
             <Route path="/whatsapp-config" element={<RequireModule module="admin"><WhatsAppConfig /></RequireModule>} />
+
+            {/* CRM, loyalty and integration settings → `admin` module */}
+            <Route path="/loyalty" element={<RequireModule module="admin"><LoyaltyGiftCards /></RequireModule>} />
+            <Route path="/promo-codes" element={<RequireModule module="admin"><PromoCodes /></RequireModule>} />
+            <Route path="/payment-settings" element={<RequireModule module="admin"><PaymentSettings /></RequireModule>} />
+            <Route path="/delivery-integrations" element={<RequireModule module="admin"><DeliveryIntegrationSettings /></RequireModule>} />
 
             <Route path="/signup" element={<TenantSignup />} />
             <Route path="/setup" element={<InstallationWizard />} />

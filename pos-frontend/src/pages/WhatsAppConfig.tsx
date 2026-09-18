@@ -14,7 +14,7 @@ import {
   TestTube2,
   ChevronDown
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
 
 interface WhatsAppConfigData {
   provider: string;
@@ -26,6 +26,13 @@ interface WhatsAppConfigData {
   isEnabled: boolean;
   autoSendOrderUpdates: boolean;
   autoSendReceipt: boolean;
+}
+
+/** The server never echoes back saved secrets — only whether one is already on file. */
+interface SecretStatus {
+  hasApiKey: boolean;
+  hasApiSecret: boolean;
+  hasAccessToken: boolean;
 }
 
 interface WhatsAppLog {
@@ -49,6 +56,7 @@ export const WhatsAppConfig: React.FC = () => {
     autoSendOrderUpdates: false,
     autoSendReceipt: false,
   });
+  const [secretStatus, setSecretStatus] = useState<SecretStatus>({ hasApiKey: false, hasApiSecret: false, hasAccessToken: false });
   const [logs, setLogs] = useState<WhatsAppLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -64,16 +72,23 @@ export const WhatsAppConfig: React.FC = () => {
         posApi.getWhatsAppLogs(50).catch(() => [])
       ]);
       if (configData) {
+        // Secrets are never returned by the server — only whether one is already saved.
+        // Leaving these blank on save keeps whatever is already on file.
         setConfig({
           provider: configData.provider || 'Manual',
-          apiKey: configData.apiKey || '',
-          apiSecret: configData.apiSecret || '',
+          apiKey: '',
+          apiSecret: '',
           phoneNumberId: configData.phoneNumberId || '',
-          accessToken: configData.accessToken || '',
+          accessToken: '',
           webhookUrl: configData.webhookUrl || '',
           isEnabled: configData.isEnabled || false,
           autoSendOrderUpdates: configData.autoSendOrderUpdates || false,
           autoSendReceipt: configData.autoSendReceipt || false,
+        });
+        setSecretStatus({
+          hasApiKey: !!configData.hasApiKey,
+          hasApiSecret: !!configData.hasApiSecret,
+          hasAccessToken: !!configData.hasAccessToken,
         });
       }
       setLogs(Array.isArray(logsData) ? logsData : []);
@@ -92,8 +107,9 @@ export const WhatsAppConfig: React.FC = () => {
     try {
       await posApi.saveWhatsAppConfig(config);
       setMessage({ type: 'success', text: 'Configuration saved successfully' });
+      await loadData(); // refresh secret-saved indicators
     } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to save configuration' });
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to save configuration') });
     } finally {
       setSaving(false);
     }
@@ -104,11 +120,16 @@ export const WhatsAppConfig: React.FC = () => {
     setTestSending(true);
     setMessage(null);
     try {
-      await posApi.sendWhatsAppTest(testPhone, 'CashlyPOS Test');
-      setMessage({ type: 'success', text: `Test message sent to ${testPhone}` });
-      setTestPhone('');
+      const result = await posApi.sendWhatsAppTest(testPhone, 'CashlyPOS Test');
+      // The server never fakes success — a rejected/unconfigured send comes back as sent:false.
+      if (result?.sent) {
+        setMessage({ type: 'success', text: `Test message sent to ${testPhone}` });
+        setTestPhone('');
+      } else {
+        setMessage({ type: 'error', text: result?.message || 'The message was not actually sent.' });
+      }
     } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to send test message' });
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to send test message') });
     } finally {
       setTestSending(false);
     }
@@ -213,22 +234,26 @@ export const WhatsAppConfig: React.FC = () => {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">API Key</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+              API Key {secretStatus.hasApiKey && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
+            </label>
             <input
               type="password"
               value={config.apiKey}
               onChange={(e) => setConfig({ ...config, apiKey: e.target.value })}
-              placeholder="Enter API key"
+              placeholder={secretStatus.hasApiKey ? '•••••••• (unchanged)' : 'Enter API key'}
               className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">API Secret</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+              API Secret {secretStatus.hasApiSecret && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
+            </label>
             <input
               type="password"
               value={config.apiSecret}
               onChange={(e) => setConfig({ ...config, apiSecret: e.target.value })}
-              placeholder="Enter API secret"
+              placeholder={secretStatus.hasApiSecret ? '•••••••• (unchanged)' : 'Enter API secret'}
               className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>
@@ -245,12 +270,14 @@ export const WhatsAppConfig: React.FC = () => {
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Access Token</label>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+              Access Token {secretStatus.hasAccessToken && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
+            </label>
             <input
               type="password"
               value={config.accessToken}
               onChange={(e) => setConfig({ ...config, accessToken: e.target.value })}
-              placeholder="Long-lived access token"
+              placeholder={secretStatus.hasAccessToken ? '•••••••• (unchanged)' : 'Long-lived access token'}
               className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
             />
           </div>

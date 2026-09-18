@@ -63,6 +63,13 @@ const BRANCH_MANAGER_VIEW_MODULES: ModuleKey[] = [
   'supplychain'
 ];
 
+/**
+ * Modules a BranchManager can fully manage with no explicit permission row.
+ * Staff scheduling and the time clock are a branch manager's day job, so `labor`
+ * is edit-level baseline here — unlike the view-only back-office modules above.
+ */
+const BRANCH_MANAGER_EDIT_MODULES: ModuleKey[] = ['labor'];
+
 const ACTION_FIELD: Record<PermissionAction, keyof ModulePermission> = {
   view: 'canView',
   edit: 'canEdit',
@@ -93,8 +100,13 @@ export function hasModuleAccess(
   );
   if (explicit) return !!explicit[ACTION_FIELD[action]];
 
-  if (normalized === 'BranchManager' && BRANCH_MANAGER_VIEW_MODULES.includes(moduleKey as ModuleKey)) {
-    return action === 'view';
+  if (normalized === 'BranchManager') {
+    if (BRANCH_MANAGER_EDIT_MODULES.includes(moduleKey as ModuleKey)) {
+      return true;
+    }
+    if (BRANCH_MANAGER_VIEW_MODULES.includes(moduleKey as ModuleKey)) {
+      return action === 'view';
+    }
   }
 
   return false;
@@ -162,8 +174,6 @@ interface PosState {
   // Terminal Profile & Role-Based Control
   terminalMode: TerminalOperatingMode;
   activeDepartment: DepartmentRole;
-  isAdminUnlocked: boolean;
-  adminMasterPin: string;
 
   // Authenticated session (mandatory — the route tree is gated on this)
   currentUser: CurrentUser | null;
@@ -213,9 +223,6 @@ interface PosState {
   // Terminal & Role Actions
   setTerminalMode: (mode: TerminalOperatingMode) => void;
   setActiveDepartment: (dept: DepartmentRole) => void;
-  unlockWithAdminPin: (pin: string) => boolean;
-  lockAdmin: () => void;
-  setAdminMasterPin: (pin: string) => void;
 
   // Parked Bills / Open Tabs
   parkedBills: ParkedBill[];
@@ -267,8 +274,6 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   terminalMode: (localStorage.getItem('cashly_terminal_mode') as TerminalOperatingMode) || 'CounterPOS',
   activeDepartment: (localStorage.getItem('cashly_active_department') as DepartmentRole) || 'Owner',
-  isAdminUnlocked: false,
-  adminMasterPin: localStorage.getItem('cashly_admin_pin') || '1234',
 
   currentUser: readStoredUser(),
   token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
@@ -330,8 +335,7 @@ export const usePosStore = create<PosState>((set, get) => ({
       currentUser: null,
       token: null,
       permissions: null,
-      modulePermissions: [],
-      isAdminUnlocked: false
+      modulePermissions: []
     });
   },
 
@@ -367,24 +371,6 @@ export const usePosStore = create<PosState>((set, get) => ({
   setActiveDepartment: (dept) => {
     localStorage.setItem('cashly_active_department', dept);
     set({ activeDepartment: dept });
-  },
-
-  unlockWithAdminPin: (pin) => {
-    const { adminMasterPin } = get();
-    if (pin.trim() === adminMasterPin.trim() || pin.trim() === '1234') {
-      set({ isAdminUnlocked: true });
-      return true;
-    }
-    return false;
-  },
-
-  lockAdmin: () => {
-    set({ isAdminUnlocked: false });
-  },
-
-  setAdminMasterPin: (pin) => {
-    localStorage.setItem('cashly_admin_pin', pin);
-    set({ adminMasterPin: pin });
   },
 
   setDeploymentMode: (mode) => {

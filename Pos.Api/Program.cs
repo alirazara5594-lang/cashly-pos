@@ -114,6 +114,25 @@ builder.Services.AddScoped<Pos.Api.Services.ITenantProvider, Pos.Api.Services.Te
 builder.Services.AddScoped<Pos.Api.Middlewares.ICurrentUserAccessor, Pos.Api.Middlewares.CurrentUserAccessor>();
 builder.Services.AddSingleton<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.NullFiscalInvoiceProvider>();
 
+// --- Payment gateways (all inert until merchant credentials are configured) ---
+builder.Services.AddSingleton<Pos.Api.Services.IPaymentGatewayProvider, Pos.Api.Services.JazzCashProvider>();
+builder.Services.AddSingleton<Pos.Api.Services.IPaymentGatewayProvider, Pos.Api.Services.EasyPaisaProvider>();
+builder.Services.AddSingleton<Pos.Api.Services.IPaymentGatewayProvider, Pos.Api.Services.NullPaymentGatewayProvider>();
+builder.Services.AddSingleton<Pos.Api.Services.IPaymentGatewayResolver, Pos.Api.Services.PaymentGatewayResolver>();
+
+// --- Delivery-platform connectors (payload shapes are best-effort until partner access exists) ---
+builder.Services.AddSingleton<Pos.Api.Services.IDeliveryPlatformConnector, Pos.Api.Services.FoodpandaStubConnector>();
+builder.Services.AddSingleton<Pos.Api.Services.IDeliveryPlatformResolver, Pos.Api.Services.DeliveryPlatformResolver>();
+
+// --- WhatsApp senders (Twilio/Meta genuinely call out once configured; Manual/Whaticket are
+// honest no-op/best-effort — see Services/WhatsAppSender.cs for details on each) ---
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.ManualWhatsAppSender>();
+builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.TwilioWhatsAppSender>();
+builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.MetaWhatsAppSender>();
+builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.WhaticketWhatsAppSender>();
+builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSenderResolver, Pos.Api.Services.WhatsAppSenderResolver>();
+
 var app = builder.Build();
 
 // --- Global Exception Handler ---
@@ -299,6 +318,10 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""Notes"" text;
             ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""IsClosed"" boolean NOT NULL DEFAULT false;
 
+            -- PIN-login lockout tracking.
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""FailedLoginAttempts"" integer NOT NULL DEFAULT 0;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""LockedUntil"" timestamp with time zone;
+
             CREATE TABLE IF NOT EXISTS ""NotificationLogs"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
@@ -463,6 +486,196 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // --- CRM / loyalty / gift cards / promos / payments / delivery integration / labor ---
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""Customers"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""FullName"" text NOT NULL DEFAULT '',
+                ""Phone"" text NOT NULL DEFAULT '',
+                ""Email"" text,
+                ""LoyaltyPoints"" integer NOT NULL DEFAULT 0,
+                ""TotalVisits"" integer NOT NULL DEFAULT 0,
+                ""TotalSpentPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""LastVisitAt"" timestamp with time zone
+            );
+            CREATE TABLE IF NOT EXISTS ""GiftCards"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""CardCode"" text NOT NULL,
+                ""InitialBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CurrentBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""IssuedToCustomerId"" uuid,
+                ""IssuedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ExpiresAt"" timestamp with time zone,
+                ""IsActive"" boolean NOT NULL DEFAULT true
+            );
+            CREATE TABLE IF NOT EXISTS ""GiftCardTransactions"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""GiftCardId"" uuid NOT NULL,
+                ""OrderId"" uuid,
+                ""Type"" integer NOT NULL DEFAULT 1,
+                ""AmountPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CreatedBy"" text NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS ""LoyaltyProgramConfigs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""IsEnabled"" boolean NOT NULL DEFAULT false,
+                ""PointsPerPKRSpent"" numeric(18,2) NOT NULL DEFAULT 1,
+                ""PKRValuePerPoint"" numeric(18,2) NOT NULL DEFAULT 1,
+                ""MinRedeemPoints"" integer NOT NULL DEFAULT 100
+            );
+            CREATE TABLE IF NOT EXISTS ""PromoCodes"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Code"" text NOT NULL,
+                ""DiscountType"" integer NOT NULL DEFAULT 1,
+                ""DiscountValue"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""MinOrderAmountPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""MaxUsesTotal"" integer,
+                ""MaxUsesPerCustomer"" integer,
+                ""UsesCount"" integer NOT NULL DEFAULT 0,
+                ""ValidFrom"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ValidUntil"" timestamp with time zone,
+                ""IsActive"" boolean NOT NULL DEFAULT true
+            );
+            CREATE TABLE IF NOT EXISTS ""PaymentTransactions"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""OrderId"" uuid NOT NULL,
+                ""Provider"" integer NOT NULL DEFAULT 4,
+                ""ProviderTransactionId"" text,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""AmountPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""RequestedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CompletedAt"" timestamp with time zone,
+                ""RawResponsePayload"" text,
+                ""FailureReason"" text
+            );
+            CREATE TABLE IF NOT EXISTS ""ExternalOrderMappings"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""Platform"" integer NOT NULL DEFAULT 1,
+                ""ExternalOrderId"" text NOT NULL DEFAULT '',
+                ""InternalOrderId"" uuid NOT NULL,
+                ""RawPayload"" text NOT NULL DEFAULT '',
+                ""ReceivedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""StaffShiftSchedules"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""UserId"" uuid NOT NULL,
+                ""ScheduledStart"" timestamp with time zone NOT NULL,
+                ""ScheduledEnd"" timestamp with time zone NOT NULL,
+                ""Position"" text NOT NULL DEFAULT '',
+                ""Notes"" text,
+                ""CreatedBy"" text NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS ""TimeClockEntries"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""UserId"" uuid NOT NULL,
+                ""ClockInAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ClockOutAt"" timestamp with time zone,
+                ""LinkedCashShiftId"" uuid,
+                ""HoursWorked"" numeric(18,2)
+            );
+
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""CustomerId"" uuid;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""PromoCodeId"" uuid;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""GiftCardRedeemedPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+        ");
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Customers_TenantId_Phone') THEN
+                    CREATE UNIQUE INDEX ""IX_Customers_TenantId_Phone"" ON ""Customers"" (""TenantId"", ""Phone"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Customers_TenantId_FullName') THEN
+                    CREATE INDEX ""IX_Customers_TenantId_FullName"" ON ""Customers"" (""TenantId"", ""FullName"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_GiftCards_CardCode') THEN
+                    CREATE UNIQUE INDEX ""IX_GiftCards_CardCode"" ON ""GiftCards"" (""CardCode"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_GiftCards_TenantId_IsActive') THEN
+                    CREATE INDEX ""IX_GiftCards_TenantId_IsActive"" ON ""GiftCards"" (""TenantId"", ""IsActive"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_GiftCardTransactions_GiftCardId_CreatedAt') THEN
+                    CREATE INDEX ""IX_GiftCardTransactions_GiftCardId_CreatedAt"" ON ""GiftCardTransactions"" (""GiftCardId"", ""CreatedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_GiftCardTransactions_OrderId') THEN
+                    CREATE INDEX ""IX_GiftCardTransactions_OrderId"" ON ""GiftCardTransactions"" (""OrderId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_LoyaltyProgramConfigs_TenantId') THEN
+                    CREATE UNIQUE INDEX ""IX_LoyaltyProgramConfigs_TenantId"" ON ""LoyaltyProgramConfigs"" (""TenantId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PromoCodes_TenantId_Code') THEN
+                    CREATE UNIQUE INDEX ""IX_PromoCodes_TenantId_Code"" ON ""PromoCodes"" (""TenantId"", ""Code"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PromoCodes_TenantId_IsActive') THEN
+                    CREATE INDEX ""IX_PromoCodes_TenantId_IsActive"" ON ""PromoCodes"" (""TenantId"", ""IsActive"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PaymentTransactions_TenantId_RequestedAt') THEN
+                    CREATE INDEX ""IX_PaymentTransactions_TenantId_RequestedAt"" ON ""PaymentTransactions"" (""TenantId"", ""RequestedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PaymentTransactions_OrderId') THEN
+                    CREATE INDEX ""IX_PaymentTransactions_OrderId"" ON ""PaymentTransactions"" (""OrderId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PaymentTransactions_BranchId_Status') THEN
+                    CREATE INDEX ""IX_PaymentTransactions_BranchId_Status"" ON ""PaymentTransactions"" (""BranchId"", ""Status"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PaymentTransactions_ProviderTransactionId') THEN
+                    CREATE INDEX ""IX_PaymentTransactions_ProviderTransactionId"" ON ""PaymentTransactions"" (""ProviderTransactionId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_ExternalOrderMappings_Platform_ExternalOrderId') THEN
+                    CREATE UNIQUE INDEX ""IX_ExternalOrderMappings_Platform_ExternalOrderId"" ON ""ExternalOrderMappings"" (""Platform"", ""ExternalOrderId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_ExternalOrderMappings_TenantId_ReceivedAt') THEN
+                    CREATE INDEX ""IX_ExternalOrderMappings_TenantId_ReceivedAt"" ON ""ExternalOrderMappings"" (""TenantId"", ""ReceivedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_ExternalOrderMappings_InternalOrderId') THEN
+                    CREATE INDEX ""IX_ExternalOrderMappings_InternalOrderId"" ON ""ExternalOrderMappings"" (""InternalOrderId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StaffShiftSchedules_BranchId_ScheduledStart') THEN
+                    CREATE INDEX ""IX_StaffShiftSchedules_BranchId_ScheduledStart"" ON ""StaffShiftSchedules"" (""BranchId"", ""ScheduledStart"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StaffShiftSchedules_TenantId_UserId') THEN
+                    CREATE INDEX ""IX_StaffShiftSchedules_TenantId_UserId"" ON ""StaffShiftSchedules"" (""TenantId"", ""UserId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TimeClockEntries_BranchId_ClockInAt') THEN
+                    CREATE INDEX ""IX_TimeClockEntries_BranchId_ClockInAt"" ON ""TimeClockEntries"" (""BranchId"", ""ClockInAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TimeClockEntries_UserId_ClockInAt') THEN
+                    CREATE INDEX ""IX_TimeClockEntries_UserId_ClockInAt"" ON ""TimeClockEntries"" (""UserId"", ""ClockInAt"");
+                END IF;
+            END $$;
+        ");
+        await db.Database.ExecuteSqlRawAsync(@"
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_giftcardtransactions_giftcards') THEN
+                    ALTER TABLE ""GiftCardTransactions"" ADD CONSTRAINT ""fk_giftcardtransactions_giftcards"" FOREIGN KEY (""GiftCardId"") REFERENCES ""GiftCards""(""Id"") ON DELETE CASCADE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_customers') THEN
+                    ALTER TABLE ""Orders"" ADD CONSTRAINT ""fk_orders_customers"" FOREIGN KEY (""CustomerId"") REFERENCES ""Customers""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_promocodes') THEN
+                    ALTER TABLE ""Orders"" ADD CONSTRAINT ""fk_orders_promocodes"" FOREIGN KEY (""PromoCodeId"") REFERENCES ""PromoCodes""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_timeclockentries_users') THEN
+                    ALTER TABLE ""TimeClockEntries"" ADD CONSTRAINT ""fk_timeclockentries_users"" FOREIGN KEY (""UserId"") REFERENCES ""Users""(""Id"") ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_staffshiftschedules_users') THEN
+                    ALTER TABLE ""StaffShiftSchedules"" ADD CONSTRAINT ""fk_staffshiftschedules_users"" FOREIGN KEY (""UserId"") REFERENCES ""Users""(""Id"") ON DELETE RESTRICT;
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -618,6 +831,69 @@ static async Task WriteAuditAsync(AppDbContext db, Guid tenantId, AppUser? user,
     });
 }
 
+// --- Helper: compose the canned WhatsApp copy for a given event type ---
+static string BuildWhatsAppMessage(string messageType, string orderNumber, string? itemSummary, decimal totalPKR, string? deliveryAddress, string? paymentMethod, string? customMessage) => messageType switch
+{
+    "order_placed" => $"✅ *Order Confirmed!*\n\nOrder #{orderNumber}\nItems: {itemSummary}\nTotal: Rs {totalPKR:N0}\n\nThank you for your order! We're preparing it now.",
+    "order_preparing" => $"👨‍🍳 *Your order is being prepared!*\n\nOrder #{orderNumber}\nEstimated time: 15-20 minutes\n\nWe'll let you know when it's ready!",
+    "order_ready" => $"🔔 *Your order is ready!*\n\nOrder #{orderNumber}\nPlease collect from the counter.\n\nThank you for choosing us!",
+    "order_delivered" => $"🚚 *Order Delivered!*\n\nOrder #{orderNumber}\nDelivered to: {deliveryAddress}\n\nThank you! We hope you enjoy your meal.",
+    "receipt" => $"🧾 *Payment Receipt*\n\nOrder #{orderNumber}\nTotal: Rs {totalPKR:N0}\nPayment: {paymentMethod}\n\nThank you for dining with us!",
+    _ => customMessage ?? "You have an update from Cashly POS."
+};
+
+/// Central place every WhatsApp send goes through — config/quota checks, provider dispatch, and the
+/// NotificationLog write all live here once, so the honest "not configured"/"failed" outcome (never a
+/// faked "sent") is guaranteed no matter which endpoint or internal order-flow event triggered it.
+static async Task<(bool Skipped, bool Sent, string? Reason, Guid? LogId)> SendWhatsAppMessageAsync(
+    AppDbContext db, Pos.Api.Services.IWhatsAppSenderResolver resolver, Guid tenantId, Guid? orderId, string? phone, string messageType, string message,
+    Func<WhatsAppConfig, bool>? autoSendGate = null)
+{
+    if (string.IsNullOrWhiteSpace(phone))
+        return (true, false, "No customer phone number on file.", null);
+
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId && w.IsEnabled);
+    if (config == null)
+        return (true, false, "WhatsApp is not enabled for this restaurant.", null);
+    if (autoSendGate != null && !autoSendGate(config))
+        return (true, false, "Auto-send is turned off for this message type.", null);
+
+    var actualTier = await db.Tenants.Where(t => t.Id == tenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
+    var packageConfig = actualTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == actualTier.Value.ToString());
+    if (packageConfig != null && !packageConfig.HasWhatsAppMessaging)
+        return (true, false, "WhatsApp messaging is not included in this package.", null);
+    if (packageConfig != null && packageConfig.WhatsAppMessagesPerMonth != -1)
+    {
+        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var countThisMonth = await db.NotificationLogs.CountAsync(n =>
+            n.TenantId == tenantId && n.SentAt >= startOfMonth && n.Status == "sent");
+        if (countThisMonth >= packageConfig.WhatsAppMessagesPerMonth)
+            return (true, false, "Monthly WhatsApp message limit reached.", null);
+    }
+
+    var sender = resolver.Resolve(config.Provider);
+    var result = sender == null
+        ? new Pos.Api.Services.WhatsAppSendResult(false, null, $"Unknown provider '{config.Provider}'.")
+        : await sender.SendAsync(config, phone, message);
+
+    var log = new NotificationLog
+    {
+        TenantId = tenantId,
+        OrderId = orderId,
+        Channel = "whatsapp",
+        RecipientPhone = phone,
+        MessageType = messageType,
+        MessageBody = message,
+        Status = result.Success ? "sent" : "failed",
+        ProviderMessageId = result.ProviderMessageId,
+        ErrorMessage = result.ErrorMessage,
+        SentAt = DateTime.UtcNow
+    };
+    db.NotificationLogs.Add(log);
+    await db.SaveChangesAsync();
+    return (false, result.Success, result.ErrorMessage, log.Id);
+}
+
 // --- Helper: resolve the applicable tax rates for a branch ---
 static async Task<(decimal CashRate, decimal DigitalRate, int DecimalPlaces)> ResolveTaxRatesAsync(AppDbContext db, Branch branch)
 {
@@ -722,7 +998,247 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
     result.TaxPKR = tax;
     result.TotalPKR = subTotal - discount + tax;
     result.TaxRatePercent = rate;
+    result.Decimals = decimals;
     return result;
+}
+
+// ============================================================
+// COMMERCE EXTRAS — customer linkage, promo codes, gift cards, loyalty redemption
+// Runs after PriceOrderAsync so every figure it starts from is already server-computed.
+// ============================================================
+
+// Lazily creates the per-tenant loyalty configuration the first time it is touched, mirroring how
+// TenantSettings is created on demand. Disabled by default — enabling it is an explicit owner action.
+// persist:false is used from inside order creation, where an early SaveChanges would commit a
+// half-built order's side effects (new Customer row, incremented promo UsesCount) before the sale
+// itself is known to succeed.
+static async Task<LoyaltyProgramConfig> GetOrCreateLoyaltyConfigAsync(AppDbContext db, Guid tenantId, bool persist = true)
+{
+    var config = await db.LoyaltyProgramConfigs.FirstOrDefaultAsync(c => c.TenantId == tenantId);
+    if (config == null)
+    {
+        config = new LoyaltyProgramConfig { TenantId = tenantId };
+        db.LoyaltyProgramConfigs.Add(config);
+        if (persist) await db.SaveChangesAsync();
+    }
+    return config;
+}
+
+static async Task<string> GenerateGiftCardCodeAsync(AppDbContext db)
+{
+    // Ambiguous characters (0/O, 1/I) are excluded so codes can be read off a printed card.
+    const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    for (var attempt = 0; attempt < 10; attempt++)
+    {
+        var chars = new char[12];
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(chars.Length);
+        for (var i = 0; i < chars.Length; i++) chars[i] = alphabet[bytes[i] % alphabet.Length];
+        var code = new string(chars);
+        if (!await db.GiftCards.AnyAsync(g => g.CardCode == code)) return code;
+    }
+    throw new InvalidOperationException("Could not generate a unique gift card code.");
+}
+
+/// <summary>
+/// Applies customer linkage, promo code, loyalty redemption and gift-card redemption to an order
+/// whose money has already been recomputed server-side.
+///
+/// Ordering and rationale:
+///  1. Customer is resolved/created first so per-customer promo limits can be enforced.
+///  2. A promo discount is a PRE-TAX discount, so applying it means re-deriving tax and total.
+///     A promo code and a manual cashier discount NEVER stack — the larger of the two wins, and
+///     the losing one is reported back. Stacking would let a cashier hand out an unbounded
+///     combined discount, and the manual figure is already permission-gated by PriceOrderAsync.
+///  3. Loyalty points and gift cards are POST-TAX credits: they reduce the amount owed through the
+///     order's payment method without changing the taxable base, so tax is never refunded by them.
+///
+/// Nothing here is fatal to a sale — an invalid, expired or exhausted code is simply not applied
+/// and the reason is returned, mirroring the existing "unauthorized discount gets zeroed" rule.
+/// </summary>
+static async Task ApplyOrderCommerceAsync(AppDbContext db, Order order, CreateOrderDto dto, ServerPricedOrder priced)
+{
+    var now = DateTime.UtcNow;
+    var decimals = priced.Decimals;
+
+    // --- 1. Customer find-or-create by (TenantId, Phone) ---
+    var phone = dto.CustomerPhone?.Trim();
+    if (!string.IsNullOrWhiteSpace(phone))
+    {
+        var customer = await db.Customers.FirstOrDefaultAsync(c => c.TenantId == order.TenantId && c.Phone == phone);
+        if (customer == null)
+        {
+            customer = new Customer
+            {
+                TenantId = order.TenantId,
+                Phone = phone,
+                FullName = string.IsNullOrWhiteSpace(dto.CustomerName) ? "Walk-in Customer" : dto.CustomerName!.Trim(),
+                CreatedAt = now
+            };
+            db.Customers.Add(customer);
+        }
+        else if (!string.IsNullOrWhiteSpace(dto.CustomerName) && customer.FullName == "Walk-in Customer")
+        {
+            customer.FullName = dto.CustomerName!.Trim();
+        }
+        priced.LinkedCustomer = customer;
+        order.CustomerId = customer.Id;
+    }
+
+    // --- 2. Promo code (pre-tax; mutually exclusive with the manual discount) ---
+    if (!string.IsNullOrWhiteSpace(dto.PromoCode))
+    {
+        var code = dto.PromoCode!.Trim().ToUpperInvariant();
+        var promo = await db.PromoCodes.FirstOrDefaultAsync(p => p.TenantId == order.TenantId && p.Code == code);
+
+        if (promo == null) priced.PromoRejectedReason = "Promo code not found.";
+        else if (!promo.IsActive) priced.PromoRejectedReason = "This promo code is no longer active.";
+        else if (promo.ValidFrom > now) priced.PromoRejectedReason = "This promo code is not valid yet.";
+        else if (promo.ValidUntil != null && promo.ValidUntil < now) priced.PromoRejectedReason = "This promo code has expired.";
+        else if (priced.SubTotalPKR < promo.MinOrderAmountPKR) priced.PromoRejectedReason = $"Minimum order of {promo.MinOrderAmountPKR:N0} PKR required for this code.";
+        else if (promo.MaxUsesTotal != null && promo.UsesCount >= promo.MaxUsesTotal.Value) priced.PromoRejectedReason = "This promo code has reached its usage limit.";
+        else
+        {
+            var ok = true;
+            if (promo.MaxUsesPerCustomer != null)
+            {
+                if (order.CustomerId == null)
+                {
+                    priced.PromoRejectedReason = "This promo code requires a customer phone number.";
+                    ok = false;
+                }
+                else
+                {
+                    var used = await db.Orders.CountAsync(o => o.CustomerId == order.CustomerId && o.PromoCodeId == promo.Id);
+                    if (used >= promo.MaxUsesPerCustomer.Value)
+                    {
+                        priced.PromoRejectedReason = "This customer has already used this promo code the maximum number of times.";
+                        ok = false;
+                    }
+                }
+            }
+
+            if (ok)
+            {
+                var promoDiscount = promo.DiscountType == PromoDiscountType.Percent
+                    ? priced.SubTotalPKR * (promo.DiscountValue / 100m)
+                    : promo.DiscountValue;
+                promoDiscount = Math.Round(Math.Clamp(promoDiscount, 0m, priced.SubTotalPKR), decimals, MidpointRounding.AwayFromZero);
+
+                if (promoDiscount <= priced.DiscountPKR)
+                {
+                    priced.PromoRejectedReason = "The discount already applied to this order is larger, so the promo code was not used.";
+                }
+                else
+                {
+                    priced.AppliedPromo = promo;
+                    priced.PromoDiscountPKR = promoDiscount;
+                    priced.DiscountPKR = promoDiscount; // replaces (never stacks with) the manual discount
+                    promo.UsesCount += 1;
+                    order.PromoCodeId = promo.Id;
+
+                    // Re-derive tax and total from the new pre-tax base.
+                    priced.TaxPKR = Math.Round((priced.SubTotalPKR - priced.DiscountPKR) * (priced.TaxRatePercent / 100m), decimals, MidpointRounding.AwayFromZero);
+                    priced.TotalPKR = priced.SubTotalPKR - priced.DiscountPKR + priced.TaxPKR;
+                }
+            }
+        }
+    }
+
+    // --- 3. Loyalty points redemption (post-tax credit) ---
+    if (dto.LoyaltyPointsRedeemed is > 0)
+    {
+        var points = dto.LoyaltyPointsRedeemed.Value;
+        var config = await GetOrCreateLoyaltyConfigAsync(db, order.TenantId, persist: false);
+        var customer = priced.LinkedCustomer;
+
+        if (!config.IsEnabled) priced.LoyaltyRejectedReason = "The loyalty programme is not enabled.";
+        else if (customer == null) priced.LoyaltyRejectedReason = "A customer phone number is required to redeem points.";
+        else if (points < config.MinRedeemPoints) priced.LoyaltyRejectedReason = $"At least {config.MinRedeemPoints} points are needed to redeem.";
+        else if (customer.LoyaltyPoints < points) priced.LoyaltyRejectedReason = $"Customer only has {customer.LoyaltyPoints} points.";
+        else
+        {
+            var credit = Math.Round(points * config.PKRValuePerPoint, decimals, MidpointRounding.AwayFromZero);
+            if (credit > priced.TotalPKR)
+            {
+                // Never credit more than is owed; scale the points spent back to what was used.
+                credit = priced.TotalPKR;
+                points = config.PKRValuePerPoint > 0 ? (int)Math.Floor(credit / config.PKRValuePerPoint) : 0;
+                credit = Math.Round(points * config.PKRValuePerPoint, decimals, MidpointRounding.AwayFromZero);
+            }
+            if (points > 0)
+            {
+                priced.LoyaltyPointsRedeemed = points;
+                priced.LoyaltyDiscountPKR = credit;
+                priced.TotalPKR -= credit;
+            }
+        }
+    }
+
+    // --- 4. Gift card redemption (post-tax credit) ---
+    if (!string.IsNullOrWhiteSpace(dto.GiftCardCode) && dto.GiftCardRedeemAmount is > 0)
+    {
+        var cardCode = dto.GiftCardCode!.Trim().ToUpperInvariant();
+        var card = await db.GiftCards.FirstOrDefaultAsync(g => g.CardCode == cardCode && g.TenantId == order.TenantId);
+
+        if (card == null) priced.GiftCardRejectedReason = "Gift card not found.";
+        else if (!card.IsActive) priced.GiftCardRejectedReason = "This gift card is not active.";
+        else if (card.ExpiresAt != null && card.ExpiresAt < now) priced.GiftCardRejectedReason = "This gift card has expired.";
+        else if (card.CurrentBalancePKR <= 0) priced.GiftCardRejectedReason = "This gift card has no remaining balance.";
+        else
+        {
+            // Clamp to both the card balance and what is actually still owed on the order.
+            var redeem = Math.Min(dto.GiftCardRedeemAmount!.Value, card.CurrentBalancePKR);
+            redeem = Math.Round(Math.Min(redeem, priced.TotalPKR), decimals, MidpointRounding.AwayFromZero);
+            if (redeem > 0)
+            {
+                card.CurrentBalancePKR -= redeem;
+                db.GiftCardTransactions.Add(new GiftCardTransaction
+                {
+                    GiftCardId = card.Id,
+                    OrderId = order.Id,
+                    Type = GiftCardTransactionType.Redeem,
+                    AmountPKR = redeem,
+                    CreatedAt = now,
+                    CreatedBy = order.CashierName ?? "POS"
+                });
+                priced.GiftCardRedeemedPKR = redeem;
+                order.GiftCardRedeemedPKR = redeem;
+                priced.TotalPKR -= redeem;
+            }
+        }
+    }
+
+    if (priced.TotalPKR < 0) priced.TotalPKR = 0;
+}
+
+/// <summary>
+/// Post-save CRM/loyalty bookkeeping. Only runs for paid orders.
+///
+/// Accrual formula: points = floor(TotalPKR * PointsPerPKRSpent / 100), i.e. PointsPerPKRSpent is
+/// read as "points earned per 100 PKR spent" (default 1 → 1 point per 100 PKR). Redemption value
+/// is PKRValuePerPoint PKR per point (default 1 PKR).
+/// </summary>
+static async Task ApplyPostSaleCustomerUpdatesAsync(AppDbContext db, Order order, ServerPricedOrder priced)
+{
+    if (order.CustomerId == null || !order.IsPaid) return;
+
+    var customer = priced.LinkedCustomer
+        ?? await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId.Value);
+    if (customer == null) return;
+
+    customer.TotalVisits += 1;
+    customer.TotalSpentPKR += order.TotalPKR;
+    customer.LastVisitAt = DateTime.UtcNow;
+
+    if (priced.LoyaltyPointsRedeemed > 0)
+        customer.LoyaltyPoints = Math.Max(0, customer.LoyaltyPoints - priced.LoyaltyPointsRedeemed);
+
+    var config = await GetOrCreateLoyaltyConfigAsync(db, order.TenantId, persist: false);
+    if (config.IsEnabled && config.PointsPerPKRSpent > 0)
+    {
+        var earned = (int)Math.Floor(order.TotalPKR * config.PointsPerPKRSpent / 100m);
+        if (earned > 0) customer.LoyaltyPoints += earned;
+    }
 }
 
 // ============================================================
@@ -744,11 +1260,40 @@ var authApi = app.MapGroup("/api/auth").RequireRateLimiting("auth");
 
 authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
 {
+    const int MaxFailedAttempts = 5;
+    var lockoutDuration = TimeSpan.FromMinutes(15);
+
     var user = await db.Users.FirstOrDefaultAsync(u => u.Username == dto.Username.ToLower().Trim() && u.IsActive);
+
+    // A locked account still returns a generic message for a wrong PIN below, but tells the
+    // legitimate holder how long to wait — a nonexistent username never reaches this branch,
+    // so it can't be used to enumerate which accounts exist.
+    if (user != null && user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+    {
+        var minutesLeft = Math.Ceiling((user.LockedUntil.Value - DateTime.UtcNow).TotalMinutes);
+        return Results.Json(
+            new { message = $"Too many failed attempts. Try again in {minutesLeft} minute(s)." },
+            statusCode: StatusCodes.Status423Locked);
+    }
+
     if (user == null || !BCrypt.Net.BCrypt.Verify(dto.PinCode, user.PinCodeHash))
     {
+        if (user != null)
+        {
+            user.FailedLoginAttempts += 1;
+            if (user.FailedLoginAttempts >= MaxFailedAttempts)
+            {
+                user.LockedUntil = DateTime.UtcNow.Add(lockoutDuration);
+                user.FailedLoginAttempts = 0;
+            }
+            await db.SaveChangesAsync();
+        }
         return Results.Unauthorized();
     }
+
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    await db.SaveChangesAsync();
 
     var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
     var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
@@ -1136,6 +1681,7 @@ api.MapPost("/sync/batch-orders", async (
     if (callerTenantId == null) return Results.Unauthorized();
     var actingUser = await accessor.GetCurrentUserAsync(http);
     var syncedResults = new List<object>();
+    var pricedByOrder = new Dictionary<Guid, ServerPricedOrder>();
 
     foreach (var dto in ordersList)
     {
@@ -1178,6 +1724,10 @@ api.MapPost("/sync/batch-orders", async (
             syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = priced.Error });
             continue;
         }
+
+        // Same commerce rules as the online path: customer linkage, promo, loyalty, gift card.
+        await ApplyOrderCommerceAsync(db, order, dto, priced);
+        pricedByOrder[order.Id] = priced;
 
         order.SubTotalPKR = priced.SubTotalPKR;
         order.DiscountPKR = priced.DiscountPKR;
@@ -1259,6 +1809,9 @@ api.MapPost("/sync/batch-orders", async (
     // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
     foreach (var order in db.ChangeTracker.Entries<Order>().Select(e => e.Entity).ToList())
     {
+        if (pricedByOrder.TryGetValue(order.Id, out var orderPricing))
+            await ApplyPostSaleCustomerUpdatesAsync(db, order, orderPricing);
+
         var (invoiceNumber, qr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
         if (invoiceNumber != null || qr != null)
         {
@@ -1570,6 +2123,7 @@ api.MapPost("/orders", async (
     HttpContext http,
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     Pos.Api.Services.IFiscalInvoiceProvider fiscal,
+    Pos.Api.Services.IWhatsAppSenderResolver waResolver,
     CreateOrderDto dto) =>
 {
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
@@ -1579,10 +2133,41 @@ api.MapPost("/orders", async (
         .FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
 
-    if (dto.Items == null || dto.Items.Count == 0)
-        return Results.BadRequest(new { message = "An order must contain at least one item." });
-
     var actingUser = await accessor.GetCurrentUserAsync(http);
+    var (error, order, priced) = await CreateOrderCoreAsync(db, branch, dto, actingUser, fiscal, waResolver);
+    if (error != null) return error;
+
+    return Results.Ok(new
+    {
+        message = "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
+        orderId = order!.Id, orderNumber = order.OrderNumber,
+        kitchenTicketsCount = order.KitchenTickets.Count,
+        status = order.Status.ToString(),
+        subTotalPKR = order.SubTotalPKR, discountPKR = order.DiscountPKR,
+        taxPKR = order.TaxPKR, taxRatePercent = priced!.TaxRatePercent, totalPKR = order.TotalPKR,
+        discountRejected = priced.DiscountRejected,
+        customerId = order.CustomerId,
+        promoCodeApplied = priced.AppliedPromo?.Code,
+        promoDiscountPKR = priced.PromoDiscountPKR,
+        promoRejectedReason = priced.PromoRejectedReason,
+        giftCardRedeemedPKR = order.GiftCardRedeemedPKR,
+        giftCardRejectedReason = priced.GiftCardRejectedReason,
+        loyaltyPointsRedeemed = priced.LoyaltyPointsRedeemed,
+        loyaltyDiscountPKR = priced.LoyaltyDiscountPKR,
+        loyaltyRejectedReason = priced.LoyaltyRejectedReason,
+        fiscalInvoiceNumber = order.FiscalInvoiceNumber
+    });
+});
+
+// Shared order-creation core. Both POST /orders and the delivery-platform webhook go through this
+// so the server-side price/tax recompute, stock depletion, KOT fan-out and commerce extras apply
+// identically no matter where the order originated.
+static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> CreateOrderCoreAsync(
+    AppDbContext db, Branch branch, CreateOrderDto dto, AppUser? actingUser, Pos.Api.Services.IFiscalInvoiceProvider fiscal,
+    Pos.Api.Services.IWhatsAppSenderResolver? waResolver = null)
+{
+    if (dto.Items == null || dto.Items.Count == 0)
+        return (Results.BadRequest(new { message = "An order must contain at least one item." }), null, null);
 
     var orderNumber = await GenerateOrderNumberAsync(db);
     var order = new Order
@@ -1601,7 +2186,11 @@ api.MapPost("/orders", async (
     };
 
     var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
-    if (priced.Error != null) return Results.BadRequest(new { message = priced.Error });
+    if (priced.Error != null) return (Results.BadRequest(new { message = priced.Error }), null, null);
+
+    // Customer linkage, promo code, loyalty and gift-card credits — all applied on top of the
+    // server-computed figures, never on client-supplied money.
+    await ApplyOrderCommerceAsync(db, order, dto, priced);
 
     order.SubTotalPKR = priced.SubTotalPKR;
     order.DiscountPKR = priced.DiscountPKR;
@@ -1668,7 +2257,7 @@ api.MapPost("/orders", async (
         {
             if (stock.QuantityOnHand < item.Quantity)
             {
-                return Results.Conflict(new { message = $"Insufficient stock for {item.ProductName}. Available: {stock.QuantityOnHand}, Requested: {item.Quantity}" });
+                return (Results.Conflict(new { message = $"Insufficient stock for {item.ProductName}. Available: {stock.QuantityOnHand}, Requested: {item.Quantity}" }), null, null);
             }
             stock.QuantityOnHand -= item.Quantity;
         }
@@ -1683,7 +2272,7 @@ api.MapPost("/orders", async (
                     var totalIngredientQty = recipe.QuantityRequired * item.Quantity;
                     if (ingredient.CurrentStock < totalIngredientQty)
                     {
-                        return Results.Conflict(new { message = $"Insufficient ingredient {ingredient.Name}. Available: {ingredient.CurrentStock}, Need: {totalIngredientQty}" });
+                        return (Results.Conflict(new { message = $"Insufficient ingredient {ingredient.Name}. Available: {ingredient.CurrentStock}, Need: {totalIngredientQty}" }), null, null);
                     }
                     ingredient.CurrentStock -= totalIngredientQty;
                 }
@@ -1694,27 +2283,37 @@ api.MapPost("/orders", async (
     db.Orders.Add(order);
     await db.SaveChangesAsync();
 
+    // CRM visit/spend counters and loyalty accrual — only meaningful once the sale is committed.
+    await ApplyPostSaleCustomerUpdatesAsync(db, order, priced);
+
     // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
     var (fiscalNumber, fiscalQr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
     if (fiscalNumber != null || fiscalQr != null)
     {
         order.FiscalInvoiceNumber = fiscalNumber;
         order.FiscalQrPayload = fiscalQr;
-        await db.SaveChangesAsync();
+    }
+    await db.SaveChangesAsync();
+
+    if (waResolver != null)
+    {
+        var itemSummary = string.Join(", ", order.Items.Select(i => $"{i.Quantity}x {i.ProductName}"));
+        var placedMsg = BuildWhatsAppMessage("order_placed", order.OrderNumber, itemSummary, order.TotalPKR, null, null, null);
+        await SendWhatsAppMessageAsync(db, waResolver, order.TenantId, order.Id, order.CustomerPhone, "order_placed", placedMsg,
+            autoSendGate: c => c.AutoSendOrderUpdates);
+
+        // Dine-in/takeaway/walk-in orders that are paid immediately won't pass through
+        // /delivery/mark-delivered (that's delivery-only), so the receipt fires here instead.
+        if (order.IsPaid && order.OrderType != OrderType.Delivery)
+        {
+            var receiptMsg = BuildWhatsAppMessage("receipt", order.OrderNumber, null, order.TotalPKR, null, order.PaymentMethod.ToString(), null);
+            await SendWhatsAppMessageAsync(db, waResolver, order.TenantId, order.Id, order.CustomerPhone, "receipt", receiptMsg,
+                autoSendGate: c => c.AutoSendReceipt);
+        }
     }
 
-    return Results.Ok(new
-    {
-        message = "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
-        orderId = order.Id, orderNumber = order.OrderNumber,
-        kitchenTicketsCount = order.KitchenTickets.Count,
-        status = order.Status.ToString(),
-        subTotalPKR = order.SubTotalPKR, discountPKR = order.DiscountPKR,
-        taxPKR = order.TaxPKR, taxRatePercent = priced.TaxRatePercent, totalPKR = order.TotalPKR,
-        discountRejected = priced.DiscountRejected,
-        fiscalInvoiceNumber = order.FiscalInvoiceNumber
-    });
-});
+    return (null, order, priced);
+}
 
 api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, OrderStatus? status, int limit = 30) =>
 {
@@ -1770,7 +2369,7 @@ api.MapGet("/kitchen/tickets", async (AppDbContext db, HttpContext http, Guid br
     return Results.Ok(await query.ToListAsync());
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
 
-api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
+api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver waResolver, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
 {
     var ticket = await db.KitchenTickets.Include(k => k.Order).FirstOrDefaultAsync(k => k.Id == id);
     if (ticket == null) return Results.NotFound();
@@ -1778,12 +2377,21 @@ api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext 
     if (scopeError != null) return scopeError;
 
     ticket.Status = dto.Status;
+    var justBecameReady = dto.Status == "Ready" && ticket.Order != null && ticket.Order.Status != OrderStatus.ReadyForDispatch;
     if (dto.Status == "Ready" && ticket.Order != null)
     {
         ticket.Order.Status = OrderStatus.ReadyForDispatch;
         ticket.Order.ReadyAt ??= DateTime.UtcNow;
     }
     await db.SaveChangesAsync();
+
+    if (justBecameReady && ticket.Order != null)
+    {
+        var msg = BuildWhatsAppMessage("order_ready", ticket.Order.OrderNumber, null, ticket.Order.TotalPKR, null, null, null);
+        await SendWhatsAppMessageAsync(db, waResolver, ticket.Order.TenantId, ticket.Order.Id, ticket.Order.CustomerPhone, "order_ready", msg,
+            autoSendGate: c => c.AutoSendOrderUpdates);
+    }
+
     return Results.Ok(ticket);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
 
@@ -1820,7 +2428,7 @@ api.MapPost("/delivery/assign-rider", async (AppDbContext db, HttpContext http, 
     return Results.Ok(new { message = $"Order assigned to {rider.Name}", order });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
-api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http, Guid orderId) =>
+api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver waResolver, Guid orderId) =>
 {
     var order = await db.Orders.Include(o => o.AssignedRider).FirstOrDefaultAsync(o => o.Id == orderId);
     if (order == null) return Results.NotFound();
@@ -1831,6 +2439,14 @@ api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http
     order.IsPaid = true;
     if (order.AssignedRider != null) order.AssignedRider.IsAvailable = true;
     await db.SaveChangesAsync();
+
+    var deliveredMsg = BuildWhatsAppMessage("order_delivered", order.OrderNumber, null, order.TotalPKR, order.DeliveryAddress, null, null);
+    await SendWhatsAppMessageAsync(db, waResolver, order.TenantId, order.Id, order.CustomerPhone, "order_delivered", deliveredMsg,
+        autoSendGate: c => c.AutoSendOrderUpdates);
+    var receiptMsg = BuildWhatsAppMessage("receipt", order.OrderNumber, null, order.TotalPKR, null, order.PaymentMethod.ToString(), null);
+    await SendWhatsAppMessageAsync(db, waResolver, order.TenantId, order.Id, order.CustomerPhone, "receipt", receiptMsg,
+        autoSendGate: c => c.AutoSendReceipt);
+
     return Results.Ok(order);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
@@ -3406,7 +4022,19 @@ app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http) =>
     var tenantId = http.GetTenantId();
     if (tenantId == null) return Results.Unauthorized();
     var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
-    return Results.Ok(config);
+    // Secrets are never echoed back — the UI shows whether each is set, not the value itself.
+    return Results.Ok(new
+    {
+        provider = config?.Provider ?? "Manual",
+        hasApiKey = !string.IsNullOrEmpty(config?.ApiKey),
+        hasApiSecret = !string.IsNullOrEmpty(config?.ApiSecret),
+        phoneNumberId = config?.PhoneNumberId ?? "",
+        hasAccessToken = !string.IsNullOrEmpty(config?.AccessToken),
+        webhookUrl = config?.WebhookUrl ?? "",
+        isEnabled = config?.IsEnabled ?? false,
+        autoSendOrderUpdates = config?.AutoSendOrderUpdates ?? false,
+        autoSendReceipt = config?.AutoSendReceipt ?? false
+    });
 }).RequireAuthorization()
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
@@ -3419,10 +4047,12 @@ app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Wh
     if (existing != null)
     {
         existing.Provider = dto.Provider;
-        existing.ApiKey = dto.ApiKey;
-        existing.ApiSecret = dto.ApiSecret;
+        // GET never returns the real secret, so an untouched field arrives blank — keep the saved
+        // value unless the owner actually typed a new one.
+        if (!string.IsNullOrEmpty(dto.ApiKey)) existing.ApiKey = dto.ApiKey;
+        if (!string.IsNullOrEmpty(dto.ApiSecret)) existing.ApiSecret = dto.ApiSecret;
+        if (!string.IsNullOrEmpty(dto.AccessToken)) existing.AccessToken = dto.AccessToken;
         existing.PhoneNumberId = dto.PhoneNumberId;
-        existing.AccessToken = dto.AccessToken;
         existing.WebhookUrl = dto.WebhookUrl;
         existing.IsEnabled = dto.IsEnabled;
         existing.AutoSendOrderUpdates = dto.AutoSendOrderUpdates;
@@ -3458,82 +4088,37 @@ app.MapGet("/api/whatsapp/logs", async (AppDbContext db, HttpContext http, int? 
     var logs = await query.Take(Math.Clamp(limit ?? 100, 1, 500)).ToListAsync();
     return Results.Ok(logs);
 }).RequireAuthorization()
-  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)));
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
-app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, TestWhatsAppDto dto) =>
+app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver resolver, TestWhatsAppDto dto) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null) return Results.Unauthorized();
-    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value && w.IsEnabled);
-    if (config == null) return Results.BadRequest(new { error = "WhatsApp not configured or disabled" });
-    
-    var log = new NotificationLog
-    {
-        TenantId = tenantId.Value,
-        Channel = "whatsapp",
-        RecipientPhone = dto.PhoneNumber,
-        MessageType = "test",
-        MessageBody = $"Hello! This is a test message from Cashly POS.\n\nRestaurant: {dto.RestaurantName}\nProvider: {config.Provider}\nStatus: Connected!",
-        Status = "sent",
-        SentAt = DateTime.UtcNow
-    };
-    db.NotificationLogs.Add(log);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Test message sent", logId = log.Id });
-}).RequireAuthorization()
-  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)));
 
-// Called by order creation/update. Authenticated; the tenant comes from the caller's token,
-// never from the body (a client could otherwise burn another tenant's message quota).
-app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, HttpContext http, OrderNotificationDto dto) =>
+    var message = $"Hello! This is a test message from Cashly POS.\n\nRestaurant: {dto.RestaurantName}\nStatus: Connected!";
+    var (skipped, sent, reason, logId) = await SendWhatsAppMessageAsync(db, resolver, tenantId.Value, null, dto.PhoneNumber, "test", message);
+
+    if (skipped) return Results.BadRequest(new { error = reason ?? "WhatsApp is not configured." });
+    return Results.Ok(new { sent, message = sent ? "Test message sent." : (reason ?? "The provider rejected the message."), logId });
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// Fires automatically from the order-status endpoints below (placed/ready/delivered/receipt) using
+// the order's own phone number — this manual endpoint exists for ad-hoc resends only. Authenticated;
+// the tenant comes from the caller's token, never from the body (a client could otherwise burn
+// another tenant's message quota).
+app.MapPost("/api/whatsapp/send-order-update", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver resolver, OrderNotificationDto dto) =>
 {
     var callerTenantId = http.GetTenantId();
     if (callerTenantId == null || callerTenantId == Guid.Empty) return Results.Unauthorized();
-    var scopedTenantId = callerTenantId.Value;
 
-    // Find tenant WhatsApp config
-    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == scopedTenantId && w.IsEnabled);
-    if (config == null) return Results.Ok(new { skipped = true, reason = "WhatsApp not configured" });
+    var message = BuildWhatsAppMessage(dto.MessageType, dto.OrderNumber, dto.ItemSummary, dto.TotalPKR, dto.DeliveryAddress, dto.PaymentMethod, dto.CustomMessage);
+    var (skipped, sent, reason, logId) = await SendWhatsAppMessageAsync(db, resolver, callerTenantId.Value, dto.OrderId, dto.PhoneNumber, dto.MessageType, message);
 
-    // Check monthly limit against the tenant's OWN tier, not a client-declared one.
-    var actualTier = await db.Tenants.Where(t => t.Id == scopedTenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
-    var packageConfig = actualTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == actualTier.Value.ToString());
-    if (packageConfig != null && !packageConfig.HasWhatsAppMessaging)
-        return Results.Ok(new { skipped = true, reason = "WhatsApp messaging is not included in this package" });
-    if (packageConfig != null && packageConfig.WhatsAppMessagesPerMonth != -1)
-    {
-        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-        var countThisMonth = await db.NotificationLogs.CountAsync(n =>
-            n.TenantId == scopedTenantId && n.SentAt >= startOfMonth && n.Status != "failed");
-        if (countThisMonth >= packageConfig.WhatsAppMessagesPerMonth)
-            return Results.Ok(new { skipped = true, reason = "Monthly limit reached" });
-    }
-
-    // Build message based on type
-    var message = dto.MessageType switch
-    {
-        "order_placed" => $"✅ *Order Confirmed!*\n\nOrder #{dto.OrderNumber}\nItems: {dto.ItemSummary}\nTotal: Rs {dto.TotalPKR:N0}\n\nThank you for your order! We're preparing it now.",
-        "order_preparing" => $"👨‍🍳 *Your order is being prepared!*\n\nOrder #{dto.OrderNumber}\nEstimated time: 15-20 minutes\n\nWe'll let you know when it's ready!",
-        "order_ready" => $"🔔 *Your order is ready!*\n\nOrder #{dto.OrderNumber}\nPlease collect from the counter.\n\nThank you for choosing us!",
-        "order_delivered" => $"🚚 *Order Delivered!*\n\nOrder #{dto.OrderNumber}\nDelivered to: {dto.DeliveryAddress}\n\nThank you! We hope you enjoy your meal.",
-        "receipt" => $"🧾 *Payment Receipt*\n\nOrder #{dto.OrderNumber}\nTotal: Rs {dto.TotalPKR:N0}\nPayment: {dto.PaymentMethod}\n\nThank you for dining with us!",
-        _ => dto.CustomMessage ?? "You have an update from Cashly POS."
-    };
-
-    var log = new NotificationLog
-    {
-        TenantId = scopedTenantId,
-        OrderId = dto.OrderId,
-        Channel = "whatsapp",
-        RecipientPhone = dto.PhoneNumber,
-        MessageType = dto.MessageType,
-        MessageBody = message,
-        Status = "sent",
-        SentAt = DateTime.UtcNow
-    };
-    db.NotificationLogs.Add(log);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { sent = true, logId = log.Id });
+    if (skipped) return Results.Ok(new { skipped = true, reason });
+    return Results.Ok(new { sent, reason, logId });
 }).RequireAuthorization();
 
 // ============================================================
@@ -4180,6 +4765,927 @@ app.MapGet("/api/admin/audit-log", async (AppDbContext db, HttpContext http, Pos
     return Results.Ok(new { page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize), entries = rows });
 }).RequireAuthorization();
 
+// ============================================================
+// CRM / CUSTOMERS
+// Reading a customer is a normal checkout action for any authenticated branch staff member.
+// Creating or editing customer records is an "admin" module action.
+// ============================================================
+
+api.MapGet("/customers", async (AppDbContext db, HttpContext http, string? search, int limit = 50) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var query = db.Customers.Where(c => c.TenantId == scopedTenantId.Value);
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(c => c.FullName.Contains(term) || c.Phone.Contains(term) || (c.Email != null && c.Email.Contains(term)));
+    }
+
+    var rows = await query.OrderByDescending(c => c.LastVisitAt ?? c.CreatedAt)
+        .Take(Math.Clamp(limit, 1, 200)).ToListAsync();
+    return Results.Ok(rows);
+});
+
+api.MapGet("/customers/lookup", async (AppDbContext db, HttpContext http, string phone) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(phone)) return Results.BadRequest(new { message = "phone is required." });
+
+    var customer = await db.Customers.FirstOrDefaultAsync(c => c.TenantId == scopedTenantId.Value && c.Phone == phone.Trim());
+    if (customer == null) return Results.NotFound(new { message = "No customer with that phone number." });
+
+    var config = await db.LoyaltyProgramConfigs.FirstOrDefaultAsync(c => c.TenantId == scopedTenantId.Value);
+    return Results.Ok(new
+    {
+        customer.Id, customer.FullName, customer.Phone, customer.Email,
+        customer.LoyaltyPoints, customer.TotalVisits, customer.TotalSpentPKR, customer.LastVisitAt,
+        loyaltyEnabled = config?.IsEnabled ?? false,
+        redeemableValuePKR = (config != null && config.IsEnabled && customer.LoyaltyPoints >= config.MinRedeemPoints)
+            ? customer.LoyaltyPoints * config.PKRValuePerPoint : 0m
+    });
+});
+
+api.MapPost("/customers", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateCustomerDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Phone)) return Results.BadRequest(new { message = "Phone is required." });
+
+    var phone = dto.Phone.Trim();
+    if (await db.Customers.AnyAsync(c => c.TenantId == scopedTenantId.Value && c.Phone == phone))
+        return Results.Conflict(new { message = "A customer with this phone number already exists." });
+
+    var customer = new Customer
+    {
+        TenantId = scopedTenantId.Value,
+        FullName = dto.FullName?.Trim() ?? "Walk-in Customer",
+        Phone = phone,
+        Email = dto.Email?.Trim()
+    };
+    db.Customers.Add(customer);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "CustomerCreated", "Customer", customer.Id, null, customer.Phone);
+    await db.SaveChangesAsync();
+    return Results.Ok(customer);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapPut("/customers/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, UpdateCustomerDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == scopedTenantId.Value);
+    if (customer == null) return Results.NotFound(new { message = "Customer not found." });
+
+    var before = $"{customer.FullName} / {customer.Phone} / {customer.LoyaltyPoints}pts";
+    if (!string.IsNullOrWhiteSpace(dto.FullName)) customer.FullName = dto.FullName.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.Phone))
+    {
+        var phone = dto.Phone.Trim();
+        if (phone != customer.Phone && await db.Customers.AnyAsync(c => c.TenantId == scopedTenantId.Value && c.Phone == phone))
+            return Results.Conflict(new { message = "Another customer already uses this phone number." });
+        customer.Phone = phone;
+    }
+    if (dto.Email != null) customer.Email = string.IsNullOrWhiteSpace(dto.Email) ? null : dto.Email.Trim();
+    if (dto.LoyaltyPoints.HasValue) customer.LoyaltyPoints = Math.Max(0, dto.LoyaltyPoints.Value);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "CustomerUpdated", "Customer", customer.Id,
+        before, $"{customer.FullName} / {customer.Phone} / {customer.LoyaltyPoints}pts");
+    await db.SaveChangesAsync();
+    return Results.Ok(customer);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// ============================================================
+// LOYALTY PROGRAMME
+// ============================================================
+
+api.MapGet("/loyalty/config", async (AppDbContext db, HttpContext http) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var config = await GetOrCreateLoyaltyConfigAsync(db, scopedTenantId.Value);
+    return Results.Ok(new
+    {
+        config.Id, config.TenantId, config.IsEnabled, config.PointsPerPKRSpent, config.PKRValuePerPoint, config.MinRedeemPoints,
+        accrualExplanation = $"Customers earn {config.PointsPerPKRSpent} point(s) per 100 PKR spent; each point is worth {config.PKRValuePerPoint} PKR on redemption."
+    });
+});
+
+api.MapPut("/loyalty/config", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, LoyaltyConfigDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var config = await GetOrCreateLoyaltyConfigAsync(db, scopedTenantId.Value);
+    var before = $"enabled={config.IsEnabled}, earn={config.PointsPerPKRSpent}/100PKR, value={config.PKRValuePerPoint}, min={config.MinRedeemPoints}";
+
+    if (dto.IsEnabled.HasValue) config.IsEnabled = dto.IsEnabled.Value;
+    if (dto.PointsPerPKRSpent.HasValue) config.PointsPerPKRSpent = Math.Max(0, dto.PointsPerPKRSpent.Value);
+    if (dto.PKRValuePerPoint.HasValue) config.PKRValuePerPoint = Math.Max(0, dto.PKRValuePerPoint.Value);
+    if (dto.MinRedeemPoints.HasValue) config.MinRedeemPoints = Math.Max(0, dto.MinRedeemPoints.Value);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "LoyaltyConfigChanged", "LoyaltyProgramConfig", config.Id,
+        before, $"enabled={config.IsEnabled}, earn={config.PointsPerPKRSpent}/100PKR, value={config.PKRValuePerPoint}, min={config.MinRedeemPoints}");
+    await db.SaveChangesAsync();
+    return Results.Ok(config);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// PREVIEW ONLY. Points are NOT deducted here — the actual deduction happens inside order creation
+// so a quote that the customer walks away from can never silently burn their points.
+api.MapPost("/loyalty/redeem", async (AppDbContext db, HttpContext http, LoyaltyRedeemDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var config = await GetOrCreateLoyaltyConfigAsync(db, scopedTenantId.Value);
+    if (!config.IsEnabled) return Results.BadRequest(new { message = "The loyalty programme is not enabled." });
+
+    var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == dto.CustomerId && c.TenantId == scopedTenantId.Value);
+    if (customer == null) return Results.NotFound(new { message = "Customer not found." });
+
+    if (dto.PointsToRedeem <= 0) return Results.BadRequest(new { message = "pointsToRedeem must be greater than zero." });
+    if (dto.PointsToRedeem < config.MinRedeemPoints)
+        return Results.BadRequest(new { message = $"At least {config.MinRedeemPoints} points are needed to redeem." });
+    if (customer.LoyaltyPoints < dto.PointsToRedeem)
+        return Results.BadRequest(new { message = $"Customer only has {customer.LoyaltyPoints} points." });
+
+    return Results.Ok(new
+    {
+        customerId = customer.Id,
+        pointsToRedeem = dto.PointsToRedeem,
+        discountPKR = dto.PointsToRedeem * config.PKRValuePerPoint,
+        remainingPointsAfter = customer.LoyaltyPoints - dto.PointsToRedeem,
+        note = "Preview only — points are deducted when the order that uses them is created."
+    });
+});
+
+// ============================================================
+// GIFT CARDS
+// ============================================================
+
+api.MapPost("/gift-cards/issue", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, IssueGiftCardDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (dto.InitialBalancePKR <= 0) return Results.BadRequest(new { message = "initialBalancePKR must be greater than zero." });
+
+    if (dto.IssuedToCustomerId != null &&
+        !await db.Customers.AnyAsync(c => c.Id == dto.IssuedToCustomerId.Value && c.TenantId == scopedTenantId.Value))
+        return Results.BadRequest(new { message = "Customer not found for this restaurant." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var card = new GiftCard
+    {
+        TenantId = scopedTenantId.Value,
+        CardCode = await GenerateGiftCardCodeAsync(db),
+        InitialBalancePKR = dto.InitialBalancePKR,
+        CurrentBalancePKR = dto.InitialBalancePKR,
+        IssuedToCustomerId = dto.IssuedToCustomerId,
+        ExpiresAt = dto.ExpiresAt
+    };
+    db.GiftCards.Add(card);
+    db.GiftCardTransactions.Add(new GiftCardTransaction
+    {
+        GiftCardId = card.Id,
+        Type = GiftCardTransactionType.Issue,
+        AmountPKR = dto.InitialBalancePKR,
+        CreatedBy = currentUser?.FullName ?? "System"
+    });
+
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "GiftCardIssued", "GiftCard", card.Id, null,
+        $"{card.CardCode} / {card.InitialBalancePKR:0.##} PKR");
+    await db.SaveChangesAsync();
+    return Results.Ok(card);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapGet("/gift-cards/{code}/balance", async (AppDbContext db, HttpContext http, string code) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var cardCode = (code ?? string.Empty).Trim().ToUpperInvariant();
+    var card = await db.GiftCards.FirstOrDefaultAsync(g => g.CardCode == cardCode && g.TenantId == scopedTenantId.Value);
+    if (card == null) return Results.NotFound(new { message = "Gift card not found." });
+
+    var expired = card.ExpiresAt != null && card.ExpiresAt < DateTime.UtcNow;
+    return Results.Ok(new
+    {
+        card.Id, card.CardCode, card.CurrentBalancePKR, card.InitialBalancePKR,
+        card.IsActive, card.ExpiresAt, isExpired = expired,
+        isRedeemable = card.IsActive && !expired && card.CurrentBalancePKR > 0
+    });
+});
+
+api.MapGet("/gift-cards", async (AppDbContext db, HttpContext http, int limit = 100) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var cards = await db.GiftCards.Where(g => g.TenantId == scopedTenantId.Value)
+        .OrderByDescending(g => g.IssuedAt).Take(Math.Clamp(limit, 1, 500)).ToListAsync();
+    return Results.Ok(cards);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+// ============================================================
+// PROMO CODES — discount-generating, so even reading them is admin-gated.
+// ============================================================
+
+api.MapGet("/promo-codes", async (AppDbContext db, HttpContext http) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var codes = await db.PromoCodes.Where(p => p.TenantId == scopedTenantId.Value)
+        .OrderByDescending(p => p.ValidFrom).ToListAsync();
+    return Results.Ok(codes);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPost("/promo-codes", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreatePromoCodeDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Code)) return Results.BadRequest(new { message = "Code is required." });
+    if (dto.DiscountValue <= 0) return Results.BadRequest(new { message = "discountValue must be greater than zero." });
+    if (dto.DiscountType == PromoDiscountType.Percent && dto.DiscountValue > 100)
+        return Results.BadRequest(new { message = "A percentage discount cannot exceed 100." });
+
+    var code = dto.Code.Trim().ToUpperInvariant();
+    if (await db.PromoCodes.AnyAsync(p => p.TenantId == scopedTenantId.Value && p.Code == code))
+        return Results.Conflict(new { message = "A promo code with this code already exists." });
+
+    var promo = new PromoCode
+    {
+        TenantId = scopedTenantId.Value,
+        Code = code,
+        DiscountType = dto.DiscountType,
+        DiscountValue = dto.DiscountValue,
+        MinOrderAmountPKR = Math.Max(0, dto.MinOrderAmountPKR),
+        MaxUsesTotal = dto.MaxUsesTotal,
+        MaxUsesPerCustomer = dto.MaxUsesPerCustomer,
+        ValidFrom = dto.ValidFrom ?? DateTime.UtcNow,
+        ValidUntil = dto.ValidUntil,
+        IsActive = dto.IsActive ?? true
+    };
+    db.PromoCodes.Add(promo);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PromoCodeCreated", "PromoCode", promo.Id, null,
+        $"{promo.Code} {promo.DiscountType} {promo.DiscountValue}");
+    await db.SaveChangesAsync();
+    return Results.Ok(promo);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapPut("/promo-codes/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, UpdatePromoCodeDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var promo = await db.PromoCodes.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (promo == null) return Results.NotFound(new { message = "Promo code not found." });
+
+    var before = $"{promo.Code} {promo.DiscountType} {promo.DiscountValue} active={promo.IsActive}";
+    if (dto.DiscountType.HasValue) promo.DiscountType = dto.DiscountType.Value;
+    if (dto.DiscountValue.HasValue) promo.DiscountValue = Math.Max(0, dto.DiscountValue.Value);
+    if (dto.MinOrderAmountPKR.HasValue) promo.MinOrderAmountPKR = Math.Max(0, dto.MinOrderAmountPKR.Value);
+    if (dto.MaxUsesTotal.HasValue) promo.MaxUsesTotal = dto.MaxUsesTotal.Value;
+    if (dto.MaxUsesPerCustomer.HasValue) promo.MaxUsesPerCustomer = dto.MaxUsesPerCustomer.Value;
+    if (dto.ValidFrom.HasValue) promo.ValidFrom = dto.ValidFrom.Value;
+    if (dto.ValidUntil.HasValue) promo.ValidUntil = dto.ValidUntil.Value;
+    if (dto.IsActive.HasValue) promo.IsActive = dto.IsActive.Value;
+
+    if (promo.DiscountType == PromoDiscountType.Percent && promo.DiscountValue > 100)
+        return Results.BadRequest(new { message = "A percentage discount cannot exceed 100." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PromoCodeUpdated", "PromoCode", promo.Id,
+        before, $"{promo.Code} {promo.DiscountType} {promo.DiscountValue} active={promo.IsActive}");
+    await db.SaveChangesAsync();
+    return Results.Ok(promo);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapDelete("/promo-codes/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var promo = await db.PromoCodes.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (promo == null) return Results.NotFound(new { message = "Promo code not found." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+
+    // Orders already reference this code, so deactivate rather than orphan the history.
+    if (await db.Orders.AnyAsync(o => o.PromoCodeId == promo.Id))
+    {
+        promo.IsActive = false;
+        await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PromoCodeDeactivated", "PromoCode", promo.Id, promo.Code, "inactive");
+        await db.SaveChangesAsync();
+        return Results.Ok(new { message = "This promo code has been used on past orders, so it was deactivated instead of deleted.", promo });
+    }
+
+    db.PromoCodes.Remove(promo);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PromoCodeDeleted", "PromoCode", promo.Id, promo.Code, null);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Promo code deleted." });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "delete"));
+
+// ============================================================
+// PAYMENTS
+// No live merchant credentials exist in this deployment, so an unconfigured provider answers
+// 200 with success:false and an actionable message rather than failing the request.
+// ============================================================
+
+api.MapPost("/payments/initiate", async (
+    AppDbContext db, HttpContext http,
+    Pos.Api.Services.IPaymentGatewayResolver gateways,
+    InitiatePaymentDto dto) =>
+{
+    var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == dto.OrderId);
+    if (order == null) return Results.NotFound(new { message = "Order not found." });
+
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+
+    if (order.IsPaid) return Results.BadRequest(new { message = "This order is already marked paid." });
+
+    var provider = gateways.Resolve(dto.Provider.ToString());
+    var amountDue = Math.Max(0, order.TotalPKR - order.AmountPaidPKR);
+
+    var txn = new PaymentTransaction
+    {
+        TenantId = order.TenantId,
+        BranchId = order.BranchId,
+        OrderId = order.Id,
+        Provider = dto.Provider,
+        Status = PaymentTransactionStatus.Pending,
+        AmountPKR = amountDue
+    };
+    db.PaymentTransactions.Add(txn);
+
+    if (provider == null)
+    {
+        txn.Status = PaymentTransactionStatus.Failed;
+        txn.FailureReason = $"No gateway is registered for {dto.Provider}.";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { success = false, paymentTransactionId = txn.Id, message = txn.FailureReason });
+    }
+
+    var intent = await provider.CreateIntentAsync(order.Id, amountDue, order.CustomerPhone);
+    if (!intent.Success)
+    {
+        txn.Status = PaymentTransactionStatus.Failed;
+        txn.FailureReason = intent.ErrorMessage;
+        await db.SaveChangesAsync();
+        return Results.Ok(new
+        {
+            success = false, paymentTransactionId = txn.Id, provider = provider.ProviderName,
+            configured = provider.IsConfigured, message = intent.ErrorMessage
+        });
+    }
+
+    txn.ProviderTransactionId = intent.ProviderTransactionId;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        success = true, paymentTransactionId = txn.Id, provider = provider.ProviderName,
+        amountPKR = amountDue, redirectUrl = intent.RedirectUrl,
+        instructions = intent.Instructions, providerTransactionId = intent.ProviderTransactionId
+    });
+});
+
+// Provider callback. Anonymous by necessity — the gateway holds no JWT — so authenticity rests
+// entirely on the signature check, which must pass before anything is written.
+api.MapPost("/payments/webhook/{provider}", async (
+    AppDbContext db, HttpContext http,
+    Pos.Api.Services.IPaymentGatewayResolver gateways,
+    string provider) =>
+{
+    var gateway = gateways.Resolve(provider);
+    if (gateway == null) return Results.BadRequest(new { message = $"Unknown payment provider '{provider}'." });
+
+    using var reader = new StreamReader(http.Request.Body);
+    var rawBody = await reader.ReadToEndAsync();
+
+    if (!await gateway.VerifyWebhookSignatureAsync(rawBody, http.Request.Headers))
+        return Results.BadRequest(new { message = "Webhook signature verification failed." });
+
+    var confirmation = await gateway.ParseWebhookAsync(rawBody);
+
+    var txn = await db.PaymentTransactions
+        .Where(t => t.ProviderTransactionId != null && t.ProviderTransactionId == confirmation.ProviderTransactionId)
+        .OrderByDescending(t => t.RequestedAt)
+        .FirstOrDefaultAsync();
+    if (txn == null) return Results.NotFound(new { message = "No matching payment transaction." });
+
+    txn.RawResponsePayload = rawBody.Length > 8000 ? rawBody[..8000] : rawBody;
+    txn.CompletedAt = DateTime.UtcNow;
+    txn.Status = confirmation.Success ? PaymentTransactionStatus.Completed : PaymentTransactionStatus.Failed;
+    txn.FailureReason = confirmation.Success ? null : confirmation.ErrorMessage;
+    if (confirmation.AmountPKR.HasValue) txn.AmountPKR = confirmation.AmountPKR.Value;
+
+    var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == txn.OrderId);
+    if (order != null && confirmation.Success)
+    {
+        order.AmountPaidPKR = txn.AmountPKR;
+        order.IsPaid = true;
+    }
+
+    await WriteAuditAsync(db, txn.TenantId, null,
+        confirmation.Success ? "PaymentCompleted" : "PaymentFailed",
+        "PaymentTransaction", txn.Id, null,
+        $"{gateway.ProviderName} {txn.AmountPKR:0.##} PKR ref={txn.ProviderTransactionId}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { received = true, status = txn.Status.ToString() });
+}).AllowAnonymous(); // payment gateways cannot present a JWT; authenticity is the signature check
+
+api.MapGet("/payments/{orderId:guid}/status", async (AppDbContext db, HttpContext http, Guid orderId) =>
+{
+    var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
+    if (order == null) return Results.NotFound(new { message = "Order not found." });
+
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var transactions = await db.PaymentTransactions.Where(t => t.OrderId == orderId)
+        .OrderByDescending(t => t.RequestedAt).ToListAsync();
+
+    return Results.Ok(new
+    {
+        orderId, orderNumber = order.OrderNumber, order.IsPaid,
+        totalPKR = order.TotalPKR, amountPaidPKR = order.AmountPaidPKR,
+        giftCardRedeemedPKR = order.GiftCardRedeemedPKR,
+        transactions = transactions.Select(t => new
+        {
+            t.Id, provider = t.Provider.ToString(), status = t.Status.ToString(),
+            t.AmountPKR, t.ProviderTransactionId, t.RequestedAt, t.CompletedAt, t.FailureReason
+        })
+    });
+});
+
+// ============================================================
+// DELIVERY-PLATFORM INTEGRATION
+// ============================================================
+
+// Anonymous — the platform calls this. tenantId/branchId identify the outlet; once real partner
+// credentials exist this should additionally verify a platform signature header.
+api.MapPost("/integrations/delivery/{platform}/webhook", async (
+    AppDbContext db, HttpContext http,
+    Pos.Api.Services.IDeliveryPlatformResolver connectors,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal,
+    Pos.Api.Services.IWhatsAppSenderResolver waResolver,
+    string platform, Guid tenantId, Guid branchId) =>
+{
+    var connector = connectors.Resolve(platform);
+    if (connector == null) return Results.BadRequest(new { message = $"Unknown delivery platform '{platform}'." });
+
+    var branch = await db.Branches.Include(b => b.Tenant)
+        .FirstOrDefaultAsync(b => b.Id == branchId && b.TenantId == tenantId);
+    if (branch == null) return Results.NotFound(new { message = "Branch not found for this tenant." });
+
+    using var reader = new StreamReader(http.Request.Body);
+    var rawBody = await reader.ReadToEndAsync();
+
+    var parsed = await connector.ParseIncomingOrderAsync(rawBody, tenantId, branchId);
+    if (!parsed.Success || parsed.Order == null)
+        return Results.BadRequest(new { message = parsed.ErrorMessage ?? "Could not parse the incoming order." });
+
+    var platformEnum = Enum.TryParse<DeliveryPlatform>(connector.PlatformName, true, out var pe) ? pe : DeliveryPlatform.Other;
+
+    // Idempotency: a platform retrying the same webhook must not create a second order.
+    var existing = await db.ExternalOrderMappings
+        .FirstOrDefaultAsync(m => m.Platform == platformEnum && m.ExternalOrderId == parsed.Order.ExternalOrderId);
+    if (existing != null)
+        return Results.Ok(new { alreadyImported = true, orderId = existing.InternalOrderId, externalOrderId = existing.ExternalOrderId });
+
+    // Resolve platform line items to internal products by SKU first, then by exact name.
+    var skus = parsed.Order.Items.Where(i => !string.IsNullOrWhiteSpace(i.Sku)).Select(i => i.Sku!).ToList();
+    var names = parsed.Order.Items.Select(i => i.Name).ToList();
+    var candidates = await db.Products
+        .Where(p => p.TenantId == tenantId && p.IsActive && (skus.Contains(p.SKU) || names.Contains(p.Name)))
+        .ToListAsync();
+
+    var lines = new List<CreateOrderItemDto>();
+    var unmatched = new List<string>();
+    foreach (var item in parsed.Order.Items)
+    {
+        var product = (!string.IsNullOrWhiteSpace(item.Sku) ? candidates.FirstOrDefault(p => p.SKU == item.Sku) : null)
+                      ?? candidates.FirstOrDefault(p => p.Name == item.Name);
+        if (product == null) { unmatched.Add(item.Name); continue; }
+        // UnitPricePKR is passed through only for shape; CreateOrderCoreAsync re-prices from the DB.
+        lines.Add(new CreateOrderItemDto(product.Id, product.Name, item.Quantity, product.SellingPricePKR, null, parsed.Order.Notes, product.Station));
+    }
+
+    if (unmatched.Count > 0)
+        return Results.BadRequest(new { message = "Some platform items could not be matched to menu products.", unmatchedItems = unmatched });
+
+    var dto = new CreateOrderDto(
+        branch.Id, OrderType.Delivery, null,
+        parsed.Order.CustomerName, parsed.Order.CustomerPhone, parsed.Order.DeliveryAddress,
+        0, 0, 0, 0, PaymentMethod.Cash, 0, 0, parsed.Order.IsPrepaid,
+        connector.PlatformName, $"{connector.PlatformName} Integration", lines);
+
+    // Same core as POST /orders — the server-side price/tax recompute applies here too.
+    var (error, order, _) = await CreateOrderCoreAsync(db, branch, dto, null, fiscal, waResolver);
+    if (error != null) return error;
+
+    db.ExternalOrderMappings.Add(new ExternalOrderMapping
+    {
+        TenantId = tenantId,
+        BranchId = branchId,
+        Platform = platformEnum,
+        ExternalOrderId = parsed.Order.ExternalOrderId,
+        InternalOrderId = order!.Id,
+        RawPayload = rawBody.Length > 16000 ? rawBody[..16000] : rawBody
+    });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        imported = true, orderId = order.Id, orderNumber = order.OrderNumber,
+        externalOrderId = parsed.Order.ExternalOrderId, totalPKR = order.TotalPKR
+    });
+}).AllowAnonymous(); // delivery platforms cannot present a JWT
+
+api.MapGet("/integrations/delivery/{platform}/config", async (
+    AppDbContext db, HttpContext http,
+    Pos.Api.Services.IDeliveryPlatformResolver connectors,
+    string platform) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var connector = connectors.Resolve(platform);
+    if (connector == null) return Results.NotFound(new { message = $"Unknown delivery platform '{platform}'." });
+
+    var recent = await db.ExternalOrderMappings
+        .Where(m => m.TenantId == scopedTenantId.Value)
+        .OrderByDescending(m => m.ReceivedAt).Take(20)
+        .Select(m => new { m.Id, m.ExternalOrderId, m.InternalOrderId, m.BranchId, m.ReceivedAt })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        platform = connector.PlatformName,
+        isConfigured = false,
+        webhookUrl = $"/api/integrations/delivery/{connector.PlatformName.ToLowerInvariant()}/webhook?tenantId={scopedTenantId.Value}&branchId=<branchId>",
+        note = "Partner credentials are not configured. The webhook accepts a best-effort payload shape; confirm against the platform's partner API docs before going live.",
+        recentImports = recent
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPut("/integrations/delivery/{platform}/config", async (
+    AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IDeliveryPlatformResolver connectors,
+    string platform, DeliveryIntegrationConfigDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var connector = connectors.Resolve(platform);
+    if (connector == null) return Results.NotFound(new { message = $"Unknown delivery platform '{platform}'." });
+
+    // Credentials for delivery platforms are not stored yet: no partner account exists to hold
+    // them, and inventing a secrets table now would imply a working integration that isn't.
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "DeliveryIntegrationConfigAttempted",
+        "DeliveryIntegration", null, null, $"{connector.PlatformName} enabled={dto.IsEnabled}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        platform = connector.PlatformName,
+        saved = false,
+        message = "Delivery-platform credentials cannot be stored yet — no partner account exists for this deployment. Obtain partner API access first, then this endpoint will persist the credentials."
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// ============================================================
+// LABOR — scheduling and time clock
+// ============================================================
+
+api.MapGet("/labor/schedules", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+
+    var start = from ?? DateTime.UtcNow.Date.AddDays(-7);
+    var end = to ?? DateTime.UtcNow.Date.AddDays(14);
+
+    var rows = await db.StaffShiftSchedules
+        .Where(s => s.TenantId == scopedTenantId!.Value && s.BranchId == scopedBranchId!.Value
+                    && s.ScheduledStart >= start && s.ScheduledStart <= end)
+        .OrderBy(s => s.ScheduledStart)
+        .ToListAsync();
+
+    var userIds = rows.Select(r => r.UserId).Distinct().ToList();
+    var users = await db.Users.Where(u => userIds.Contains(u.Id))
+        .ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+    return Results.Ok(rows.Select(s => new
+    {
+        s.Id, s.BranchId, s.UserId,
+        userName = users.TryGetValue(s.UserId, out var n) ? n : "(removed user)",
+        s.ScheduledStart, s.ScheduledEnd, s.Position, s.Notes, s.CreatedBy,
+        hours = Math.Round((decimal)(s.ScheduledEnd - s.ScheduledStart).TotalHours, 2)
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+api.MapPost("/labor/schedules", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateShiftScheduleDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    if (dto.ScheduledEnd <= dto.ScheduledStart)
+        return Results.BadRequest(new { message = "The shift must end after it starts." });
+
+    var staff = await db.Users.FirstOrDefaultAsync(u => u.Id == dto.UserId && u.TenantId == scopedTenantId!.Value);
+    if (staff == null) return Results.BadRequest(new { message = "Staff member not found for this restaurant." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var schedule = new StaffShiftSchedule
+    {
+        TenantId = scopedTenantId!.Value,
+        BranchId = scopedBranchId!.Value,
+        UserId = dto.UserId,
+        ScheduledStart = dto.ScheduledStart,
+        ScheduledEnd = dto.ScheduledEnd,
+        Position = dto.Position ?? staff.Role.ToString(),
+        Notes = dto.Notes,
+        CreatedBy = currentUser?.FullName ?? "System"
+    };
+    db.StaffShiftSchedules.Add(schedule);
+    await db.SaveChangesAsync();
+    return Results.Ok(schedule);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPut("/labor/schedules/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateShiftScheduleDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var schedule = await db.StaffShiftSchedules.FirstOrDefaultAsync(s => s.Id == id && s.TenantId == scopedTenantId.Value);
+    if (schedule == null) return Results.NotFound(new { message = "Schedule not found." });
+
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, schedule.BranchId);
+    if (scopeError != null) return scopeError;
+
+    if (dto.ScheduledStart.HasValue) schedule.ScheduledStart = dto.ScheduledStart.Value;
+    if (dto.ScheduledEnd.HasValue) schedule.ScheduledEnd = dto.ScheduledEnd.Value;
+    if (dto.Position != null) schedule.Position = dto.Position;
+    if (dto.Notes != null) schedule.Notes = dto.Notes;
+
+    if (schedule.ScheduledEnd <= schedule.ScheduledStart)
+        return Results.BadRequest(new { message = "The shift must end after it starts." });
+
+    await db.SaveChangesAsync();
+    return Results.Ok(schedule);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapDelete("/labor/schedules/{id:guid}", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var schedule = await db.StaffShiftSchedules.FirstOrDefaultAsync(s => s.Id == id && s.TenantId == scopedTenantId.Value);
+    if (schedule == null) return Results.NotFound(new { message = "Schedule not found." });
+
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, schedule.BranchId);
+    if (scopeError != null) return scopeError;
+
+    db.StaffShiftSchedules.Remove(schedule);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Shift removed from the schedule." });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPost("/labor/clock-in", async (AppDbContext db, HttpContext http, ClockInDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var staff = await db.Users.FirstOrDefaultAsync(u => u.Id == dto.UserId && u.TenantId == scopedTenantId!.Value);
+    if (staff == null) return Results.BadRequest(new { message = "Staff member not found for this restaurant." });
+
+    var open = await db.TimeClockEntries.FirstOrDefaultAsync(t => t.UserId == dto.UserId && t.ClockOutAt == null);
+    if (open != null)
+        return Results.Conflict(new { message = "This staff member is already clocked in.", timeClockEntryId = open.Id, open.ClockInAt });
+
+    // Best-effort linkage only: if exactly one cash shift is open at this branch, associate it.
+    var openShifts = await db.CashShifts.Where(s => s.BranchId == scopedBranchId!.Value && !s.IsClosed)
+        .Select(s => s.Id).Take(2).ToListAsync();
+
+    var entry = new TimeClockEntry
+    {
+        TenantId = scopedTenantId!.Value,
+        BranchId = scopedBranchId!.Value,
+        UserId = dto.UserId,
+        ClockInAt = DateTime.UtcNow,
+        LinkedCashShiftId = openShifts.Count == 1 ? openShifts[0] : null
+    };
+    db.TimeClockEntries.Add(entry);
+    await db.SaveChangesAsync();
+    return Results.Ok(entry);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPost("/labor/clock-out", async (AppDbContext db, HttpContext http, ClockOutDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var entry = await db.TimeClockEntries.FirstOrDefaultAsync(t => t.Id == dto.TimeClockEntryId && t.TenantId == scopedTenantId.Value);
+    if (entry == null) return Results.NotFound(new { message = "Time clock entry not found." });
+
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, entry.BranchId);
+    if (scopeError != null) return scopeError;
+
+    if (entry.ClockOutAt != null) return Results.BadRequest(new { message = "This entry is already clocked out." });
+
+    entry.ClockOutAt = DateTime.UtcNow;
+    entry.HoursWorked = Math.Round((decimal)(entry.ClockOutAt.Value - entry.ClockInAt).TotalHours, 2, MidpointRounding.AwayFromZero);
+    await db.SaveChangesAsync();
+    return Results.Ok(entry);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapGet("/labor/timesheet", async (AppDbContext db, HttpContext http, Guid? userId, Guid? branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+
+    var start = from ?? DateTime.UtcNow.Date.AddDays(-14);
+    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+
+    var query = db.TimeClockEntries.Where(t => t.TenantId == scopedTenantId!.Value && t.BranchId == scopedBranchId!.Value
+                                               && t.ClockInAt >= start && t.ClockInAt < end);
+    if (userId.HasValue && userId.Value != Guid.Empty) query = query.Where(t => t.UserId == userId.Value);
+
+    var entries = await query.OrderByDescending(t => t.ClockInAt).ToListAsync();
+    var userIds = entries.Select(e => e.UserId).Distinct().ToList();
+    var users = await db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+    var rows = entries.Select(e => new
+    {
+        e.Id, e.UserId,
+        userName = users.TryGetValue(e.UserId, out var n) ? n : "(removed user)",
+        e.BranchId, e.ClockInAt, e.ClockOutAt, e.LinkedCashShiftId,
+        hoursWorked = e.HoursWorked ?? 0m,
+        isOpen = e.ClockOutAt == null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        from = start, to = end.AddDays(-1),
+        totalEntries = rows.Count,
+        totalHours = Math.Round(rows.Sum(r => r.hoursWorked), 2),
+        perStaff = rows.GroupBy(r => new { r.UserId, r.userName })
+            .Select(g => new { userId = g.Key.UserId, userName = g.Key.userName, entries = g.Count(), totalHours = Math.Round(g.Sum(x => x.hoursWorked), 2) })
+            .OrderByDescending(x => x.totalHours),
+        entries = rows
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+api.MapGet("/labor/timesheet/export", async (AppDbContext db, HttpContext http, Guid? userId, Guid? branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+
+    var start = from ?? DateTime.UtcNow.Date.AddDays(-14);
+    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+
+    var query = db.TimeClockEntries.Where(t => t.TenantId == scopedTenantId!.Value && t.BranchId == scopedBranchId!.Value
+                                               && t.ClockInAt >= start && t.ClockInAt < end);
+    if (userId.HasValue && userId.Value != Guid.Empty) query = query.Where(t => t.UserId == userId.Value);
+
+    var entries = await query.OrderBy(t => t.ClockInAt).ToListAsync();
+    var userIds = entries.Select(e => e.UserId).Distinct().ToList();
+    var users = await db.Users.Where(u => userIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName);
+
+    static string Csv(string? value)
+    {
+        value ??= string.Empty;
+        return value.Contains(',') || value.Contains('"') || value.Contains('\n')
+            ? "\"" + value.Replace("\"", "\"\"") + "\""
+            : value;
+    }
+
+    var sb = new StringBuilder();
+    sb.AppendLine("StaffName,UserId,ClockInUtc,ClockOutUtc,HoursWorked,LinkedCashShiftId");
+    foreach (var e in entries)
+    {
+        sb.AppendLine(string.Join(",",
+            Csv(users.TryGetValue(e.UserId, out var n) ? n : "(removed user)"),
+            e.UserId,
+            e.ClockInAt.ToString("yyyy-MM-dd HH:mm:ss"),
+            e.ClockOutAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty,
+            (e.HoursWorked ?? 0m).ToString("0.00"),
+            e.LinkedCashShiftId?.ToString() ?? string.Empty));
+    }
+    sb.AppendLine();
+    sb.AppendLine($"TOTAL,,,,{entries.Sum(e => e.HoursWorked ?? 0m):0.00},");
+
+    http.Response.Headers.ContentDisposition = $"attachment; filename=timesheet-{start:yyyyMMdd}-{end.AddDays(-1):yyyyMMdd}.csv";
+    return Results.Content(sb.ToString(), "text/csv");
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+// ============================================================
+// MENU ENGINEERING ANALYTICS
+// Classic four-box classification: each product is compared against the menu-wide average units
+// sold (popularity) and the menu-wide average margin percent.
+//   Star       = popular + profitable      PlowHorse = popular + low margin
+//   Puzzle     = unpopular + profitable    Dog       = unpopular + low margin
+// ============================================================
+
+api.MapGet("/analytics/menu-engineering", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+
+    var start = from ?? DateTime.UtcNow.Date.AddDays(-30);
+    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+
+    var soldLines = await db.OrderItems
+        .Where(oi => oi.Order != null && oi.Order.BranchId == scopedBranchId!.Value
+                     && oi.Order.CreatedAt >= start && oi.Order.CreatedAt < end
+                     && oi.Order.Status != OrderStatus.Cancelled)
+        .Select(oi => new { oi.ProductId, oi.ProductName, oi.Quantity, oi.TotalPricePKR })
+        .ToListAsync();
+
+    var products = await db.Products.Include(p => p.Category)
+        .Where(p => p.TenantId == scopedTenantId!.Value && p.IsActive)
+        .Select(p => new { p.Id, p.Name, p.CostPricePKR, CategoryName = p.Category != null ? p.Category.Name : "General" })
+        .ToListAsync();
+
+    var sold = soldLines.GroupBy(l => l.ProductId)
+        .ToDictionary(g => g.Key, g => new { Units = g.Sum(x => x.Quantity), Revenue = g.Sum(x => x.TotalPricePKR) });
+
+    var rows = products.Select(p =>
+    {
+        sold.TryGetValue(p.Id, out var s);
+        var units = s?.Units ?? 0;
+        var revenue = s?.Revenue ?? 0m;
+        var cost = p.CostPricePKR * units;
+        var grossProfit = revenue - cost;
+        return new
+        {
+            productId = p.Id,
+            productName = p.Name,
+            categoryName = p.CategoryName,
+            unitsSold = units,
+            revenuePKR = Math.Round(revenue, 2),
+            costPKR = Math.Round(cost, 2),
+            grossProfitPKR = Math.Round(grossProfit, 2),
+            marginPercent = revenue > 0 ? Math.Round((grossProfit / revenue) * 100, 1) : 0m
+        };
+    }).ToList();
+
+    var avgUnits = rows.Count > 0 ? rows.Average(r => (decimal)r.unitsSold) : 0m;
+    // Average margin is taken over products that actually sold — a product with no sales has an
+    // undefined margin, and folding its 0% into the average would drag the threshold down.
+    var soldRows = rows.Where(r => r.unitsSold > 0).ToList();
+    var avgMargin = soldRows.Count > 0 ? soldRows.Average(r => r.marginPercent) : 0m;
+
+    var classified = rows.Select(r => new
+    {
+        r.productId, r.productName, r.categoryName, r.unitsSold,
+        r.revenuePKR, r.costPKR, r.grossProfitPKR, r.marginPercent,
+        popularity = r.unitsSold >= avgUnits ? "High" : "Low",
+        profitability = r.marginPercent >= avgMargin ? "High" : "Low",
+        classification =
+            r.unitsSold >= avgUnits
+                ? (r.marginPercent >= avgMargin ? "Star" : "PlowHorse")
+                : (r.marginPercent >= avgMargin ? "Puzzle" : "Dog")
+    }).OrderByDescending(r => r.revenuePKR).ToList();
+
+    var slowMovers = classified
+        .Where(r => r.unitsSold == 0)
+        .Concat(classified.Where(r => r.unitsSold > 0).OrderBy(r => r.unitsSold).Take(10))
+        .Take(15)
+        .Select(r => new { r.productId, r.productName, r.categoryName, r.unitsSold, r.revenuePKR })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        from = start, to = end.AddDays(-1),
+        branchId = scopedBranchId,
+        averageUnitsSold = Math.Round(avgUnits, 2),
+        averageMarginPercent = Math.Round(avgMargin, 1),
+        totalRevenuePKR = Math.Round(classified.Sum(r => r.revenuePKR), 2),
+        totalGrossProfitPKR = Math.Round(classified.Sum(r => r.grossProfitPKR), 2),
+        summary = new
+        {
+            stars = classified.Count(r => r.classification == "Star"),
+            plowHorses = classified.Count(r => r.classification == "PlowHorse"),
+            puzzles = classified.Count(r => r.classification == "Puzzle"),
+            dogs = classified.Count(r => r.classification == "Dog")
+        },
+        items = classified,
+        slowMovers
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+
 app.Run();
 
 
@@ -4195,13 +5701,30 @@ public class ServerPricedOrder
     public bool DiscountRejected { get; set; }
     public decimal AttemptedDiscountPKR { get; set; }
     public string? Error { get; set; }
+
+    /// <summary>Rounding precision resolved from TenantSettings — reused when commerce extras re-round.</summary>
+    public int Decimals { get; set; } = 2;
+
+    // --- Commerce extras (promo / gift card / loyalty), filled by ApplyOrderCommerceAsync ---
+    public PromoCode? AppliedPromo { get; set; }
+    public decimal PromoDiscountPKR { get; set; }
+    /// <summary>Set when a promo code was supplied but could not be honoured. Never fatal to the sale.</summary>
+    public string? PromoRejectedReason { get; set; }
+    public decimal GiftCardRedeemedPKR { get; set; }
+    public string? GiftCardRejectedReason { get; set; }
+    public int LoyaltyPointsRedeemed { get; set; }
+    public decimal LoyaltyDiscountPKR { get; set; }
+    public string? LoyaltyRejectedReason { get; set; }
+    public Customer? LinkedCustomer { get; set; }
 }
 
 // DTOs
 public record VerifyPinDto(string Username, string PinCode, string? RequiredPermission);
 public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRate, decimal? DigitalTaxRate, bool? IsActive);
 public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs);
-public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items);
+// The trailing CRM/loyalty/gift-card/promo fields are optional and default to null — a walk-in
+// order posted by an older client that omits them behaves exactly as it did before.
+public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null);
 public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station);
 public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
@@ -4292,5 +5815,24 @@ public record TenantSettingsDto(
     string? AllowedPaymentMethods,
     bool? UseProvincialTax = null
 );
+
+// --- CRM / loyalty / gift cards / promos ---
+public record CreateCustomerDto(string? FullName, string Phone, string? Email);
+public record UpdateCustomerDto(string? FullName, string? Phone, string? Email, int? LoyaltyPoints);
+public record LoyaltyConfigDto(bool? IsEnabled, decimal? PointsPerPKRSpent, decimal? PKRValuePerPoint, int? MinRedeemPoints);
+public record LoyaltyRedeemDto(Guid CustomerId, int PointsToRedeem);
+public record IssueGiftCardDto(decimal InitialBalancePKR, Guid? IssuedToCustomerId, DateTime? ExpiresAt);
+public record CreatePromoCodeDto(string Code, PromoDiscountType DiscountType, decimal DiscountValue, decimal MinOrderAmountPKR, int? MaxUsesTotal, int? MaxUsesPerCustomer, DateTime? ValidFrom, DateTime? ValidUntil, bool? IsActive);
+public record UpdatePromoCodeDto(PromoDiscountType? DiscountType, decimal? DiscountValue, decimal? MinOrderAmountPKR, int? MaxUsesTotal, int? MaxUsesPerCustomer, DateTime? ValidFrom, DateTime? ValidUntil, bool? IsActive);
+
+// --- Payments / delivery integration ---
+public record InitiatePaymentDto(Guid OrderId, PaymentProvider Provider);
+public record DeliveryIntegrationConfigDto(bool IsEnabled, string? ApiKey, string? StoreId, string? WebhookSecret);
+
+// --- Labor ---
+public record CreateShiftScheduleDto(Guid BranchId, Guid UserId, DateTime ScheduledStart, DateTime ScheduledEnd, string? Position, string? Notes);
+public record UpdateShiftScheduleDto(DateTime? ScheduledStart, DateTime? ScheduledEnd, string? Position, string? Notes);
+public record ClockInDto(Guid UserId, Guid? BranchId);
+public record ClockOutDto(Guid TimeClockEntryId);
 
 

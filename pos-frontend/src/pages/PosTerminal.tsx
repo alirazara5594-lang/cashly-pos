@@ -16,13 +16,17 @@ import {
   Check,
   X,
   ShoppingBag,
-  Lock
+  Lock,
+  UserRound,
+  Gift,
+  Percent,
+  Star
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
 import { posApi } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
-import type { Product, Category, PaymentMethod, OrderType, Order } from '../types';
+import type { Product, Category, PaymentMethod, OrderType, Order, Customer } from '../types';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
@@ -82,8 +86,49 @@ export const PosTerminal: React.FC = () => {
     taxMode,
     getEffectiveTaxRate,
     tenantSettings,
-    permissions
+    permissions,
+    setCustomerInfo
   } = usePosStore();
+
+  // ── Loyalty / promo / gift card extras. Every one of these is optional: leaving
+  // the whole section untouched produces exactly the same order payload as before.
+  const [lookupPhone, setLookupPhone] = useState('');
+  const [matchedCustomer, setMatchedCustomer] = useState<Customer | null>(null);
+  const [customerLookupState, setCustomerLookupState] = useState<'idle' | 'searching' | 'notfound'>('idle');
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [giftCardCode, setGiftCardCode] = useState('');
+  const [giftCardRedeemAmount, setGiftCardRedeemAmount] = useState<number>(0);
+
+  const handleCustomerLookup = async () => {
+    const phone = lookupPhone.trim();
+    if (!phone) return;
+    setCustomerLookupState('searching');
+    setMatchedCustomer(null);
+    try {
+      const customer = await posApi.lookupCustomer(phone);
+      if (customer) {
+        setMatchedCustomer(customer);
+        setCustomerLookupState('idle');
+        setCustomerInfo({ name: customer.fullName, phone: customer.phone });
+      } else {
+        setCustomerLookupState('notfound');
+        setCustomerInfo({ phone });
+      }
+    } catch {
+      // No profile / no endpoint — the sale proceeds without a loyalty attachment.
+      setCustomerLookupState('notfound');
+      setCustomerInfo({ phone });
+    }
+  };
+
+  const resetCheckoutExtras = () => {
+    setLookupPhone('');
+    setMatchedCustomer(null);
+    setCustomerLookupState('idle');
+    setPromoCodeInput('');
+    setGiftCardCode('');
+    setGiftCardRedeemAmount(0);
+  };
 
   // Discounts are a gated action. If this cashier lacks the flag they can still
   // apply one, but only after a manager authorizes it with their own PIN. The
@@ -197,6 +242,11 @@ export const PosTerminal: React.FC = () => {
       createdByRole: 'Cashier',
       // Set when a manager authorized a discount this cashier can't normally give.
       discountAuthorizedByUserId: discountOverride?.authorizedByUserId,
+      // Optional CRM extras — omitted entirely when the cashier skips that section.
+      customerId: matchedCustomer?.id,
+      promoCode: promoCodeInput.trim() || undefined,
+      giftCardCode: giftCardCode.trim() || undefined,
+      giftCardRedeemAmount: giftCardCode.trim() && giftCardRedeemAmount > 0 ? giftCardRedeemAmount : undefined,
       items: cart.map(i => ({
         productId: i.productId,
         productName: i.productName,
@@ -293,6 +343,7 @@ export const PosTerminal: React.FC = () => {
       clearCart();
       // A manager override authorizes one bill only.
       setDiscountOverride(null);
+      resetCheckoutExtras();
     } catch (err) {
       console.error('Order submission error:', err);
       alert('Failed to submit order. Please check network.');
@@ -663,6 +714,80 @@ export const PosTerminal: React.FC = () => {
               <span>TOTAL</span>
               <span className="text-teal-600">{grandTotal.toLocaleString()}</span>
             </div>
+          </div>
+
+          {/* Optional customer / promo / gift-card attachments. Everything here can be
+              skipped — the checkout below works exactly as it always has. */}
+          <div className="p-4 border-t border-slate-100 space-y-2.5">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Customer & Offers (optional)</div>
+
+            <div className="flex gap-1.5">
+              <div className="relative flex-1">
+                <UserRound className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  value={lookupPhone}
+                  onChange={(e) => { setLookupPhone(e.target.value); setCustomerLookupState('idle'); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleCustomerLookup(); }}
+                  placeholder="Customer phone"
+                  className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
+                />
+              </div>
+              <button
+                onClick={handleCustomerLookup}
+                disabled={customerLookupState === 'searching' || !lookupPhone.trim()}
+                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-[11px] font-bold transition disabled:opacity-40"
+              >
+                {customerLookupState === 'searching' ? '…' : 'Look Up'}
+              </button>
+            </div>
+
+            {matchedCustomer && (
+              <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
+                <span className="text-[11px] font-bold text-amber-800 truncate">{matchedCustomer.fullName}</span>
+                <span className="flex items-center gap-1 text-[11px] font-bold text-amber-700 shrink-0">
+                  <Star className="w-3 h-3" />
+                  {(matchedCustomer.loyaltyPoints ?? 0).toLocaleString()} pts
+                </span>
+              </div>
+            )}
+            {customerLookupState === 'notfound' && (
+              <p className="text-[10px] text-slate-400">
+                No loyalty profile for that number — the sale will still go through.
+              </p>
+            )}
+
+            <div className="relative">
+              <Percent className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                value={promoCodeInput}
+                onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+                placeholder="Promo code"
+                className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
+              />
+            </div>
+
+            <div className="flex gap-1.5">
+              <div className="relative flex-1">
+                <Gift className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  value={giftCardCode}
+                  onChange={(e) => setGiftCardCode(e.target.value.toUpperCase())}
+                  placeholder="Gift card code"
+                  className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
+                />
+              </div>
+              <input
+                type="number"
+                min="0"
+                value={giftCardRedeemAmount || ''}
+                onChange={(e) => setGiftCardRedeemAmount(Number(e.target.value) || 0)}
+                placeholder="PKR"
+                className="w-20 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-right text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
+              />
+            </div>
+            <p className="text-[10px] text-slate-400">
+              Promo and gift-card amounts are validated and applied by the server on submit.
+            </p>
           </div>
 
           <div className="p-4 border-t border-slate-100">

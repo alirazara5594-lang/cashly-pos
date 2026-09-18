@@ -311,7 +311,8 @@ export type ModuleKey =
   | 'accounts'
   | 'supplychain'
   | 'admin'
-  | 'users';
+  | 'users'
+  | 'labor';
 
 export type PermissionAction = 'view' | 'edit' | 'delete' | 'export';
 
@@ -653,5 +654,160 @@ export interface StockRequest {
   reviewedAt?: string;
   reviewNotes?: string;
   items: StockRequestItem[];
+}
+
+// ─────────────────────────────────────────────────────────────
+// CRM — Customers & Loyalty
+// ─────────────────────────────────────────────────────────────
+
+export interface Customer {
+  id: string;
+  tenantId: string;
+  fullName: string;
+  phone: string;
+  email?: string;
+  loyaltyPoints: number;
+  totalVisits: number;
+  totalSpentPKR: number;
+  createdAt: string;
+  lastVisitAt?: string;
+}
+
+export interface LoyaltyProgramConfig {
+  id: string;
+  tenantId: string;
+  isEnabled: boolean;
+  /** Points earned per 1 PKR spent. */
+  pointsPerPKRSpent: number;
+  /** PKR a single point is worth when redeemed. */
+  pkrValuePerPoint: number;
+  minRedeemPoints: number;
+}
+
+/** Preview response of POST /api/loyalty/redeem — the points are only really burned at order submit. */
+export interface LoyaltyRedeemPreview {
+  discountPKR: number;
+}
+
+export interface GiftCard {
+  id: string;
+  tenantId: string;
+  cardCode: string;
+  initialBalancePKR: number;
+  currentBalancePKR: number;
+  issuedToCustomerId?: string;
+  issuedAt: string;
+  expiresAt?: string;
+  isActive: boolean;
+}
+
+export type PromoDiscountType = 'Percent' | 'Fixed';
+
+export interface PromoCode {
+  id: string;
+  tenantId: string;
+  code: string;
+  discountType: PromoDiscountType;
+  discountValue: number;
+  minOrderAmountPKR: number;
+  maxUsesTotal?: number;
+  maxUsesPerCustomer?: number;
+  usesCount: number;
+  validFrom: string;
+  validUntil?: string;
+  isActive: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payments & Delivery Integrations
+// ─────────────────────────────────────────────────────────────
+
+export type PaymentProvider = 'JazzCash' | 'EasyPaisa' | 'Card' | 'Cash';
+
+export interface PaymentInitiateResponse {
+  success: boolean;
+  redirectUrl?: string;
+  instructions?: string;
+  providerTransactionId?: string;
+  errorMessage?: string;
+}
+
+export interface PaymentStatusResponse {
+  orderId?: string;
+  provider?: PaymentProvider;
+  status?: string;
+  providerTransactionId?: string;
+  errorMessage?: string;
+}
+
+export type DeliveryPlatform = 'Foodpanda' | 'Other';
+
+/**
+ * The backend's delivery-integration config is still settling, so this stays
+ * deliberately loose: only `isEnabled` is relied on, everything else is read
+ * defensively and round-tripped back untouched on save.
+ */
+export interface DeliveryIntegrationConfig {
+  platform?: string;
+  isEnabled?: boolean;
+  apiKey?: string;
+  apiSecret?: string;
+  storeId?: string;
+  webhookUrl?: string;
+  isConfigured?: boolean;
+  lastSyncAt?: string;
+  [key: string]: unknown;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Labor — Scheduling & Time Clock
+// ─────────────────────────────────────────────────────────────
+
+export interface StaffShiftSchedule {
+  id: string;
+  tenantId: string;
+  branchId: string;
+  userId: string;
+  /** Denormalized by the API where available — purely for display. */
+  userFullName?: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  position: string;
+  notes?: string;
+  createdBy: string;
+}
+
+export interface TimeClockEntry {
+  id: string;
+  tenantId: string;
+  branchId: string;
+  userId: string;
+  userFullName?: string;
+  clockInAt: string;
+  clockOutAt?: string;
+  linkedCashShiftId?: string;
+  hoursWorked?: number;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Menu Engineering
+// ─────────────────────────────────────────────────────────────
+
+export type MenuClassification = 'Star' | 'PlowHorse' | 'Puzzle' | 'Dog';
+
+export interface MenuEngineeringRow {
+  productId: string;
+  name: string;
+  unitsSold: number;
+  revenuePKR: number;
+  costPKR: number;
+  grossProfitPKR: number;
+  marginPercent: number;
+  classification: MenuClassification;
+}
+
+export interface MenuEngineeringReport {
+  items: MenuEngineeringRow[];
+  slowMovers: MenuEngineeringRow[];
 }
 

@@ -42,6 +42,15 @@ public class AppDbContext : DbContext
     public DbSet<TenantSettings> TenantSettings => Set<TenantSettings>();
     public DbSet<TaxJurisdiction> TaxJurisdictions => Set<TaxJurisdiction>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<GiftCard> GiftCards => Set<GiftCard>();
+    public DbSet<GiftCardTransaction> GiftCardTransactions => Set<GiftCardTransaction>();
+    public DbSet<LoyaltyProgramConfig> LoyaltyProgramConfigs => Set<LoyaltyProgramConfig>();
+    public DbSet<PromoCode> PromoCodes => Set<PromoCode>();
+    public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
+    public DbSet<ExternalOrderMapping> ExternalOrderMappings => Set<ExternalOrderMapping>();
+    public DbSet<StaffShiftSchedule> StaffShiftSchedules => Set<StaffShiftSchedule>();
+    public DbSet<TimeClockEntry> TimeClockEntries => Set<TimeClockEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -300,5 +309,103 @@ public class AppDbContext : DbContext
             .WithMany(t => t.AddOns)
             .HasForeignKey(aos => aos.TenantId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // --- CRM / loyalty / gift cards / promos / payments / delivery / labor ---
+
+        modelBuilder.Entity<Customer>()
+            .HasIndex(c => new { c.TenantId, c.Phone })
+            .IsUnique();
+
+        modelBuilder.Entity<Customer>()
+            .HasIndex(c => new { c.TenantId, c.FullName });
+
+        modelBuilder.Entity<GiftCard>()
+            .HasIndex(g => g.CardCode)
+            .IsUnique();
+
+        modelBuilder.Entity<GiftCard>()
+            .HasIndex(g => new { g.TenantId, g.IsActive });
+
+        modelBuilder.Entity<GiftCardTransaction>()
+            .HasIndex(gt => new { gt.GiftCardId, gt.CreatedAt });
+
+        modelBuilder.Entity<GiftCardTransaction>()
+            .HasIndex(gt => gt.OrderId);
+
+        modelBuilder.Entity<LoyaltyProgramConfig>()
+            .HasIndex(l => l.TenantId)
+            .IsUnique();
+
+        modelBuilder.Entity<PromoCode>()
+            .HasIndex(p => new { p.TenantId, p.Code })
+            .IsUnique();
+
+        modelBuilder.Entity<PromoCode>()
+            .HasIndex(p => new { p.TenantId, p.IsActive });
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasIndex(pt => new { pt.TenantId, pt.RequestedAt });
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasIndex(pt => pt.OrderId);
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasIndex(pt => new { pt.BranchId, pt.Status });
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasIndex(pt => pt.ProviderTransactionId);
+
+        modelBuilder.Entity<ExternalOrderMapping>()
+            .HasIndex(em => new { em.Platform, em.ExternalOrderId })
+            .IsUnique();
+
+        modelBuilder.Entity<ExternalOrderMapping>()
+            .HasIndex(em => new { em.TenantId, em.ReceivedAt });
+
+        modelBuilder.Entity<ExternalOrderMapping>()
+            .HasIndex(em => em.InternalOrderId);
+
+        modelBuilder.Entity<StaffShiftSchedule>()
+            .HasIndex(s => new { s.BranchId, s.ScheduledStart });
+
+        modelBuilder.Entity<StaffShiftSchedule>()
+            .HasIndex(s => new { s.TenantId, s.UserId });
+
+        modelBuilder.Entity<TimeClockEntry>()
+            .HasIndex(t => new { t.BranchId, t.ClockInAt });
+
+        modelBuilder.Entity<TimeClockEntry>()
+            .HasIndex(t => new { t.UserId, t.ClockInAt });
+
+        modelBuilder.Entity<GiftCardTransaction>()
+            .HasOne(gt => gt.GiftCard)
+            .WithMany()
+            .HasForeignKey(gt => gt.GiftCardId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Order>()
+            .HasOne(o => o.Customer)
+            .WithMany()
+            .HasForeignKey(o => o.CustomerId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<Order>()
+            .HasOne(o => o.PromoCode)
+            .WithMany()
+            .HasForeignKey(o => o.PromoCodeId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Time records and published schedules survive a user being removed — never cascade.
+        modelBuilder.Entity<TimeClockEntry>()
+            .HasOne(t => t.User)
+            .WithMany()
+            .HasForeignKey(t => t.UserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<StaffShiftSchedule>()
+            .HasOne(s => s.User)
+            .WithMany()
+            .HasForeignKey(s => s.UserId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
