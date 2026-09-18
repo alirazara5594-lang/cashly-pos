@@ -53,7 +53,7 @@ export const InstallationWizard: React.FC = () => {
   const [allowedOrderTabs, setAllowedOrderTabs] = useState<number>(10);
   const [selectedPlan, setSelectedPlan] = useState<'Starter' | 'Standard' | 'Professional'>('Standard');
 
-  const PLANS: { key: 'Starter' | 'Standard' | 'Professional'; label: string; counters: number; tablets: number; badge?: string; color: string; ring: string; borderActive: string; bgActive: string; badgeColor: string }[] = [
+  const PLANS: { key: 'Starter' | 'Standard' | 'Professional'; label: string; counters: number; tablets: number; badge?: string; color: string; ring: string; borderActive: string; bgActive: string; badgeColor: string; checkFill: string }[] = [
     {
       key: 'Starter',
       label: 'Starter',
@@ -64,6 +64,7 @@ export const InstallationWizard: React.FC = () => {
       borderActive: 'border-emerald-500',
       bgActive: 'bg-emerald-50',
       badgeColor: 'bg-emerald-50 text-emerald-600 border-emerald-200',
+      checkFill: 'fill-emerald-500',
     },
     {
       key: 'Standard',
@@ -76,6 +77,7 @@ export const InstallationWizard: React.FC = () => {
       borderActive: 'border-teal-500',
       bgActive: 'bg-teal-50',
       badgeColor: 'bg-teal-50 text-teal-600 border-teal-200',
+      checkFill: 'fill-teal-500',
     },
     {
       key: 'Professional',
@@ -87,6 +89,7 @@ export const InstallationWizard: React.FC = () => {
       borderActive: 'border-amber-500',
       bgActive: 'bg-amber-50',
       badgeColor: 'bg-amber-50 text-amber-600 border-amber-200',
+      checkFill: 'fill-amber-500',
     },
   ];
 
@@ -256,19 +259,16 @@ export const InstallationWizard: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col justify-between selection:bg-emerald-500 selection:text-white">
+    <div className="h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-emerald-500 selection:text-white overflow-hidden">
       {/* Top Banner */}
-      <div className="border-b border-slate-200 bg-white backdrop-blur px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-            <UtensilsCrossed className="w-5 h-5 text-white stroke-[2.5]" />
+      <div className="shrink-0 border-b border-slate-200 bg-white backdrop-blur px-4 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow shadow-emerald-500/20 shrink-0">
+            <UtensilsCrossed className="w-3.5 h-3.5 text-white stroke-[2.5]" />
           </div>
-          <div>
-            <h1 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
-              Cashly POS <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-semibold border border-emerald-200">Installation Wizard</span>
-            </h1>
-            <p className="text-xs text-slate-500">First-Time Deployment & Architecture Onboarding</p>
-          </div>
+          <h1 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-1.5">
+            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-semibold border border-emerald-200">Setup</span>
+          </h1>
         </div>
 
         {/* Step indicators */}
@@ -280,17 +280,17 @@ export const InstallationWizard: React.FC = () => {
             { num: 4, label: 'Offline & Sync' },
             { num: 5, label: 'Deploy' }
           ].map((s) => (
-            <div 
-              key={s.num} 
+            <div
+              key={s.num}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all ${
-                step === s.num 
-                  ? 'bg-emerald-500 border-emerald-500 text-white font-semibold' 
-                  : step > s.num 
-                  ? 'bg-slate-100 border-slate-200 text-slate-700' 
+                step === s.num
+                  ? 'bg-emerald-500 border-emerald-500 text-white font-semibold'
+                  : step > s.num
+                  ? 'bg-slate-100 border-slate-200 text-slate-700'
                   : 'border-transparent text-slate-500'
               }`}
             >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
                 step === s.num ? 'bg-white text-emerald-600' : step > s.num ? 'bg-emerald-500/40 text-white' : 'bg-slate-200 text-slate-500'
               }`}>
                 {step > s.num ? '✓' : s.num}
@@ -301,30 +301,32 @@ export const InstallationWizard: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Form Content */}
-      <div className="flex-1 max-w-4xl w-full mx-auto p-6 md:p-10 flex flex-col justify-center">
+      {/* Main Form Content — this is the ONLY part that scrolls, so the nav bar below
+          stays visible no matter how tall a step's content gets (e.g. many branches). */}
+      <div className="flex-1 overflow-y-auto">
+      <div className="max-w-4xl w-full mx-auto p-6 md:p-8">
         {errorMessage && (
-          <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-sm flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full bg-rose-400 animate-ping" />
+          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-sm flex items-center gap-3">
+            <div className="w-2 h-2 rounded-full bg-rose-400 animate-ping shrink-0" />
             <span>{errorMessage}</span>
           </div>
         )}
 
         {/* STEP 1: Select Architecture Mode */}
         {step === 1 && (
-          <div className="space-y-6">
+          <div className="space-y-5">
             <div className="text-center md:text-left space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your Restaurant Setup Mode</h2>
               <p className="text-sm text-slate-500">Select whether Cashly POS will power a single standalone location or a multi-branch chain with central Head Office.</p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {/* Single Restaurant Option */}
-              <div 
+              <div
                 onClick={() => setMode('Single')}
-                className={`relative p-6 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
+                className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
                   deploymentMode === 'Single'
-                    ? 'border-emerald-500 bg-emerald-50 shadow-xl shadow-emerald-500/10 ring-1 ring-emerald-500/40'
+                    ? 'border-emerald-500 bg-emerald-50 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/40'
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
@@ -333,16 +335,16 @@ export const InstallationWizard: React.FC = () => {
                     <CheckCircle2 className="w-6 h-6 fill-emerald-500 text-white" />
                   </div>
                 )}
-                <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
-                    <Store className="w-6 h-6" />
-                  </div>
-                  <div>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 shrink-0">
+                      <Store className="w-5 h-5" />
+                    </div>
                     <h3 className="text-lg font-bold text-slate-900">Single Restaurant Outlet</h3>
-                    <p className="text-xs text-slate-500 mt-1">Independent standalone cafe, diner, takeaway, or full-service dining restaurant.</p>
                   </div>
+                  <p className="text-sm text-slate-500">Independent standalone cafe, diner, takeaway, or full-service dining restaurant.</p>
 
-                  <ul className="space-y-2 text-xs text-slate-700 pt-2 border-t border-slate-200">
+                  <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
                     <li className="flex items-center gap-2">
                       <span className="text-emerald-600 font-bold">✓</span> Direct Counter POS & Split-Second Billing
                     </li>
@@ -355,23 +357,20 @@ export const InstallationWizard: React.FC = () => {
                     <li className="flex items-center gap-2">
                       <span className="text-emerald-600 font-bold">✓</span> Local Stock & Cash Shift Register
                     </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-emerald-600 font-bold">✓</span> Clean, streamlined navigation (no commissary overhead)
-                    </li>
                   </ul>
                 </div>
 
-                <div className="mt-6 pt-4 text-xs font-semibold text-emerald-600 flex items-center gap-1">
+                <div className="mt-4 pt-3 text-xs font-semibold text-emerald-600">
                   Fastest setup • Recommended for single spots
                 </div>
               </div>
 
               {/* Multi-Branch Chain Option */}
-              <div 
+              <div
                 onClick={() => setMode('MultiBranch')}
-                className={`relative p-6 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
+                className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
                   deploymentMode === 'MultiBranch'
-                    ? 'border-teal-500 bg-teal-50 shadow-xl shadow-teal-500/10 ring-1 ring-teal-500/40'
+                    ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
@@ -380,43 +379,40 @@ export const InstallationWizard: React.FC = () => {
                     <CheckCircle2 className="w-6 h-6 fill-teal-500 text-white" />
                   </div>
                 )}
-                <div className="space-y-4">
-                  <div className="w-12 h-12 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600">
-                    <Building2 className="w-6 h-6" />
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
+                      <Building2 className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900">Multi-Branch Chain with HQ</h3>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-slate-900">Multi-Branch Chain with Head Office (HQ)</h3>
-                    <p className="text-xs text-slate-500 mt-1">For multi-location chains with a Central Commissary / Warehouse and branch outlets.</p>
-                  </div>
+                  <p className="text-sm text-slate-500">For multi-location chains with a Central Commissary / Warehouse and branch outlets.</p>
 
-                  <ul className="space-y-2 text-xs text-slate-700 pt-2 border-t border-slate-200">
+                  <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
                     <li className="flex items-center gap-2">
-                      <span className="text-teal-600 font-bold">✓</span> Central Commissary & Central Recipe Management
+                      <span className="text-teal-600 font-bold">✓</span> Central Commissary & Recipe Management
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className="text-teal-600 font-bold">✓</span> Inter-Branch Stock Transfers (Dispatch → Receive)
+                      <span className="text-teal-600 font-bold">✓</span> Inter-Branch Stock Transfers
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="text-teal-600 font-bold">✓</span> Centralized Vendor Purchase Orders (PO)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className="text-teal-600 font-bold">✓</span> Consolidated Director / C-Level Analytics
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-teal-600 font-bold">✓</span> Branch Switcher & Multi-Branch Access Control
+                      <span className="text-teal-600 font-bold">✓</span> Consolidated Director Analytics
                     </li>
                   </ul>
                 </div>
 
-                <div className="mt-6 pt-4 text-xs font-semibold text-teal-600 flex items-center gap-1">
+                <div className="mt-4 pt-3 text-xs font-semibold text-teal-600">
                   Enterprise-grade • Full commissary supply chain
                 </div>
               </div>
             </div>
 
             {/* Quick Pair Branch Option */}
-            <div className="pt-4 border-t border-slate-200">
-              <div className="p-4 rounded-2xl bg-white border border-slate-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="pt-3 border-t border-slate-200">
+              <div className="p-4 rounded-xl bg-white border border-slate-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <Key className="w-4 h-4 text-emerald-600" />
@@ -490,13 +486,13 @@ export const InstallationWizard: React.FC = () => {
 
         {/* STEP 2: Restaurant & Outlets Profile */}
         {step === 2 && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             <div className="space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Business Profile & Outlets</h2>
               <p className="text-sm text-slate-500">Enter your restaurant details, currency, and physical branch locations.</p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="space-y-1.5 md:col-span-2">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
@@ -507,7 +503,7 @@ export const InstallationWizard: React.FC = () => {
                     value={restaurantName}
                     onChange={(e) => setRestaurantName(e.target.value)}
                     placeholder="e.g. Royal Grill & Kitchen"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
 
@@ -518,7 +514,7 @@ export const InstallationWizard: React.FC = () => {
                   <select 
                     value={businessType}
                     onChange={(e) => setBusinessType(e.target.value as BusinessType)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   >
                     <option value="Restaurant">Restaurant / Café / Dine-in</option>
                     <option value="Retail">Retail Store</option>
@@ -534,10 +530,10 @@ export const InstallationWizard: React.FC = () => {
                   <select 
                     value={countryCode}
                     onChange={(e) => handleCountryChange(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   >
                     {COUNTRIES.map(c => (
-                      <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.currencyCode} {c.currencySymbol})</option>
+                      <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.currencyCode})</option>
                     ))}
                   </select>
                 </div>
@@ -553,7 +549,7 @@ export const InstallationWizard: React.FC = () => {
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
                     placeholder="e.g. Islamabad"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
 
@@ -566,7 +562,7 @@ export const InstallationWizard: React.FC = () => {
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
                     placeholder="e.g. Sector F-7 Markaz"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
 
@@ -579,26 +575,26 @@ export const InstallationWizard: React.FC = () => {
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="e.g. 051-111-443-443"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
               </div>
 
               {/* Mode-specific branch configuration */}
               {deploymentMode === 'Single' ? (
-                <div className="pt-4 border-t border-slate-200 space-y-4">
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <div className="pt-3 border-t border-slate-200 space-y-3">
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                     <Store className="w-4 h-4 text-emerald-600" /> Single Outlet Configuration
                   </h3>
 
                   {/* Outlet name */}
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <label className="text-xs font-semibold text-slate-600">Outlet Branch Name</label>
                     <input
                       type="text"
                       value={mainBranchName}
                       onChange={(e) => setMainBranchName(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                     />
                   </div>
 
@@ -618,37 +614,39 @@ export const InstallationWizard: React.FC = () => {
                           <div
                             key={plan.key}
                             onClick={() => handleSelectPlan(plan)}
-                            className={`relative p-4 rounded-xl border-2 cursor-pointer transition-all duration-150 flex flex-col gap-3 ${borderClass} ${bgClass} ${ringClass}`}
+                            className={`relative p-3 rounded-xl border-2 cursor-pointer transition-all duration-150 flex flex-col gap-2 ${borderClass} ${bgClass} ${ringClass}`}
                           >
                             {/* Top row: plan name + badge */}
                             <div className="flex items-center justify-between">
                               <span className="text-sm font-bold text-slate-900">{plan.label}</span>
                               {plan.badge && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${plan.badgeColor}`}>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-semibold ${plan.badgeColor}`}>
                                   {plan.badge}
                                 </span>
                               )}
                               {isActive && (
-                                <CheckCircle2 className="w-4 h-4 text-white fill-current opacity-80 shrink-0" />
+                                <CheckCircle2 className={`w-4 h-4 text-white ${plan.checkFill} shrink-0`} />
                               )}
                             </div>
 
-                            {/* Auto Counter */}
-                            <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                            {/* Counters & tablets, side by side to save height */}
+                            <div className="grid grid-cols-2 gap-2">
+                            <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 border border-slate-200">
                               <Monitor className="w-4 h-4 text-slate-500 shrink-0" />
                               <div>
-                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Auto Counter</p>
-                                <p className="text-lg font-extrabold text-slate-900 leading-tight">{plan.counters}</p>
+                                <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Counters</p>
+                                <p className="text-base font-extrabold text-slate-900 leading-tight">{plan.counters}</p>
                               </div>
                             </div>
 
                             {/* Tablet Users */}
-                            <div className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                            <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 border border-slate-200">
                               <Tablet className="w-4 h-4 text-slate-500 shrink-0" />
                               <div>
-                                <p className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Tablet Users</p>
-                                <p className="text-lg font-extrabold text-slate-900 leading-tight">{plan.tablets}</p>
+                                <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Tablets</p>
+                                <p className="text-base font-extrabold text-slate-900 leading-tight">{plan.tablets}</p>
                               </div>
+                            </div>
                             </div>
                           </div>
                         );
@@ -656,18 +654,18 @@ export const InstallationWizard: React.FC = () => {
                     </div>
 
                     {/* Live summary of selected plan */}
-                    <div className="flex items-center gap-4 px-4 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500">
-                      <Monitor className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span><span className="text-slate-900 font-semibold">{allowedCounters}</span> Auto Counter{allowedCounters !== 1 ? 's' : ''}</span>
+                    <div className="flex items-center gap-3 px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500">
+                      <Monitor className="w-3 h-3 text-slate-500 shrink-0" />
+                      <span><span className="text-slate-900 font-semibold">{allowedCounters}</span> Counter{allowedCounters !== 1 ? 's' : ''}</span>
                       <span className="text-slate-300">·</span>
-                      <Tablet className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                      <span><span className="text-slate-900 font-semibold">{allowedOrderTabs}</span> Tablet User{allowedOrderTabs !== 1 ? 's' : ''}</span>
+                      <Tablet className="w-3 h-3 text-slate-500 shrink-0" />
+                      <span><span className="text-slate-900 font-semibold">{allowedOrderTabs}</span> Tablet{allowedOrderTabs !== 1 ? 's' : ''}</span>
                       <span className="ml-auto text-slate-500">Plan: <span className="text-slate-900 font-semibold">{selectedPlan}</span></span>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="pt-4 border-t border-slate-200 space-y-4">
+                <div className="pt-3 border-t border-slate-200 space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
@@ -691,11 +689,11 @@ export const InstallationWizard: React.FC = () => {
                       value={hqName}
                       onChange={(e) => setHqName(e.target.value)}
                       placeholder="e.g. Royal Grill Head Office & Central Commissary"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                     />
                   </div>
 
-                  <div className="space-y-4 pt-2">
+                  <div className="space-y-1.5 pt-1 max-h-[26vh] overflow-y-auto pr-1">
                     <label className="text-xs font-semibold text-slate-600">Initial Outlets / Branches:</label>
                     {branches.map((b, idx) => {
                       // Determine which plan this branch currently matches (for highlight)
@@ -704,131 +702,92 @@ export const InstallationWizard: React.FC = () => {
                       )?.key ?? null;
 
                       return (
-                        <div key={idx} className="rounded-xl bg-white border border-slate-200 overflow-hidden">
+                        <div key={idx} className="rounded-lg bg-white border border-slate-200 overflow-hidden">
                           {/* Branch header */}
-                          <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-                            <span className="text-xs font-bold text-teal-600 flex items-center gap-1.5">
-                              <Building2 className="w-3.5 h-3.5" /> Branch {idx + 1}
+                          <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-200">
+                            <span className="text-[11px] font-bold text-teal-600 flex items-center gap-1.5">
+                              <Building2 className="w-3 h-3" /> Branch {idx + 1}
                             </span>
                             <button
                               type="button"
                               disabled={branches.length <= 1}
                               onClick={() => removeBranchRow(idx)}
-                              className="p-1 text-slate-500 hover:text-rose-500 disabled:opacity-30 transition-colors"
+                              className="p-0.5 text-slate-500 hover:text-rose-500 disabled:opacity-30 transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
 
-                          <div className="p-4 space-y-4">
+                          <div className="p-2.5 space-y-2">
                             {/* Fields row */}
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                               <div>
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Branch Name</label>
+                                <label className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">Branch Name</label>
                                 <input
                                   type="text"
                                   placeholder="e.g. Downtown Outlet"
                                   value={b.name}
                                   onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
-                                  className="mt-1 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                                  className="mt-0.5 w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                                 />
                               </div>
                               <div>
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Code</label>
+                                <label className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">Code</label>
                                 <input
                                   type="text"
                                   placeholder="e.g. BR-01"
                                   value={b.code}
                                   onChange={(e) => updateBranchField(idx, 'code', e.target.value)}
-                                  className="mt-1 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 uppercase"
+                                  className="mt-0.5 w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 uppercase"
                                 />
                               </div>
                               <div>
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">City</label>
+                                <label className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">City</label>
                                 <input
                                   type="text"
                                   placeholder="e.g. Islamabad"
                                   value={b.city}
                                   onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
-                                  className="mt-1 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                                  className="mt-0.5 w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                                 />
                               </div>
                               <div>
-                                <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Address</label>
+                                <label className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">Address</label>
                                 <input
                                   type="text"
                                   placeholder="e.g. Sector F-7 Markaz"
                                   value={b.address}
                                   onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
-                                  className="mt-1 w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                                  className="mt-0.5 w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                                 />
                               </div>
                             </div>
 
-                            {/* Plan selector */}
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                                <Zap className="w-3 h-3 text-amber-600" /> Terminal Plan
-                              </label>
-                              <div className="grid grid-cols-3 gap-2">
-                                {PLANS.map((plan) => {
-                                  const isActive = branchPlanKey === plan.key;
-                                  return (
-                                    <div
-                                      key={plan.key}
-                                      onClick={() => {
-                                        updateBranchField(idx, 'allowedCounters', plan.counters);
-                                        updateBranchField(idx, 'allowedOrderTabs', plan.tablets);
-                                      }}
-                                      className={`relative p-3 rounded-lg border-2 cursor-pointer transition-all duration-150 flex flex-col gap-2 ${
-                                        isActive
-                                          ? `${plan.borderActive} ${plan.bgActive} ring-1 ${plan.ring}`
-                                          : 'border-slate-200 bg-white hover:bg-slate-50'
-                                      }`}
-                                    >
-                                      {/* Plan name + check */}
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-xs font-bold text-slate-900">{plan.label}</span>
-                                        {plan.badge && (
-                                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-semibold ${plan.badgeColor}`}>
-                                            {plan.badge}
-                                          </span>
-                                        )}
-                                        {isActive && (
-                                          <CheckCircle2 className="w-3.5 h-3.5 text-white fill-current opacity-80 shrink-0" />
-                                        )}
-                                      </div>
-
-                                      {/* Auto Counter */}
-                                      <div className="flex items-center gap-2 p-2 rounded-md bg-slate-50 border border-slate-200">
-                                        <Monitor className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <div>
-                                          <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Auto Counter</p>
-                                          <p className="text-base font-extrabold text-slate-900 leading-tight">{plan.counters}</p>
-                                        </div>
-                                      </div>
-
-                                      {/* Tablet Users */}
-                                      <div className="flex items-center gap-2 p-2 rounded-md bg-slate-50 border border-slate-200">
-                                        <Tablet className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                        <div>
-                                          <p className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold leading-none">Tablet Users</p>
-                                          <p className="text-base font-extrabold text-slate-900 leading-tight">{plan.tablets}</p>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-
-                              {/* Per-branch live summary */}
-                              <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-500">
-                                <Monitor className="w-3 h-3 text-slate-500 shrink-0" />
-                                <span><span className="text-slate-900 font-semibold">{b.allowedCounters ?? 0}</span> Auto Counter{(b.allowedCounters ?? 0) !== 1 ? 's' : ''}</span>
-                                <span className="text-slate-300">·</span>
-                                <Tablet className="w-3 h-3 text-slate-500 shrink-0" />
-                                <span><span className="text-slate-900 font-semibold">{b.allowedOrderTabs ?? 0}</span> Tablet User{(b.allowedOrderTabs ?? 0) !== 1 ? 's' : ''}</span>
-                              </div>
+                            {/* Plan selector — compact single-row buttons instead of tall cards */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                                <Zap className="w-3 h-3 text-amber-600" /> Plan:
+                              </span>
+                              {PLANS.map((plan) => {
+                                const isActive = branchPlanKey === plan.key;
+                                return (
+                                  <button
+                                    key={plan.key}
+                                    type="button"
+                                    onClick={() => {
+                                      updateBranchField(idx, 'allowedCounters', plan.counters);
+                                      updateBranchField(idx, 'allowedOrderTabs', plan.tablets);
+                                    }}
+                                    className={`px-2 py-1 rounded-md border text-[11px] font-semibold transition cursor-pointer ${
+                                      isActive
+                                        ? `${plan.borderActive} ${plan.bgActive} text-slate-900`
+                                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {plan.label} <span className="text-slate-400">({plan.counters}c/{plan.tablets}t)</span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
                         </div>
@@ -843,13 +802,13 @@ export const InstallationWizard: React.FC = () => {
 
         {/* STEP 3: Admin & Security Credentials */}
         {step === 3 && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             <div className="space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Master Admin Account</h2>
               <p className="text-sm text-slate-500">Create the primary owner/admin credentials with full system permissions.</p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
@@ -860,7 +819,7 @@ export const InstallationWizard: React.FC = () => {
                     value={adminFullName}
                     onChange={(e) => setAdminFullName(e.target.value)}
                     placeholder="e.g. Muhammad Ali"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
 
@@ -873,7 +832,7 @@ export const InstallationWizard: React.FC = () => {
                     value={adminUsername}
                     onChange={(e) => setAdminUsername(e.target.value)}
                     placeholder="admin"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
 
@@ -887,16 +846,16 @@ export const InstallationWizard: React.FC = () => {
                     value={adminPin}
                     onChange={(e) => setAdminPin(e.target.value)}
                     placeholder="1234"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
               </div>
 
-              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 space-y-2">
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 space-y-2.5">
                 <div className="font-semibold text-slate-700 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" /> Default Permissions Granted:
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-slate-700">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5 text-slate-700">
                   <span className="flex items-center gap-1.5 text-emerald-600">✓ Full Financial Reports</span>
                   <span className="flex items-center gap-1.5 text-emerald-600">✓ Menu & Tax Adjustments</span>
                   <span className="flex items-center gap-1.5 text-emerald-600">✓ Inventory Management</span>
@@ -911,13 +870,13 @@ export const InstallationWizard: React.FC = () => {
 
         {/* STEP 4: Offline & Sync Architecture */}
         {step === 4 && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             <div className="space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Offline & Sync Configuration</h2>
               <p className="text-sm text-slate-500">Configure how Cashly POS behaves when the internet drops in the restaurant.</p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-6">
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-5">
               {/* Local-First IndexedDB Toggle */}
               <div className="flex items-start justify-between gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="space-y-1">
@@ -926,30 +885,30 @@ export const InstallationWizard: React.FC = () => {
                     <span className="text-sm font-bold text-slate-900">Local-First Storage Engine (IndexedDB)</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Saves product catalogs, modifiers, dining tables, and offline invoices locally in the browser/desktop cache. Billing never stops even if WiFi disconnects.
+                    Saves product catalogs, modifiers, dining tables, and offline invoices locally. Billing never stops even if WiFi disconnects.
                   </p>
                 </div>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={enableOfflineDb}
                   onChange={(e) => setEnableOfflineDb(e.target.checked)}
-                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-1"
+                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-0.5 shrink-0"
                 />
               </div>
 
               {/* Cloud Sync API Server */}
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                   <Wifi className="w-3.5 h-3.5 text-emerald-600" /> Backend / Cloud API Server URL
                 </label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
                   placeholder="http://localhost:5288"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-mono text-xs"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 font-mono"
                 />
-                <p className="text-[11px] text-slate-500">
+                <p className="text-xs text-slate-500">
                   When internet restores, pending offline tickets automatically sync to this central database endpoint.
                 </p>
               </div>
@@ -962,14 +921,14 @@ export const InstallationWizard: React.FC = () => {
                     <span className="text-sm font-bold text-slate-900">Load Starter Fast-Food & Café Menu Template</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Pre-loads sample categories (Burgers, Pizzas, Beverages, Sides), modifiers, and dining floor tables so you can test POS immediately.
+                    Pre-loads sample categories, modifiers, and dining floor tables so you can test POS immediately.
                   </p>
                 </div>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={seedStarterMenu}
                   onChange={(e) => setSeedStarterMenu(e.target.checked)}
-                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-1"
+                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-0.5 shrink-0"
                 />
               </div>
             </div>
@@ -978,16 +937,16 @@ export const InstallationWizard: React.FC = () => {
 
         {/* STEP 5: Review & Deploy */}
         {step === 5 && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             <div className="space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Ready to Initialize Cashly POS</h2>
               <p className="text-sm text-slate-500">Review your deployment summary before finalizing installation.</p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                  <span className="text-slate-500 uppercase tracking-wider font-semibold">Deployment Architecture</span>
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                  <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Deployment Architecture</span>
                   <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
                     {deploymentMode === 'Single' ? (
                       <span className="text-emerald-600 flex items-center gap-1"><Store className="w-4 h-4" /> Single Restaurant Outlet</span>
@@ -997,15 +956,15 @@ export const InstallationWizard: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                  <span className="text-slate-500 uppercase tracking-wider font-semibold">Restaurant Name & Currency</span>
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                  <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Restaurant Name & Currency</span>
                   <div className="text-sm font-bold text-slate-900">
                     {restaurantName} ({currency})
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                  <span className="text-slate-500 uppercase tracking-wider font-semibold">Locations Configured</span>
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                  <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Locations Configured</span>
                   <div className="text-slate-700">
                     {deploymentMode === 'Single' ? (
                       <span>1 Branch: {mainBranchName} ({city})</span>
@@ -1015,8 +974,8 @@ export const InstallationWizard: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                  <span className="text-slate-500 uppercase tracking-wider font-semibold">Master Admin Account</span>
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                  <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Master Admin Account</span>
                   <div className="text-slate-700">
                     Username: <span className="text-emerald-600 font-mono font-semibold">{adminUsername}</span> • Name: {adminFullName}
                   </div>
@@ -1030,11 +989,15 @@ export const InstallationWizard: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
+      </div>
 
-        {/* Bottom Navigation Buttons */}
-        <div className="flex items-center justify-between pt-6 border-t border-slate-200 mt-6">
+      {/* Bottom Navigation Buttons — fixed outside the scroll area so Back/Next/Complete
+          are always visible without scrolling, no matter how tall a step gets. */}
+      <div className="shrink-0 border-t border-slate-200 bg-white px-6 md:px-10 py-4">
+        <div className="max-w-4xl w-full mx-auto flex items-center justify-between gap-4">
           {step > 1 ? (
-            <button 
+            <button
               type="button"
               onClick={() => setStep(step - 1)}
               className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs flex items-center gap-2 transition-colors cursor-pointer"
@@ -1043,8 +1006,12 @@ export const InstallationWizard: React.FC = () => {
             </button>
           ) : <div />}
 
+          <span className="hidden lg:inline text-[11px] text-slate-400">
+            Cashly POS v3.0 • Local-First Offline & Multi-Branch Cloud Architecture
+          </span>
+
           {step < 5 ? (
-            <button 
+            <button
               type="button"
               onClick={() => setStep(step + 1)}
               className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-teal-500/20 transition-all cursor-pointer"
@@ -1052,7 +1019,7 @@ export const InstallationWizard: React.FC = () => {
               Next Step <ArrowRight className="w-4 h-4" />
             </button>
           ) : (
-            <button 
+            <button
               type="button"
               disabled={loading}
               onClick={handleCompleteSetup}
@@ -1071,11 +1038,6 @@ export const InstallationWizard: React.FC = () => {
             </button>
           )}
         </div>
-      </div>
-
-      {/* Footer */}
-      <div className="border-t border-slate-200 bg-white px-6 py-3 text-center text-xs text-slate-500">
-        Cashly POS v3.0 • Local-First Offline & Multi-Branch Cloud Architecture
       </div>
     </div>
   );
