@@ -376,6 +376,15 @@ export interface AppUser {
     canGiveDiscounts: boolean;
     canVoidOrders: boolean;
   };
+  // Payroll (optional — absent/zero simply means not payroll-eligible)
+  department?: string;
+  designation?: string;
+  employmentType?: 'FullTime' | 'PartTime' | 'Contract';
+  monthlyRatePKR?: number;
+  hourlyRatePKR?: number;
+  bankAccountNumber?: string;
+  joiningDate?: string;
+  isPayrollEligible?: boolean;
 }
 
 export type TransferStatus = 'Requested' | 'InTransit' | 'Received' | 'Cancelled';
@@ -412,6 +421,42 @@ export interface StockTransferOrder {
   items: StockTransferItem[];
 }
 
+export interface Supplier {
+  id: string;
+  tenantId: string;
+  name: string;
+  contactName?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  taxNumber?: string;
+  paymentTerms?: string;
+  openingBalancePKR: number;
+  currentBalancePKR: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export type StockMovementType =
+  | 'PurchaseReceipt' | 'SaleConsumption' | 'TransferOut' | 'TransferIn'
+  | 'Adjustment' | 'Waste' | 'OpeningBalance' | 'StockCount';
+
+export interface StockLedgerEntry {
+  id: string;
+  branchId: string;
+  ingredientId: string;
+  ingredientName: string;
+  movementType: StockMovementType;
+  quantityChange: number;
+  unitCostPKR: number;
+  balanceAfter: number;
+  referenceType?: string;
+  referenceId?: string;
+  notes?: string;
+  createdAt: string;
+  createdBy: string;
+}
+
 export type POStatus = 'Draft' | 'Ordered' | 'Received' | 'Cancelled';
 
 export interface PurchaseOrderItem {
@@ -432,6 +477,7 @@ export interface PurchaseOrder {
   branch?: Branch;
   poNumber: string;
   supplierName: string;
+  supplierId?: string;
   status: POStatus;
   totalCostPKR: number;
   createdAt: string;
@@ -787,6 +833,197 @@ export interface TimeClockEntry {
   clockOutAt?: string;
   linkedCashShiftId?: string;
   hoursWorked?: number;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payroll
+// ─────────────────────────────────────────────────────────────
+
+export type PayrollPeriodStatus = 'Open' | 'Generated' | 'Finalized' | 'Paid';
+export type PayslipStatus = 'Draft' | 'Finalized' | 'Paid';
+export type PayslipLineType = 'Allowance' | 'Deduction' | 'Overtime';
+
+export interface PayrollPeriod {
+  id: string;
+  tenantId: string;
+  periodStart: string;
+  periodEnd: string;
+  status: PayrollPeriodStatus;
+  createdAt: string;
+  generatedAt?: string;
+  finalizedAt?: string;
+  notes?: string;
+}
+
+export interface PayslipLine {
+  id: string;
+  type: PayslipLineType;
+  description: string;
+  amountPKR: number;
+}
+
+export interface Payslip {
+  id: string;
+  payrollPeriodId: string;
+  userId: string;
+  userName: string;
+  branchId: string;
+  hoursWorked: number;
+  basicPayPKR: number;
+  totalAllowancesPKR: number;
+  totalDeductionsPKR: number;
+  netPayPKR: number;
+  status: PayslipStatus;
+  generatedAt: string;
+  paidAt?: string;
+  paymentMethod?: string;
+  notes?: string;
+  lines: PayslipLine[];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Warehouses
+// ─────────────────────────────────────────────────────────────
+
+export interface Warehouse {
+  id: string;
+  tenantId: string;
+  branchId: string;
+  name: string;
+  code?: string;
+  isPrimary: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Subscription billing (platform-vendor)
+// ─────────────────────────────────────────────────────────────
+
+export type SubscriptionInvoiceStatus = 'Pending' | 'Paid' | 'Overdue' | 'Cancelled';
+
+export interface SubscriptionInvoice {
+  id: string;
+  tenantId: string;
+  invoiceNumber: string;
+  tier: string;
+  billingPeriodStart: string;
+  billingPeriodEnd: string;
+  amountPKR: number;
+  status: SubscriptionInvoiceStatus;
+  issuedAt: string;
+  dueAt: string;
+  paidAt?: string;
+  paymentMethod?: string;
+  notes?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Audit Log
+// ─────────────────────────────────────────────────────────────
+
+export interface AuditLogEntry {
+  id: string;
+  tenantId: string;
+  userId: string;
+  userName: string;
+  action: string;
+  entityType: string;
+  entityId?: string;
+  oldValue?: string;
+  newValue?: string;
+  createdAt: string;
+}
+
+export interface AuditLogPage {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  entries: AuditLogEntry[];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Accounting
+// ─────────────────────────────────────────────────────────────
+
+export type AccountType = 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense';
+
+export interface Account {
+  id: string;
+  tenantId: string;
+  code: string;
+  name: string;
+  type: AccountType;
+  subType?: string;
+  parentAccountId?: string;
+  isSystemAccount: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface JournalLine {
+  id: string;
+  accountCode: string;
+  accountName: string;
+  debitPKR: number;
+  creditPKR: number;
+  description?: string;
+}
+
+export type JournalEntryStatus = 'Posted' | 'Reversed';
+
+export interface JournalEntry {
+  id: string;
+  entryNumber: string;
+  entryDate: string;
+  description: string;
+  referenceType: string;
+  referenceId?: string;
+  status: JournalEntryStatus;
+  reversalOfEntryId?: string;
+  createdBy: string;
+  createdAt: string;
+  lines: JournalLine[];
+}
+
+export interface TrialBalanceRow {
+  id: string;
+  code: string;
+  name: string;
+  type: AccountType;
+  debitBalance: number;
+  creditBalance: number;
+}
+
+export interface TrialBalanceReport {
+  asOf: string;
+  totalDebits: number;
+  totalCredits: number;
+  accounts: TrialBalanceRow[];
+}
+
+export interface ProfitLossReport {
+  periodStart: string;
+  periodEnd: string;
+  revenue: { code: string; name: string; amountPKR: number }[];
+  totalRevenuePKR: number;
+  expenses: { code: string; name: string; amountPKR: number }[];
+  totalExpensesPKR: number;
+  netProfitPKR: number;
+}
+
+export interface BalanceSheetReport {
+  asOf: string;
+  assets: { code: string; name: string; amountPKR: number }[];
+  totalAssetsPKR: number;
+  liabilities: { code: string; name: string; amountPKR: number }[];
+  totalLiabilitiesPKR: number;
+  equity: { code: string; name: string; amountPKR: number }[];
+  retainedEarningsPKR: number;
+  totalEquityPKR: number;
+  totalLiabilitiesAndEquityPKR: number;
+  balances: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────

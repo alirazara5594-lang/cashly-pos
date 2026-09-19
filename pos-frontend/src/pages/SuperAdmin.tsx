@@ -14,11 +14,13 @@ import {
   Clock,
   ChevronDown,
   CreditCard,
-  MessageSquare
+  MessageSquare,
+  Receipt
 } from 'lucide-react';
 import { posApi } from '../services/api';
 import { PricingAdmin } from './PricingAdmin';
 import { WhatsAppConfig } from './WhatsAppConfig';
+import { SubscriptionBilling } from './SubscriptionBilling';
 
 interface TenantRow {
   id: string;
@@ -55,7 +57,7 @@ export const SuperAdmin: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive' | 'trial' | 'paid'>('all');
   const [changingTier, setChangingTier] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'tenants' | 'packages' | 'whatsapp'>('tenants');
+  const [activeTab, setActiveTab] = useState<'tenants' | 'packages' | 'whatsapp' | 'billing'>('tenants');
 
   const loadData = async () => {
     setLoading(true);
@@ -163,6 +165,7 @@ export const SuperAdmin: React.FC = () => {
         {[
           { key: 'tenants' as const, label: 'Tenants', icon: Building2 },
           { key: 'packages' as const, label: 'Packages & Pricing', icon: CreditCard },
+          { key: 'billing' as const, label: 'Subscription Billing', icon: Receipt },
           { key: 'whatsapp' as const, label: 'WhatsApp Logs', icon: MessageSquare },
         ].map((tab) => (
           <button
@@ -331,6 +334,7 @@ export const SuperAdmin: React.FC = () => {
       )}
 
       {activeTab === 'packages' && <PricingAdmin />}
+      {activeTab === 'billing' && <SubscriptionBilling />}
       {activeTab === 'whatsapp' && <WhatsAppConfig />}
     </div>
   );

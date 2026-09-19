@@ -45,7 +45,21 @@ import type {
   DeliveryIntegrationConfig,
   StaffShiftSchedule,
   TimeClockEntry,
-  MenuEngineeringReport
+  MenuEngineeringReport,
+  Supplier,
+  StockLedgerEntry,
+  PayrollPeriod,
+  Payslip,
+  PayslipLineType,
+  Account,
+  AccountType,
+  JournalEntry,
+  TrialBalanceReport,
+  ProfitLossReport,
+  BalanceSheetReport,
+  AuditLogPage,
+  Warehouse,
+  SubscriptionInvoice
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -655,6 +669,7 @@ export const posApi = {
     tenantId: string;
     branchId: string;
     supplierName: string;
+    supplierId?: string;
     notes?: string;
     items: { ingredientId: string; ingredientName: string; quantity: number; unit?: string; unitCostPKR: number; }[];
   }) => {
@@ -667,6 +682,55 @@ export const posApi = {
   },
   cancelPurchaseOrder: async (id: string) => {
     const res = await api.post(`/api/procurement/purchase-orders/${id}/cancel`);
+    return res.data;
+  },
+
+  // Suppliers
+  getSuppliers: async (tenantId?: string, activeOnly?: boolean) => {
+    const res = await api.get<Supplier[]>('/api/suppliers', { params: { tenantId, activeOnly } });
+    return res.data;
+  },
+  createSupplier: async (data: {
+    tenantId?: string;
+    name: string;
+    contactName?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    taxNumber?: string;
+    paymentTerms?: string;
+    openingBalancePKR?: number;
+  }) => {
+    const res = await api.post<Supplier>('/api/suppliers', data);
+    return res.data;
+  },
+  updateSupplier: async (id: string, data: Partial<Pick<Supplier, 'name' | 'contactName' | 'phone' | 'email' | 'address' | 'taxNumber' | 'paymentTerms' | 'isActive'>>) => {
+    const res = await api.put<Supplier>(`/api/suppliers/${id}`, data);
+    return res.data;
+  },
+  getSupplierPayments: async (supplierId: string) => {
+    const res = await api.get(`/api/suppliers/${supplierId}/payments`);
+    return res.data;
+  },
+  recordSupplierPayment: async (supplierId: string, data: { amountPKR: number; paymentMethod?: string; referenceNumber?: string; notes?: string }) => {
+    const res = await api.post(`/api/suppliers/${supplierId}/payments`, data);
+    return res.data;
+  },
+
+  // Stock Ledger (real movement history behind Ingredient.currentStock)
+  getStockLedger: async (branchId?: string, ingredientId?: string, days?: number) => {
+    const res = await api.get<StockLedgerEntry[]>('/api/inventory/stock-ledger', { params: { branchId, ingredientId, days } });
+    return res.data;
+  },
+  createStockAdjustment: async (data: {
+    tenantId?: string;
+    branchId: string;
+    ingredientId: string;
+    movementType: 'Adjustment' | 'Waste' | 'StockCount';
+    quantityChange: number;
+    reason?: string;
+  }) => {
+    const res = await api.post('/api/inventory/stock-adjustment', data);
     return res.data;
   },
 
@@ -1064,6 +1128,112 @@ export const posApi = {
   exportTimesheetCsv: async (params?: { userId?: string; branchId?: string; from?: string; to?: string }) => {
     const res = await api.get('/api/labor/timesheet/export', { params, responseType: 'blob' });
     return res.data as Blob;
+  },
+
+  // ── Payroll
+  getPayrollPeriods: async (tenantId?: string) => {
+    const res = await api.get<PayrollPeriod[]>('/api/payroll/periods', { params: { tenantId } });
+    return res.data;
+  },
+  createPayrollPeriod: async (data: { tenantId?: string; periodStart: string; periodEnd: string; notes?: string }) => {
+    const res = await api.post<PayrollPeriod>('/api/payroll/periods', data);
+    return res.data;
+  },
+  generatePayroll: async (periodId: string) => {
+    const res = await api.post<PayrollPeriod>(`/api/payroll/periods/${periodId}/generate`);
+    return res.data;
+  },
+  getPayslips: async (params?: { periodId?: string; userId?: string; branchId?: string }) => {
+    const res = await api.get<Payslip[]>('/api/payroll/payslips', { params });
+    return res.data;
+  },
+  addPayslipLine: async (payslipId: string, data: { type: PayslipLineType; description: string; amountPKR: number }) => {
+    const res = await api.post<Payslip>(`/api/payroll/payslips/${payslipId}/lines`, data);
+    return res.data;
+  },
+  finalizePayslip: async (payslipId: string) => {
+    const res = await api.post<Payslip>(`/api/payroll/payslips/${payslipId}/finalize`);
+    return res.data;
+  },
+  markPayslipPaid: async (payslipId: string, paymentMethod?: string) => {
+    const res = await api.post<Payslip>(`/api/payroll/payslips/${payslipId}/mark-paid`, { paymentMethod });
+    return res.data;
+  },
+
+  // ── Accounting
+  getChartOfAccounts: async (tenantId?: string) => {
+    const res = await api.get<Account[]>('/api/accounting/chart-of-accounts', { params: { tenantId } });
+    return res.data;
+  },
+  createAccount: async (data: { tenantId?: string; code: string; name: string; type: AccountType; subType?: string; parentAccountId?: string }) => {
+    const res = await api.post<Account>('/api/accounting/chart-of-accounts', data);
+    return res.data;
+  },
+  updateAccount: async (id: string, data: { name?: string; subType?: string; isActive?: boolean }) => {
+    const res = await api.put<Account>(`/api/accounting/chart-of-accounts/${id}`, data);
+    return res.data;
+  },
+  getJournalEntries: async (params?: { tenantId?: string; from?: string; to?: string; referenceType?: string }) => {
+    const res = await api.get<JournalEntry[]>('/api/accounting/journal-entries', { params });
+    return res.data;
+  },
+  createJournalEntry: async (data: { tenantId?: string; branchId?: string; entryDate?: string; description: string; lines: { accountCode: string; debitPKR: number; creditPKR: number }[] }) => {
+    const res = await api.post<JournalEntry>('/api/accounting/journal-entries', data);
+    return res.data;
+  },
+  reverseJournalEntry: async (id: string, reason?: string) => {
+    const res = await api.post<JournalEntry>(`/api/accounting/journal-entries/${id}/reverse`, { reason });
+    return res.data;
+  },
+  getTrialBalance: async (tenantId?: string, asOf?: string) => {
+    const res = await api.get<TrialBalanceReport>('/api/accounting/trial-balance', { params: { tenantId, asOf } });
+    return res.data;
+  },
+  getProfitLoss: async (params?: { tenantId?: string; from?: string; to?: string }) => {
+    const res = await api.get<ProfitLossReport>('/api/accounting/profit-loss', { params });
+    return res.data;
+  },
+  getBalanceSheet: async (tenantId?: string, asOf?: string) => {
+    const res = await api.get<BalanceSheetReport>('/api/accounting/balance-sheet', { params: { tenantId, asOf } });
+    return res.data;
+  },
+
+  // ── Audit log
+  getAuditLog: async (params?: { tenantId?: string; action?: string; page?: number; pageSize?: number }) => {
+    const res = await api.get<AuditLogPage>('/api/admin/audit-log', { params });
+    return res.data;
+  },
+
+  // ── Warehouses
+  getWarehouses: async (branchId: string) => {
+    const res = await api.get<Warehouse[]>('/api/warehouses', { params: { branchId } });
+    return res.data;
+  },
+  createWarehouse: async (data: { tenantId?: string; branchId: string; name: string; code?: string }) => {
+    const res = await api.post<Warehouse>('/api/warehouses', data);
+    return res.data;
+  },
+  updateWarehouse: async (id: string, data: { name?: string; code?: string; isActive?: boolean }) => {
+    const res = await api.put<Warehouse>(`/api/warehouses/${id}`, data);
+    return res.data;
+  },
+
+  // ── Subscription billing (platform-vendor)
+  getSubscriptionInvoices: async (tenantId?: string) => {
+    const res = await api.get<SubscriptionInvoice[]>('/api/admin/subscription-invoices', { params: { tenantId } });
+    return res.data;
+  },
+  issueSubscriptionInvoice: async (data: { tenantId: string; annual?: boolean; amountPKR?: number; notes?: string }) => {
+    const res = await api.post<SubscriptionInvoice>('/api/admin/subscription-invoices', data);
+    return res.data;
+  },
+  markSubscriptionInvoicePaid: async (id: string, paymentMethod?: string) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/mark-paid`, { paymentMethod });
+    return res.data;
+  },
+  cancelSubscriptionInvoice: async (id: string) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/cancel`);
+    return res.data;
   },
 
   // ── Menu engineering analytics

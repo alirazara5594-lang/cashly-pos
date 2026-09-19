@@ -69,16 +69,19 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 // --- CORS (restricted origins) ---
+// Dev defaults cover local Vite/CRA ports; a real deployment adds its own origin(s) via the
+// CORS_ORIGINS env var (comma-separated) or config, instead of needing a code change per domain.
+var corsOrigins = (builder.Configuration["CorsOrigins"] ?? Environment.GetEnvironmentVariable("CORS_ORIGINS"))
+    ?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    ?? Array.Empty<string>();
+var allOrigins = new[] { "http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "https://cashly-pos.vercel.app" }
+    .Concat(corsOrigins).Distinct().ToArray();
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(
-                "http://localhost:5173",
-                "http://localhost:5174",
-                "http://localhost:3000",
-                "https://cashly-pos.vercel.app"
-            )
+        policy.WithOrigins(allOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
@@ -676,6 +679,263 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // Suppliers + real stock movement ledger (purchasing/inventory Phase 1).
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""Suppliers"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Name"" text NOT NULL,
+                ""ContactName"" text,
+                ""Phone"" text,
+                ""Email"" text,
+                ""Address"" text,
+                ""TaxNumber"" text,
+                ""PaymentTerms"" text,
+                ""OpeningBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CurrentBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""StockLedgerEntries"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""IngredientId"" uuid NOT NULL,
+                ""MovementType"" integer NOT NULL,
+                ""QuantityChange"" numeric(18,2) NOT NULL,
+                ""UnitCostPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""BalanceAfter"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""ReferenceType"" text,
+                ""ReferenceId"" uuid,
+                ""Notes"" text,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CreatedBy"" text NOT NULL DEFAULT ''
+            );
+            ALTER TABLE ""PurchaseOrders"" ADD COLUMN IF NOT EXISTS ""SupplierId"" uuid;
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Suppliers_TenantId_Name') THEN
+                    CREATE INDEX ""IX_Suppliers_TenantId_Name"" ON ""Suppliers"" (""TenantId"", ""Name"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StockLedgerEntries_BranchId_IngredientId_CreatedAt') THEN
+                    CREATE INDEX ""IX_StockLedgerEntries_BranchId_IngredientId_CreatedAt"" ON ""StockLedgerEntries"" (""BranchId"", ""IngredientId"", ""CreatedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StockLedgerEntries_TenantId_CreatedAt') THEN
+                    CREATE INDEX ""IX_StockLedgerEntries_TenantId_CreatedAt"" ON ""StockLedgerEntries"" (""TenantId"", ""CreatedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_purchaseorders_suppliers') THEN
+                    ALTER TABLE ""PurchaseOrders"" ADD CONSTRAINT ""fk_purchaseorders_suppliers"" FOREIGN KEY (""SupplierId"") REFERENCES ""Suppliers""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_stockledgerentries_ingredients') THEN
+                    ALTER TABLE ""StockLedgerEntries"" ADD CONSTRAINT ""fk_stockledgerentries_ingredients"" FOREIGN KEY (""IngredientId"") REFERENCES ""Ingredients""(""Id"") ON DELETE RESTRICT;
+                END IF;
+            END $$;
+        ");
+
+        // Payroll: pay fields on Users + PayrollPeriods/Payslips/PayslipLines.
+        await db.Database.ExecuteSqlRawAsync(@"
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""Department"" text;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""Designation"" text;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""EmploymentType"" integer NOT NULL DEFAULT 1;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""MonthlyRatePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""HourlyRatePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""BankAccountNumber"" text;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""JoiningDate"" timestamp with time zone;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""IsPayrollEligible"" boolean NOT NULL DEFAULT false;
+
+            CREATE TABLE IF NOT EXISTS ""PayrollPeriods"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""PeriodStart"" timestamp with time zone NOT NULL,
+                ""PeriodEnd"" timestamp with time zone NOT NULL,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""GeneratedAt"" timestamp with time zone,
+                ""FinalizedAt"" timestamp with time zone,
+                ""Notes"" text
+            );
+            CREATE TABLE IF NOT EXISTS ""Payslips"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""UserId"" uuid NOT NULL,
+                ""PayrollPeriodId"" uuid NOT NULL,
+                ""HoursWorked"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""BasicPayPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""TotalAllowancesPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""TotalDeductionsPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""NetPayPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""GeneratedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""PaidAt"" timestamp with time zone,
+                ""PaymentMethod"" text,
+                ""Notes"" text
+            );
+            CREATE TABLE IF NOT EXISTS ""PayslipLines"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""PayslipId"" uuid NOT NULL,
+                ""Type"" integer NOT NULL,
+                ""Description"" text NOT NULL,
+                ""AmountPKR"" numeric(18,2) NOT NULL
+            );
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PayrollPeriods_TenantId_PeriodStart_PeriodEnd') THEN
+                    CREATE INDEX ""IX_PayrollPeriods_TenantId_PeriodStart_PeriodEnd"" ON ""PayrollPeriods"" (""TenantId"", ""PeriodStart"", ""PeriodEnd"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Payslips_PayrollPeriodId_UserId') THEN
+                    CREATE UNIQUE INDEX ""IX_Payslips_PayrollPeriodId_UserId"" ON ""Payslips"" (""PayrollPeriodId"", ""UserId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payslips_payrollperiods') THEN
+                    ALTER TABLE ""Payslips"" ADD CONSTRAINT ""fk_payslips_payrollperiods"" FOREIGN KEY (""PayrollPeriodId"") REFERENCES ""PayrollPeriods""(""Id"") ON DELETE CASCADE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_payslips_users') THEN
+                    ALTER TABLE ""Payslips"" ADD CONSTRAINT ""fk_payslips_users"" FOREIGN KEY (""UserId"") REFERENCES ""Users""(""Id"") ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_paysliplines_payslips') THEN
+                    ALTER TABLE ""PayslipLines"" ADD CONSTRAINT ""fk_paysliplines_payslips"" FOREIGN KEY (""PayslipId"") REFERENCES ""Payslips""(""Id"") ON DELETE CASCADE;
+                END IF;
+            END $$;
+        ");
+
+        // Accounting: Chart of Accounts, Journal Entries/Lines, Accounting Periods.
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""Accounts"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Code"" text NOT NULL,
+                ""Name"" text NOT NULL,
+                ""Type"" integer NOT NULL,
+                ""SubType"" text,
+                ""ParentAccountId"" uuid,
+                ""IsSystemAccount"" boolean NOT NULL DEFAULT false,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""JournalEntries"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid,
+                ""EntryNumber"" text NOT NULL,
+                ""EntryDate"" timestamp with time zone NOT NULL,
+                ""Description"" text NOT NULL,
+                ""ReferenceType"" text NOT NULL DEFAULT 'Manual',
+                ""ReferenceId"" uuid,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""ReversalOfEntryId"" uuid,
+                ""CreatedBy"" text NOT NULL DEFAULT '',
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""JournalLines"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""JournalEntryId"" uuid NOT NULL,
+                ""AccountId"" uuid NOT NULL,
+                ""DebitPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""CreditPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Description"" text
+            );
+            CREATE TABLE IF NOT EXISTS ""AccountingPeriods"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""PeriodStart"" timestamp with time zone NOT NULL,
+                ""PeriodEnd"" timestamp with time zone NOT NULL,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""ClosedAt"" timestamp with time zone,
+                ""ClosedBy"" text
+            );
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Accounts_TenantId_Code') THEN
+                    CREATE UNIQUE INDEX ""IX_Accounts_TenantId_Code"" ON ""Accounts"" (""TenantId"", ""Code"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_JournalEntries_TenantId_EntryNumber') THEN
+                    CREATE UNIQUE INDEX ""IX_JournalEntries_TenantId_EntryNumber"" ON ""JournalEntries"" (""TenantId"", ""EntryNumber"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_JournalEntries_TenantId_EntryDate') THEN
+                    CREATE INDEX ""IX_JournalEntries_TenantId_EntryDate"" ON ""JournalEntries"" (""TenantId"", ""EntryDate"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_JournalLines_AccountId') THEN
+                    CREATE INDEX ""IX_JournalLines_AccountId"" ON ""JournalLines"" (""AccountId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_accounts_parentaccount') THEN
+                    ALTER TABLE ""Accounts"" ADD CONSTRAINT ""fk_accounts_parentaccount"" FOREIGN KEY (""ParentAccountId"") REFERENCES ""Accounts""(""Id"") ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_journallines_journalentries') THEN
+                    ALTER TABLE ""JournalLines"" ADD CONSTRAINT ""fk_journallines_journalentries"" FOREIGN KEY (""JournalEntryId"") REFERENCES ""JournalEntries""(""Id"") ON DELETE CASCADE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_journallines_accounts') THEN
+                    ALTER TABLE ""JournalLines"" ADD CONSTRAINT ""fk_journallines_accounts"" FOREIGN KEY (""AccountId"") REFERENCES ""Accounts""(""Id"") ON DELETE RESTRICT;
+                END IF;
+            END $$;
+        ");
+
+        // Warehouses + Subscription billing invoices.
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""Warehouses"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""Name"" text NOT NULL,
+                ""Code"" text,
+                ""IsPrimary"" boolean NOT NULL DEFAULT false,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""SubscriptionInvoices"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""InvoiceNumber"" text NOT NULL,
+                ""Tier"" text NOT NULL,
+                ""BillingPeriodStart"" timestamp with time zone NOT NULL,
+                ""BillingPeriodEnd"" timestamp with time zone NOT NULL,
+                ""AmountPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""IssuedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""DueAt"" timestamp with time zone NOT NULL,
+                ""PaidAt"" timestamp with time zone,
+                ""PaymentMethod"" text,
+                ""Notes"" text
+            );
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Warehouses_BranchId_IsPrimary') THEN
+                    CREATE INDEX ""IX_Warehouses_BranchId_IsPrimary"" ON ""Warehouses"" (""BranchId"", ""IsPrimary"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SubscriptionInvoices_TenantId_InvoiceNumber') THEN
+                    CREATE UNIQUE INDEX ""IX_SubscriptionInvoices_TenantId_InvoiceNumber"" ON ""SubscriptionInvoices"" (""TenantId"", ""InvoiceNumber"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SubscriptionInvoices_TenantId_IssuedAt') THEN
+                    CREATE INDEX ""IX_SubscriptionInvoices_TenantId_IssuedAt"" ON ""SubscriptionInvoices"" (""TenantId"", ""IssuedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_warehouses_branches') THEN
+                    ALTER TABLE ""Warehouses"" ADD CONSTRAINT ""fk_warehouses_branches"" FOREIGN KEY (""BranchId"") REFERENCES ""Branches""(""Id"") ON DELETE CASCADE;
+                END IF;
+            END $$;
+        ");
+
+        // Supplier payments — settles Supplier.CurrentBalancePKR opened by PO receipts.
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""SupplierPayments"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""SupplierId"" uuid NOT NULL,
+                ""AmountPKR"" numeric(18,2) NOT NULL,
+                ""PaymentMethod"" text NOT NULL DEFAULT 'Bank Transfer',
+                ""ReferenceNumber"" text,
+                ""Notes"" text,
+                ""PaidAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CreatedBy"" text NOT NULL DEFAULT ''
+            );
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SupplierPayments_SupplierId_PaidAt') THEN
+                    CREATE INDEX ""IX_SupplierPayments_SupplierId_PaidAt"" ON ""SupplierPayments"" (""SupplierId"", ""PaidAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_supplierpayments_suppliers') THEN
+                    ALTER TABLE ""SupplierPayments"" ADD CONSTRAINT ""fk_supplierpayments_suppliers"" FOREIGN KEY (""SupplierId"") REFERENCES ""Suppliers""(""Id"") ON DELETE RESTRICT;
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -829,6 +1089,123 @@ static async Task WriteAuditAsync(AppDbContext db, Guid tenantId, AppUser? user,
         NewValue = newValue,
         CreatedAt = DateTime.UtcNow
     });
+}
+
+/// <summary>
+/// Records one stock movement and keeps <see cref="Ingredient.CurrentStock"/> as the fast-read balance
+/// in sync with it — every mutation of that field should go through here instead of touching it directly,
+/// so the ledger (audit trail) and the cached balance (existing reads) can never drift apart.
+/// Caller is responsible for SaveChangesAsync (this only stages changes) and must supply an
+/// already-tracked <paramref name="ingredient"/> from the same DbContext.
+/// </summary>
+static StockLedgerEntry RecordStockLedgerEntry(
+    AppDbContext db, Ingredient ingredient, Guid tenantId, Guid branchId,
+    StockMovementType movementType, decimal quantityChange, decimal unitCostPKR,
+    string? referenceType, Guid? referenceId, string createdBy, string? notes = null)
+{
+    ingredient.CurrentStock += quantityChange;
+    var entry = new StockLedgerEntry
+    {
+        TenantId = tenantId,
+        BranchId = branchId,
+        IngredientId = ingredient.Id,
+        MovementType = movementType,
+        QuantityChange = quantityChange,
+        UnitCostPKR = unitCostPKR,
+        BalanceAfter = ingredient.CurrentStock,
+        ReferenceType = referenceType,
+        ReferenceId = referenceId,
+        Notes = notes,
+        CreatedBy = createdBy
+    };
+    db.StockLedgerEntries.Add(entry);
+    return entry;
+}
+
+// ============================================================
+// Accounting helpers
+// ============================================================
+
+/// <summary>The standard chart every tenant gets, seeded lazily the first time accounting is touched
+/// (GET chart-of-accounts, or the first auto-post attempt) — never forced on tenants who don't use it.</summary>
+static (string Code, string Name, AccountType Type, string SubType)[] GetDefaultChartOfAccounts() => new[]
+{
+    ("1000", "Cash on Hand", AccountType.Asset, "Current Asset"),
+    ("1010", "Bank Account", AccountType.Asset, "Current Asset"),
+    ("1020", "Digital Wallet / Card Settlement", AccountType.Asset, "Current Asset"),
+    ("1100", "Accounts Receivable", AccountType.Asset, "Current Asset"),
+    ("1200", "Inventory", AccountType.Asset, "Current Asset"),
+    ("2000", "Accounts Payable", AccountType.Liability, "Current Liability"),
+    ("2100", "Sales Tax Payable", AccountType.Liability, "Current Liability"),
+    ("3000", "Owner's Equity", AccountType.Equity, "Equity"),
+    ("3900", "Retained Earnings", AccountType.Equity, "Equity"),
+    ("4000", "Sales Revenue", AccountType.Revenue, "Operating Revenue"),
+    ("4900", "Discounts & Promotions", AccountType.Revenue, "Contra-Revenue"),
+    ("5000", "Cost of Goods Sold", AccountType.Expense, "Cost of Sales"),
+    ("5100", "Purchases", AccountType.Expense, "Cost of Sales"),
+    ("5200", "Salary & Wages Expense", AccountType.Expense, "Operating Expense"),
+    ("5300", "Operating Expenses", AccountType.Expense, "Operating Expense")
+};
+
+static async Task<bool> HasAccountingAsync(AppDbContext db, Guid tenantId) =>
+    await db.Accounts.AnyAsync(a => a.TenantId == tenantId);
+
+static async Task EnsureChartOfAccountsSeededAsync(AppDbContext db, Guid tenantId)
+{
+    if (await db.Accounts.AnyAsync(a => a.TenantId == tenantId)) return;
+    foreach (var (code, name, type, subType) in GetDefaultChartOfAccounts())
+        db.Accounts.Add(new Account { TenantId = tenantId, Code = code, Name = name, Type = type, SubType = subType, IsSystemAccount = true });
+    await db.SaveChangesAsync();
+}
+
+static async Task<string> GenerateJournalEntryNumberAsync(AppDbContext db, Guid tenantId)
+{
+    var count = await db.JournalEntries.CountAsync(j => j.TenantId == tenantId);
+    return $"JE-{count + 1:00000}";
+}
+
+/// <summary>
+/// Posts a balanced journal entry. Throws if the lines don't balance (debit != credit) or an
+/// account code isn't found — callers doing automatic posting (order/PO/payroll) must catch this
+/// and log rather than let an accounting gap break the underlying business operation; a manual
+/// journal entry from the Accounting screen is fine to let bubble up as a validation error.
+/// Caller is responsible for SaveChangesAsync (this only stages changes).
+/// </summary>
+static async Task<JournalEntry> PostJournalEntryAsync(
+    AppDbContext db, Guid tenantId, Guid? branchId, DateTime entryDate, string description,
+    string referenceType, Guid? referenceId, string createdBy, List<(string AccountCode, decimal Debit, decimal Credit)> lines)
+{
+    var totalDebit = Math.Round(lines.Sum(l => l.Debit), 2);
+    var totalCredit = Math.Round(lines.Sum(l => l.Credit), 2);
+    if (totalDebit != totalCredit)
+        throw new InvalidOperationException($"Journal entry does not balance: debit {totalDebit} != credit {totalCredit}.");
+    if (totalDebit == 0)
+        throw new InvalidOperationException("Journal entry has no amount.");
+
+    var codes = lines.Select(l => l.AccountCode).Distinct().ToList();
+    var accounts = await db.Accounts.Where(a => a.TenantId == tenantId && codes.Contains(a.Code)).ToDictionaryAsync(a => a.Code);
+    var missing = codes.Except(accounts.Keys).ToList();
+    if (missing.Count > 0)
+        throw new InvalidOperationException($"Chart of Accounts is missing: {string.Join(", ", missing)}.");
+
+    var entry = new JournalEntry
+    {
+        TenantId = tenantId,
+        BranchId = branchId,
+        EntryNumber = await GenerateJournalEntryNumberAsync(db, tenantId),
+        EntryDate = entryDate,
+        Description = description,
+        ReferenceType = referenceType,
+        ReferenceId = referenceId,
+        Status = JournalEntryStatus.Posted,
+        CreatedBy = createdBy
+    };
+    foreach (var line in lines.Where(l => l.Debit != 0 || l.Credit != 0))
+    {
+        entry.Lines.Add(new JournalLine { JournalEntryId = entry.Id, AccountId = accounts[line.AccountCode].Id, DebitPKR = line.Debit, CreditPKR = line.Credit });
+    }
+    db.JournalEntries.Add(entry);
+    return entry;
 }
 
 // --- Helper: compose the canned WhatsApp copy for a given event type ---
@@ -2312,6 +2689,35 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         }
     }
 
+    // Auto-post to the general ledger — opt-in per tenant (skipped entirely if no Chart of
+    // Accounts is seeded) and never allowed to fail the sale itself.
+    if (order.IsPaid && await HasAccountingAsync(db, order.TenantId))
+    {
+        try
+        {
+            var settlementAccount = order.PaymentMethod switch
+            {
+                PaymentMethod.Cash => "1000",
+                PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
+                _ => "1100" // Split / CustomerKhata — approximated as receivable since it isn't fully cash-settled
+            };
+            var netSales = order.SubTotalPKR - order.DiscountPKR;
+            await PostJournalEntryAsync(db, order.TenantId, order.BranchId, order.CreatedAt,
+                $"Sale — Order #{order.OrderNumber}", "Order", order.Id, order.CashierName ?? "System",
+                new List<(string, decimal, decimal)>
+                {
+                    (settlementAccount, order.TotalPKR, 0),
+                    ("4000", 0, netSales),
+                    ("2100", 0, order.TaxPKR)
+                });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post journal entry for order {order.OrderNumber}: {ex.Message}");
+        }
+    }
+
     return (null, order, priced);
 }
 
@@ -3043,6 +3449,52 @@ api.MapPost("/inventory/adjust", async (AppDbContext db, HttpContext http, Pos.A
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to adjust stock."));
 
+// --- Warehouses (storage locations within a branch) ---
+api.MapGet("/warehouses", async (AppDbContext db, HttpContext http, Guid branchId) =>
+{
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    branchId = scopedBranchId!.Value;
+
+    if (!await db.Warehouses.AnyAsync(w => w.BranchId == branchId))
+    {
+        var branch = await db.Branches.FindAsync(branchId);
+        if (branch != null)
+            db.Warehouses.Add(new Warehouse { TenantId = branch.TenantId, BranchId = branchId, Name = "Main Store", Code = "MAIN", IsPrimary = true });
+        await db.SaveChangesAsync();
+    }
+
+    var warehouses = await db.Warehouses.Where(w => w.BranchId == branchId).OrderByDescending(w => w.IsPrimary).ThenBy(w => w.Name).ToListAsync();
+    return Results.Ok(warehouses);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+api.MapPost("/warehouses", async (AppDbContext db, HttpContext http, CreateWarehouseDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "Warehouse name is required." });
+
+    var warehouse = new Warehouse { TenantId = scopedTenantId!.Value, BranchId = scopedBranchId!.Value, Name = dto.Name.Trim(), Code = dto.Code, IsPrimary = false };
+    db.Warehouses.Add(warehouse);
+    await db.SaveChangesAsync();
+    return Results.Ok(warehouse);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to add warehouses."));
+
+api.MapPut("/warehouses/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateWarehouseDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var warehouse = await db.Warehouses.FirstOrDefaultAsync(w => w.Id == id && w.TenantId == scopedTenantId.Value);
+    if (warehouse == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.Name)) warehouse.Name = dto.Name.Trim();
+    if (dto.Code != null) warehouse.Code = dto.Code;
+    // The primary warehouse is where existing (pre-multi-warehouse) stock lives — deactivating it
+    // would orphan that data, so it can't be turned off, only renamed.
+    if (dto.IsActive.HasValue && !warehouse.IsPrimary) warehouse.IsActive = dto.IsActive.Value;
+    await db.SaveChangesAsync();
+    return Results.Ok(warehouse);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit warehouses."));
+
 // --- Raw Ingredients ---
 api.MapGet("/inventory/ingredients", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
@@ -3256,6 +3708,14 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     if (dto.CanManageMenuAndTax.HasValue) user.CanManageMenuAndTax = dto.CanManageMenuAndTax.Value;
     if (dto.CanGiveDiscounts.HasValue) user.CanGiveDiscounts = dto.CanGiveDiscounts.Value;
     if (dto.CanVoidOrders.HasValue) user.CanVoidOrders = dto.CanVoidOrders.Value;
+    if (dto.Department != null) user.Department = dto.Department;
+    if (dto.Designation != null) user.Designation = dto.Designation;
+    if (dto.EmploymentType.HasValue) user.EmploymentType = dto.EmploymentType.Value;
+    if (dto.MonthlyRatePKR.HasValue) user.MonthlyRatePKR = dto.MonthlyRatePKR.Value;
+    if (dto.HourlyRatePKR.HasValue) user.HourlyRatePKR = dto.HourlyRatePKR.Value;
+    if (dto.BankAccountNumber != null) user.BankAccountNumber = dto.BankAccountNumber;
+    if (dto.JoiningDate.HasValue) user.JoiningDate = dto.JoiningDate.Value;
+    if (dto.IsPayrollEligible.HasValue) user.IsPayrollEligible = dto.IsPayrollEligible.Value;
 
     var after = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
     if (before != after)
@@ -3536,15 +3996,22 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
     if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch in {order.Status} state");
+    var dispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
     foreach (var item in order.Items)
     {
         var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-        if (sourceIng != null) sourceIng.CurrentStock = Math.Max(0, sourceIng.CurrentStock - item.QuantityRequested);
+        if (sourceIng != null)
+        {
+            // Never let a movement push the source below zero — dispatch what's actually on hand.
+            var actualQty = Math.Min(item.QuantityRequested, sourceIng.CurrentStock);
+            if (actualQty > 0)
+                RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.TransferOut, -actualQty, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
+        }
         item.QuantityDispatched = item.QuantityRequested;
     }
     order.Status = TransferStatus.InTransit;
     order.DispatchedAt = DateTime.UtcNow;
-    order.DispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
+    order.DispatchedBy = dispatchedBy;
     if (!string.IsNullOrEmpty(dto.VehicleOrDriver)) order.VehicleOrDriver = dto.VehicleOrDriver;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = dto.Notes;
     await db.SaveChangesAsync();
@@ -3560,17 +4027,27 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
     if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive in {order.Status} state");
+    var receivedBy = dto.ReceivedBy ?? "Branch Manager";
     foreach (var item in order.Items)
     {
         var qtyToReceive = item.QuantityDispatched > 0 ? item.QuantityDispatched : item.QuantityRequested;
         item.QuantityReceived = qtyToReceive;
         var destIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
-        if (destIng != null) { destIng.CurrentStock += qtyToReceive; if (item.UnitCostPKR > 0) destIng.CostPerUnitPKR = item.UnitCostPKR; }
-        else { db.Ingredients.Add(new Ingredient { TenantId = order.TenantId, BranchId = order.DestinationBranchId, Name = item.IngredientName, Category = "Commissary Transferred", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = qtyToReceive, MinAlertLevel = 10, SupplierName = "Central Commissary" }); }
+        if (destIng == null)
+        {
+            destIng = new Ingredient { TenantId = order.TenantId, BranchId = order.DestinationBranchId, Name = item.IngredientName, Category = "Commissary Transferred", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = 0, MinAlertLevel = 10, SupplierName = "Central Commissary" };
+            db.Ingredients.Add(destIng);
+        }
+        else if (item.UnitCostPKR > 0)
+        {
+            destIng.CostPerUnitPKR = item.UnitCostPKR;
+        }
+        if (qtyToReceive > 0)
+            RecordStockLedgerEntry(db, destIng, order.TenantId, order.DestinationBranchId, StockMovementType.TransferIn, qtyToReceive, destIng.CostPerUnitPKR, "StockTransfer", order.Id, receivedBy, $"Transfer {order.TransferNumber}");
     }
     order.Status = TransferStatus.Received;
     order.ReceivedAt = DateTime.UtcNow;
-    order.ReceivedBy = dto.ReceivedBy ?? "Branch Manager";
+    order.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
     await db.SaveChangesAsync();
     return Results.Ok(order);
@@ -3589,7 +4066,8 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
         foreach (var item in order.Items)
         {
             var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-            if (sourceIng != null) sourceIng.CurrentStock += item.QuantityDispatched;
+            if (sourceIng != null && item.QuantityDispatched > 0)
+                RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.Adjustment, item.QuantityDispatched, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, "System", $"Transfer {order.TransferNumber} cancelled in transit — stock returned to source");
         }
     }
     order.Status = TransferStatus.Cancelled;
@@ -3597,6 +4075,143 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
     return Results.Ok(new { success = true, status = "Cancelled" });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to cancel stock transfers."));
+
+// --- Suppliers (purchasing master data) ---
+api.MapGet("/suppliers", async (AppDbContext db, HttpContext http, Guid? tenantId, bool? activeOnly) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Suppliers.Where(s => s.TenantId == scopedTenantId.Value).AsQueryable();
+    if (activeOnly == true) query = query.Where(s => s.IsActive);
+    return Results.Ok(await query.OrderBy(s => s.Name).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "view"));
+
+api.MapPost("/suppliers", async (AppDbContext db, HttpContext http, CreateSupplierDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "Supplier name is required." });
+    var opening = dto.OpeningBalancePKR ?? 0;
+    var supplier = new Supplier
+    {
+        TenantId = scopedTenantId.Value, Name = dto.Name.Trim(), ContactName = dto.ContactName, Phone = dto.Phone,
+        Email = dto.Email, Address = dto.Address, TaxNumber = dto.TaxNumber, PaymentTerms = dto.PaymentTerms,
+        OpeningBalancePKR = opening, CurrentBalancePKR = opening
+    };
+    db.Suppliers.Add(supplier);
+    await db.SaveChangesAsync();
+    return Results.Ok(supplier);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to add suppliers."));
+
+api.MapPut("/suppliers/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateSupplierDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == id && (http.IsSuperAdmin() || s.TenantId == scopedTenantId!.Value));
+    if (supplier == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.Name)) supplier.Name = dto.Name.Trim();
+    if (dto.ContactName != null) supplier.ContactName = dto.ContactName;
+    if (dto.Phone != null) supplier.Phone = dto.Phone;
+    if (dto.Email != null) supplier.Email = dto.Email;
+    if (dto.Address != null) supplier.Address = dto.Address;
+    if (dto.TaxNumber != null) supplier.TaxNumber = dto.TaxNumber;
+    if (dto.PaymentTerms != null) supplier.PaymentTerms = dto.PaymentTerms;
+    if (dto.IsActive.HasValue) supplier.IsActive = dto.IsActive.Value;
+    // CurrentBalancePKR is intentionally not settable here — it only moves via PO receipt / supplier payments.
+    await db.SaveChangesAsync();
+    return Results.Ok(supplier);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit suppliers."));
+
+// --- Supplier Payments (settles what PO receipts on account added to Supplier.CurrentBalancePKR) ---
+api.MapGet("/suppliers/{id:guid}/payments", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == id && s.TenantId == scopedTenantId.Value);
+    if (supplier == null) return Results.NotFound();
+    var payments = await db.SupplierPayments.Where(p => p.SupplierId == id).OrderByDescending(p => p.PaidAt).ToListAsync();
+    return Results.Ok(payments);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "view"));
+
+api.MapPost("/suppliers/{id:guid}/payments", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, RecordSupplierPaymentDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == id && s.TenantId == scopedTenantId.Value);
+    if (supplier == null) return Results.NotFound();
+    if (dto.AmountPKR <= 0) return Results.BadRequest(new { message = "Payment amount must be greater than zero." });
+    if (dto.AmountPKR > supplier.CurrentBalancePKR)
+        return Results.BadRequest(new { message = $"Payment ({dto.AmountPKR}) exceeds what's owed to this supplier ({supplier.CurrentBalancePKR})." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var payment = new SupplierPayment
+    {
+        TenantId = scopedTenantId.Value, SupplierId = id, AmountPKR = dto.AmountPKR,
+        PaymentMethod = dto.PaymentMethod ?? "Bank Transfer", ReferenceNumber = dto.ReferenceNumber, Notes = dto.Notes,
+        CreatedBy = currentUser?.FullName ?? "System"
+    };
+    db.SupplierPayments.Add(payment);
+    supplier.CurrentBalancePKR -= dto.AmountPKR;
+
+    if (await HasAccountingAsync(db, scopedTenantId.Value))
+    {
+        try
+        {
+            var payAccount = (dto.PaymentMethod ?? "").Contains("Cash", StringComparison.OrdinalIgnoreCase) ? "1000" : "1010";
+            await PostJournalEntryAsync(db, scopedTenantId.Value, null, payment.PaidAt,
+                $"Payment to supplier — {supplier.Name}", "SupplierPayment", payment.Id, payment.CreatedBy,
+                new List<(string, decimal, decimal)> { ("2000", dto.AmountPKR, 0), (payAccount, 0, dto.AmountPKR) });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post journal entry for supplier payment {payment.Id}: {ex.Message}");
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { payment, supplier.CurrentBalancePKR });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to record supplier payments."));
+
+// --- Stock Ledger (the real movement history behind Ingredient.CurrentStock) ---
+api.MapGet("/inventory/stock-ledger", async (AppDbContext db, HttpContext http, Guid? branchId, Guid? ingredientId, int? days) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var effectiveBranchId = http.GetBranchId() ?? branchId;
+    var since = DateTime.UtcNow.AddDays(-(days ?? 30));
+    var query = db.StockLedgerEntries.Include(e => e.Ingredient)
+        .Where(e => e.TenantId == scopedTenantId.Value && e.CreatedAt >= since).AsQueryable();
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty) query = query.Where(e => e.BranchId == effectiveBranchId.Value);
+    if (ingredientId.HasValue) query = query.Where(e => e.IngredientId == ingredientId.Value);
+    var rows = await query.OrderByDescending(e => e.CreatedAt).Take(500).ToListAsync();
+    return Results.Ok(rows.Select(e => new
+    {
+        e.Id, e.BranchId, e.IngredientId, ingredientName = e.Ingredient?.Name ?? "Unknown", movementType = e.MovementType.ToString(),
+        e.QuantityChange, e.UnitCostPKR, e.BalanceAfter, e.ReferenceType, e.ReferenceId, e.Notes, e.CreatedAt, e.CreatedBy
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+api.MapPost("/inventory/stock-adjustment", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, IngredientStockAdjustmentDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+
+    var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == dto.IngredientId && i.BranchId == scopedBranchId!.Value);
+    if (ing == null) return Results.NotFound(new { message = "Ingredient not found for this branch." });
+    if (!Enum.TryParse<StockMovementType>(dto.MovementType, true, out var movementType) ||
+        (movementType != StockMovementType.Adjustment && movementType != StockMovementType.Waste && movementType != StockMovementType.StockCount))
+        return Results.BadRequest(new { message = "MovementType must be Adjustment, Waste, or StockCount." });
+    if (ing.CurrentStock + dto.QuantityChange < 0)
+        return Results.BadRequest(new { message = $"This would take stock negative ({ing.CurrentStock} {dto.QuantityChange:+0.##;-0.##}). Enter the actual on-hand count instead." });
+
+    var entry = RecordStockLedgerEntry(db, ing, scopedTenantId!.Value, scopedBranchId!.Value, movementType, dto.QuantityChange, ing.CostPerUnitPKR, "Adjustment", null, currentUser?.FullName ?? "System", dto.Reason);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "StockAdjustment", "Ingredient", ing.Id,
+        null, $"{movementType} {dto.QuantityChange:+0.##;-0.##} {ing.Unit} — {dto.Reason ?? "no reason given"}");
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { entry.Id, ing.CurrentStock });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to adjust stock."));
 
 // --- Procurement ---
 api.MapGet("/procurement/purchase-orders", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? branchId) =>
@@ -3618,10 +4233,19 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     if (scopeError != null) return scopeError;
 
     var poNumber = await GeneratePONumberAsync(db);
+    var supplierName = dto.SupplierName;
+    Guid? supplierId = null;
+    if (dto.SupplierId.HasValue)
+    {
+        var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == dto.SupplierId.Value && s.TenantId == scopedTenantId.Value);
+        if (supplier == null) return Results.BadRequest(new { message = "Supplier not found for this tenant." });
+        supplierId = supplier.Id;
+        supplierName = supplier.Name; // authoritative — never trust a client-supplied display name over the linked record
+    }
     var po = new PurchaseOrder
     {
         TenantId = scopedTenantId!.Value, BranchId = scopedBranchId!.Value, PONumber = poNumber,
-        SupplierName = dto.SupplierName, Status = POStatus.Ordered, CreatedAt = DateTime.UtcNow, Notes = dto.Notes
+        SupplierName = supplierName, SupplierId = supplierId, Status = POStatus.Ordered, CreatedAt = DateTime.UtcNow, Notes = dto.Notes
     };
     decimal totalCost = 0;
     foreach (var item in dto.Items)
@@ -3648,16 +4272,55 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
         .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
     if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
+    var receivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
     foreach (var item in po.Items)
     {
         var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == po.BranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-        if (ing != null) { ing.CurrentStock += item.Quantity; if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR; if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName; }
-        else { db.Ingredients.Add(new Ingredient { TenantId = po.TenantId, BranchId = po.BranchId, Name = item.IngredientName, Category = "Direct Purchased", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = item.Quantity, MinAlertLevel = 10, SupplierName = po.SupplierName }); }
+        if (ing == null)
+        {
+            ing = new Ingredient { TenantId = po.TenantId, BranchId = po.BranchId, Name = item.IngredientName, Category = "Direct Purchased", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = 0, MinAlertLevel = 10, SupplierName = po.SupplierName };
+            db.Ingredients.Add(ing);
+        }
+        else
+        {
+            if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
+            if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
+        }
+        RecordStockLedgerEntry(db, ing, po.TenantId, po.BranchId, StockMovementType.PurchaseReceipt, item.Quantity, item.UnitCostPKR, "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
     }
     po.Status = POStatus.Received;
     po.ReceivedAt = DateTime.UtcNow;
-    po.ReceivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
+    po.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) po.Notes = (po.Notes != null ? po.Notes + " • " : "") + dto.Notes;
+
+    // Purchasing on account increases what's owed to the supplier — settled later via supplier payments.
+    if (po.SupplierId.HasValue)
+    {
+        var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == po.SupplierId.Value);
+        if (supplier != null) supplier.CurrentBalancePKR += po.TotalCostPKR;
+    }
+
+    if (await HasAccountingAsync(db, po.TenantId) && po.TotalCostPKR > 0)
+    {
+        try
+        {
+            // Linked supplier = purchase on account (credit Accounts Payable); no supplier = paid on the spot.
+            var creditAccount = po.SupplierId.HasValue ? "2000" : "1000";
+            await PostJournalEntryAsync(db, po.TenantId, po.BranchId, po.ReceivedAt ?? DateTime.UtcNow,
+                $"Goods received — PO #{po.PONumber} ({po.SupplierName})", "PurchaseOrder", po.Id, receivedBy,
+                new List<(string, decimal, decimal)>
+                {
+                    ("1200", po.TotalCostPKR, 0),
+                    (creditAccount, 0, po.TotalCostPKR)
+                });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post journal entry for PO {po.PONumber}: {ex.Message}");
+        }
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(po);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive purchase orders."));
@@ -3945,6 +4608,77 @@ app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (Guid id, AppDbCont
     tenant.SubscriptionPaidUntil = dto.PaidUntil;
     await db.SaveChangesAsync();
     return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil });
+}).RequireAuthorization();
+
+// --- Subscription billing history — platform-vendor only, same reasoning as
+// Tenant Management above: this bills every restaurant on the platform, not one. ---
+app.MapGet("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var query = db.SubscriptionInvoices.AsQueryable();
+    if (tenantId.HasValue) query = query.Where(i => i.TenantId == tenantId.Value);
+    var rows = await query.OrderByDescending(i => i.IssuedAt).Take(500).ToListAsync();
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, IssueSubscriptionInvoiceDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.FindAsync(dto.TenantId);
+    if (tenant == null) return Results.NotFound(new { message = "Tenant not found." });
+
+    var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
+    var amount = dto.AmountPKR ?? (dto.Annual ? package?.YearlyPricePKR : package?.MonthlyPricePKR) ?? 0;
+    var periodStart = dto.BillingPeriodStart ?? DateTime.UtcNow;
+    var periodEnd = dto.BillingPeriodEnd ?? periodStart.AddMonths(dto.Annual ? 12 : 1);
+    var count = await db.SubscriptionInvoices.CountAsync();
+
+    var invoice = new SubscriptionInvoice
+    {
+        TenantId = tenant.Id,
+        InvoiceNumber = $"INV-{count + 1:00000}",
+        Tier = tenant.Tier.ToString(),
+        BillingPeriodStart = periodStart,
+        BillingPeriodEnd = periodEnd,
+        AmountPKR = amount,
+        Status = SubscriptionInvoiceStatus.Pending,
+        DueAt = dto.DueAt ?? periodStart.AddDays(7),
+        Notes = dto.Notes
+    };
+    db.SubscriptionInvoices.Add(invoice);
+    await db.SaveChangesAsync();
+    return Results.Ok(invoice);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/mark-paid", async (AppDbContext db, HttpContext http, Guid id, MarkSubscriptionInvoicePaidDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var invoice = await db.SubscriptionInvoices.FirstOrDefaultAsync(i => i.Id == id);
+    if (invoice == null) return Results.NotFound();
+    if (invoice.Status == SubscriptionInvoiceStatus.Paid) return Results.BadRequest(new { message = "Already paid." });
+
+    invoice.Status = SubscriptionInvoiceStatus.Paid;
+    invoice.PaidAt = DateTime.UtcNow;
+    invoice.PaymentMethod = dto.PaymentMethod;
+
+    // Paying an invoice extends the tenant's paid-until date to cover the billed period.
+    var tenant = await db.Tenants.FindAsync(invoice.TenantId);
+    if (tenant != null && (tenant.SubscriptionPaidUntil == null || tenant.SubscriptionPaidUntil < invoice.BillingPeriodEnd))
+        tenant.SubscriptionPaidUntil = invoice.BillingPeriodEnd;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(invoice);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/cancel", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var invoice = await db.SubscriptionInvoices.FirstOrDefaultAsync(i => i.Id == id);
+    if (invoice == null) return Results.NotFound();
+    if (invoice.Status == SubscriptionInvoiceStatus.Paid) return Results.BadRequest(new { message = "A paid invoice cannot be cancelled." });
+    invoice.Status = SubscriptionInvoiceStatus.Cancelled;
+    await db.SaveChangesAsync();
+    return Results.Ok(invoice);
 }).RequireAuthorization();
 
 authApi.MapPost("/super-admin-login", async (AppDbContext db, LoginDto dto) =>
@@ -5612,6 +6346,393 @@ api.MapGet("/labor/timesheet/export", async (AppDbContext db, HttpContext http, 
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
 
 // ============================================================
+// PAYROLL — wages are more sensitive than shift scheduling, so unlike the rest of
+// "labor" this is gated on CanViewFinancialReports (read) and Owner/SuperAdmin (write),
+// not the BranchManager-friendly labor baseline.
+// ============================================================
+
+api.MapGet("/payroll/periods", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var periods = await db.PayrollPeriods.Where(p => p.TenantId == scopedTenantId.Value)
+        .OrderByDescending(p => p.PeriodStart).ToListAsync();
+    return Results.Ok(periods);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view payroll."));
+
+api.MapPost("/payroll/periods", async (AppDbContext db, HttpContext http, CreatePayrollPeriodDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (dto.PeriodEnd <= dto.PeriodStart) return Results.BadRequest(new { message = "Period end must be after period start." });
+
+    var overlaps = await db.PayrollPeriods.AnyAsync(p => p.TenantId == scopedTenantId.Value &&
+        dto.PeriodStart < p.PeriodEnd && dto.PeriodEnd > p.PeriodStart);
+    if (overlaps) return Results.BadRequest(new { message = "This period overlaps an existing payroll period." });
+
+    var period = new PayrollPeriod { TenantId = scopedTenantId.Value, PeriodStart = dto.PeriodStart, PeriodEnd = dto.PeriodEnd, Notes = dto.Notes };
+    db.PayrollPeriods.Add(period);
+    await db.SaveChangesAsync();
+    return Results.Ok(period);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage payroll."));
+
+api.MapPost("/payroll/periods/{id:guid}/generate", async (AppDbContext db, HttpContext http, Guid id, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var period = await db.PayrollPeriods.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (period == null) return Results.NotFound();
+    if (period.Status == PayrollPeriodStatus.Finalized || period.Status == PayrollPeriodStatus.Paid)
+        return Results.BadRequest(new { message = $"Cannot regenerate a {period.Status} period." });
+
+    var eligibleUsers = await db.Users.Where(u => u.TenantId == scopedTenantId.Value && u.IsActive && u.IsPayrollEligible).ToListAsync();
+    var existingUserIds = await db.Payslips.Where(p => p.PayrollPeriodId == id).Select(p => p.UserId).ToListAsync();
+
+    foreach (var user in eligibleUsers.Where(u => !existingUserIds.Contains(u.Id)))
+    {
+        var hoursWorked = await db.TimeClockEntries
+            .Where(t => t.UserId == user.Id && t.ClockInAt >= period.PeriodStart && t.ClockInAt < period.PeriodEnd && t.HoursWorked != null)
+            .SumAsync(t => t.HoursWorked!.Value);
+
+        // Hourly rate takes precedence when set (actual hours worked); otherwise the flat rate applies
+        // in full for the period — this assumes periods are run monthly-to-monthly, not prorated.
+        var basicPay = user.HourlyRatePKR > 0 ? hoursWorked * user.HourlyRatePKR : user.MonthlyRatePKR;
+
+        db.Payslips.Add(new Payslip
+        {
+            TenantId = scopedTenantId.Value,
+            BranchId = user.BranchId ?? Guid.Empty,
+            UserId = user.Id,
+            PayrollPeriodId = id,
+            HoursWorked = hoursWorked,
+            BasicPayPKR = basicPay,
+            NetPayPKR = basicPay,
+            Status = PayslipStatus.Draft
+        });
+    }
+
+    period.Status = PayrollPeriodStatus.Generated;
+    period.GeneratedAt = DateTime.UtcNow;
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PayrollGenerated", "PayrollPeriod", period.Id, null,
+        $"{eligibleUsers.Count(u => !existingUserIds.Contains(u.Id))} payslips generated for {period.PeriodStart:yyyy-MM-dd}–{period.PeriodEnd:yyyy-MM-dd}");
+    await db.SaveChangesAsync();
+    return Results.Ok(period);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage payroll."));
+
+api.MapGet("/payroll/payslips", async (AppDbContext db, HttpContext http, Guid? periodId, Guid? userId, Guid? branchId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Payslips.Include(p => p.User).Include(p => p.Lines)
+        .Where(p => p.TenantId == scopedTenantId.Value).AsQueryable();
+    if (periodId.HasValue) query = query.Where(p => p.PayrollPeriodId == periodId.Value);
+    if (userId.HasValue) query = query.Where(p => p.UserId == userId.Value);
+    if (branchId.HasValue && branchId.Value != Guid.Empty) query = query.Where(p => p.BranchId == branchId.Value);
+    var rows = await query.OrderBy(p => p.User!.FullName).ToListAsync();
+    return Results.Ok(rows.Select(p => new
+    {
+        p.Id, p.PayrollPeriodId, p.UserId, userName = p.User?.FullName ?? "Unknown", p.BranchId,
+        p.HoursWorked, p.BasicPayPKR, p.TotalAllowancesPKR, p.TotalDeductionsPKR, p.NetPayPKR,
+        status = p.Status.ToString(), p.GeneratedAt, p.PaidAt, p.PaymentMethod, p.Notes,
+        lines = p.Lines.Select(l => new { l.Id, type = l.Type.ToString(), l.Description, l.AmountPKR })
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view payroll."));
+
+api.MapPost("/payroll/payslips/{id:guid}/lines", async (AppDbContext db, HttpContext http, Guid id, AddPayslipLineDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var payslip = await db.Payslips.Include(p => p.Lines).FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (payslip == null) return Results.NotFound();
+    if (payslip.Status != PayslipStatus.Draft) return Results.BadRequest(new { message = "Only a draft payslip can be adjusted — the period has been finalized." });
+    if (string.IsNullOrWhiteSpace(dto.Description)) return Results.BadRequest(new { message = "A description is required for every payslip line." });
+
+    db.PayslipLines.Add(new PayslipLine { PayslipId = payslip.Id, Type = dto.Type, Description = dto.Description.Trim(), AmountPKR = dto.AmountPKR });
+
+    // Overtime is additional pay, same direction as an allowance — only Deduction reduces net pay.
+    if (dto.Type == PayslipLineType.Deduction) payslip.TotalDeductionsPKR += dto.AmountPKR;
+    else payslip.TotalAllowancesPKR += dto.AmountPKR;
+    payslip.NetPayPKR = payslip.BasicPayPKR + payslip.TotalAllowancesPKR - payslip.TotalDeductionsPKR;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(payslip);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage payroll."));
+
+api.MapPost("/payroll/payslips/{id:guid}/finalize", async (AppDbContext db, HttpContext http, Guid id, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var payslip = await db.Payslips.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (payslip == null) return Results.NotFound();
+    if (payslip.Status != PayslipStatus.Draft) return Results.BadRequest(new { message = $"Payslip is already {payslip.Status}." });
+
+    payslip.Status = PayslipStatus.Finalized;
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PayslipFinalized", "Payslip", payslip.Id, null, $"Net pay PKR {payslip.NetPayPKR}");
+    await db.SaveChangesAsync();
+    return Results.Ok(payslip);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage payroll."));
+
+api.MapPost("/payroll/payslips/{id:guid}/mark-paid", async (AppDbContext db, HttpContext http, Guid id, MarkPayslipPaidDto dto, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var payslip = await db.Payslips.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (payslip == null) return Results.NotFound();
+    if (payslip.Status != PayslipStatus.Finalized) return Results.BadRequest(new { message = "Finalize the payslip before marking it paid." });
+
+    payslip.Status = PayslipStatus.Paid;
+    payslip.PaidAt = DateTime.UtcNow;
+    payslip.PaymentMethod = dto.PaymentMethod ?? "Bank Transfer";
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "PayslipPaid", "Payslip", payslip.Id, null, $"PKR {payslip.NetPayPKR} via {payslip.PaymentMethod}");
+
+    // Once every payslip in the period is paid, the period itself is done.
+    var period = await db.PayrollPeriods.Include(p => p.Payslips).FirstOrDefaultAsync(p => p.Id == payslip.PayrollPeriodId);
+    if (period != null && period.Payslips.All(p => p.Id == payslip.Id || p.Status == PayslipStatus.Paid))
+        period.Status = PayrollPeriodStatus.Paid;
+
+    if (await HasAccountingAsync(db, scopedTenantId.Value) && payslip.NetPayPKR > 0)
+    {
+        try
+        {
+            var payAccount = (payslip.PaymentMethod ?? "").Contains("Cash", StringComparison.OrdinalIgnoreCase) ? "1000" : "1010";
+            await PostJournalEntryAsync(db, scopedTenantId.Value, payslip.BranchId, payslip.PaidAt!.Value,
+                $"Payroll — payslip for period {period?.PeriodStart:yyyy-MM-dd}", "Payslip", payslip.Id, currentUser?.FullName ?? "System",
+                new List<(string, decimal, decimal)>
+                {
+                    ("5200", payslip.NetPayPKR, 0),
+                    (payAccount, 0, payslip.NetPayPKR)
+                });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post journal entry for payslip {payslip.Id}: {ex.Message}");
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(payslip);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage payroll."));
+
+// ============================================================
+// ACCOUNTING — Chart of Accounts, Journal Entries, and reports computed live
+// from posted journal lines only (never hardcoded/placeholder figures).
+// Gated on CanViewFinancialReports (read) / Owner-SuperAdmin (write), matching Payroll.
+// ============================================================
+
+api.MapGet("/accounting/chart-of-accounts", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    await EnsureChartOfAccountsSeededAsync(db, scopedTenantId.Value);
+    var accounts = await db.Accounts.Where(a => a.TenantId == scopedTenantId.Value)
+        .OrderBy(a => a.Code).ToListAsync();
+    return Results.Ok(accounts);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view accounting."));
+
+api.MapPost("/accounting/chart-of-accounts", async (AppDbContext db, HttpContext http, CreateAccountDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    await EnsureChartOfAccountsSeededAsync(db, scopedTenantId.Value);
+    if (string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name))
+        return Results.BadRequest(new { message = "Account code and name are required." });
+    if (await db.Accounts.AnyAsync(a => a.TenantId == scopedTenantId.Value && a.Code == dto.Code))
+        return Results.BadRequest(new { message = $"Account code {dto.Code} already exists." });
+
+    var account = new Account
+    {
+        TenantId = scopedTenantId.Value, Code = dto.Code.Trim(), Name = dto.Name.Trim(), Type = dto.Type,
+        SubType = dto.SubType, ParentAccountId = dto.ParentAccountId, IsSystemAccount = false
+    };
+    db.Accounts.Add(account);
+    await db.SaveChangesAsync();
+    return Results.Ok(account);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage the chart of accounts."));
+
+api.MapPut("/accounting/chart-of-accounts/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateAccountDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == scopedTenantId.Value);
+    if (account == null) return Results.NotFound();
+    // System accounts back automatic posting by code — renaming is safe, deactivating one that's
+    // still wired into auto-posting would silently break it, so system accounts can't be deactivated.
+    if (!string.IsNullOrWhiteSpace(dto.Name)) account.Name = dto.Name.Trim();
+    if (dto.SubType != null) account.SubType = dto.SubType;
+    if (dto.IsActive.HasValue && !(account.IsSystemAccount && dto.IsActive.Value == false)) account.IsActive = dto.IsActive.Value;
+    await db.SaveChangesAsync();
+    return Results.Ok(account);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage the chart of accounts."));
+
+api.MapGet("/accounting/journal-entries", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to, string? referenceType) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
+        .Where(j => j.TenantId == scopedTenantId.Value).AsQueryable();
+    if (from.HasValue) query = query.Where(j => j.EntryDate >= from.Value);
+    if (to.HasValue) query = query.Where(j => j.EntryDate <= to.Value);
+    if (!string.IsNullOrEmpty(referenceType)) query = query.Where(j => j.ReferenceType == referenceType);
+    var rows = await query.OrderByDescending(j => j.EntryDate).ThenByDescending(j => j.EntryNumber).Take(500).ToListAsync();
+    return Results.Ok(rows.Select(j => new
+    {
+        j.Id, j.EntryNumber, j.EntryDate, j.Description, j.ReferenceType, j.ReferenceId,
+        status = j.Status.ToString(), j.ReversalOfEntryId, j.CreatedBy, j.CreatedAt,
+        lines = j.Lines.Select(l => new { l.Id, accountCode = l.Account?.Code, accountName = l.Account?.Name, l.DebitPKR, l.CreditPKR, l.Description })
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view the journal."));
+
+api.MapPost("/accounting/journal-entries", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateJournalEntryDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (dto.Lines == null || dto.Lines.Count < 2)
+        return Results.BadRequest(new { message = "A journal entry needs at least two lines." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    try
+    {
+        var entry = await PostJournalEntryAsync(db, scopedTenantId.Value, dto.BranchId, dto.EntryDate ?? DateTime.UtcNow,
+            dto.Description, "Manual", null, currentUser?.FullName ?? "System",
+            dto.Lines.Select(l => (l.AccountCode, l.DebitPKR, l.CreditPKR)).ToList());
+        await db.SaveChangesAsync();
+        return Results.Ok(entry);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can post manual journal entries."));
+
+api.MapPost("/accounting/journal-entries/{id:guid}/reverse", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, ReverseJournalEntryDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var original = await db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
+        .FirstOrDefaultAsync(j => j.Id == id && j.TenantId == scopedTenantId.Value);
+    if (original == null) return Results.NotFound();
+    if (original.Status == JournalEntryStatus.Reversed) return Results.BadRequest(new { message = "This entry has already been reversed." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    // A reversal is a new entry with debits/credits flipped — the original stays untouched and auditable.
+    var reversalLines = original.Lines.Select(l => (l.Account!.Code, l.CreditPKR, l.DebitPKR)).ToList();
+    var reversal = await PostJournalEntryAsync(db, scopedTenantId.Value, original.BranchId, DateTime.UtcNow,
+        $"Reversal of {original.EntryNumber} — {dto.Reason ?? original.Description}", original.ReferenceType, original.ReferenceId,
+        currentUser?.FullName ?? "System", reversalLines);
+    reversal.ReversalOfEntryId = original.Id;
+    original.Status = JournalEntryStatus.Reversed;
+
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "JournalEntryReversed", "JournalEntry", original.Id, original.EntryNumber, reversal.EntryNumber);
+    await db.SaveChangesAsync();
+    return Results.Ok(reversal);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can reverse journal entries."));
+
+api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var cutoff = asOf ?? DateTime.UtcNow;
+    var accounts = await db.Accounts.Where(a => a.TenantId == scopedTenantId.Value).OrderBy(a => a.Code).ToListAsync();
+    var lines = await db.JournalLines.Include(l => l.JournalEntry)
+        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted && l.JournalEntry!.EntryDate <= cutoff)
+        .ToListAsync();
+    var byAccount = lines.GroupBy(l => l.AccountId).ToDictionary(g => g.Key, g => (Debit: g.Sum(l => l.DebitPKR), Credit: g.Sum(l => l.CreditPKR)));
+
+    var rows = accounts.Select(a =>
+    {
+        var (debit, credit) = byAccount.TryGetValue(a.Id, out var v) ? v : (0m, 0m);
+        // Normal-balance accounts (Asset/Expense: debit; Liability/Equity/Revenue: credit) are shown
+        // net in their natural column so the trial balance reads the way an accountant expects.
+        var isDebitNormal = a.Type == AccountType.Asset || a.Type == AccountType.Expense;
+        var net = isDebitNormal ? debit - credit : credit - debit;
+        return new { a.Id, a.Code, a.Name, type = a.Type.ToString(), debitBalance = isDebitNormal ? Math.Max(0, net) : 0m, creditBalance = !isDebitNormal ? Math.Max(0, net) : 0m, rawDebit = debit, rawCredit = credit };
+    }).Where(r => r.rawDebit != 0 || r.rawCredit != 0).ToList();
+
+    return Results.Ok(new
+    {
+        asOf = cutoff,
+        totalDebits = rows.Sum(r => r.debitBalance),
+        totalCredits = rows.Sum(r => r.creditBalance),
+        accounts = rows
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
+
+api.MapGet("/accounting/profit-loss", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var start = from ?? DateTime.UtcNow.AddMonths(-1);
+    var end = to ?? DateTime.UtcNow;
+    var lines = await db.JournalLines.Include(l => l.Account).Include(l => l.JournalEntry)
+        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted
+            && l.JournalEntry!.EntryDate >= start && l.JournalEntry!.EntryDate <= end
+            && (l.Account!.Type == AccountType.Revenue || l.Account!.Type == AccountType.Expense))
+        .ToListAsync();
+
+    var revenueRows = lines.Where(l => l.Account!.Type == AccountType.Revenue)
+        .GroupBy(l => new { l.Account!.Code, l.Account.Name })
+        .Select(g => new { g.Key.Code, g.Key.Name, amountPKR = g.Sum(l => l.CreditPKR - l.DebitPKR) })
+        .OrderBy(r => r.Code).ToList();
+    var expenseRows = lines.Where(l => l.Account!.Type == AccountType.Expense)
+        .GroupBy(l => new { l.Account!.Code, l.Account.Name })
+        .Select(g => new { g.Key.Code, g.Key.Name, amountPKR = g.Sum(l => l.DebitPKR - l.CreditPKR) })
+        .OrderBy(r => r.Code).ToList();
+
+    var totalRevenue = revenueRows.Sum(r => r.amountPKR);
+    var totalExpense = expenseRows.Sum(r => r.amountPKR);
+    return Results.Ok(new
+    {
+        periodStart = start, periodEnd = end,
+        revenue = revenueRows, totalRevenuePKR = totalRevenue,
+        expenses = expenseRows, totalExpensesPKR = totalExpense,
+        netProfitPKR = totalRevenue - totalExpense
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
+
+api.MapGet("/accounting/balance-sheet", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var cutoff = asOf ?? DateTime.UtcNow;
+    var lines = await db.JournalLines.Include(l => l.Account).Include(l => l.JournalEntry)
+        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted && l.JournalEntry!.EntryDate <= cutoff)
+        .ToListAsync();
+
+    // Retained earnings (P&L to date) rolls into Equity so Assets == Liabilities + Equity holds,
+    // exactly like a real balance sheet — it isn't a separately-posted figure.
+    var netProfitToDate = lines.Where(l => l.Account!.Type == AccountType.Revenue).Sum(l => l.CreditPKR - l.DebitPKR)
+        - lines.Where(l => l.Account!.Type == AccountType.Expense).Sum(l => l.DebitPKR - l.CreditPKR);
+
+    var assetRows = lines.Where(l => l.Account!.Type == AccountType.Asset)
+        .GroupBy(l => new { l.Account!.Code, l.Account.Name }).Select(g => new { g.Key.Code, g.Key.Name, amountPKR = g.Sum(l => l.DebitPKR - l.CreditPKR) })
+        .Where(r => r.amountPKR != 0).OrderBy(r => r.Code).ToList();
+    var liabilityRows = lines.Where(l => l.Account!.Type == AccountType.Liability)
+        .GroupBy(l => new { l.Account!.Code, l.Account.Name }).Select(g => new { g.Key.Code, g.Key.Name, amountPKR = g.Sum(l => l.CreditPKR - l.DebitPKR) })
+        .Where(r => r.amountPKR != 0).OrderBy(r => r.Code).ToList();
+    var equityRows = lines.Where(l => l.Account!.Type == AccountType.Equity)
+        .GroupBy(l => new { l.Account!.Code, l.Account.Name }).Select(g => new { g.Key.Code, g.Key.Name, amountPKR = g.Sum(l => l.CreditPKR - l.DebitPKR) })
+        .Where(r => r.amountPKR != 0).OrderBy(r => r.Code).ToList();
+
+    var totalAssets = assetRows.Sum(r => r.amountPKR);
+    var totalLiabilities = liabilityRows.Sum(r => r.amountPKR);
+    var totalEquity = equityRows.Sum(r => r.amountPKR) + netProfitToDate;
+
+    return Results.Ok(new
+    {
+        asOf = cutoff,
+        assets = assetRows, totalAssetsPKR = totalAssets,
+        liabilities = liabilityRows, totalLiabilitiesPKR = totalLiabilities,
+        equity = equityRows, retainedEarningsPKR = netProfitToDate, totalEquityPKR = totalEquity,
+        totalLiabilitiesAndEquityPKR = totalLiabilities + totalEquity,
+        balances = totalAssets == Math.Round(totalLiabilities + totalEquity, 2)
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
+
+// ============================================================
 // MENU ENGINEERING ANALYTICS
 // Classic four-box classification: each product is compared against the menu-wide average units
 // sold (popularity) and the menu-wide average margin percent.
@@ -5761,15 +6882,24 @@ public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal Qua
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
 public record RecipeItemInputDto(Guid IngredientId, decimal QuantityRequired, string? Unit);
 public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders);
-public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders);
+public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders,
+    string? Department = null, string? Designation = null, EmploymentType? EmploymentType = null, decimal? MonthlyRatePKR = null, decimal? HourlyRatePKR = null, string? BankAccountNumber = null, DateTime? JoiningDate = null, bool? IsPayrollEligible = null);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 public record CreateTransferItemDto(Guid IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit);
 public record DispatchTransferDto(string? DispatchedBy, string? VehicleOrDriver, string? Notes);
 public record ReceiveTransferDto(string? ReceivedBy, string? Notes);
-public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items);
+public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items, Guid? SupplierId = null);
 public record CreatePOItemDto(Guid IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR);
 public record ReceivePODto(string? ReceivedBy, string? Notes);
+public record CreateWarehouseDto(Guid? TenantId, Guid BranchId, string Name, string? Code);
+public record UpdateWarehouseDto(string? Name, string? Code, bool? IsActive);
+public record IssueSubscriptionInvoiceDto(Guid TenantId, bool Annual, decimal? AmountPKR, DateTime? BillingPeriodStart, DateTime? BillingPeriodEnd, DateTime? DueAt, string? Notes);
+public record MarkSubscriptionInvoicePaidDto(string? PaymentMethod);
+public record CreateSupplierDto(Guid? TenantId, string Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, decimal? OpeningBalancePKR);
+public record UpdateSupplierDto(string? Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, bool? IsActive);
+public record RecordSupplierPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes);
+public record IngredientStockAdjustmentDto(Guid? TenantId, Guid BranchId, Guid IngredientId, string MovementType, decimal QuantityChange, string? Reason);
 public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
 public record LoginDto(string Username, string PinCode);
@@ -5855,5 +6985,17 @@ public record CreateShiftScheduleDto(Guid BranchId, Guid UserId, DateTime Schedu
 public record UpdateShiftScheduleDto(DateTime? ScheduledStart, DateTime? ScheduledEnd, string? Position, string? Notes);
 public record ClockInDto(Guid UserId, Guid? BranchId);
 public record ClockOutDto(Guid TimeClockEntryId);
+
+// --- Payroll ---
+public record CreatePayrollPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd, string? Notes);
+public record AddPayslipLineDto(PayslipLineType Type, string Description, decimal AmountPKR);
+public record MarkPayslipPaidDto(string? PaymentMethod);
+
+// --- Accounting ---
+public record CreateAccountDto(Guid? TenantId, string Code, string Name, AccountType Type, string? SubType, Guid? ParentAccountId);
+public record UpdateAccountDto(string? Name, string? SubType, bool? IsActive);
+public record JournalLineInputDto(string AccountCode, decimal DebitPKR, decimal CreditPKR);
+public record CreateJournalEntryDto(Guid? TenantId, Guid? BranchId, DateTime? EntryDate, string Description, List<JournalLineInputDto> Lines);
+public record ReverseJournalEntryDto(string? Reason);
 
 

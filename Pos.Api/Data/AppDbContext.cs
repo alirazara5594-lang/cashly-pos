@@ -30,8 +30,10 @@ public class AppDbContext : DbContext
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<StockTransferOrder> StockTransferOrders => Set<StockTransferOrder>();
     public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
+    public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
     public DbSet<PurchaseOrderItem> PurchaseOrderItems => Set<PurchaseOrderItem>();
+    public DbSet<StockLedgerEntry> StockLedgerEntries => Set<StockLedgerEntry>();
     public DbSet<StockRequest> StockRequests => Set<StockRequest>();
     public DbSet<StockRequestItem> StockRequestItems => Set<StockRequestItem>();
     public DbSet<NotificationLog> NotificationLogs => Set<NotificationLog>();
@@ -51,6 +53,16 @@ public class AppDbContext : DbContext
     public DbSet<ExternalOrderMapping> ExternalOrderMappings => Set<ExternalOrderMapping>();
     public DbSet<StaffShiftSchedule> StaffShiftSchedules => Set<StaffShiftSchedule>();
     public DbSet<TimeClockEntry> TimeClockEntries => Set<TimeClockEntry>();
+    public DbSet<PayrollPeriod> PayrollPeriods => Set<PayrollPeriod>();
+    public DbSet<Payslip> Payslips => Set<Payslip>();
+    public DbSet<PayslipLine> PayslipLines => Set<PayslipLine>();
+    public DbSet<Account> Accounts => Set<Account>();
+    public DbSet<JournalEntry> JournalEntries => Set<JournalEntry>();
+    public DbSet<JournalLine> JournalLines => Set<JournalLine>();
+    public DbSet<AccountingPeriod> AccountingPeriods => Set<AccountingPeriod>();
+    public DbSet<Warehouse> Warehouses => Set<Warehouse>();
+    public DbSet<SubscriptionInvoice> SubscriptionInvoices => Set<SubscriptionInvoice>();
+    public DbSet<SupplierPayment> SupplierPayments => Set<SupplierPayment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -302,6 +314,122 @@ public class AppDbContext : DbContext
             .HasOne(poi => poi.Ingredient)
             .WithMany()
             .HasForeignKey(poi => poi.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // --- Suppliers & stock ledger ---
+
+        modelBuilder.Entity<Supplier>()
+            .HasIndex(s => new { s.TenantId, s.Name });
+
+        modelBuilder.Entity<PurchaseOrder>()
+            .HasOne(po => po.Supplier)
+            .WithMany()
+            .HasForeignKey(po => po.SupplierId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<StockLedgerEntry>()
+            .HasIndex(sl => new { sl.BranchId, sl.IngredientId, sl.CreatedAt });
+
+        modelBuilder.Entity<StockLedgerEntry>()
+            .HasIndex(sl => new { sl.TenantId, sl.CreatedAt });
+
+        modelBuilder.Entity<StockLedgerEntry>()
+            .HasOne(sl => sl.Ingredient)
+            .WithMany()
+            .HasForeignKey(sl => sl.IngredientId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // --- Payroll ---
+
+        modelBuilder.Entity<PayrollPeriod>()
+            .HasIndex(pp => new { pp.TenantId, pp.PeriodStart, pp.PeriodEnd });
+
+        modelBuilder.Entity<Payslip>()
+            .HasIndex(p => new { p.PayrollPeriodId, p.UserId })
+            .IsUnique();
+
+        modelBuilder.Entity<Payslip>()
+            .HasOne(p => p.PayrollPeriod)
+            .WithMany(pp => pp.Payslips)
+            .HasForeignKey(p => p.PayrollPeriodId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Payslip>()
+            .HasOne(p => p.User)
+            .WithMany()
+            .HasForeignKey(p => p.UserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<PayslipLine>()
+            .HasOne(pl => pl.Payslip)
+            .WithMany(p => p.Lines)
+            .HasForeignKey(pl => pl.PayslipId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // --- Accounting ---
+
+        modelBuilder.Entity<Account>()
+            .HasIndex(a => new { a.TenantId, a.Code })
+            .IsUnique();
+
+        modelBuilder.Entity<Account>()
+            .HasOne(a => a.ParentAccount)
+            .WithMany()
+            .HasForeignKey(a => a.ParentAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<JournalEntry>()
+            .HasIndex(j => new { j.TenantId, j.EntryNumber })
+            .IsUnique();
+
+        modelBuilder.Entity<JournalEntry>()
+            .HasIndex(j => new { j.TenantId, j.EntryDate });
+
+        modelBuilder.Entity<JournalLine>()
+            .HasOne(jl => jl.JournalEntry)
+            .WithMany(j => j.Lines)
+            .HasForeignKey(jl => jl.JournalEntryId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<JournalLine>()
+            .HasOne(jl => jl.Account)
+            .WithMany()
+            .HasForeignKey(jl => jl.AccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<JournalLine>()
+            .HasIndex(jl => jl.AccountId);
+
+        modelBuilder.Entity<AccountingPeriod>()
+            .HasIndex(ap => new { ap.TenantId, ap.PeriodStart, ap.PeriodEnd });
+
+        // --- Warehouses ---
+
+        modelBuilder.Entity<Warehouse>()
+            .HasIndex(w => new { w.BranchId, w.IsPrimary });
+
+        modelBuilder.Entity<Warehouse>()
+            .HasOne(w => w.Branch)
+            .WithMany()
+            .HasForeignKey(w => w.BranchId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // --- Subscription billing ---
+
+        modelBuilder.Entity<SubscriptionInvoice>()
+            .HasIndex(si => new { si.TenantId, si.InvoiceNumber })
+            .IsUnique();
+
+        modelBuilder.Entity<SubscriptionInvoice>()
+            .HasIndex(si => new { si.TenantId, si.IssuedAt });
+
+        modelBuilder.Entity<SupplierPayment>()
+            .HasIndex(sp => new { sp.SupplierId, sp.PaidAt });
+
+        modelBuilder.Entity<SupplierPayment>()
+            .HasOne(sp => sp.Supplier)
+            .WithMany()
+            .HasForeignKey(sp => sp.SupplierId)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<AddOnSubscription>()

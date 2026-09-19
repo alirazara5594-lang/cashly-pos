@@ -9,6 +9,8 @@ import { OrderTab } from './pages/OrderTab';
 import { DeliveryBoard } from './pages/DeliveryBoard';
 import { MenuManagement } from './pages/MenuManagement';
 import { TaxConfiguration } from './pages/TaxConfiguration';
+import { AccountingManagement } from './pages/AccountingManagement';
+import { AuditLog } from './pages/AuditLog';
 import { DirectorDashboard } from './pages/DirectorDashboard';
 import { SuperAdmin } from './pages/SuperAdmin';
 import { InventoryManagement } from './pages/InventoryManagement';
@@ -217,6 +219,8 @@ function MainLayoutInner() {
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />
             <Route path="/tax-configuration" element={<RequireModule module="accounts"><TaxConfiguration /></RequireModule>} />
+            <Route path="/accounting" element={<RequireModule module="accounts"><AccountingManagement /></RequireModule>} />
+            <Route path="/audit-log" element={<RequireModule module="admin"><AuditLog /></RequireModule>} />
             <Route path="/floors" element={<RequireModule module="menu"><FloorManagement /></RequireModule>} />
 
             {/* Stock → `inventory` module */}
@@ -243,8 +247,8 @@ function MainLayoutInner() {
             <Route path="/permissions" element={<RequireModule module="users" action="edit"><ModulePermissions /></RequireModule>} />
 
             {/* Platform / super-admin surface → `admin` module */}
-            <Route path="/super-admin" element={<RequireModule module="admin"><SuperAdmin /></RequireModule>} />
-            <Route path="/pricing-admin" element={<RequireModule module="admin"><PricingAdmin /></RequireModule>} />
+            <Route path="/super-admin" element={<RequireModule module="admin" superAdminOnly><SuperAdmin /></RequireModule>} />
+            <Route path="/pricing-admin" element={<RequireModule module="admin" superAdminOnly><PricingAdmin /></RequireModule>} />
             <Route path="/whatsapp-config" element={<RequireModule module="admin"><WhatsAppConfig /></RequireModule>} />
 
             {/* CRM, loyalty and integration settings → `admin` module */}

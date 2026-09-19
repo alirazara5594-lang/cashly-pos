@@ -12,13 +12,16 @@ import {
   AlertCircle,
   LogIn,
   LogOut,
-  Users
+  Users,
+  Wallet,
+  CheckCircle2,
+  Banknote
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
-import type { AppUser, StaffShiftSchedule, TimeClockEntry } from '../types';
+import type { AppUser, StaffShiftSchedule, TimeClockEntry, PayrollPeriod, Payslip, PayslipLineType } from '../types';
 
-type TabKey = 'schedule' | 'timeclock';
+type TabKey = 'schedule' | 'timeclock' | 'payroll';
 
 const POSITIONS = ['Cashier', 'Waiter', 'Chef', 'Kitchen Helper', 'Rider', 'Manager', 'Cleaner'];
 
@@ -46,24 +49,31 @@ const emptyShift = () => ({
 });
 
 export const LaborManagement: React.FC = () => {
-  const { selectedTenant, selectedBranch, currentUser, modulePermissions } = usePosStore();
+  const { selectedTenant, selectedBranch, currentUser, modulePermissions, permissions } = usePosStore();
   const canEdit = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'edit');
   const canDelete = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'delete');
   const canExport = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'export') || canEdit;
+
+  // Payroll exposes wages, so it's gated separately from the rest of "labor" (scheduling):
+  // viewing needs CanViewFinancialReports (or Owner/SuperAdmin); generating/adjusting/paying
+  // is Owner/SuperAdmin only, matching the backend's RequirePermissionFilter(u => false, ...).
+  const isOwner = currentUser?.role === 'OwnerAdmin' || currentUser?.role === 'SuperAdmin';
+  const canViewPayroll = isOwner || !!permissions?.canViewFinancialReports;
 
   // The sidebar deep-links to a tab via router state, matching the convention
   // used by Reports / Inventory. Both sub-items point at the same "/labor" path,
   // so switching between them while already on this page doesn't remount it —
   // the tab has to react to location.state changing, not just read it once.
   const location = useLocation();
+  const tabFromState = (t: unknown): TabKey => (t === 'timeclock' || t === 'payroll') ? t : 'schedule';
   const [activeTab, setActiveTab] = useState<TabKey>(
-    (location.state as { tab?: TabKey } | null)?.tab === 'timeclock' ? 'timeclock' : 'schedule'
+    tabFromState((location.state as { tab?: TabKey } | null)?.tab)
   );
 
   useEffect(() => {
-    const tab = (location.state as { tab?: TabKey } | null)?.tab;
     // "Shift Schedule" links with no state at all — absence means 'schedule', not "leave as-is".
-    setActiveTab(tab === 'timeclock' ? 'timeclock' : 'schedule');
+    setActiveTab(tabFromState((location.state as { tab?: TabKey } | null)?.tab));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
   const [staff, setStaff] = useState<AppUser[]>([]);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -82,6 +92,21 @@ export const LaborManagement: React.FC = () => {
   const [from, setFrom] = useState(daysAgoISO(7));
   const [to, setTo] = useState(daysAgoISO(0));
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
+
+  // Payroll
+  const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
+  const [loadingPeriods, setLoadingPeriods] = useState(true);
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  const [payslips, setPayslips] = useState<Payslip[]>([]);
+  const [loadingPayslips, setLoadingPayslips] = useState(false);
+  const [isNewPeriodOpen, setIsNewPeriodOpen] = useState(false);
+  const [newPeriodStart, setNewPeriodStart] = useState(daysAgoISO(30));
+  const [newPeriodEnd, setNewPeriodEnd] = useState(daysAgoISO(0));
+  const [payrollBusy, setPayrollBusy] = useState(false);
+  const [lineModalPayslip, setLineModalPayslip] = useState<Payslip | null>(null);
+  const [lineType, setLineType] = useState<PayslipLineType>('Allowance');
+  const [lineDesc, setLineDesc] = useState('');
+  const [lineAmount, setLineAmount] = useState('');
 
   const branchId = selectedBranch?.id;
 
@@ -131,6 +156,114 @@ export const LaborManagement: React.FC = () => {
 
   useEffect(() => { loadSchedules(); }, [loadSchedules]);
   useEffect(() => { loadTimesheet(); }, [loadTimesheet]);
+
+  const loadPeriods = useCallback(async () => {
+    if (!selectedTenant?.id || !canViewPayroll) return;
+    setLoadingPeriods(true);
+    try {
+      const data = await posApi.getPayrollPeriods(selectedTenant.id);
+      const rows = Array.isArray(data) ? data : [];
+      setPeriods(rows);
+      setSelectedPeriodId(prev => prev && rows.some(p => p.id === prev) ? prev : (rows[0]?.id || null));
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load payroll periods') });
+    } finally {
+      setLoadingPeriods(false);
+    }
+  }, [selectedTenant?.id, canViewPayroll]);
+
+  const loadPayslips = useCallback(async () => {
+    if (!selectedPeriodId) { setPayslips([]); return; }
+    setLoadingPayslips(true);
+    try {
+      const data = await posApi.getPayslips({ periodId: selectedPeriodId, branchId });
+      setPayslips(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load payslips') });
+      setPayslips([]);
+    } finally {
+      setLoadingPayslips(false);
+    }
+  }, [selectedPeriodId, branchId]);
+
+  useEffect(() => { if (activeTab === 'payroll') loadPeriods(); }, [activeTab, loadPeriods]);
+  useEffect(() => { loadPayslips(); }, [loadPayslips]);
+
+  const handleCreatePeriod = async () => {
+    if (!selectedTenant?.id || !newPeriodStart || !newPeriodEnd) return;
+    setPayrollBusy(true);
+    try {
+      const period = await posApi.createPayrollPeriod({
+        tenantId: selectedTenant.id,
+        periodStart: new Date(newPeriodStart).toISOString(),
+        periodEnd: new Date(newPeriodEnd).toISOString()
+      });
+      setIsNewPeriodOpen(false);
+      setMessage({ type: 'success', text: 'Payroll period created' });
+      await loadPeriods();
+      setSelectedPeriodId(period.id);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to create payroll period') });
+    } finally {
+      setPayrollBusy(false);
+    }
+  };
+
+  const handleGeneratePayroll = async (periodId: string) => {
+    if (!window.confirm('Generate draft payslips for every payroll-eligible staff member? This uses each person\'s configured wage rate and logged hours for the period.')) return;
+    setPayrollBusy(true);
+    try {
+      await posApi.generatePayroll(periodId);
+      setMessage({ type: 'success', text: 'Payslips generated' });
+      await loadPeriods();
+      await loadPayslips();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to generate payroll') });
+    } finally {
+      setPayrollBusy(false);
+    }
+  };
+
+  const handleAddLine = async () => {
+    if (!lineModalPayslip || !lineDesc.trim() || !lineAmount) return;
+    setPayrollBusy(true);
+    try {
+      await posApi.addPayslipLine(lineModalPayslip.id, { type: lineType, description: lineDesc.trim(), amountPKR: Number(lineAmount) || 0 });
+      setLineModalPayslip(null);
+      setLineDesc('');
+      setLineAmount('');
+      await loadPayslips();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to add payslip line') });
+    } finally {
+      setPayrollBusy(false);
+    }
+  };
+
+  const handleFinalizePayslip = async (p: Payslip) => {
+    if (!window.confirm(`Finalize ${p.userName}'s payslip? Net pay PKR ${p.netPayPKR.toLocaleString()} will be locked from further edits.`)) return;
+    try {
+      await posApi.finalizePayslip(p.id);
+      await loadPayslips();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to finalize payslip') });
+    }
+  };
+
+  const handleMarkPaid = async (p: Payslip) => {
+    const method = window.prompt('Payment method (e.g. Bank Transfer, Cash)', 'Bank Transfer');
+    if (method === null) return;
+    try {
+      await posApi.markPayslipPaid(p.id, method || undefined);
+      setMessage({ type: 'success', text: `${p.userName} marked as paid` });
+      await loadPeriods();
+      await loadPayslips();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to mark payslip paid') });
+    }
+  };
+
+  const selectedPeriod = periods.find(p => p.id === selectedPeriodId) || null;
 
   const openCreate = () => {
     setEditingId(null);
@@ -265,7 +398,8 @@ export const LaborManagement: React.FC = () => {
         <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1">
           {([
             { key: 'schedule' as const, label: 'Schedule', icon: CalendarClock },
-            { key: 'timeclock' as const, label: 'Time Clock', icon: Clock }
+            { key: 'timeclock' as const, label: 'Time Clock', icon: Clock },
+            ...(canViewPayroll ? [{ key: 'payroll' as const, label: 'Payroll', icon: Wallet }] : [])
           ]).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -519,6 +653,203 @@ export const LaborManagement: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'payroll' && canViewPayroll && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={selectedPeriodId || ''}
+                onChange={(e) => setSelectedPeriodId(e.target.value || null)}
+                className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
+              >
+                {periods.length === 0 && <option value="">No payroll periods yet</option>}
+                {periods.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()} ({p.status})
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={loadPeriods}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loadingPeriods ? 'animate-spin' : ''}`} />
+                <span>Refresh</span>
+              </button>
+            </div>
+            {isOwner && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsNewPeriodOpen(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Period</span>
+                </button>
+                {selectedPeriod && selectedPeriod.status === 'Open' && (
+                  <button
+                    onClick={() => handleGeneratePayroll(selectedPeriod.id)}
+                    disabled={payrollBusy}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+                  >
+                    <Wallet className="w-3.5 h-3.5" />
+                    <span>Generate Payslips</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {!selectedPeriod ? (
+            <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-xs text-slate-400">
+              No payroll period selected. {isOwner ? 'Create one to get started.' : 'Ask an owner to create one.'}
+            </div>
+          ) : (
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                      <th className="px-4 py-2.5">Staff</th>
+                      <th className="px-4 py-2.5 text-right">Hours</th>
+                      <th className="px-4 py-2.5 text-right">Basic Pay</th>
+                      <th className="px-4 py-2.5 text-right">Allowances</th>
+                      <th className="px-4 py-2.5 text-right">Deductions</th>
+                      <th className="px-4 py-2.5 text-right">Net Pay</th>
+                      <th className="px-4 py-2.5">Status</th>
+                      {isOwner && <th className="px-4 py-2.5 text-right">Actions</th>}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {loadingPayslips ? (
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-slate-400">Loading payslips…</td></tr>
+                    ) : payslips.length === 0 ? (
+                      <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-slate-400">
+                        No payslips yet for this period. {isOwner && selectedPeriod.status === 'Open' ? 'Click "Generate Payslips" above.' : ''}
+                      </td></tr>
+                    ) : payslips.map(p => (
+                      <tr key={p.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2.5 text-xs font-bold text-slate-900">{p.userName}</td>
+                        <td className="px-4 py-2.5 text-right text-xs text-slate-600">{p.hoursWorked.toFixed(1)}</td>
+                        <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-700">{p.basicPayPKR.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right text-xs font-mono text-teal-600">{p.totalAllowancesPKR.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right text-xs font-mono text-rose-600">{p.totalDeductionsPKR.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right text-xs font-mono font-black text-slate-900">{p.netPayPKR.toLocaleString()}</td>
+                        <td className="px-4 py-2.5">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${
+                            p.status === 'Paid' ? 'bg-teal-50 text-teal-700 border-teal-200'
+                            : p.status === 'Finalized' ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}>
+                            {p.status}
+                          </span>
+                        </td>
+                        {isOwner && (
+                          <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                            {p.status === 'Draft' && (
+                              <>
+                                <button onClick={() => setLineModalPayslip(p)} className="text-[11px] font-bold text-teal-600 hover:text-teal-700 mr-3">
+                                  Add Line
+                                </button>
+                                <button onClick={() => handleFinalizePayslip(p)} className="text-[11px] font-bold text-amber-600 hover:text-amber-700">
+                                  Finalize
+                                </button>
+                              </>
+                            )}
+                            {p.status === 'Finalized' && (
+                              <button onClick={() => handleMarkPaid(p)} className="flex items-center gap-1 text-[11px] font-bold text-teal-600 hover:text-teal-700 ml-auto">
+                                <Banknote className="w-3.5 h-3.5" />
+                                <span>Mark Paid</span>
+                              </button>
+                            )}
+                            {p.status === 'Paid' && (
+                              <span className="flex items-center gap-1 text-[11px] text-slate-400 justify-end">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-teal-500" />
+                                {p.paymentMethod || 'Paid'}
+                              </span>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isNewPeriodOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">New Payroll Period</h2>
+              <button onClick={() => setIsNewPeriodOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <input type="date" value={newPeriodStart} onChange={(e) => setNewPeriodStart(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <input type="date" value={newPeriodEnd} onChange={(e) => setNewPeriodEnd(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+            </div>
+            <button
+              onClick={handleCreatePeriod}
+              disabled={payrollBusy}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{payrollBusy ? 'Creating…' : 'Create Period'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {lineModalPayslip && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">Add Line — {lineModalPayslip.userName}</h2>
+              <button onClick={() => setLineModalPayslip(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</label>
+              <select value={lineType} onChange={(e) => setLineType(e.target.value as PayslipLineType)}
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
+                <option value="Allowance">Allowance</option>
+                <option value="Overtime">Overtime</option>
+                <option value="Deduction">Deduction</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Description</label>
+              <input type="text" value={lineDesc} onChange={(e) => setLineDesc(e.target.value)}
+                placeholder="e.g. Transport allowance, Late deduction"
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
+              <input type="number" value={lineAmount} onChange={(e) => setLineAmount(e.target.value)}
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
+            </div>
+            <button
+              onClick={handleAddLine}
+              disabled={payrollBusy || !lineDesc.trim() || !lineAmount}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{payrollBusy ? 'Saving…' : 'Add Line'}</span>
+            </button>
           </div>
         </div>
       )}

@@ -43,7 +43,11 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^https?:\/\/localhost:5288\/api\/.*/i,
+            // Path-based, not origin-based: matches the API whether it's same-origin
+            // (a reverse-proxied /api path) or a separate origin (VITE_API_BASE_URL
+            // pointing at api.yourdomain.com) — the dev-only localhost:5288 literal
+            // this replaced meant offline caching silently did nothing once deployed.
+            urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

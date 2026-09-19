@@ -556,6 +556,28 @@ public class AppUser
     // Account lockout after repeated failed PIN attempts (see /api/auth/login).
     public int FailedLoginAttempts { get; set; } = 0;
     public DateTime? LockedUntil { get; set; }
+
+    // Payroll (additive — a walk-in/legacy user with none of this set simply isn't payroll-eligible).
+    // Department/Designation are free-text here rather than their own master-data tables: this stays
+    // consistent with how the rest of staff management already works (no separate Employee entity),
+    // and can be promoted to real lookup tables later if HQ needs centrally-managed dropdowns.
+    public string? Department { get; set; }
+    public string? Designation { get; set; }
+    public EmploymentType EmploymentType { get; set; } = EmploymentType.FullTime;
+    /// <summary>Flat pay per payroll period when set (e.g. a fixed monthly period). Mutually exclusive with HourlyRatePKR in practice, not enforced.</summary>
+    public decimal MonthlyRatePKR { get; set; } = 0;
+    /// <summary>Used instead of MonthlyRatePKR when pay is computed from actual TimeClockEntry hours.</summary>
+    public decimal HourlyRatePKR { get; set; } = 0;
+    public string? BankAccountNumber { get; set; }
+    public DateTime? JoiningDate { get; set; }
+    public bool IsPayrollEligible { get; set; } = false;
+}
+
+public enum EmploymentType
+{
+    FullTime = 1,
+    PartTime = 2,
+    Contract = 3
 }
 
 public enum TransferStatus
@@ -611,6 +633,25 @@ public enum POStatus
     Cancelled = 4
 }
 
+public class Supplier
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? ContactName { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    public string? Address { get; set; }
+    public string? TaxNumber { get; set; } // NTN / STRN etc.
+    public string? PaymentTerms { get; set; } // e.g. "Net 30", "Cash on Delivery"
+    /// <summary>Amount owed to this supplier when the record was created (migrating an existing balance in).</summary>
+    public decimal OpeningBalancePKR { get; set; } = 0;
+    /// <summary>Running payable balance — increases on invoice, decreases on payment. Server-maintained only.</summary>
+    public decimal CurrentBalancePKR { get; set; } = 0;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class PurchaseOrder
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -618,7 +659,11 @@ public class PurchaseOrder
     public Guid BranchId { get; set; }
     public Branch? Branch { get; set; }
     public string PONumber { get; set; } = string.Empty; // e.g. "PO-501"
+    /// <summary>Denormalized display name — kept even after linking SupplierId so historical POs
+    /// still render correctly if a supplier is later renamed or deactivated.</summary>
     public string SupplierName { get; set; } = string.Empty;
+    public Guid? SupplierId { get; set; }
+    public Supplier? Supplier { get; set; }
     public POStatus Status { get; set; } = POStatus.Ordered;
     public decimal TotalCostPKR { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -693,6 +738,44 @@ public class StockRequestItem
     public decimal QuantityRequested { get; set; }
     public decimal CurrentStock { get; set; } // snapshot at request time
     public decimal UnitCostPKR { get; set; }
+}
+
+/// <summary>
+/// Every stock movement, in order, for a given ingredient — the audit trail that
+/// <see cref="Ingredient.CurrentStock"/> alone can't provide. That field stays as the fast
+/// current-balance cache existing code already reads; this table is additive, written
+/// alongside every mutation of it so the balance can always be reconstructed/audited.
+/// </summary>
+public enum StockMovementType
+{
+    PurchaseReceipt = 1,
+    SaleConsumption = 2,
+    TransferOut = 3,
+    TransferIn = 4,
+    Adjustment = 5,
+    Waste = 6,
+    OpeningBalance = 7,
+    StockCount = 8
+}
+
+public class StockLedgerEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid IngredientId { get; set; }
+    public Ingredient? Ingredient { get; set; }
+    public StockMovementType MovementType { get; set; }
+    /// <summary>Signed — positive for stock in, negative for stock out.</summary>
+    public decimal QuantityChange { get; set; }
+    public decimal UnitCostPKR { get; set; }
+    /// <summary>Running balance snapshot immediately after this entry, for fast history reads without re-summing.</summary>
+    public decimal BalanceAfter { get; set; }
+    public string? ReferenceType { get; set; } // "PurchaseOrder", "StockTransfer", "Order", "Adjustment"
+    public Guid? ReferenceId { get; set; }
+    public string? Notes { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string CreatedBy { get; set; } = string.Empty;
 }
 
 
@@ -871,4 +954,244 @@ public class TimeClockEntry
     public DateTime? ClockOutAt { get; set; }
     public Guid? LinkedCashShiftId { get; set; }
     public decimal? HoursWorked { get; set; }
+}
+
+// ============================================================
+// Payroll — built on top of AppUser (no separate Employee master) and the
+// TimeClockEntry hours already being recorded above.
+// ============================================================
+
+public enum PayrollPeriodStatus
+{
+    Open = 1,       // still accruing; payslips not yet generated
+    Generated = 2,  // draft payslips exist, can still be adjusted
+    Finalized = 3,  // locked — payslips are no longer editable, only payable
+    Paid = 4        // all payslips in the period have been marked paid
+}
+
+public class PayrollPeriod
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public DateTime PeriodStart { get; set; }
+    public DateTime PeriodEnd { get; set; }
+    public PayrollPeriodStatus Status { get; set; } = PayrollPeriodStatus.Open;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? GeneratedAt { get; set; }
+    public DateTime? FinalizedAt { get; set; }
+    public string? Notes { get; set; }
+
+    public ICollection<Payslip> Payslips { get; set; } = new List<Payslip>();
+}
+
+public enum PayslipStatus
+{
+    Draft = 1,
+    Finalized = 2,
+    Paid = 3
+}
+
+public class Payslip
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    public Guid PayrollPeriodId { get; set; }
+    public PayrollPeriod? PayrollPeriod { get; set; }
+
+    public decimal HoursWorked { get; set; }
+    public decimal BasicPayPKR { get; set; }
+    public decimal TotalAllowancesPKR { get; set; } = 0;
+    public decimal TotalDeductionsPKR { get; set; } = 0;
+    public decimal NetPayPKR { get; set; }
+
+    public PayslipStatus Status { get; set; } = PayslipStatus.Draft;
+    public DateTime GeneratedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? PaidAt { get; set; }
+    public string? PaymentMethod { get; set; }
+    public string? Notes { get; set; }
+
+    public ICollection<PayslipLine> Lines { get; set; } = new List<PayslipLine>();
+}
+
+public enum PayslipLineType
+{
+    Allowance = 1,
+    Deduction = 2,
+    Overtime = 3
+}
+
+public class PayslipLine
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid PayslipId { get; set; }
+    public Payslip? Payslip { get; set; }
+    public PayslipLineType Type { get; set; }
+    public string Description { get; set; } = string.Empty;
+    public decimal AmountPKR { get; set; }
+}
+
+// ============================================================
+// Accounting — proper double-entry bookkeeping. Every posted JournalEntry's
+// lines must balance (total debits == total credits); this is enforced in the
+// posting helper (Program.cs: PostJournalEntryAsync), not trusted from callers.
+// Accounting is opt-in per tenant: nothing here runs for a tenant with no
+// Chart of Accounts seeded, so tenants who never open Accounting are unaffected.
+// ============================================================
+
+public enum AccountType
+{
+    Asset = 1,
+    Liability = 2,
+    Equity = 3,
+    Revenue = 4,
+    Expense = 5
+}
+
+public class Account
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Code { get; set; } = string.Empty; // e.g. "1000"
+    public string Name { get; set; } = string.Empty; // e.g. "Cash on Hand"
+    public AccountType Type { get; set; }
+    public string? SubType { get; set; } // e.g. "Current Asset", "Cost of Goods Sold"
+    public Guid? ParentAccountId { get; set; }
+    public Account? ParentAccount { get; set; }
+    /// <summary>Seeded accounts the system posts to automatically (Cash, AR, AP, Sales Revenue, ...).
+    /// Protected from deletion — renaming is fine, removing one would silently break auto-posting.</summary>
+    public bool IsSystemAccount { get; set; } = false;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public enum JournalEntryStatus
+{
+    Posted = 1,
+    Reversed = 2
+}
+
+public class JournalEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid? BranchId { get; set; }
+    public string EntryNumber { get; set; } = string.Empty; // e.g. "JE-1001"
+    public DateTime EntryDate { get; set; } = DateTime.UtcNow;
+    public string Description { get; set; } = string.Empty;
+    /// <summary>What triggered this — "Order", "PurchaseOrder", "Payslip", or "Manual" for a hand-entered one.</summary>
+    public string ReferenceType { get; set; } = "Manual";
+    public Guid? ReferenceId { get; set; }
+    public JournalEntryStatus Status { get; set; } = JournalEntryStatus.Posted;
+    /// <summary>Set on the reversing entry itself, pointing back at the entry it reverses.
+    /// Reversal is how a mistake gets corrected — the original entry is never edited or deleted.</summary>
+    public Guid? ReversalOfEntryId { get; set; }
+    public string CreatedBy { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<JournalLine> Lines { get; set; } = new List<JournalLine>();
+}
+
+public class JournalLine
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid JournalEntryId { get; set; }
+    public JournalEntry? JournalEntry { get; set; }
+    public Guid AccountId { get; set; }
+    public Account? Account { get; set; }
+    public decimal DebitPKR { get; set; } = 0;
+    public decimal CreditPKR { get; set; } = 0;
+    public string? Description { get; set; }
+}
+
+public enum AccountingPeriodStatus
+{
+    Open = 1,
+    Closed = 2
+}
+
+public class AccountingPeriod
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public DateTime PeriodStart { get; set; }
+    public DateTime PeriodEnd { get; set; }
+    public AccountingPeriodStatus Status { get; set; } = AccountingPeriodStatus.Open;
+    public DateTime? ClosedAt { get; set; }
+    public string? ClosedBy { get; set; }
+}
+
+// ============================================================
+// Warehouses — a storage location within a branch. Most tenants have exactly
+// one per branch (their kitchen store), which is why every stock endpoint keeps
+// scoping by BranchId as the primary key, not WarehouseId — this is additive
+// structure for tenants who need more than one storage location per branch
+// (e.g. a walk-in freezer separate from dry storage), not a required migration.
+// ============================================================
+
+public class Warehouse
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    public string Name { get; set; } = string.Empty; // e.g. "Main Store", "Walk-in Freezer", "Central Commissary"
+    public string? Code { get; set; }
+    /// <summary>Every branch's original, implicit storage location — the one existing Ingredient
+    /// records belong to before this feature existed. Exactly one per branch.</summary>
+    public bool IsPrimary { get; set; } = false;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+// ============================================================
+// Subscription billing history — separate from Tenant.Tier/SubscriptionPaidUntil
+// (the tenant's *current* state) and from SaaSPackageConfig (the tier *template*).
+// This is the actual invoice trail: what was billed, when, and whether it was paid.
+// ============================================================
+
+public enum SubscriptionInvoiceStatus
+{
+    Pending = 1,
+    Paid = 2,
+    Overdue = 3,
+    Cancelled = 4
+}
+
+public class SubscriptionInvoice
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string InvoiceNumber { get; set; } = string.Empty; // e.g. "INV-1001"
+    public string Tier { get; set; } = string.Empty; // snapshot of the tier billed — a later tier change doesn't rewrite history
+    public DateTime BillingPeriodStart { get; set; }
+    public DateTime BillingPeriodEnd { get; set; }
+    public decimal AmountPKR { get; set; }
+    public SubscriptionInvoiceStatus Status { get; set; } = SubscriptionInvoiceStatus.Pending;
+    public DateTime IssuedAt { get; set; } = DateTime.UtcNow;
+    public DateTime DueAt { get; set; }
+    public DateTime? PaidAt { get; set; }
+    public string? PaymentMethod { get; set; }
+    public string? Notes { get; set; }
+}
+
+/// <summary>
+/// Settles part or all of what's owed to a Supplier. Closes the loop the PO-receive flow opened —
+/// receiving a PO on account increases Supplier.CurrentBalancePKR; a payment decreases it and, if
+/// accounting is set up for the tenant, posts Debit Accounts Payable / Credit Cash or Bank.
+/// </summary>
+public class SupplierPayment
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid SupplierId { get; set; }
+    public Supplier? Supplier { get; set; }
+    public decimal AmountPKR { get; set; }
+    public string PaymentMethod { get; set; } = "Bank Transfer";
+    public string? ReferenceNumber { get; set; } // cheque #, transaction ID, etc.
+    public string? Notes { get; set; }
+    public DateTime PaidAt { get; set; } = DateTime.UtcNow;
+    public string CreatedBy { get; set; } = string.Empty;
 }

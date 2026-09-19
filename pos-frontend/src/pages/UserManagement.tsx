@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Users, 
-  UserPlus, 
-  Trash2, 
-  Building2, 
+import {
+  Users,
+  UserPlus,
+  Trash2,
+  Building2,
   RefreshCw,
-  CheckCircle2
+  CheckCircle2,
+  Wallet,
+  X,
+  Save
 } from 'lucide-react';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
@@ -34,6 +37,14 @@ export const UserManagement: React.FC = () => {
   const [canManageMenuAndTax, setCanManageMenuAndTax] = useState(false);
   const [canGiveDiscounts, setCanGiveDiscounts] = useState(false);
   const [canVoidOrders, setCanVoidOrders] = useState(false);
+
+  // Payroll quick-edit (set after the account exists — the create endpoint doesn't take these yet)
+  const [payrollUser, setPayrollUser] = useState<AppUser | null>(null);
+  const [payrollForm, setPayrollForm] = useState({
+    department: '', designation: '', employmentType: 'FullTime' as 'FullTime' | 'PartTime' | 'Contract',
+    monthlyRatePKR: '0', hourlyRatePKR: '0', bankAccountNumber: '', isPayrollEligible: false
+  });
+  const [payrollSaving, setPayrollSaving] = useState(false);
 
   const fetchUsers = async () => {
     if (!selectedTenant?.id) return;
@@ -135,6 +146,44 @@ export const UserManagement: React.FC = () => {
       await fetchUsers();
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const openPayrollEdit = (user: AppUser) => {
+    setPayrollForm({
+      department: user.department || '',
+      designation: user.designation || '',
+      employmentType: user.employmentType || 'FullTime',
+      monthlyRatePKR: String(user.monthlyRatePKR ?? 0),
+      hourlyRatePKR: String(user.hourlyRatePKR ?? 0),
+      bankAccountNumber: user.bankAccountNumber || '',
+      isPayrollEligible: !!user.isPayrollEligible
+    });
+    setPayrollUser(user);
+  };
+
+  const handleSavePayroll = async () => {
+    if (!payrollUser) return;
+    setPayrollSaving(true);
+    try {
+      await posApi.updateUser(payrollUser.id, {
+        department: payrollForm.department || null,
+        designation: payrollForm.designation || null,
+        employmentType: payrollForm.employmentType,
+        monthlyRatePKR: Number(payrollForm.monthlyRatePKR) || 0,
+        hourlyRatePKR: Number(payrollForm.hourlyRatePKR) || 0,
+        bankAccountNumber: payrollForm.bankAccountNumber || null,
+        isPayrollEligible: payrollForm.isPayrollEligible
+      });
+      setActionSuccess(`Payroll details updated for ${payrollUser.fullName}`);
+      setPayrollUser(null);
+      await fetchUsers();
+      setTimeout(() => setActionSuccess(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save payroll details');
+    } finally {
+      setPayrollSaving(false);
     }
   };
 
@@ -297,13 +346,24 @@ export const UserManagement: React.FC = () => {
                       </button>
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <button
-                        onClick={() => handleDeleteUser(u.id, u.fullName)}
-                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600 transition"
-                        title="Delete User"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => openPayrollEdit(u)}
+                          className={`p-1.5 rounded-lg transition ${
+                            u.isPayrollEligible ? 'bg-teal-50 text-teal-600 hover:bg-teal-100' : 'bg-slate-100 text-slate-500 hover:bg-teal-100 hover:text-teal-600'
+                          }`}
+                          title={u.isPayrollEligible ? 'Edit payroll details' : 'Not payroll-eligible — click to set up'}
+                        >
+                          <Wallet className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(u.id, u.fullName)}
+                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600 transition"
+                          title="Delete User"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -454,6 +514,87 @@ export const UserManagement: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Payroll Quick-Edit Modal */}
+      {payrollUser && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <Wallet className="w-5 h-5 text-teal-500" />
+                <h3 className="font-bold text-slate-900 text-base">Payroll — {payrollUser.fullName}</h3>
+              </div>
+              <button onClick={() => setPayrollUser(null)} className="text-slate-400 hover:text-slate-900"><X className="w-4 h-4" /></button>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={payrollForm.isPayrollEligible}
+                onChange={(e) => setPayrollForm({ ...payrollForm, isPayrollEligible: e.target.checked })}
+                className="w-4 h-4 accent-teal-500"
+              />
+              <span>Payroll-eligible (included when payslips are generated)</span>
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Department</label>
+                <input type="text" value={payrollForm.department} onChange={(e) => setPayrollForm({ ...payrollForm, department: e.target.value })}
+                  placeholder="e.g. Kitchen, Front of House"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Designation</label>
+                <input type="text" value={payrollForm.designation} onChange={(e) => setPayrollForm({ ...payrollForm, designation: e.target.value })}
+                  placeholder="e.g. Head Chef"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Employment Type</label>
+                <select value={payrollForm.employmentType} onChange={(e) => setPayrollForm({ ...payrollForm, employmentType: e.target.value as any })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
+                  <option value="FullTime">Full-Time</option>
+                  <option value="PartTime">Part-Time</option>
+                  <option value="Contract">Contract</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Bank Account</label>
+                <input type="text" value={payrollForm.bankAccountNumber} onChange={(e) => setPayrollForm({ ...payrollForm, bankAccountNumber: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Monthly Rate (PKR)</label>
+                <input type="number" value={payrollForm.monthlyRatePKR} onChange={(e) => setPayrollForm({ ...payrollForm, monthlyRatePKR: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+                <p className="text-[10px] text-slate-400 mt-0.5">Used when hourly rate is 0.</p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Hourly Rate (PKR)</label>
+                <input type="number" value={payrollForm.hourlyRatePKR} onChange={(e) => setPayrollForm({ ...payrollForm, hourlyRatePKR: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+                <p className="text-[10px] text-slate-400 mt-0.5">Takes precedence — pays actual clocked hours.</p>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setPayrollUser(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition">
+                Cancel
+              </button>
+              <button
+                onClick={handleSavePayroll}
+                disabled={payrollSaving}
+                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{payrollSaving ? 'Saving…' : 'Save Payroll Details'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

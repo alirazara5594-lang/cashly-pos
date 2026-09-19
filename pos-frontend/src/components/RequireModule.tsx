@@ -1,12 +1,19 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, ArrowLeft } from 'lucide-react';
-import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import type { ModuleKey, PermissionAction } from '../types';
 
 interface RequireModuleProps {
   module: ModuleKey;
   action?: PermissionAction;
+  /**
+   * For cross-tenant platform screens (Tenant Management, Package Pricing)
+   * that manage every restaurant on the platform — the `admin` module alone
+   * isn't enough here, since a restaurant Owner also passes it for their own
+   * tenant's config. Only the true platform SuperAdmin may enter.
+   */
+  superAdminOnly?: boolean;
   children: React.ReactNode;
 }
 
@@ -17,12 +24,14 @@ interface RequireModuleProps {
  * This is UI feedback, not security: the backend enforces the same rules on
  * every request, so a bypassed guard still gets a 401/403 from the API.
  */
-export const RequireModule: React.FC<RequireModuleProps> = ({ module, action = 'view', children }) => {
+export const RequireModule: React.FC<RequireModuleProps> = ({ module, action = 'view', superAdminOnly = false, children }) => {
   const navigate = useNavigate();
   const currentUser = usePosStore(s => s.currentUser);
   const modulePermissions = usePosStore(s => s.modulePermissions);
 
-  const allowed = hasModuleAccess(currentUser?.role, modulePermissions, module, action);
+  const allowed = superAdminOnly
+    ? normalizeRole(currentUser?.role) === 'SuperAdmin'
+    : hasModuleAccess(currentUser?.role, modulePermissions, module, action);
 
   if (allowed) return <>{children}</>;
 
@@ -35,13 +44,21 @@ export const RequireModule: React.FC<RequireModuleProps> = ({ module, action = '
         <div className="space-y-1.5">
           <h2 className="text-lg font-black text-slate-900">Access Denied</h2>
           <p className="text-xs text-slate-500 leading-relaxed">
-            Your account{currentUser?.fullName ? ` (${currentUser.fullName})` : ''} does not have
-            <strong className="text-slate-700"> {action} </strong>
-            access to the <strong className="text-slate-700">{module}</strong> module.
+            {superAdminOnly ? (
+              <>This screen is reserved for the platform administrator and is not available to restaurant accounts.</>
+            ) : (
+              <>
+                Your account{currentUser?.fullName ? ` (${currentUser.fullName})` : ''} does not have
+                <strong className="text-slate-700"> {action} </strong>
+                access to the <strong className="text-slate-700">{module}</strong> module.
+              </>
+            )}
           </p>
-          <p className="text-[11px] text-slate-400">
-            Ask an owner or administrator to grant this in Module Permissions.
-          </p>
+          {!superAdminOnly && (
+            <p className="text-[11px] text-slate-400">
+              Ask an owner or administrator to grant this in Module Permissions.
+            </p>
+          )}
         </div>
         <button
           onClick={() => navigate('/')}

@@ -1,25 +1,32 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Truck, 
-  ArrowRightLeft, 
-  ShoppingBag, 
-  Plus, 
-  CheckCircle, 
-  ChevronRight, 
-  PackageCheck, 
-  X
+import {
+  Truck,
+  ArrowRightLeft,
+  ShoppingBag,
+  Plus,
+  CheckCircle,
+  ChevronRight,
+  PackageCheck,
+  X,
+  Building2,
+  History,
+  Phone,
+  Mail,
+  Edit,
+  Ban,
+  Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
-import type { StockTransferOrder, PurchaseOrder, RawIngredient } from '../types';
+import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse } from '../types';
 
 export const SupplyChainManagement: React.FC = () => {
   const { selectedTenant, selectedBranch } = usePosStore();
   const location = useLocation();
-  
+
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
-  const [activeTab, setActiveTab] = useState<'transfers' | 'procurement'>(
+  const [activeTab, setActiveTab] = useState<'transfers' | 'procurement' | 'suppliers' | 'ledger' | 'warehouses'>(
     location.state?.tab || (isMultiBranchChain ? 'transfers' : 'procurement')
   );
 
@@ -32,6 +39,20 @@ export const SupplyChainManagement: React.FC = () => {
   const [transfers, setTransfers] = useState<StockTransferOrder[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [ingredients, setIngredients] = useState<RawIngredient[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [stockLedger, setStockLedger] = useState<StockLedgerEntry[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [isNewWarehouseOpen, setIsNewWarehouseOpen] = useState(false);
+  const [newWarehouseName, setNewWarehouseName] = useState('');
+  const [newWarehouseCode, setNewWarehouseCode] = useState('');
+  const [warehouseSaving, setWarehouseSaving] = useState(false);
+
+  // New / Edit Supplier Modal
+  const [supplierModal, setSupplierModal] = useState<Supplier | null | 'new'>(null);
+  const [supplierForm, setSupplierForm] = useState({
+    name: '', contactName: '', phone: '', email: '', address: '', taxNumber: '', paymentTerms: '', openingBalancePKR: 0
+  });
+  const [supplierSaving, setSupplierSaving] = useState(false);
 
   // New Transfer Modal
   const [isNewTransferOpen, setIsNewTransferOpen] = useState(false);
@@ -55,6 +76,7 @@ export const SupplyChainManagement: React.FC = () => {
   // New PO Modal
   const [isNewPOOpen, setIsNewPOOpen] = useState(false);
   const [poSupplier, setPoSupplier] = useState('National Poultry Farms');
+  const [poSupplierId, setPoSupplierId] = useState<string>('');
   const [poNotes, setPoNotes] = useState('');
   const [poLines, setPoLines] = useState<Array<{
     ingredientId: string;
@@ -70,16 +92,51 @@ export const SupplyChainManagement: React.FC = () => {
   const fetchData = async () => {
     if (!selectedTenant?.id) return;
     try {
-      const [transfersData, poData, ingsData] = await Promise.all([
+      const [transfersData, poData, ingsData, suppliersData, ledgerData, warehousesData] = await Promise.all([
         posApi.getTransferOrders(selectedTenant.id),
         posApi.getPurchaseOrders(selectedTenant.id),
-        selectedBranch?.id ? posApi.getRawIngredients(selectedBranch.id) : Promise.resolve([])
+        selectedBranch?.id ? posApi.getRawIngredients(selectedBranch.id) : Promise.resolve([]),
+        posApi.getSuppliers(selectedTenant.id).catch(() => []),
+        selectedBranch?.id ? posApi.getStockLedger(selectedBranch.id).catch(() => []) : Promise.resolve([]),
+        selectedBranch?.id ? posApi.getWarehouses(selectedBranch.id).catch(() => []) : Promise.resolve([])
       ]);
       setTransfers(transfersData);
       setPurchaseOrders(poData);
       setIngredients(ingsData);
+      setSuppliers(suppliersData);
+      setStockLedger(ledgerData);
+      setWarehouses(warehousesData);
     } catch (err) {
       console.error('Failed to load supply chain data', err);
+    }
+  };
+
+  const handleCreateWarehouse = async () => {
+    if (!newWarehouseName.trim() || !selectedBranch?.id) return;
+    setWarehouseSaving(true);
+    try {
+      await posApi.createWarehouse({ tenantId: selectedTenant?.id, branchId: selectedBranch.id, name: newWarehouseName.trim(), code: newWarehouseCode.trim() || undefined });
+      setIsNewWarehouseOpen(false);
+      setNewWarehouseName('');
+      setNewWarehouseCode('');
+      setStatusMsg('Warehouse added');
+      setTimeout(() => setStatusMsg(null), 3000);
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to add warehouse');
+    } finally {
+      setWarehouseSaving(false);
+    }
+  };
+
+  const handleToggleWarehouseActive = async (w: Warehouse) => {
+    try {
+      await posApi.updateWarehouse(w.id, { isActive: !w.isActive });
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to update warehouse');
     }
   };
 
@@ -197,7 +254,9 @@ export const SupplyChainManagement: React.FC = () => {
   };
 
   const handleOpenNewPO = () => {
-    setPoSupplier('National Poultry Farms Ltd');
+    const firstSupplier = suppliers.find(s => s.isActive);
+    setPoSupplierId(firstSupplier?.id || '');
+    setPoSupplier(firstSupplier?.name || 'National Poultry Farms Ltd');
     setPoNotes('Fresh morning delivery batch');
     if (ingredients.length > 0) {
       setPoLines([
@@ -239,6 +298,7 @@ export const SupplyChainManagement: React.FC = () => {
         tenantId: selectedTenant.id,
         branchId: selectedBranch.id,
         supplierName: poSupplier,
+        supplierId: poSupplierId || undefined,
         notes: poNotes,
         items: poLines
       });
@@ -267,6 +327,83 @@ export const SupplyChainManagement: React.FC = () => {
     } catch (err) {
       console.error(err);
       alert('Failed to receive PO');
+    }
+  };
+
+  const openNewSupplier = () => {
+    setSupplierForm({ name: '', contactName: '', phone: '', email: '', address: '', taxNumber: '', paymentTerms: '', openingBalancePKR: 0 });
+    setSupplierModal('new');
+  };
+
+  const openEditSupplier = (s: Supplier) => {
+    setSupplierForm({
+      name: s.name, contactName: s.contactName || '', phone: s.phone || '', email: s.email || '',
+      address: s.address || '', taxNumber: s.taxNumber || '', paymentTerms: s.paymentTerms || '', openingBalancePKR: s.openingBalancePKR
+    });
+    setSupplierModal(s);
+  };
+
+  const handleSaveSupplier = async () => {
+    if (!supplierForm.name.trim() || !selectedTenant?.id) {
+      alert('Supplier name is required');
+      return;
+    }
+    setSupplierSaving(true);
+    try {
+      if (supplierModal === 'new') {
+        await posApi.createSupplier({ tenantId: selectedTenant.id, ...supplierForm });
+      } else if (supplierModal) {
+        await posApi.updateSupplier(supplierModal.id, {
+          name: supplierForm.name, contactName: supplierForm.contactName, phone: supplierForm.phone,
+          email: supplierForm.email, address: supplierForm.address, taxNumber: supplierForm.taxNumber,
+          paymentTerms: supplierForm.paymentTerms
+        });
+      }
+      setSupplierModal(null);
+      setStatusMsg('Supplier saved successfully!');
+      setTimeout(() => setStatusMsg(null), 3000);
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save supplier');
+    } finally {
+      setSupplierSaving(false);
+    }
+  };
+
+  const handleToggleSupplierActive = async (s: Supplier) => {
+    try {
+      await posApi.updateSupplier(s.id, { isActive: !s.isActive });
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to update supplier');
+    }
+  };
+
+  const [paymentSupplier, setPaymentSupplier] = useState<Supplier | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('Bank Transfer');
+  const [paymentRef, setPaymentRef] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+
+  const handleRecordPayment = async () => {
+    if (!paymentSupplier || !paymentAmount) return;
+    setPaymentSaving(true);
+    try {
+      await posApi.recordSupplierPayment(paymentSupplier.id, {
+        amountPKR: Number(paymentAmount), paymentMethod, referenceNumber: paymentRef.trim() || undefined
+      });
+      setPaymentSupplier(null);
+      setPaymentAmount('');
+      setPaymentRef('');
+      setStatusMsg('Payment recorded');
+      setTimeout(() => setStatusMsg(null), 3000);
+      fetchData();
+    } catch (err: any) {
+      alert(err?.response?.data?.message || 'Failed to record payment');
+    } finally {
+      setPaymentSaving(false);
     }
   };
 
@@ -322,6 +459,39 @@ export const SupplyChainManagement: React.FC = () => {
           >
             <ShoppingBag className="w-4 h-4" />
             <span>Vendor Procurement (PO)</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('suppliers')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${
+              activeTab === 'suppliers'
+                ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
+            }`}
+          >
+            <Building2 className="w-4 h-4" />
+            <span>Suppliers</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('ledger')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${
+              activeTab === 'ledger'
+                ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
+            }`}
+          >
+            <History className="w-4 h-4" />
+            <span>Stock Ledger</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('warehouses')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${
+              activeTab === 'warehouses'
+                ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
+                : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
+            }`}
+          >
+            <WarehouseIcon className="w-4 h-4" />
+            <span>Warehouses</span>
           </button>
         </div>
       </div>
@@ -608,6 +778,388 @@ export const SupplyChainManagement: React.FC = () => {
         </div>
       )}
 
+      {/* TAB 3: SUPPLIERS (PURCHASING MASTER DATA) */}
+      {activeTab === 'suppliers' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
+                <span className="text-xs text-slate-500 block">Total Suppliers</span>
+                <span className="text-lg font-black text-slate-900">{suppliers.length}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
+                <span className="text-xs text-rose-600 block">Total Payable</span>
+                <span className="text-lg font-black text-rose-600">
+                  {suppliers.reduce((s, x) => s + x.currentBalancePKR, 0).toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={openNewSupplier}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Supplier</span>
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Supplier Directory</span>
+              <span className="text-xs text-slate-400">{suppliers.length} records</span>
+            </div>
+
+            {suppliers.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No suppliers added yet. Add one to link it on future purchase orders and track what you owe them.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="p-3">Supplier</th>
+                      <th className="p-3">Contact</th>
+                      <th className="p-3">Payment Terms</th>
+                      <th className="p-3 text-right">Balance Owed (PKR)</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {suppliers.map(s => (
+                      <tr key={s.id} className="hover:bg-slate-50 transition">
+                        <td className="p-3">
+                          <strong className="text-slate-900 text-sm">{s.name}</strong>
+                          {s.taxNumber && <div className="text-[10px] text-slate-500">NTN/Tax#: {s.taxNumber}</div>}
+                        </td>
+                        <td className="p-3 text-slate-700">
+                          {s.contactName && <div>{s.contactName}</div>}
+                          {s.phone && <div className="flex items-center gap-1 text-[11px] text-slate-500"><Phone className="w-3 h-3" />{s.phone}</div>}
+                          {s.email && <div className="flex items-center gap-1 text-[11px] text-slate-500"><Mail className="w-3 h-3" />{s.email}</div>}
+                        </td>
+                        <td className="p-3 text-slate-700">{s.paymentTerms || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3 text-right font-mono font-black text-rose-600">{s.currentBalancePKR.toLocaleString()}</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-1 rounded-md text-[10px] font-bold border ${
+                            s.isActive ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'
+                          }`}>
+                            {s.isActive ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {s.currentBalancePKR > 0 && (
+                              <button
+                                onClick={() => { setPaymentSupplier(s); setPaymentAmount(String(s.currentBalancePKR)); }}
+                                className="px-2.5 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-600 text-[11px] font-bold transition"
+                                title="Record a payment to this supplier"
+                              >
+                                Pay
+                              </button>
+                            )}
+                            <button onClick={() => openEditSupplier(s)} className="p-1.5 rounded-lg bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 transition" title="Edit supplier">
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+                            <button onClick={() => handleToggleSupplierActive(s)} className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-500 hover:text-rose-600 transition" title={s.isActive ? 'Deactivate' : 'Reactivate'}>
+                              <Ban className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: STOCK LEDGER (EVERY MOVEMENT BEHIND CURRENT STOCK) */}
+      {activeTab === 'ledger' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Stock Movement History — {selectedBranch?.name || 'This Branch'} (last 30 days)
+              </span>
+              <span className="text-xs text-slate-400">{stockLedger.length} records</span>
+            </div>
+
+            {stockLedger.length === 0 ? (
+              <div className="p-8 text-center text-slate-500 text-xs">
+                No stock movements recorded yet for this branch in the last 30 days. Every PO receipt, transfer, and
+                manual adjustment will show up here as it happens.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="p-3">Date</th>
+                      <th className="p-3">Ingredient</th>
+                      <th className="p-3">Movement</th>
+                      <th className="p-3 text-right">Qty Change</th>
+                      <th className="p-3 text-right">Balance After</th>
+                      <th className="p-3">Reference</th>
+                      <th className="p-3">By</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {stockLedger.map(e => (
+                      <tr key={e.id} className="hover:bg-slate-50 transition">
+                        <td className="p-3 text-slate-500">{new Date(e.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
+                        <td className="p-3 font-bold text-slate-900">{e.ingredientName}</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            e.quantityChange >= 0 ? 'bg-teal-50 text-teal-600 border border-teal-200' : 'bg-rose-50 text-rose-600 border border-rose-200'
+                          }`}>
+                            {e.movementType}
+                          </span>
+                        </td>
+                        <td className={`p-3 text-right font-mono font-black ${e.quantityChange >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
+                          {e.quantityChange > 0 ? '+' : ''}{e.quantityChange}
+                        </td>
+                        <td className="p-3 text-right font-mono text-slate-700">{e.balanceAfter}</td>
+                        <td className="p-3 text-slate-500">{e.referenceType || '—'}{e.notes ? ` · ${e.notes}` : ''}</td>
+                        <td className="p-3 text-slate-500">{e.createdBy}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: WAREHOUSES (STORAGE LOCATIONS WITHIN A BRANCH) */}
+      {activeTab === 'warehouses' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-white border border-slate-200">
+                <span className="text-xs text-slate-500 block">Storage Locations — {selectedBranch?.name || 'This Branch'}</span>
+                <span className="text-lg font-black text-slate-900">{warehouses.length}</span>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsNewWarehouseOpen(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Warehouse</span>
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Most restaurants only need one — add more if you split storage (e.g. a walk-in freezer separate from dry store).
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200">
+                  <tr>
+                    <th className="p-3">Name</th>
+                    <th className="p-3">Code</th>
+                    <th className="p-3">Role</th>
+                    <th className="p-3">Status</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  {warehouses.map(w => (
+                    <tr key={w.id} className="hover:bg-slate-50 transition">
+                      <td className="p-3 font-bold text-slate-900">{w.name}</td>
+                      <td className="p-3 font-mono text-slate-500">{w.code || '—'}</td>
+                      <td className="p-3">
+                        {w.isPrimary && <span className="px-2 py-1 rounded-md bg-teal-50 text-teal-600 border border-teal-200 text-[10px] font-bold">Primary</span>}
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2 py-1 rounded-md text-[10px] font-bold border ${
+                          w.isActive ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'
+                        }`}>
+                          {w.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        {!w.isPrimary && (
+                          <button
+                            onClick={() => handleToggleWarehouseActive(w)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 font-bold text-[11px] transition"
+                          >
+                            {w.isActive ? 'Deactivate' : 'Reactivate'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADD WAREHOUSE */}
+      {isNewWarehouseOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+              <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">
+                <WarehouseIcon className="w-5 h-5" />
+                <span>Add Warehouse</span>
+              </div>
+              <button onClick={() => setIsNewWarehouseOpen(false)} className="text-slate-400 hover:text-slate-900">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Name</label>
+              <input type="text" value={newWarehouseName} onChange={(e) => setNewWarehouseName(e.target.value)}
+                placeholder="e.g. Walk-in Freezer" autoFocus
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Code (optional)</label>
+              <input type="text" value={newWarehouseCode} onChange={(e) => setNewWarehouseCode(e.target.value)}
+                placeholder="e.g. FRZ-1"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+            </div>
+            <button
+              onClick={handleCreateWarehouse}
+              disabled={warehouseSaving || !newWarehouseName.trim()}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+            >
+              {warehouseSaving ? 'Saving…' : 'Add Warehouse'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: RECORD SUPPLIER PAYMENT */}
+      {paymentSupplier && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+              <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">
+                <span>Pay {paymentSupplier.name}</span>
+              </div>
+              <button onClick={() => setPaymentSupplier(null)} className="text-slate-400 hover:text-slate-900">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500">Owed: <span className="font-mono font-bold text-rose-600">{paymentSupplier.currentBalancePKR.toLocaleString()} PKR</span></p>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Amount (PKR)</label>
+              <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
+                max={paymentSupplier.currentBalancePKR}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Payment Method</label>
+              <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
+                <option>Bank Transfer</option>
+                <option>Cash</option>
+                <option>Cheque</option>
+                <option>JazzCash</option>
+                <option>EasyPaisa</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Reference # (optional)</label>
+              <input type="text" value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)}
+                placeholder="Cheque #, transaction ID..."
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+            </div>
+            <button
+              onClick={handleRecordPayment}
+              disabled={paymentSaving || !paymentAmount || Number(paymentAmount) <= 0}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+            >
+              {paymentSaving ? 'Recording…' : 'Record Payment'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ADD / EDIT SUPPLIER */}
+      {supplierModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+              <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">
+                <Building2 className="w-5 h-5" />
+                <span>{supplierModal === 'new' ? 'Add Supplier' : 'Edit Supplier'}</span>
+              </div>
+              <button onClick={() => setSupplierModal(null)} className="text-slate-400 hover:text-slate-900">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Supplier / Vendor Name</label>
+                <input type="text" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })}
+                  placeholder="e.g. Dawn Bread Bakeries" autoFocus
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Contact Person</label>
+                <input type="text" value={supplierForm.contactName} onChange={(e) => setSupplierForm({ ...supplierForm, contactName: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Phone</label>
+                <input type="text" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Email</label>
+                <input type="email" value={supplierForm.email} onChange={(e) => setSupplierForm({ ...supplierForm, email: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Tax / NTN Number</label>
+                <input type="text" value={supplierForm.taxNumber} onChange={(e) => setSupplierForm({ ...supplierForm, taxNumber: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Address</label>
+                <input type="text" value={supplierForm.address} onChange={(e) => setSupplierForm({ ...supplierForm, address: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Payment Terms</label>
+                <input type="text" value={supplierForm.paymentTerms} onChange={(e) => setSupplierForm({ ...supplierForm, paymentTerms: e.target.value })}
+                  placeholder="e.g. Net 30, Cash on Delivery"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+              </div>
+              {supplierModal === 'new' && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Opening Balance Owed (PKR)</label>
+                  <input type="number" value={supplierForm.openingBalancePKR}
+                    onChange={(e) => setSupplierForm({ ...supplierForm, openingBalancePKR: Number(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={handleSaveSupplier}
+              disabled={supplierSaving}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+            >
+              {supplierSaving ? 'Saving…' : supplierModal === 'new' ? 'Add Supplier' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: CREATE INTER-BRANCH TRANSFER */}
       {isNewTransferOpen && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -846,14 +1398,35 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Vendor / Wholesaler Name</label>
-              <input
-                type="text"
-                value={poSupplier}
-                onChange={(e) => setPoSupplier(e.target.value)}
-                placeholder="e.g. Dawn Bread Bakeries, K&N's Poultry"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 font-bold placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
-              />
+              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Vendor / Supplier</label>
+              {suppliers.length > 0 ? (
+                <select
+                  value={poSupplierId}
+                  onChange={(e) => {
+                    const sup = suppliers.find(s => s.id === e.target.value);
+                    setPoSupplierId(e.target.value);
+                    setPoSupplier(sup?.name || '');
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                >
+                  <option value="">— Manual entry (no linked supplier) —</option>
+                  {suppliers.filter(s => s.isActive).map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              ) : null}
+              {!poSupplierId && (
+                <input
+                  type="text"
+                  value={poSupplier}
+                  onChange={(e) => setPoSupplier(e.target.value)}
+                  placeholder="e.g. Dawn Bread Bakeries, K&N's Poultry"
+                  className={`w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 font-bold placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none ${suppliers.length > 0 ? 'mt-2' : ''}`}
+                />
+              )}
+              {suppliers.length === 0 && (
+                <p className="text-[10px] text-slate-400 mt-1">No suppliers added yet — add one from the Suppliers tab to link future POs to their balance.</p>
+              )}
             </div>
 
             <div>

@@ -34,9 +34,11 @@ import {
   Gift,
   CalendarClock,
   Clock,
-  Plug
+  Plug,
+  Landmark,
+  History
 } from 'lucide-react';
-import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import type { ModuleKey, PermissionAction } from '../types';
 
 interface SidebarProps {
@@ -84,6 +86,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
+  // Platform-vendor screens (Tenant Management, Package Pricing) manage every
+  // tenant on the platform, not just this one — they must never show for a
+  // restaurant Owner, even though Owner otherwise bypasses module checks.
+  const isPlatformSuperAdmin = normalizeRole(currentUser?.role) === 'SuperAdmin';
 
   // Menu visibility is driven by the signed-in user's real ModulePermission rows
   // (plus the role baseline), not by which terminal profile this PC is set to.
@@ -209,11 +215,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
     }
 
-    // ── Reporting & analytics → `reports` module
-    if (can('reports')) {
-      sections.push({
-        title: 'Reporting & Analytics',
-        items: [
+    // ── Reporting & analytics → `reports` module (Accounting is `accounts`, shown here too
+    // since the same people who read financial reports run the books).
+    if (can('reports') || can('accounts')) {
+      const reportingItems: NavItem[] = [];
+      if (can('accounts')) {
+        reportingItems.push({
+          id: 'accounting',
+          label: 'Accounting',
+          path: '/accounting',
+          icon: Landmark
+        });
+      }
+      if (can('reports')) {
+        reportingItems.push(
           {
             id: 'reports',
             label: 'Financial Reports',
@@ -249,8 +264,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             path: '/menu-engineering',
             icon: TrendingUp
           }
-        ]
-      });
+        );
+      }
+      sections.push({ title: 'Reporting & Analytics', items: reportingItems });
     }
 
     // ── CRM, loyalty & promotions. Customer lookup is part of taking an order, so
@@ -322,20 +338,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     if (can('admin')) {
-      const platformSubItems: SubMenuItem[] = [
-        { label: 'Tenant Management', path: '/super-admin', icon: Building2 },
-        { label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard },
-        { label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare },
-        { label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard },
-        { label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug }
-      ];
+      const platformSubItems: SubMenuItem[] = [];
+      // Cross-tenant vendor screens — only the platform SuperAdmin (you, the
+      // company) manages every restaurant's tier/status. A restaurant Owner
+      // never sees these, even though Owner otherwise passes module checks.
+      if (isPlatformSuperAdmin) {
+        platformSubItems.push({ label: 'Tenant Management', path: '/super-admin', icon: Building2 });
+        platformSubItems.push({ label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard });
+      }
+      platformSubItems.push({ label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare });
+      platformSubItems.push({ label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard });
+      platformSubItems.push({ label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug });
       if (can('users', 'edit')) {
         platformSubItems.push({ label: 'Permissions', path: '/permissions', icon: Shield });
       }
+      platformSubItems.push({ label: 'Audit Log', path: '/audit-log', icon: History });
       adminItems.push({
         id: 'platformAdmin',
-        label: 'Platform Admin',
-        path: '/super-admin',
+        label: isPlatformSuperAdmin ? 'Platform Admin' : 'Integrations & Access',
+        path: platformSubItems[0].path,
         icon: ShieldCheck,
         subItems: platformSubItems
       });
@@ -365,7 +386,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode, can]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin]);
 
   return (
     <>
