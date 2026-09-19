@@ -2832,17 +2832,22 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
             oldValue: priced.AttemptedDiscountPKR.ToString("0.##"), newValue: "0");
     }
 
-    // KOTs per station
-    var stationGroups = order.Items.GroupBy(i => i.Station);
-    int ticketIndex = 1;
-    foreach (var group in stationGroups)
+    // KOTs per station — skipped for Retail/CashAndCarry tenants, which have no kitchen to route
+    // to. A bag of chips rung up at a shop counter has no business spawning a "Cooking" ticket.
+    var tenantBusinessType = await db.Tenants.Where(t => t.Id == branch.TenantId).Select(t => t.BusinessType).FirstOrDefaultAsync();
+    if (tenantBusinessType != BusinessType.Retail && tenantBusinessType != BusinessType.CashAndCarry)
     {
-        order.KitchenTickets.Add(new KitchenTicket
+        var stationGroups = order.Items.GroupBy(i => i.Station);
+        int ticketIndex = 1;
+        foreach (var group in stationGroups)
         {
-            OrderId = order.Id, BranchId = branch.Id,
-            TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
-            Station = group.Key, Status = "Cooking", CreatedAt = DateTime.UtcNow
-        });
+            order.KitchenTickets.Add(new KitchenTicket
+            {
+                OrderId = order.Id, BranchId = branch.Id,
+                TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
+                Station = group.Key, Status = "Cooking", CreatedAt = DateTime.UtcNow
+            });
+        }
     }
 
     // Mark table occupied

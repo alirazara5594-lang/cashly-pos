@@ -87,6 +87,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
+  // Retail/Cash & Carry tenants have no kitchen and no dine-in tables — those screens
+  // would just be dead weight in their sidebar.
+  const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';
   // Platform-vendor screens (Tenant Management, Package Pricing) manage every
   // tenant on the platform, not just this one — they must never show for a
   // restaurant Owner, even though Owner otherwise bypasses module checks.
@@ -149,16 +152,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
     } else {
       sections.push({
-        title: 'Operations & Dining',
+        title: isRetailBiz ? 'Sales & Orders' : 'Operations & Dining',
         items: [{
           id: 'pos',
-          label: 'POS & Orders',
+          label: isRetailBiz ? 'POS & Sales' : 'POS & Orders',
           path: '/',
           icon: Store,
           subItems: [
             { label: 'POS Terminal (Register)', path: '/', icon: Store },
-            { label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat },
-            { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
+            ...(isRetailBiz ? [] : [{ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat }]),
+            ...(isRetailBiz ? [] : [{ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet }]),
             { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
           ]
         }]
@@ -319,8 +322,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     const menuSubItems: SubMenuItem[] = [];
     if (can('menu')) {
-      menuSubItems.push({ label: 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen });
-      menuSubItems.push({ label: 'Floor & Table Setup', path: '/floors', icon: Armchair });
+      menuSubItems.push({ label: isRetailBiz ? 'Product Catalog' : 'Menu Catalog & Recipes', path: '/menu', icon: BookOpen });
+      if (!isRetailBiz) menuSubItems.push({ label: 'Floor & Table Setup', path: '/floors', icon: Armchair });
     }
     if (can('accounts')) {
       menuSubItems.push({ label: 'Tax Configuration', path: '/tax-configuration', icon: Percent });
@@ -388,7 +391,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin, isRetailBiz]);
 
   return (
     <>

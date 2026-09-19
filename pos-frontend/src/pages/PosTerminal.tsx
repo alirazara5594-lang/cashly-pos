@@ -90,6 +90,15 @@ export const PosTerminal: React.FC = () => {
     setCustomerInfo
   } = usePosStore();
 
+  // Retail/Cash & Carry has no dine-in tables — a shop counter sale is always an
+  // immediate "take it with you" transaction.
+  const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';
+  const orderTypeOptions = (isRetailBiz ? ['Takeaway', 'Delivery'] : ['DineIn', 'Takeaway', 'Delivery']) as OrderType[];
+
+  useEffect(() => {
+    if (isRetailBiz && orderType === 'DineIn') setOrderType('Takeaway');
+  }, [isRetailBiz, orderType, setOrderType]);
+
   // ── Loyalty / promo / gift card extras. Every one of these is optional: leaving
   // the whole section untouched produces exactly the same order payload as before.
   const [lookupPhone, setLookupPhone] = useState('');
@@ -501,7 +510,7 @@ export const PosTerminal: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">
-                  {orderType === 'DineIn' ? (selectedTable || 'Select Table') : orderType === 'Takeaway' ? 'Takeaway' : orderType === 'Delivery' ? 'Delivery' : 'Phone Order'}
+                  {orderType === 'DineIn' ? (selectedTable || 'Select Table') : orderType === 'Takeaway' ? (isRetailBiz ? 'Counter Sale' : 'Takeaway') : orderType === 'Delivery' ? 'Delivery' : 'Phone Order'}
                 </h2>
                 <p className="text-xs text-slate-400">
                   {customerName || 'Walk-in Customer'}
@@ -519,7 +528,7 @@ export const PosTerminal: React.FC = () => {
               )}
             </div>
             <div className="flex gap-2 mt-3">
-              {(['DineIn', 'Takeaway', 'Delivery'] as OrderType[]).map((type) => (
+              {orderTypeOptions.map((type) => (
                 <button
                   key={type}
                   onClick={() => setOrderType(type)}
@@ -529,12 +538,12 @@ export const PosTerminal: React.FC = () => {
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
-                  {type === 'DineIn' ? 'Dine In' : type === 'Takeaway' ? 'Take Away' : 'Delivery'}
+                  {type === 'DineIn' ? 'Dine In' : type === 'Takeaway' ? (isRetailBiz ? 'Counter Sale' : 'Take Away') : 'Delivery'}
                 </button>
               ))}
             </div>
 
-            {orderType === 'DineIn' && (
+            {orderType === 'DineIn' && !isRetailBiz && (
               <div className="mt-3 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-500 font-medium">Table:</span>
@@ -877,6 +886,7 @@ export const PosTerminal: React.FC = () => {
         </div>
       </div>
 
+      {!isRetailBiz && (
       <div className="bg-white border-t border-slate-200 px-4 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
         {tables.length > 0 ? (
           tables.slice(0, 15).map((t) => (
@@ -924,6 +934,7 @@ export const PosTerminal: React.FC = () => {
           + Add Table
         </Link>
       </div>
+      )}
 
       {showParkedModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
