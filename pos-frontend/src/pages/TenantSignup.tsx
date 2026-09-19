@@ -516,13 +516,17 @@ export const TenantSignup: React.FC = () => {
                           <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
                           {active && <Check className="w-4 h-4 text-teal-600" />}
                         </div>
-                        <div className="text-xs text-slate-500 mt-1">
+                        <div className="text-xs text-slate-500 mt-1 leading-relaxed">
                           {pkg.maxBranches >= 999 ? 'Unlimited branches' : `${pkg.maxBranches} branch${pkg.maxBranches > 1 ? 'es' : ''}`}
                           {' · '}
                           {pkg.maxCounters} counter{pkg.maxCounters > 1 ? 's' : ''}
                           {' · '}
+                          {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
+                          {' · '}
                           {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
                           {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
+                          {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
+                          {pkg.hasInventoryManagement ? ' · Inventory' : ''}
                           {pkg.hasMultiBranch ? ' · Multi-branch' : ''}
                         </div>
                       </div>
