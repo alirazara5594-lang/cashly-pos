@@ -2783,7 +2783,8 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
                     {
                         return (Results.Conflict(new { message = $"Insufficient ingredient {ingredient.Name}. Available: {ingredient.CurrentStock}, Need: {totalIngredientQty}" }), null, null);
                     }
-                    ingredient.CurrentStock -= totalIngredientQty;
+                    RecordStockLedgerEntry(db, ingredient, branch.TenantId, branch.Id, StockMovementType.SaleConsumption,
+                        -totalIngredientQty, ingredient.CostPerUnitPKR, "Order", order.Id, order.CashierName ?? "System", $"Order {order.OrderNumber}");
                 }
             }
         }
@@ -2864,6 +2865,9 @@ api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, O
 });
 
 // --- Void Order (requires CanVoidOrders; always audited) ---
+// Reverses everything order creation touched: finished-product stock, recipe ingredient
+// consumption (via the ledger, not a raw mutation), a CustomerKhata tab balance, visit/spend
+// stats, and — if one was posted — the accounting entry (via a reversal, never edited/deleted).
 api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
 {
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
@@ -2872,26 +2876,79 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.A
     if (scopeError != null) return scopeError;
     if (order.Status == OrderStatus.Cancelled) return Results.BadRequest(new { message = "Order already cancelled" });
 
+    var currentUser = await accessor.GetCurrentUserAsync(http);
     order.Status = OrderStatus.Cancelled;
     order.CancelledAt = DateTime.UtcNow;
 
-    // Restore stock
+    // Restore finished-product (retail) stock.
     var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
     var stockDict = await db.BranchStocks.Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
         .ToDictionaryAsync(s => s.ProductId);
-
     foreach (var item in order.Items)
     {
         if (stockDict.TryGetValue(item.ProductId, out var stock))
             stock.QuantityOnHand += item.Quantity;
     }
 
-    var currentUser = await accessor.GetCurrentUserAsync(http);
+    // Restore recipe-based raw ingredients that were consumed, through the ledger (not a raw
+    // mutation) so the audit trail shows the reversal, not just an unexplained stock jump.
+    var recipeDict = await db.ProductRecipeItems.Where(r => productIds.Contains(r.ProductId))
+        .GroupBy(r => r.ProductId).ToDictionaryAsync(g => g.Key, g => g.ToList());
+    var ingredientIds = recipeDict.Values.SelectMany(r => r).Select(r => r.IngredientId).Distinct().ToList();
+    var ingredientDict = await db.Ingredients.Where(i => i.BranchId == order.BranchId && ingredientIds.Contains(i.Id)).ToDictionaryAsync(i => i.Id);
+    foreach (var item in order.Items)
+    {
+        if (!recipeDict.TryGetValue(item.ProductId, out var recipeItems)) continue;
+        foreach (var recipe in recipeItems)
+        {
+            if (!ingredientDict.TryGetValue(recipe.IngredientId, out var ingredient)) continue;
+            var totalQty = recipe.QuantityRequired * item.Quantity;
+            RecordStockLedgerEntry(db, ingredient, order.TenantId, order.BranchId, StockMovementType.Adjustment,
+                totalQty, ingredient.CostPerUnitPKR, "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
+        }
+    }
+
+    // A CustomerKhata order added to what the customer owes — voiding removes that debt, and
+    // the visit/spend stats it contributed (loyalty points earned are left alone: a minor,
+    // non-monetary balance, not worth the risk of a wrong reversal formula drifting from config).
+    if (order.CustomerId != null && order.IsPaid)
+    {
+        var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId.Value);
+        if (customer != null)
+        {
+            customer.TotalVisits = Math.Max(0, customer.TotalVisits - 1);
+            customer.TotalSpentPKR = Math.Max(0, customer.TotalSpentPKR - order.TotalPKR);
+            if (order.PaymentMethod == PaymentMethod.CustomerKhata)
+                customer.CurrentBalancePKR = Math.Max(0, customer.CurrentBalancePKR - order.TotalPKR);
+        }
+    }
+
+    // Reverse the sale's journal entry, if accounting was active when it was posted.
+    var saleEntry = await db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
+        .FirstOrDefaultAsync(j => j.ReferenceType == "Order" && j.ReferenceId == order.Id && j.Status == JournalEntryStatus.Posted);
+    if (saleEntry != null)
+    {
+        try
+        {
+            var reversalLines = saleEntry.Lines.Select(l => (l.Account!.Code, l.CreditPKR, l.DebitPKR)).ToList();
+            var reversal = await PostJournalEntryAsync(db, order.TenantId, order.BranchId, DateTime.UtcNow,
+                $"Reversal of {saleEntry.EntryNumber} — Order #{order.OrderNumber} voided", "Order", order.Id,
+                currentUser?.FullName ?? "System", reversalLines);
+            reversal.ReversalOfEntryId = saleEntry.Id;
+            saleEntry.Status = JournalEntryStatus.Reversed;
+        }
+        catch (Exception ex)
+        {
+            // Same rule as every other auto-post: accounting can lag or fail, the void itself never can.
+            Console.WriteLine($"[Accounting] Failed to reverse journal entry for voided order {order.OrderNumber}: {ex.Message}");
+        }
+    }
+
     await WriteAuditAsync(db, order.TenantId, currentUser, "OrderVoided", "Order", order.Id,
         oldValue: $"{order.OrderNumber} / {order.TotalPKR:0.##}", newValue: dto?.Reason ?? "(no reason given)");
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Order voided and stock restored", orderId = order.Id });
+    return Results.Ok(new { message = "Order voided — stock, customer balance, and accounting reversed", orderId = order.Id });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to void orders. Ask a manager to approve."));
 
 // --- Kitchen Display ---
@@ -3859,7 +3916,15 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     }
 
     await db.SaveChangesAsync();
-    return Results.Ok(user);
+    return Results.Ok(new
+    {
+        id = user.Id, tenantId = user.TenantId, branchId = user.BranchId, fullName = user.FullName, username = user.Username,
+        role = user.Role.ToString(), isActive = user.IsActive, createdAt = user.CreatedAt,
+        department = user.Department, designation = user.Designation, employmentType = user.EmploymentType.ToString(),
+        monthlyRatePKR = user.MonthlyRatePKR, hourlyRatePKR = user.HourlyRatePKR, bankAccountNumber = user.BankAccountNumber,
+        joiningDate = user.JoiningDate, isPayrollEligible = user.IsPayrollEligible, departmentId = user.DepartmentId, designationId = user.DesignationId,
+        permissions = new { user.CanViewFinancialReports, user.CanManageInventory, user.CanManageMenuAndTax, user.CanGiveDiscounts, user.CanVoidOrders }
+    });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
 api.MapDelete("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
@@ -7070,13 +7135,20 @@ api.MapPost("/accounting/periods", async (AppDbContext db, HttpContext http, Cre
     return Results.Ok(period);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage accounting periods."));
 
-api.MapPost("/accounting/periods/{id:guid}/close", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+api.MapPost("/accounting/periods/{id:guid}/close", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, bool confirmStillActive = false) =>
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null) return Results.Unauthorized();
     var period = await db.AccountingPeriods.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
     if (period == null) return Results.NotFound();
     if (period.Status == AccountingPeriodStatus.Closed) return Results.BadRequest(new { message = "Already closed." });
+
+    // Closing a period that still includes today would silently drop the accounting entry for any
+    // sale/payment made later today (the auto-poster never blocks the underlying business action, it
+    // just logs and skips) — require an explicit confirmation instead of letting that happen quietly.
+    var today = DateTime.UtcNow.Date;
+    if (!confirmStillActive && today >= period.PeriodStart.Date && today <= period.PeriodEnd.Date)
+        return Results.BadRequest(new { message = "This period includes today's date. Closing it now means any sale, payment, or payroll posted later today will silently skip the ledger. Pass confirmStillActive=true to close anyway.", stillActive = true });
 
     period.Status = AccountingPeriodStatus.Closed;
     period.ClosedAt = DateTime.UtcNow;
@@ -7175,11 +7247,12 @@ api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http
     var rows = accounts.Select(a =>
     {
         var (debit, credit) = byAccount.TryGetValue(a.Id, out var v) ? v : (0m, 0m);
-        // Normal-balance accounts (Asset/Expense: debit; Liability/Equity/Revenue: credit) are shown
-        // net in their natural column so the trial balance reads the way an accountant expects.
-        var isDebitNormal = a.Type == AccountType.Asset || a.Type == AccountType.Expense;
-        var net = isDebitNormal ? debit - credit : credit - debit;
-        return new { a.Id, a.Code, a.Name, type = a.Type.ToString(), debitBalance = isDebitNormal ? Math.Max(0, net) : 0m, creditBalance = !isDebitNormal ? Math.Max(0, net) : 0m, rawDebit = debit, rawCredit = credit };
+        // A trial balance nets debits against credits per account and reports whichever side the
+        // net lands on — it is NOT about each account's "normal" side. An account sitting on its
+        // non-normal side (e.g. a bank account that's only ever been credited so far) is a real,
+        // valid balance and must still show up, not get clipped to zero.
+        var net = debit - credit;
+        return new { a.Id, a.Code, a.Name, type = a.Type.ToString(), debitBalance = net > 0 ? net : 0m, creditBalance = net < 0 ? -net : 0m, rawDebit = debit, rawCredit = credit };
     }).Where(r => r.rawDebit != 0 || r.rawCredit != 0).ToList();
 
     return Results.Ok(new

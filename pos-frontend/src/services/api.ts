@@ -789,8 +789,8 @@ export const posApi = {
     const res = await api.post<AccountingPeriod>('/api/accounting/periods', data);
     return res.data;
   },
-  closeAccountingPeriod: async (id: string) => {
-    const res = await api.post<AccountingPeriod>(`/api/accounting/periods/${id}/close`);
+  closeAccountingPeriod: async (id: string, confirmStillActive?: boolean) => {
+    const res = await api.post<AccountingPeriod>(`/api/accounting/periods/${id}/close`, null, { params: confirmStillActive ? { confirmStillActive: true } : undefined });
     return res.data;
   },
 

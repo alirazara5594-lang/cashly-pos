@@ -166,7 +166,19 @@ export const AccountingManagement: React.FC = () => {
       await posApi.closeAccountingPeriod(period.id);
       setMessage({ type: 'success', text: 'Period closed' });
       await loadPeriods();
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.response?.data?.stillActive) {
+        if (window.confirm(`${err.response.data.message}\n\nClose it anyway?`)) {
+          try {
+            await posApi.closeAccountingPeriod(period.id, true);
+            setMessage({ type: 'success', text: 'Period closed' });
+            await loadPeriods();
+          } catch (err2) {
+            setMessage({ type: 'error', text: getApiErrorMessage(err2, 'Failed to close period') });
+          }
+        }
+        return;
+      }
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to close period') });
     }
   };
