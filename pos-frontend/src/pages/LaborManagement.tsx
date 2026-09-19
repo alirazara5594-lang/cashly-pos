@@ -19,9 +19,11 @@ import {
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
-import type { AppUser, StaffShiftSchedule, TimeClockEntry, PayrollPeriod, Payslip, PayslipLineType } from '../types';
+import type { AppUser, StaffShiftSchedule, TimeClockEntry, PayrollPeriod, Payslip, PayslipLineType, LeaveRequest, LeaveType } from '../types';
 
-type TabKey = 'schedule' | 'timeclock' | 'payroll';
+type TabKey = 'schedule' | 'timeclock' | 'payroll' | 'leave';
+
+const LEAVE_TYPES: LeaveType[] = ['Annual', 'Sick', 'Casual', 'Unpaid'];
 
 const POSITIONS = ['Cashier', 'Waiter', 'Chef', 'Kitchen Helper', 'Rider', 'Manager', 'Cleaner'];
 
@@ -65,7 +67,7 @@ export const LaborManagement: React.FC = () => {
   // so switching between them while already on this page doesn't remount it —
   // the tab has to react to location.state changing, not just read it once.
   const location = useLocation();
-  const tabFromState = (t: unknown): TabKey => (t === 'timeclock' || t === 'payroll') ? t : 'schedule';
+  const tabFromState = (t: unknown): TabKey => (t === 'timeclock' || t === 'payroll' || t === 'leave') ? t : 'schedule';
   const [activeTab, setActiveTab] = useState<TabKey>(
     tabFromState((location.state as { tab?: TabKey } | null)?.tab)
   );
@@ -92,6 +94,13 @@ export const LaborManagement: React.FC = () => {
   const [from, setFrom] = useState(daysAgoISO(7));
   const [to, setTo] = useState(daysAgoISO(0));
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
+
+  // Leave requests
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [loadingLeave, setLoadingLeave] = useState(true);
+  const [isNewLeaveOpen, setIsNewLeaveOpen] = useState(false);
+  const [leaveForm, setLeaveForm] = useState({ userId: '', leaveType: 'Annual' as LeaveType, startDate: daysAgoISO(0), endDate: daysAgoISO(0), reason: '' });
+  const [leaveSaving, setLeaveSaving] = useState(false);
 
   // Payroll
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
@@ -156,6 +165,51 @@ export const LaborManagement: React.FC = () => {
 
   useEffect(() => { loadSchedules(); }, [loadSchedules]);
   useEffect(() => { loadTimesheet(); }, [loadTimesheet]);
+
+  const loadLeaveRequests = useCallback(async () => {
+    setLoadingLeave(true);
+    try {
+      const data = await posApi.getLeaveRequests({ branchId });
+      setLeaveRequests(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load leave requests') });
+      setLeaveRequests([]);
+    } finally {
+      setLoadingLeave(false);
+    }
+  }, [branchId]);
+
+  useEffect(() => { if (activeTab === 'leave') loadLeaveRequests(); }, [activeTab, loadLeaveRequests]);
+
+  const handleCreateLeave = async () => {
+    if (!leaveForm.userId || !leaveForm.startDate || !leaveForm.endDate || !branchId) return;
+    setLeaveSaving(true);
+    try {
+      await posApi.createLeaveRequest({
+        branchId, userId: leaveForm.userId, leaveType: leaveForm.leaveType,
+        startDate: new Date(leaveForm.startDate).toISOString(), endDate: new Date(leaveForm.endDate).toISOString(),
+        reason: leaveForm.reason.trim() || undefined
+      });
+      setIsNewLeaveOpen(false);
+      setLeaveForm({ userId: '', leaveType: 'Annual', startDate: daysAgoISO(0), endDate: daysAgoISO(0), reason: '' });
+      setMessage({ type: 'success', text: 'Leave request submitted' });
+      await loadLeaveRequests();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to submit leave request') });
+    } finally {
+      setLeaveSaving(false);
+    }
+  };
+
+  const handleReviewLeave = async (leave: LeaveRequest, approve: boolean) => {
+    try {
+      if (approve) await posApi.approveLeaveRequest(leave.id);
+      else await posApi.rejectLeaveRequest(leave.id);
+      await loadLeaveRequests();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to review leave request') });
+    }
+  };
 
   const loadPeriods = useCallback(async () => {
     if (!selectedTenant?.id || !canViewPayroll) return;
@@ -399,6 +453,7 @@ export const LaborManagement: React.FC = () => {
           {([
             { key: 'schedule' as const, label: 'Schedule', icon: CalendarClock },
             { key: 'timeclock' as const, label: 'Time Clock', icon: Clock },
+            { key: 'leave' as const, label: 'Leave', icon: AlertCircle },
             ...(canViewPayroll ? [{ key: 'payroll' as const, label: 'Payroll', icon: Wallet }] : [])
           ]).map(({ key, label, icon: Icon }) => (
             <button
@@ -653,6 +708,134 @@ export const LaborManagement: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'leave' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={loadLeaveRequests}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loadingLeave ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+            {canEdit && (
+              <button
+                onClick={() => { setLeaveForm({ ...leaveForm, userId: staff[0]?.id || '' }); setIsNewLeaveOpen(true); }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Request Leave</span>
+              </button>
+            )}
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-2.5">Staff</th>
+                    <th className="px-4 py-2.5">Type</th>
+                    <th className="px-4 py-2.5">Dates</th>
+                    <th className="px-4 py-2.5 text-right">Days</th>
+                    <th className="px-4 py-2.5">Status</th>
+                    {canEdit && <th className="px-4 py-2.5 text-right">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {loadingLeave ? (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-400">Loading leave requests…</td></tr>
+                  ) : leaveRequests.length === 0 ? (
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-400">No leave requests yet.</td></tr>
+                  ) : leaveRequests.map(l => (
+                    <tr key={l.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 text-xs font-bold text-slate-900">{l.userFullName || staffName(l.userId)}</td>
+                      <td className="px-4 py-2.5">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600 border border-slate-200">{l.leaveType}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-[11px] text-slate-600">
+                        {new Date(l.startDate).toLocaleDateString()} – {new Date(l.endDate).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-xs font-bold text-slate-900">{l.daysRequested}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${
+                          l.status === 'Approved' ? 'bg-teal-50 text-teal-700 border-teal-200'
+                          : l.status === 'Rejected' ? 'bg-rose-50 text-rose-700 border-rose-200'
+                          : l.status === 'Cancelled' ? 'bg-slate-100 text-slate-500 border-slate-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                        }`}>
+                          {l.status}
+                        </span>
+                      </td>
+                      {canEdit && (
+                        <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                          {l.status === 'Pending' && (
+                            <>
+                              <button onClick={() => handleReviewLeave(l, true)} className="text-[11px] font-bold text-teal-600 hover:text-teal-700 mr-3">Approve</button>
+                              <button onClick={() => handleReviewLeave(l, false)} className="text-[11px] font-bold text-rose-600 hover:text-rose-700">Reject</button>
+                            </>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isNewLeaveOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">Request Leave</h2>
+              <button onClick={() => setIsNewLeaveOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Staff Member</label>
+              <select value={leaveForm.userId} onChange={(e) => setLeaveForm({ ...leaveForm, userId: e.target.value })}
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
+                {staff.map(s => <option key={s.id} value={s.id}>{s.fullName}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Leave Type</label>
+              <select value={leaveForm.leaveType} onChange={(e) => setLeaveForm({ ...leaveForm, leaveType: e.target.value as LeaveType })}
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
+                {LEAVE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <input type="date" value={leaveForm.startDate} onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <input type="date" value={leaveForm.endDate} onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Reason (optional)</label>
+              <input type="text" value={leaveForm.reason} onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
+                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+            </div>
+            <button
+              onClick={handleCreateLeave}
+              disabled={leaveSaving || !leaveForm.userId}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{leaveSaving ? 'Submitting…' : 'Submit Request'}</span>
+            </button>
           </div>
         </div>
       )}

@@ -63,6 +63,11 @@ public class AppDbContext : DbContext
     public DbSet<Warehouse> Warehouses => Set<Warehouse>();
     public DbSet<SubscriptionInvoice> SubscriptionInvoices => Set<SubscriptionInvoice>();
     public DbSet<SupplierPayment> SupplierPayments => Set<SupplierPayment>();
+    public DbSet<CustomerPayment> CustomerPayments => Set<CustomerPayment>();
+    public DbSet<Department> Departments => Set<Department>();
+    public DbSet<Designation> Designations => Set<Designation>();
+    public DbSet<LeaveRequest> LeaveRequests => Set<LeaveRequest>();
+    public DbSet<BankReconciliation> BankReconciliations => Set<BankReconciliation>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -430,6 +435,64 @@ public class AppDbContext : DbContext
             .HasOne(sp => sp.Supplier)
             .WithMany()
             .HasForeignKey(sp => sp.SupplierId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CustomerPayment>()
+            .HasIndex(cp => new { cp.CustomerId, cp.PaidAt });
+
+        modelBuilder.Entity<CustomerPayment>()
+            .HasOne(cp => cp.Customer)
+            .WithMany()
+            .HasForeignKey(cp => cp.CustomerId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // --- Departments / Designations ---
+
+        modelBuilder.Entity<Department>()
+            .HasIndex(d => new { d.TenantId, d.Name })
+            .IsUnique();
+
+        modelBuilder.Entity<Designation>()
+            .HasIndex(d => new { d.TenantId, d.Name });
+
+        modelBuilder.Entity<Designation>()
+            .HasOne(d => d.Department)
+            .WithMany()
+            .HasForeignKey(d => d.DepartmentId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<AppUser>()
+            .HasOne<Department>()
+            .WithMany()
+            .HasForeignKey(u => u.DepartmentId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<AppUser>()
+            .HasOne<Designation>()
+            .WithMany()
+            .HasForeignKey(u => u.DesignationId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // --- Leave requests ---
+
+        modelBuilder.Entity<LeaveRequest>()
+            .HasIndex(lr => new { lr.UserId, lr.Status });
+
+        modelBuilder.Entity<LeaveRequest>()
+            .HasOne(lr => lr.User)
+            .WithMany()
+            .HasForeignKey(lr => lr.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // --- Bank reconciliation ---
+
+        modelBuilder.Entity<BankReconciliation>()
+            .HasIndex(br => new { br.AccountId, br.StatementDate });
+
+        modelBuilder.Entity<BankReconciliation>()
+            .HasOne(br => br.Account)
+            .WithMany()
+            .HasForeignKey(br => br.AccountId)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<AddOnSubscription>()

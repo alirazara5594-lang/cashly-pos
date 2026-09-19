@@ -571,6 +571,10 @@ public class AppUser
     public string? BankAccountNumber { get; set; }
     public DateTime? JoiningDate { get; set; }
     public bool IsPayrollEligible { get; set; } = false;
+    /// <summary>Optional link to real master data — when set, takes display precedence over the
+    /// free-text Department/Designation strings above (which remain for backward compatibility).</summary>
+    public Guid? DepartmentId { get; set; }
+    public Guid? DesignationId { get; set; }
 }
 
 public enum EmploymentType
@@ -793,6 +797,9 @@ public class Customer
     public int LoyaltyPoints { get; set; } = 0;
     public int TotalVisits { get; set; } = 0;
     public decimal TotalSpentPKR { get; set; } = 0;
+    /// <summary>Amount owed on a CustomerKhata (pay-later) tab. Increases when an order is settled
+    /// via CustomerKhata, decreases via CustomerPayment — mirrors Supplier.CurrentBalancePKR.</summary>
+    public decimal CurrentBalancePKR { get; set; } = 0;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastVisitAt { get; set; }
 }
@@ -1104,6 +1111,9 @@ public class JournalLine
     public decimal DebitPKR { get; set; } = 0;
     public decimal CreditPKR { get; set; } = 0;
     public string? Description { get; set; }
+    public bool IsReconciled { get; set; } = false;
+    public DateTime? ReconciledAt { get; set; }
+    public Guid? BankReconciliationId { get; set; }
 }
 
 public enum AccountingPeriodStatus
@@ -1194,4 +1204,100 @@ public class SupplierPayment
     public string? Notes { get; set; }
     public DateTime PaidAt { get; set; } = DateTime.UtcNow;
     public string CreatedBy { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Settles part of what a Customer owes on a CustomerKhata (pay-later) tab — the receivables
+/// mirror of SupplierPayment. Decreases Customer.CurrentBalancePKR and posts Debit Cash/Bank,
+/// Credit Accounts Receivable when accounting is set up for the tenant.
+/// </summary>
+public class CustomerPayment
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid CustomerId { get; set; }
+    public Customer? Customer { get; set; }
+    public decimal AmountPKR { get; set; }
+    public string PaymentMethod { get; set; } = "Cash";
+    public string? ReferenceNumber { get; set; }
+    public string? Notes { get; set; }
+    public DateTime PaidAt { get; set; } = DateTime.UtcNow;
+    public string CreatedBy { get; set; } = string.Empty;
+}
+
+// ============================================================
+// Departments & Designations — real master data, promoted out of the free-text
+// AppUser.Department/Designation strings so HQ can manage one standardized list
+// across branches. The free-text fields stay (existing data, walk-in edge cases);
+// these are additive, matched by name where possible, not a breaking migration.
+// ============================================================
+
+public class Department
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public class Designation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public Guid? DepartmentId { get; set; }
+    public Department? Department { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+// ============================================================
+// Leave requests — a formal approval workflow, distinct from the free-form
+// "Notes" field on StaffShiftSchedule/TimeClockEntry.
+// ============================================================
+
+public enum LeaveType { Annual = 1, Sick = 2, Casual = 3, Unpaid = 4 }
+public enum LeaveRequestStatus { Pending = 1, Approved = 2, Rejected = 3, Cancelled = 4 }
+
+public class LeaveRequest
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    public LeaveType LeaveType { get; set; } = LeaveType.Annual;
+    public DateTime StartDate { get; set; }
+    public DateTime EndDate { get; set; }
+    public decimal DaysRequested { get; set; }
+    public string? Reason { get; set; }
+    public LeaveRequestStatus Status { get; set; } = LeaveRequestStatus.Pending;
+    public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
+    public string? ReviewedBy { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? ReviewNotes { get; set; }
+}
+
+// ============================================================
+// Bank reconciliation — matches posted JournalLines against a bank statement.
+// A completed run's balance either matches the statement or the gap is visible,
+// never silently assumed correct.
+// ============================================================
+
+public enum BankReconciliationStatus { InProgress = 1, Completed = 2 }
+
+public class BankReconciliation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid AccountId { get; set; } // the bank/cash Account being reconciled
+    public Account? Account { get; set; }
+    public DateTime StatementDate { get; set; }
+    public decimal StatementBalancePKR { get; set; }
+    public decimal ReconciledBookBalancePKR { get; set; }
+    public BankReconciliationStatus Status { get; set; } = BankReconciliationStatus.InProgress;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? CompletedAt { get; set; }
+    public string? CompletedBy { get; set; }
 }

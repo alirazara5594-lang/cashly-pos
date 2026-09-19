@@ -11,13 +11,15 @@ import {
   Undo2,
   RefreshCw,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Lock,
+  Building
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
-import type { Account, AccountType, JournalEntry, TrialBalanceReport, ProfitLossReport, BalanceSheetReport } from '../types';
+import type { Account, AccountType, JournalEntry, TrialBalanceReport, ProfitLossReport, BalanceSheetReport, AccountingPeriod, UnreconciledReport, BankReconciliation } from '../types';
 
-type TabKey = 'coa' | 'journal' | 'trial-balance' | 'profit-loss' | 'balance-sheet';
+type TabKey = 'coa' | 'journal' | 'trial-balance' | 'profit-loss' | 'balance-sheet' | 'periods' | 'reconciliation';
 
 function daysAgoISO(days: number): string {
   const d = new Date();
@@ -61,6 +63,24 @@ export const AccountingManagement: React.FC = () => {
     { accountCode: '', debitPKR: '', creditPKR: '' }
   ]);
   const [savingEntry, setSavingEntry] = useState(false);
+
+  // Accounting periods
+  const [periods, setPeriods] = useState<AccountingPeriod[]>([]);
+  const [loadingPeriods, setLoadingPeriods] = useState(true);
+  const [isNewPeriodOpen, setIsNewPeriodOpen] = useState(false);
+  const [newPeriodStart, setNewPeriodStart] = useState(daysAgoISO(30));
+  const [newPeriodEnd, setNewPeriodEnd] = useState(daysAgoISO(0));
+  const [periodSaving, setPeriodSaving] = useState(false);
+
+  // Bank reconciliation
+  const [reconAccountCode, setReconAccountCode] = useState('1000');
+  const [unreconciled, setUnreconciled] = useState<UnreconciledReport | null>(null);
+  const [reconHistory, setReconHistory] = useState<BankReconciliation[]>([]);
+  const [selectedLineIds, setSelectedLineIds] = useState<Set<string>>(new Set());
+  const [statementDate, setStatementDate] = useState(daysAgoISO(0));
+  const [statementBalance, setStatementBalance] = useState('');
+  const [loadingRecon, setLoadingRecon] = useState(false);
+  const [reconSaving, setReconSaving] = useState(false);
 
   const loadAccounts = useCallback(async () => {
     if (!selectedTenant?.id) return;
@@ -110,6 +130,100 @@ export const AccountingManagement: React.FC = () => {
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
   useEffect(() => { if (activeTab === 'journal') loadJournal(); }, [activeTab, loadJournal]);
   useEffect(() => { if (activeTab === 'trial-balance' || activeTab === 'profit-loss' || activeTab === 'balance-sheet') loadReports(); }, [activeTab, loadReports]);
+
+  const loadPeriods = useCallback(async () => {
+    if (!selectedTenant?.id) return;
+    setLoadingPeriods(true);
+    try {
+      const data = await posApi.getAccountingPeriods(selectedTenant.id);
+      setPeriods(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load accounting periods') });
+    } finally {
+      setLoadingPeriods(false);
+    }
+  }, [selectedTenant?.id]);
+
+  useEffect(() => { if (activeTab === 'periods') loadPeriods(); }, [activeTab, loadPeriods]);
+
+  const handleCreatePeriod = async () => {
+    setPeriodSaving(true);
+    try {
+      await posApi.createAccountingPeriod({ tenantId: selectedTenant?.id, periodStart: new Date(newPeriodStart).toISOString(), periodEnd: new Date(newPeriodEnd).toISOString() });
+      setIsNewPeriodOpen(false);
+      setMessage({ type: 'success', text: 'Accounting period created' });
+      await loadPeriods();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to create period') });
+    } finally {
+      setPeriodSaving(false);
+    }
+  };
+
+  const handleClosePeriod = async (period: AccountingPeriod) => {
+    if (!window.confirm(`Close the period ${new Date(period.periodStart).toLocaleDateString()} – ${new Date(period.periodEnd).toLocaleDateString()}? No further entries can be posted into it.`)) return;
+    try {
+      await posApi.closeAccountingPeriod(period.id);
+      setMessage({ type: 'success', text: 'Period closed' });
+      await loadPeriods();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to close period') });
+    }
+  };
+
+  const loadReconciliation = useCallback(async () => {
+    if (!selectedTenant?.id || !reconAccountCode) return;
+    setLoadingRecon(true);
+    setSelectedLineIds(new Set());
+    try {
+      const [unrec, history] = await Promise.all([
+        posApi.getUnreconciledLines(reconAccountCode, selectedTenant.id),
+        posApi.getReconciliationHistory(reconAccountCode, selectedTenant.id)
+      ]);
+      setUnreconciled(unrec);
+      setReconHistory(Array.isArray(history) ? history : []);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load bank reconciliation') });
+      setUnreconciled(null);
+    } finally {
+      setLoadingRecon(false);
+    }
+  }, [selectedTenant?.id, reconAccountCode]);
+
+  useEffect(() => { if (activeTab === 'reconciliation') loadReconciliation(); }, [activeTab, loadReconciliation]);
+
+  const toggleLine = (id: string) => {
+    setSelectedLineIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectedLinesTotal = unreconciled?.unreconciledLines
+    .filter(l => selectedLineIds.has(l.id))
+    .reduce((sum, l) => sum + (l.debitPKR - l.creditPKR), 0) ?? 0;
+
+  const handleReconcile = async () => {
+    if (!statementBalance || selectedLineIds.size === 0) return;
+    setReconSaving(true);
+    try {
+      const result: any = await posApi.createBankReconciliation({
+        tenantId: selectedTenant?.id, accountCode: reconAccountCode, statementDate: new Date(statementDate).toISOString(),
+        statementBalancePKR: Number(statementBalance), lineIds: Array.from(selectedLineIds)
+      });
+      setMessage({
+        type: result.matches ? 'success' : 'error',
+        text: result.matches ? 'Reconciled — book and statement balances match.' : `Reconciled with a difference of ${result.differencePKR} PKR — check for missing entries.`
+      });
+      setStatementBalance('');
+      await loadReconciliation();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to reconcile') });
+    } finally {
+      setReconSaving(false);
+    }
+  };
 
   const handleCreateAccount = async () => {
     if (!newAccount.code.trim() || !newAccount.name.trim()) return;
@@ -194,7 +308,9 @@ export const AccountingManagement: React.FC = () => {
             { key: 'journal' as const, label: 'Journal', icon: FileBarChart },
             { key: 'trial-balance' as const, label: 'Trial Balance', icon: Scale },
             { key: 'profit-loss' as const, label: 'P&L', icon: TrendingUp },
-            { key: 'balance-sheet' as const, label: 'Balance Sheet', icon: Landmark }
+            { key: 'balance-sheet' as const, label: 'Balance Sheet', icon: Landmark },
+            { key: 'periods' as const, label: 'Periods', icon: Lock },
+            { key: 'reconciliation' as const, label: 'Bank Reconciliation', icon: Building }
           ]).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -518,6 +634,192 @@ export const AccountingManagement: React.FC = () => {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ACCOUNTING PERIODS */}
+      {activeTab === 'periods' && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-end gap-2">
+            <button onClick={loadPeriods} className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition">
+              <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loadingPeriods ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+            {isOwner && (
+              <button onClick={() => setIsNewPeriodOpen(true)} className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition">
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Period</span>
+              </button>
+            )}
+          </div>
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-2.5">Period</th>
+                    <th className="px-4 py-2.5">Status</th>
+                    <th className="px-4 py-2.5">Closed</th>
+                    {isOwner && <th className="px-4 py-2.5 text-right">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {loadingPeriods ? (
+                    <tr><td colSpan={4} className="px-4 py-8 text-center text-xs text-slate-400">Loading periods…</td></tr>
+                  ) : periods.length === 0 ? (
+                    <tr><td colSpan={4} className="px-4 py-8 text-center text-xs text-slate-400">No accounting periods yet. Books stay open indefinitely until you create and close one.</td></tr>
+                  ) : periods.map(p => (
+                    <tr key={p.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 text-xs font-bold text-slate-900">
+                        {new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${p.status === 'Closed' ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-teal-50 text-teal-700 border-teal-200'}`}>
+                          {p.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-[11px] text-slate-500">{p.closedAt ? `${new Date(p.closedAt).toLocaleDateString()} by ${p.closedBy}` : '—'}</td>
+                      {isOwner && (
+                        <td className="px-4 py-2.5 text-right">
+                          {p.status === 'Open' && (
+                            <button onClick={() => handleClosePeriod(p)} className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700">
+                              <Lock className="w-3 h-3" /> Close Period
+                            </button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANK RECONCILIATION */}
+      {activeTab === 'reconciliation' && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={reconAccountCode} onChange={(e) => setReconAccountCode(e.target.value)}
+              className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
+              {accounts.filter(a => a.type === 'Asset').map(a => <option key={a.id} value={a.code}>{a.code} — {a.name}</option>)}
+            </select>
+            <button onClick={loadReconciliation} className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition">
+              <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loadingRecon ? 'animate-spin' : ''}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
+
+          {unreconciled && (
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  {unreconciled.accountName} — book balance {unreconciled.bookBalancePKR.toLocaleString()} PKR
+                </span>
+                <span className="text-[11px] text-slate-500">Selected: {selectedLinesTotal.toLocaleString()} PKR</span>
+              </div>
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-200 sticky top-0">
+                    <tr>
+                      <th className="p-2 w-8"></th>
+                      <th className="p-2">Entry</th>
+                      <th className="p-2">Description</th>
+                      <th className="p-2 text-right">Debit</th>
+                      <th className="p-2 text-right">Credit</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {unreconciled.unreconciledLines.length === 0 ? (
+                      <tr><td colSpan={5} className="p-6 text-center text-slate-400">Everything is reconciled for this account.</td></tr>
+                    ) : unreconciled.unreconciledLines.map(l => (
+                      <tr key={l.id} className={`hover:bg-slate-50 ${selectedLineIds.has(l.id) ? 'bg-teal-50/50' : ''}`}>
+                        <td className="p-2"><input type="checkbox" checked={selectedLineIds.has(l.id)} onChange={() => toggleLine(l.id)} className="w-3.5 h-3.5 accent-teal-500" /></td>
+                        <td className="p-2 font-mono text-slate-500">{l.entryNumber}<div className="text-[10px] text-slate-400">{new Date(l.entryDate).toLocaleDateString()}</div></td>
+                        <td className="p-2 text-slate-700">{l.description}</td>
+                        <td className="p-2 text-right font-mono">{l.debitPKR > 0 ? l.debitPKR.toLocaleString() : ''}</td>
+                        <td className="p-2 text-right font-mono">{l.creditPKR > 0 ? l.creditPKR.toLocaleString() : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {isOwner && unreconciled.unreconciledLines.length > 0 && (
+                <div className="p-4 border-t border-slate-200 flex flex-wrap items-end gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Statement Date</label>
+                    <input type="date" value={statementDate} onChange={(e) => setStatementDate(e.target.value)}
+                      className="mt-1 block px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Statement Balance (PKR)</label>
+                    <input type="number" value={statementBalance} onChange={(e) => setStatementBalance(e.target.value)}
+                      className="mt-1 block px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
+                  </div>
+                  <button
+                    onClick={handleReconcile}
+                    disabled={reconSaving || !statementBalance || selectedLineIds.size === 0}
+                    className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{reconSaving ? 'Reconciling…' : `Reconcile ${selectedLineIds.size} Line(s)`}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {reconHistory.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Reconciliation History</span>
+              </div>
+              <table className="w-full text-left text-xs">
+                <tbody className="divide-y divide-slate-100">
+                  {reconHistory.map(r => (
+                    <tr key={r.id}>
+                      <td className="p-3 text-slate-500">{new Date(r.statementDate).toLocaleDateString()}</td>
+                      <td className="p-3 text-slate-700">Statement: {r.statementBalancePKR.toLocaleString()}</td>
+                      <td className="p-3 text-slate-700">Book: {r.reconciledBookBalancePKR.toLocaleString()}</td>
+                      <td className="p-3">{r.completedBy}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isNewPeriodOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">New Accounting Period</h2>
+              <button onClick={() => setIsNewPeriodOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <input type="date" value={newPeriodStart} onChange={(e) => setNewPeriodStart(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <input type="date" value={newPeriodEnd} onChange={(e) => setNewPeriodEnd(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
+              </div>
+            </div>
+            <button
+              onClick={handleCreatePeriod}
+              disabled={periodSaving}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{periodSaving ? 'Creating…' : 'Create Period'}</span>
+            </button>
+          </div>
         </div>
       )}
 

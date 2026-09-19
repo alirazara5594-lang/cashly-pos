@@ -385,6 +385,8 @@ export interface AppUser {
   bankAccountNumber?: string;
   joiningDate?: string;
   isPayrollEligible?: boolean;
+  departmentId?: string;
+  designationId?: string;
 }
 
 export type TransferStatus = 'Requested' | 'InTransit' | 'Received' | 'Cancelled';
@@ -715,6 +717,7 @@ export interface Customer {
   loyaltyPoints: number;
   totalVisits: number;
   totalSpentPKR: number;
+  currentBalancePKR: number;
   createdAt: string;
   lastVisitAt?: string;
 }
@@ -916,6 +919,105 @@ export interface SubscriptionInvoice {
   paidAt?: string;
   paymentMethod?: string;
   notes?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// HR — Departments, Designations, Leave
+// ─────────────────────────────────────────────────────────────
+
+export interface Department {
+  id: string;
+  tenantId: string;
+  name: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface Designation {
+  id: string;
+  tenantId: string;
+  name: string;
+  departmentId?: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export type LeaveType = 'Annual' | 'Sick' | 'Casual' | 'Unpaid';
+export type LeaveRequestStatus = 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
+
+export interface LeaveRequest {
+  id: string;
+  userId: string;
+  userFullName?: string;
+  branchId: string;
+  leaveType: LeaveType;
+  startDate: string;
+  endDate: string;
+  daysRequested: number;
+  reason?: string;
+  status: LeaveRequestStatus;
+  requestedAt: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Accounting periods & bank reconciliation
+// ─────────────────────────────────────────────────────────────
+
+export type AccountingPeriodStatus = 'Open' | 'Closed';
+
+export interface AccountingPeriod {
+  id: string;
+  tenantId: string;
+  periodStart: string;
+  periodEnd: string;
+  status: AccountingPeriodStatus;
+  closedAt?: string;
+  closedBy?: string;
+}
+
+export interface UnreconciledLine {
+  id: string;
+  entryNumber: string;
+  entryDate: string;
+  description: string;
+  debitPKR: number;
+  creditPKR: number;
+}
+
+export interface UnreconciledReport {
+  accountCode: string;
+  accountName: string;
+  bookBalancePKR: number;
+  unreconciledLines: UnreconciledLine[];
+}
+
+export interface BankReconciliation {
+  id: string;
+  accountId: string;
+  statementDate: string;
+  statementBalancePKR: number;
+  reconciledBookBalancePKR: number;
+  status: 'InProgress' | 'Completed';
+  completedAt?: string;
+  completedBy?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Customer payments (AR)
+// ─────────────────────────────────────────────────────────────
+
+export interface CustomerPayment {
+  id: string;
+  customerId: string;
+  amountPKR: number;
+  paymentMethod: string;
+  referenceNumber?: string;
+  notes?: string;
+  paidAt: string;
+  createdBy: string;
 }
 
 // ─────────────────────────────────────────────────────────────

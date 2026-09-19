@@ -59,7 +59,15 @@ import type {
   BalanceSheetReport,
   AuditLogPage,
   Warehouse,
-  SubscriptionInvoice
+  SubscriptionInvoice,
+  Department,
+  Designation,
+  LeaveRequest,
+  LeaveType,
+  AccountingPeriod,
+  UnreconciledReport,
+  BankReconciliation,
+  CustomerPayment
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -714,6 +722,86 @@ export const posApi = {
   },
   recordSupplierPayment: async (supplierId: string, data: { amountPKR: number; paymentMethod?: string; referenceNumber?: string; notes?: string }) => {
     const res = await api.post(`/api/suppliers/${supplierId}/payments`, data);
+    return res.data;
+  },
+
+  // ── Customer payments (AR)
+  getCustomerPayments: async (customerId: string) => {
+    const res = await api.get<CustomerPayment[]>(`/api/customers/${customerId}/payments`);
+    return res.data;
+  },
+  recordCustomerPayment: async (customerId: string, data: { amountPKR: number; paymentMethod?: string; referenceNumber?: string; notes?: string }) => {
+    const res = await api.post(`/api/customers/${customerId}/payments`, data);
+    return res.data;
+  },
+
+  // ── HR: Departments, Designations, Leave
+  getDepartments: async (tenantId?: string) => {
+    const res = await api.get<Department[]>('/api/hr/departments', { params: { tenantId } });
+    return res.data;
+  },
+  createDepartment: async (data: { tenantId?: string; name: string }) => {
+    const res = await api.post<Department>('/api/hr/departments', data);
+    return res.data;
+  },
+  updateDepartment: async (id: string, data: { name?: string; isActive?: boolean }) => {
+    const res = await api.put<Department>(`/api/hr/departments/${id}`, data);
+    return res.data;
+  },
+  getDesignations: async (tenantId?: string, departmentId?: string) => {
+    const res = await api.get<Designation[]>('/api/hr/designations', { params: { tenantId, departmentId } });
+    return res.data;
+  },
+  createDesignation: async (data: { tenantId?: string; name: string; departmentId?: string }) => {
+    const res = await api.post<Designation>('/api/hr/designations', data);
+    return res.data;
+  },
+  updateDesignation: async (id: string, data: { name?: string; departmentId?: string; isActive?: boolean }) => {
+    const res = await api.put<Designation>(`/api/hr/designations/${id}`, data);
+    return res.data;
+  },
+  getLeaveRequests: async (params?: { userId?: string; branchId?: string; status?: string }) => {
+    const res = await api.get<LeaveRequest[]>('/api/hr/leave-requests', { params });
+    return res.data;
+  },
+  createLeaveRequest: async (data: { branchId?: string; userId: string; leaveType: LeaveType; startDate: string; endDate: string; daysRequested?: number; reason?: string }) => {
+    const res = await api.post<LeaveRequest>('/api/hr/leave-requests', data);
+    return res.data;
+  },
+  approveLeaveRequest: async (id: string, notes?: string) => {
+    const res = await api.post<LeaveRequest>(`/api/hr/leave-requests/${id}/approve`, { notes });
+    return res.data;
+  },
+  rejectLeaveRequest: async (id: string, notes?: string) => {
+    const res = await api.post<LeaveRequest>(`/api/hr/leave-requests/${id}/reject`, { notes });
+    return res.data;
+  },
+
+  // ── Accounting periods
+  getAccountingPeriods: async (tenantId?: string) => {
+    const res = await api.get<AccountingPeriod[]>('/api/accounting/periods', { params: { tenantId } });
+    return res.data;
+  },
+  createAccountingPeriod: async (data: { tenantId?: string; periodStart: string; periodEnd: string }) => {
+    const res = await api.post<AccountingPeriod>('/api/accounting/periods', data);
+    return res.data;
+  },
+  closeAccountingPeriod: async (id: string) => {
+    const res = await api.post<AccountingPeriod>(`/api/accounting/periods/${id}/close`);
+    return res.data;
+  },
+
+  // ── Bank reconciliation
+  getUnreconciledLines: async (accountCode: string, tenantId?: string) => {
+    const res = await api.get<UnreconciledReport>('/api/accounting/reconciliation/unreconciled', { params: { accountCode, tenantId } });
+    return res.data;
+  },
+  createBankReconciliation: async (data: { tenantId?: string; accountCode: string; statementDate: string; statementBalancePKR: number; lineIds: string[] }) => {
+    const res = await api.post('/api/accounting/reconciliation', data);
+    return res.data;
+  },
+  getReconciliationHistory: async (accountCode: string, tenantId?: string) => {
+    const res = await api.get<BankReconciliation[]>('/api/accounting/reconciliation/history', { params: { accountCode, tenantId } });
     return res.data;
   },
 

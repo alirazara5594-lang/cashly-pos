@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
-import type { AppUser, UserRole } from '../types';
+import type { AppUser, UserRole, Department, Designation } from '../types';
 
 export const UserManagement: React.FC = () => {
   const { selectedTenant, selectedBranch } = usePosStore();
@@ -41,10 +41,52 @@ export const UserManagement: React.FC = () => {
   // Payroll quick-edit (set after the account exists — the create endpoint doesn't take these yet)
   const [payrollUser, setPayrollUser] = useState<AppUser | null>(null);
   const [payrollForm, setPayrollForm] = useState({
-    department: '', designation: '', employmentType: 'FullTime' as 'FullTime' | 'PartTime' | 'Contract',
+    departmentId: '', designationId: '', employmentType: 'FullTime' as 'FullTime' | 'PartTime' | 'Contract',
     monthlyRatePKR: '0', hourlyRatePKR: '0', bankAccountNumber: '', isPayrollEligible: false
   });
   const [payrollSaving, setPayrollSaving] = useState(false);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
+
+  const loadHrLists = async () => {
+    try {
+      const [depts, desigs] = await Promise.all([
+        posApi.getDepartments(selectedTenant?.id),
+        posApi.getDesignations(selectedTenant?.id)
+      ]);
+      setDepartments(Array.isArray(depts) ? depts : []);
+      setDesignations(Array.isArray(desigs) ? desigs : []);
+    } catch {
+      setDepartments([]);
+      setDesignations([]);
+    }
+  };
+
+  const handleQuickAddDepartment = async () => {
+    const name = window.prompt('New department name:');
+    if (!name?.trim()) return;
+    try {
+      const dept = await posApi.createDepartment({ tenantId: selectedTenant?.id, name: name.trim() });
+      setDepartments(prev => [...prev, dept]);
+      setPayrollForm(prev => ({ ...prev, departmentId: dept.id }));
+    } catch (err) {
+      console.error(err);
+      alert('Failed to add department');
+    }
+  };
+
+  const handleQuickAddDesignation = async () => {
+    const name = window.prompt('New designation name:');
+    if (!name?.trim()) return;
+    try {
+      const desig = await posApi.createDesignation({ tenantId: selectedTenant?.id, name: name.trim(), departmentId: payrollForm.departmentId || undefined });
+      setDesignations(prev => [...prev, desig]);
+      setPayrollForm(prev => ({ ...prev, designationId: desig.id }));
+    } catch (err) {
+      console.error(err);
+      alert('Failed to add designation');
+    }
+  };
 
   const fetchUsers = async () => {
     if (!selectedTenant?.id) return;
@@ -61,6 +103,8 @@ export const UserManagement: React.FC = () => {
 
   useEffect(() => {
     fetchUsers();
+    loadHrLists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTenant?.id, selectedBranch?.id]);
 
   // Quick preset helper when selecting a role
@@ -151,8 +195,8 @@ export const UserManagement: React.FC = () => {
 
   const openPayrollEdit = (user: AppUser) => {
     setPayrollForm({
-      department: user.department || '',
-      designation: user.designation || '',
+      departmentId: user.departmentId || '',
+      designationId: user.designationId || '',
       employmentType: user.employmentType || 'FullTime',
       monthlyRatePKR: String(user.monthlyRatePKR ?? 0),
       hourlyRatePKR: String(user.hourlyRatePKR ?? 0),
@@ -167,8 +211,10 @@ export const UserManagement: React.FC = () => {
     setPayrollSaving(true);
     try {
       await posApi.updateUser(payrollUser.id, {
-        department: payrollForm.department || null,
-        designation: payrollForm.designation || null,
+        // Guid? fields: omit (undefined) rather than send an empty string, which the server's
+        // Guid binder can't parse — "" is not a sentinel it understands, only a real Guid or absence.
+        departmentId: payrollForm.departmentId || undefined,
+        designationId: payrollForm.designationId || undefined,
         employmentType: payrollForm.employmentType,
         monthlyRatePKR: Number(payrollForm.monthlyRatePKR) || 0,
         hourlyRatePKR: Number(payrollForm.hourlyRatePKR) || 0,
@@ -543,15 +589,27 @@ export const UserManagement: React.FC = () => {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Department</label>
-                <input type="text" value={payrollForm.department} onChange={(e) => setPayrollForm({ ...payrollForm, department: e.target.value })}
-                  placeholder="e.g. Kitchen, Front of House"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+                <div className="flex gap-1">
+                  <select value={payrollForm.departmentId} onChange={(e) => setPayrollForm({ ...payrollForm, departmentId: e.target.value })}
+                    className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
+                    <option value="">— None —</option>
+                    {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <button type="button" onClick={handleQuickAddDepartment}
+                    className="px-2.5 rounded-xl bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 text-xs font-bold transition" title="Add new department">+</button>
+                </div>
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Designation</label>
-                <input type="text" value={payrollForm.designation} onChange={(e) => setPayrollForm({ ...payrollForm, designation: e.target.value })}
-                  placeholder="e.g. Head Chef"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
+                <div className="flex gap-1">
+                  <select value={payrollForm.designationId} onChange={(e) => setPayrollForm({ ...payrollForm, designationId: e.target.value })}
+                    className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
+                    <option value="">— None —</option>
+                    {designations.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                  <button type="button" onClick={handleQuickAddDesignation}
+                    className="px-2.5 rounded-xl bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 text-xs font-bold transition" title="Add new designation">+</button>
+                </div>
               </div>
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Employment Type</label>

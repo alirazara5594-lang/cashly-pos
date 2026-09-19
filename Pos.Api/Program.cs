@@ -936,6 +936,107 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // Customer AR, Departments/Designations, Leave requests, Bank reconciliation.
+        await db.Database.ExecuteSqlRawAsync(@"
+            ALTER TABLE ""Customers"" ADD COLUMN IF NOT EXISTS ""CurrentBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""DepartmentId"" uuid;
+            ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""DesignationId"" uuid;
+            ALTER TABLE ""JournalLines"" ADD COLUMN IF NOT EXISTS ""IsReconciled"" boolean NOT NULL DEFAULT false;
+            ALTER TABLE ""JournalLines"" ADD COLUMN IF NOT EXISTS ""ReconciledAt"" timestamp with time zone;
+            ALTER TABLE ""JournalLines"" ADD COLUMN IF NOT EXISTS ""BankReconciliationId"" uuid;
+
+            CREATE TABLE IF NOT EXISTS ""CustomerPayments"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""CustomerId"" uuid NOT NULL,
+                ""AmountPKR"" numeric(18,2) NOT NULL,
+                ""PaymentMethod"" text NOT NULL DEFAULT 'Cash',
+                ""ReferenceNumber"" text,
+                ""Notes"" text,
+                ""PaidAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CreatedBy"" text NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS ""Departments"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Name"" text NOT NULL,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""Designations"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Name"" text NOT NULL,
+                ""DepartmentId"" uuid,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ""LeaveRequests"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""UserId"" uuid NOT NULL,
+                ""LeaveType"" integer NOT NULL DEFAULT 1,
+                ""StartDate"" timestamp with time zone NOT NULL,
+                ""EndDate"" timestamp with time zone NOT NULL,
+                ""DaysRequested"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Reason"" text,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""RequestedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ReviewedBy"" text,
+                ""ReviewedAt"" timestamp with time zone,
+                ""ReviewNotes"" text
+            );
+            CREATE TABLE IF NOT EXISTS ""BankReconciliations"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""AccountId"" uuid NOT NULL,
+                ""StatementDate"" timestamp with time zone NOT NULL,
+                ""StatementBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""ReconciledBookBalancePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CompletedAt"" timestamp with time zone,
+                ""CompletedBy"" text
+            );
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_CustomerPayments_CustomerId_PaidAt') THEN
+                    CREATE INDEX ""IX_CustomerPayments_CustomerId_PaidAt"" ON ""CustomerPayments"" (""CustomerId"", ""PaidAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Departments_TenantId_Name') THEN
+                    CREATE UNIQUE INDEX ""IX_Departments_TenantId_Name"" ON ""Departments"" (""TenantId"", ""Name"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Designations_TenantId_Name') THEN
+                    CREATE INDEX ""IX_Designations_TenantId_Name"" ON ""Designations"" (""TenantId"", ""Name"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_LeaveRequests_UserId_Status') THEN
+                    CREATE INDEX ""IX_LeaveRequests_UserId_Status"" ON ""LeaveRequests"" (""UserId"", ""Status"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_BankReconciliations_AccountId_StatementDate') THEN
+                    CREATE INDEX ""IX_BankReconciliations_AccountId_StatementDate"" ON ""BankReconciliations"" (""AccountId"", ""StatementDate"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_customerpayments_customers') THEN
+                    ALTER TABLE ""CustomerPayments"" ADD CONSTRAINT ""fk_customerpayments_customers"" FOREIGN KEY (""CustomerId"") REFERENCES ""Customers""(""Id"") ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_designations_departments') THEN
+                    ALTER TABLE ""Designations"" ADD CONSTRAINT ""fk_designations_departments"" FOREIGN KEY (""DepartmentId"") REFERENCES ""Departments""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_users_departments') THEN
+                    ALTER TABLE ""Users"" ADD CONSTRAINT ""fk_users_departments"" FOREIGN KEY (""DepartmentId"") REFERENCES ""Departments""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_users_designations') THEN
+                    ALTER TABLE ""Users"" ADD CONSTRAINT ""fk_users_designations"" FOREIGN KEY (""DesignationId"") REFERENCES ""Designations""(""Id"") ON DELETE SET NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_leaverequests_users') THEN
+                    ALTER TABLE ""LeaveRequests"" ADD CONSTRAINT ""fk_leaverequests_users"" FOREIGN KEY (""UserId"") REFERENCES ""Users""(""Id"") ON DELETE CASCADE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_bankreconciliations_accounts') THEN
+                    ALTER TABLE ""BankReconciliations"" ADD CONSTRAINT ""fk_bankreconciliations_accounts"" FOREIGN KEY (""AccountId"") REFERENCES ""Accounts""(""Id"") ON DELETE RESTRICT;
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -1181,6 +1282,11 @@ static async Task<JournalEntry> PostJournalEntryAsync(
         throw new InvalidOperationException($"Journal entry does not balance: debit {totalDebit} != credit {totalCredit}.");
     if (totalDebit == 0)
         throw new InvalidOperationException("Journal entry has no amount.");
+
+    var closedPeriod = await db.AccountingPeriods.FirstOrDefaultAsync(p =>
+        p.TenantId == tenantId && p.Status == AccountingPeriodStatus.Closed && entryDate >= p.PeriodStart && entryDate <= p.PeriodEnd);
+    if (closedPeriod != null)
+        throw new InvalidOperationException($"The accounting period covering {entryDate:yyyy-MM-dd} is closed — it cannot be posted to.");
 
     var codes = lines.Select(l => l.AccountCode).Distinct().ToList();
     var accounts = await db.Accounts.Where(a => a.TenantId == tenantId && codes.Contains(a.Code)).ToDictionaryAsync(a => a.Code);
@@ -1606,6 +1712,10 @@ static async Task ApplyPostSaleCustomerUpdatesAsync(AppDbContext db, Order order
     customer.TotalVisits += 1;
     customer.TotalSpentPKR += order.TotalPKR;
     customer.LastVisitAt = DateTime.UtcNow;
+
+    // CustomerKhata = a running tab settled later — the sale is final (IsPaid), the cash isn't in yet.
+    if (order.PaymentMethod == PaymentMethod.CustomerKhata)
+        customer.CurrentBalancePKR += order.TotalPKR;
 
     if (priced.LoyaltyPointsRedeemed > 0)
         customer.LoyaltyPoints = Math.Max(0, customer.LoyaltyPoints - priced.LoyaltyPointsRedeemed);
@@ -3716,6 +3826,8 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     if (dto.BankAccountNumber != null) user.BankAccountNumber = dto.BankAccountNumber;
     if (dto.JoiningDate.HasValue) user.JoiningDate = dto.JoiningDate.Value;
     if (dto.IsPayrollEligible.HasValue) user.IsPayrollEligible = dto.IsPayrollEligible.Value;
+    if (dto.DepartmentId.HasValue) user.DepartmentId = dto.DepartmentId.Value == Guid.Empty ? null : dto.DepartmentId.Value;
+    if (dto.DesignationId.HasValue) user.DesignationId = dto.DesignationId.Value == Guid.Empty ? null : dto.DesignationId.Value;
 
     var after = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
     if (before != after)
@@ -5615,6 +5727,56 @@ api.MapPut("/customers/{id:guid}", async (AppDbContext db, HttpContext http, Pos
     return Results.Ok(customer);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
+// --- Customer payments (settles a CustomerKhata tab — the AR mirror of supplier payments) ---
+api.MapGet("/customers/{id:guid}/payments", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == scopedTenantId.Value);
+    if (customer == null) return Results.NotFound();
+    var payments = await db.CustomerPayments.Where(p => p.CustomerId == id).OrderByDescending(p => p.PaidAt).ToListAsync();
+    return Results.Ok(payments);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPost("/customers/{id:guid}/payments", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, RecordCustomerPaymentDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == scopedTenantId.Value);
+    if (customer == null) return Results.NotFound();
+    if (dto.AmountPKR <= 0) return Results.BadRequest(new { message = "Payment amount must be greater than zero." });
+    if (dto.AmountPKR > customer.CurrentBalancePKR)
+        return Results.BadRequest(new { message = $"Payment ({dto.AmountPKR}) exceeds what this customer owes ({customer.CurrentBalancePKR})." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var payment = new CustomerPayment
+    {
+        TenantId = scopedTenantId.Value, CustomerId = id, AmountPKR = dto.AmountPKR,
+        PaymentMethod = dto.PaymentMethod ?? "Cash", ReferenceNumber = dto.ReferenceNumber, Notes = dto.Notes,
+        CreatedBy = currentUser?.FullName ?? "System"
+    };
+    db.CustomerPayments.Add(payment);
+    customer.CurrentBalancePKR -= dto.AmountPKR;
+
+    if (await HasAccountingAsync(db, scopedTenantId.Value))
+    {
+        try
+        {
+            var receiveAccount = (dto.PaymentMethod ?? "").Contains("Cash", StringComparison.OrdinalIgnoreCase) ? "1000" : "1010";
+            await PostJournalEntryAsync(db, scopedTenantId.Value, null, payment.PaidAt,
+                $"Payment received from customer — {customer.FullName}", "CustomerPayment", payment.Id, payment.CreatedBy,
+                new List<(string, decimal, decimal)> { (receiveAccount, dto.AmountPKR, 0), ("1100", 0, dto.AmountPKR) });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post journal entry for customer payment {payment.Id}: {ex.Message}");
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { payment, customer.CurrentBalancePKR });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
 // ============================================================
 // LOYALTY PROGRAMME
 // ============================================================
@@ -6346,6 +6508,146 @@ api.MapGet("/labor/timesheet/export", async (AppDbContext db, HttpContext http, 
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
 
 // ============================================================
+// HR — Departments, Designations (real master data, promoted out of the free-text
+// AppUser fields) and Leave Requests. Gated with the "labor" baseline like the rest
+// of scheduling — a BranchManager can run their own branch's day-to-day HR.
+// ============================================================
+
+api.MapGet("/hr/departments", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var rows = await db.Departments.Where(d => d.TenantId == scopedTenantId.Value).OrderBy(d => d.Name).ToListAsync();
+    return Results.Ok(rows);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+api.MapPost("/hr/departments", async (AppDbContext db, HttpContext http, CreateDepartmentDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "Department name is required." });
+    if (await db.Departments.AnyAsync(d => d.TenantId == scopedTenantId.Value && d.Name == dto.Name.Trim()))
+        return Results.BadRequest(new { message = "A department with this name already exists." });
+    var dept = new Department { TenantId = scopedTenantId.Value, Name = dto.Name.Trim() };
+    db.Departments.Add(dept);
+    await db.SaveChangesAsync();
+    return Results.Ok(dept);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPut("/hr/departments/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateDepartmentDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var dept = await db.Departments.FirstOrDefaultAsync(d => d.Id == id && d.TenantId == scopedTenantId.Value);
+    if (dept == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.Name)) dept.Name = dto.Name.Trim();
+    if (dto.IsActive.HasValue) dept.IsActive = dto.IsActive.Value;
+    await db.SaveChangesAsync();
+    return Results.Ok(dept);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapGet("/hr/designations", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? departmentId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var query = db.Designations.Where(d => d.TenantId == scopedTenantId.Value).AsQueryable();
+    if (departmentId.HasValue) query = query.Where(d => d.DepartmentId == departmentId.Value);
+    return Results.Ok(await query.OrderBy(d => d.Name).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+api.MapPost("/hr/designations", async (AppDbContext db, HttpContext http, CreateDesignationDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "Designation name is required." });
+    var designation = new Designation { TenantId = scopedTenantId.Value, Name = dto.Name.Trim(), DepartmentId = dto.DepartmentId };
+    db.Designations.Add(designation);
+    await db.SaveChangesAsync();
+    return Results.Ok(designation);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPut("/hr/designations/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateDesignationDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var designation = await db.Designations.FirstOrDefaultAsync(d => d.Id == id && d.TenantId == scopedTenantId.Value);
+    if (designation == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.Name)) designation.Name = dto.Name.Trim();
+    if (dto.DepartmentId.HasValue) designation.DepartmentId = dto.DepartmentId.Value == Guid.Empty ? null : dto.DepartmentId.Value;
+    if (dto.IsActive.HasValue) designation.IsActive = dto.IsActive.Value;
+    await db.SaveChangesAsync();
+    return Results.Ok(designation);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+// --- Leave requests ---
+api.MapGet("/hr/leave-requests", async (AppDbContext db, HttpContext http, Guid? userId, Guid? branchId, string? status) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var effectiveBranchId = http.GetBranchId() ?? branchId;
+    var query = db.LeaveRequests.Include(l => l.User).Where(l => l.TenantId == scopedTenantId.Value).AsQueryable();
+    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty) query = query.Where(l => l.BranchId == effectiveBranchId.Value);
+    if (userId.HasValue) query = query.Where(l => l.UserId == userId.Value);
+    if (!string.IsNullOrEmpty(status) && Enum.TryParse<LeaveRequestStatus>(status, out var st)) query = query.Where(l => l.Status == st);
+    var rows = await query.OrderByDescending(l => l.RequestedAt).ToListAsync();
+    return Results.Ok(rows.Select(l => new
+    {
+        l.Id, l.UserId, userFullName = l.User?.FullName, l.BranchId, leaveType = l.LeaveType.ToString(),
+        l.StartDate, l.EndDate, l.DaysRequested, l.Reason, status = l.Status.ToString(),
+        l.RequestedAt, l.ReviewedBy, l.ReviewedAt, l.ReviewNotes
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "view"));
+
+api.MapPost("/hr/leave-requests", async (AppDbContext db, HttpContext http, CreateLeaveRequestDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    if (dto.EndDate < dto.StartDate) return Results.BadRequest(new { message = "End date must be on or after the start date." });
+
+    var days = dto.DaysRequested ?? (decimal)(dto.EndDate.Date - dto.StartDate.Date).TotalDays + 1;
+    var leave = new LeaveRequest
+    {
+        TenantId = scopedTenantId!.Value, BranchId = scopedBranchId!.Value, UserId = dto.UserId,
+        LeaveType = dto.LeaveType, StartDate = dto.StartDate, EndDate = dto.EndDate, DaysRequested = days, Reason = dto.Reason
+    };
+    db.LeaveRequests.Add(leave);
+    await db.SaveChangesAsync();
+    return Results.Ok(leave);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPost("/hr/leave-requests/{id:guid}/approve", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, ReviewLeaveRequestDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var leave = await db.LeaveRequests.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == scopedTenantId.Value);
+    if (leave == null) return Results.NotFound();
+    if (leave.Status != LeaveRequestStatus.Pending) return Results.BadRequest(new { message = $"Already {leave.Status}." });
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    leave.Status = LeaveRequestStatus.Approved;
+    leave.ReviewedBy = currentUser?.FullName ?? "System";
+    leave.ReviewedAt = DateTime.UtcNow;
+    leave.ReviewNotes = dto.Notes;
+    await db.SaveChangesAsync();
+    return Results.Ok(leave);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+api.MapPost("/hr/leave-requests/{id:guid}/reject", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, ReviewLeaveRequestDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var leave = await db.LeaveRequests.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == scopedTenantId.Value);
+    if (leave == null) return Results.NotFound();
+    if (leave.Status != LeaveRequestStatus.Pending) return Results.BadRequest(new { message = $"Already {leave.Status}." });
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    leave.Status = LeaveRequestStatus.Rejected;
+    leave.ReviewedBy = currentUser?.FullName ?? "System";
+    leave.ReviewedAt = DateTime.UtcNow;
+    leave.ReviewNotes = dto.Notes;
+    await db.SaveChangesAsync();
+    return Results.Ok(leave);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("labor", "edit"));
+
+// ============================================================
 // PAYROLL — wages are more sensitive than shift scheduling, so unlike the rest of
 // "labor" this is gated on CanViewFinancialReports (read) and Owner/SuperAdmin (write),
 // not the BranchManager-friendly labor baseline.
@@ -6631,6 +6933,120 @@ api.MapPost("/accounting/journal-entries/{id:guid}/reverse", async (AppDbContext
     return Results.Ok(reversal);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can reverse journal entries."));
 
+// --- Accounting periods (close the books — no posting into a closed range) ---
+api.MapGet("/accounting/periods", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var periods = await db.AccountingPeriods.Where(p => p.TenantId == scopedTenantId.Value).OrderByDescending(p => p.PeriodStart).ToListAsync();
+    return Results.Ok(periods);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view accounting periods."));
+
+api.MapPost("/accounting/periods", async (AppDbContext db, HttpContext http, CreateAccountingPeriodDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    if (dto.PeriodEnd <= dto.PeriodStart) return Results.BadRequest(new { message = "Period end must be after period start." });
+    var overlaps = await db.AccountingPeriods.AnyAsync(p => p.TenantId == scopedTenantId.Value && dto.PeriodStart < p.PeriodEnd && dto.PeriodEnd > p.PeriodStart);
+    if (overlaps) return Results.BadRequest(new { message = "This period overlaps an existing accounting period." });
+
+    var period = new AccountingPeriod { TenantId = scopedTenantId.Value, PeriodStart = dto.PeriodStart, PeriodEnd = dto.PeriodEnd };
+    db.AccountingPeriods.Add(period);
+    await db.SaveChangesAsync();
+    return Results.Ok(period);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage accounting periods."));
+
+api.MapPost("/accounting/periods/{id:guid}/close", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var period = await db.AccountingPeriods.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == scopedTenantId.Value);
+    if (period == null) return Results.NotFound();
+    if (period.Status == AccountingPeriodStatus.Closed) return Results.BadRequest(new { message = "Already closed." });
+
+    period.Status = AccountingPeriodStatus.Closed;
+    period.ClosedAt = DateTime.UtcNow;
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    period.ClosedBy = currentUser?.FullName ?? "System";
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "AccountingPeriodClosed", "AccountingPeriod", period.Id, null,
+        $"{period.PeriodStart:yyyy-MM-dd} to {period.PeriodEnd:yyyy-MM-dd}");
+    await db.SaveChangesAsync();
+    return Results.Ok(period);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can close accounting periods."));
+
+// --- Bank reconciliation ---
+api.MapGet("/accounting/reconciliation/unreconciled", async (AppDbContext db, HttpContext http, Guid? tenantId, string accountCode) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.TenantId == scopedTenantId.Value && a.Code == accountCode);
+    if (account == null) return Results.NotFound(new { message = $"No account with code {accountCode}." });
+
+    var lines = await db.JournalLines.Include(l => l.JournalEntry)
+        .Where(l => l.AccountId == account.Id && !l.IsReconciled && l.JournalEntry!.Status == JournalEntryStatus.Posted)
+        .OrderBy(l => l.JournalEntry!.EntryDate).ToListAsync();
+
+    var bookBalance = await db.JournalLines.Include(l => l.JournalEntry)
+        .Where(l => l.AccountId == account.Id && l.JournalEntry!.Status == JournalEntryStatus.Posted)
+        .SumAsync(l => l.DebitPKR - l.CreditPKR);
+
+    return Results.Ok(new
+    {
+        accountCode = account.Code, accountName = account.Name, bookBalancePKR = bookBalance,
+        unreconciledLines = lines.Select(l => new
+        {
+            l.Id, entryNumber = l.JournalEntry!.EntryNumber, entryDate = l.JournalEntry!.EntryDate,
+            description = l.JournalEntry!.Description, l.DebitPKR, l.CreditPKR
+        })
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view accounting."));
+
+api.MapPost("/accounting/reconciliation", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateBankReconciliationDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.TenantId == scopedTenantId.Value && a.Code == dto.AccountCode);
+    if (account == null) return Results.NotFound(new { message = $"No account with code {dto.AccountCode}." });
+    if (dto.LineIds == null || dto.LineIds.Count == 0) return Results.BadRequest(new { message = "Select at least one line to reconcile." });
+
+    var lines = await db.JournalLines.Where(l => dto.LineIds.Contains(l.Id) && l.AccountId == account.Id && !l.IsReconciled).ToListAsync();
+    if (lines.Count != dto.LineIds.Count) return Results.BadRequest(new { message = "One or more selected lines were already reconciled or don't belong to this account." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var recon = new BankReconciliation
+    {
+        TenantId = scopedTenantId.Value, AccountId = account.Id, StatementDate = dto.StatementDate,
+        StatementBalancePKR = dto.StatementBalancePKR, Status = BankReconciliationStatus.Completed,
+        CompletedAt = DateTime.UtcNow, CompletedBy = currentUser?.FullName ?? "System"
+    };
+
+    var reconciledDelta = lines.Sum(l => l.DebitPKR - l.CreditPKR);
+    var priorReconciledBalance = await db.JournalLines.Where(l => l.AccountId == account.Id && l.IsReconciled).SumAsync(l => l.DebitPKR - l.CreditPKR);
+    recon.ReconciledBookBalancePKR = priorReconciledBalance + reconciledDelta;
+
+    foreach (var line in lines)
+    {
+        line.IsReconciled = true;
+        line.ReconciledAt = recon.CompletedAt;
+        line.BankReconciliationId = recon.Id;
+    }
+    db.BankReconciliations.Add(recon);
+    await db.SaveChangesAsync();
+
+    var difference = Math.Round(recon.ReconciledBookBalancePKR - dto.StatementBalancePKR, 2);
+    return Results.Ok(new { recon.Id, recon.ReconciledBookBalancePKR, recon.StatementBalancePKR, differencePKR = difference, matches = difference == 0 });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can reconcile bank accounts."));
+
+api.MapGet("/accounting/reconciliation/history", async (AppDbContext db, HttpContext http, Guid? tenantId, string accountCode) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, tenantId);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.TenantId == scopedTenantId.Value && a.Code == accountCode);
+    if (account == null) return Results.NotFound();
+    var history = await db.BankReconciliations.Where(r => r.AccountId == account.Id).OrderByDescending(r => r.StatementDate).ToListAsync();
+    return Results.Ok(history);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view accounting."));
+
 api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
@@ -6883,7 +7299,8 @@ public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, str
 public record RecipeItemInputDto(Guid IngredientId, decimal QuantityRequired, string? Unit);
 public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders);
 public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders,
-    string? Department = null, string? Designation = null, EmploymentType? EmploymentType = null, decimal? MonthlyRatePKR = null, decimal? HourlyRatePKR = null, string? BankAccountNumber = null, DateTime? JoiningDate = null, bool? IsPayrollEligible = null);
+    string? Department = null, string? Designation = null, EmploymentType? EmploymentType = null, decimal? MonthlyRatePKR = null, decimal? HourlyRatePKR = null, string? BankAccountNumber = null, DateTime? JoiningDate = null, bool? IsPayrollEligible = null,
+    Guid? DepartmentId = null, Guid? DesignationId = null);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 public record CreateTransferItemDto(Guid IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit);
@@ -6970,6 +7387,7 @@ public record TenantSettingsDto(
 // --- CRM / loyalty / gift cards / promos ---
 public record CreateCustomerDto(string? FullName, string Phone, string? Email);
 public record UpdateCustomerDto(string? FullName, string? Phone, string? Email, int? LoyaltyPoints);
+public record RecordCustomerPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes);
 public record LoyaltyConfigDto(bool? IsEnabled, decimal? PointsPerPKRSpent, decimal? PKRValuePerPoint, int? MinRedeemPoints);
 public record LoyaltyRedeemDto(Guid CustomerId, int PointsToRedeem);
 public record IssueGiftCardDto(decimal InitialBalancePKR, Guid? IssuedToCustomerId, DateTime? ExpiresAt);
@@ -6987,6 +7405,14 @@ public record ClockInDto(Guid UserId, Guid? BranchId);
 public record ClockOutDto(Guid TimeClockEntryId);
 
 // --- Payroll ---
+// --- HR (Departments/Designations/Leave) ---
+public record CreateDepartmentDto(Guid? TenantId, string Name);
+public record UpdateDepartmentDto(string? Name, bool? IsActive);
+public record CreateDesignationDto(Guid? TenantId, string Name, Guid? DepartmentId);
+public record UpdateDesignationDto(string? Name, Guid? DepartmentId, bool? IsActive);
+public record CreateLeaveRequestDto(Guid? BranchId, Guid UserId, LeaveType LeaveType, DateTime StartDate, DateTime EndDate, decimal? DaysRequested, string? Reason);
+public record ReviewLeaveRequestDto(string? Notes);
+
 public record CreatePayrollPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd, string? Notes);
 public record AddPayslipLineDto(PayslipLineType Type, string Description, decimal AmountPKR);
 public record MarkPayslipPaidDto(string? PaymentMethod);
@@ -6997,5 +7423,7 @@ public record UpdateAccountDto(string? Name, string? SubType, bool? IsActive);
 public record JournalLineInputDto(string AccountCode, decimal DebitPKR, decimal CreditPKR);
 public record CreateJournalEntryDto(Guid? TenantId, Guid? BranchId, DateTime? EntryDate, string Description, List<JournalLineInputDto> Lines);
 public record ReverseJournalEntryDto(string? Reason);
+public record CreateAccountingPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd);
+public record CreateBankReconciliationDto(Guid? TenantId, string AccountCode, DateTime StatementDate, decimal StatementBalancePKR, List<Guid> LineIds);
 
 

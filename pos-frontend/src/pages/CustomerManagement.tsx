@@ -45,6 +45,10 @@ export const CustomerManagement: React.FC = () => {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
 
+  const [paymentCustomer, setPaymentCustomer] = useState<Customer | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+
   const loadCustomers = useCallback(async (term?: string) => {
     setLoading(true);
     try {
@@ -112,6 +116,25 @@ export const CustomerManagement: React.FC = () => {
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to save customer') });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleRecordPayment = async () => {
+    if (!paymentCustomer || !paymentAmount) return;
+    setPaymentSaving(true);
+    try {
+      await posApi.recordCustomerPayment(paymentCustomer.id, { amountPKR: Number(paymentAmount) });
+      setMessage({ type: 'success', text: 'Payment recorded' });
+      setPaymentCustomer(null);
+      setPaymentAmount('');
+      await loadCustomers(search);
+      const refreshed = await posApi.getCustomers(paymentCustomer.phone);
+      const updated = Array.isArray(refreshed) ? refreshed.find((c: Customer) => c.id === paymentCustomer.id) : null;
+      if (updated) setSelected(updated);
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to record payment') });
+    } finally {
+      setPaymentSaving(false);
     }
   };
 
@@ -267,6 +290,23 @@ export const CustomerManagement: React.FC = () => {
                 </p>
               )}
 
+              {selected.currentBalancePKR > 0 && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between">
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-wider text-rose-600">Owed on Tab (CustomerKhata)</p>
+                    <p className="text-sm font-black text-rose-700">{selected.currentBalancePKR.toLocaleString()} PKR</p>
+                  </div>
+                  {canEdit && (
+                    <button
+                      onClick={() => { setPaymentCustomer(selected); setPaymentAmount(String(selected.currentBalancePKR)); }}
+                      className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white text-[11px] font-bold transition"
+                    >
+                      Record Payment
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="pt-2 border-t border-slate-100">
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">
                   Recent Visits
@@ -342,6 +382,32 @@ export const CustomerManagement: React.FC = () => {
             >
               <Save className="w-3.5 h-3.5" />
               <span>{saving ? 'Saving…' : 'Save Customer'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {paymentCustomer && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">Pay Down — {paymentCustomer.fullName}</h2>
+              <button onClick={() => setPaymentCustomer(null)} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-[11px] text-slate-500">Owed: <span className="font-mono font-bold text-rose-600">{paymentCustomer.currentBalancePKR.toLocaleString()} PKR</span></p>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
+              <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
+                max={paymentCustomer.currentBalancePKR}
+                className="mt-1 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
+            </div>
+            <button
+              onClick={handleRecordPayment}
+              disabled={paymentSaving || !paymentAmount || Number(paymentAmount) <= 0}
+              className="w-full py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{paymentSaving ? 'Recording…' : 'Record Payment'}</span>
             </button>
           </div>
         </div>
