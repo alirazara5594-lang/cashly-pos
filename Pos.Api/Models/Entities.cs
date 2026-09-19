@@ -72,6 +72,8 @@ public class Tenant
     public string ContactPhone { get; set; } = string.Empty;
     public string? City { get; set; }
     public string? Address { get; set; }
+    public string Country { get; set; } = "Pakistan";
+    public string? State { get; set; }
     public BusinessType BusinessType { get; set; } = BusinessType.Restaurant;
     public SubscriptionTier Tier { get; set; } = SubscriptionTier.Starter;
     public bool IsActive { get; set; } = true;

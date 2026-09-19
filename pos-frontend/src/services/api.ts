@@ -72,7 +72,8 @@ import type {
   BankReconciliation,
   CustomerPayment,
   BusinessType,
-  PublicPackage
+  PublicPackage,
+  CountryProfile
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -917,12 +918,19 @@ export const posApi = {
     phone: string;
     city?: string;
     address?: string;
+    country?: string;
+    stateCode?: string;
+    stateName?: string;
     adminUsername: string;
     adminPin: string;
     businessType?: BusinessType;
     packageKey?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
+    return res.data;
+  },
+  getCountries: async () => {
+    const res = await api.get<CountryProfile[]>('/api/public/countries');
     return res.data;
   },
 

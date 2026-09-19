@@ -300,6 +300,8 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactPhone"" text NOT NULL DEFAULT '';
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""City"" text;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Address"" text;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Country"" text NOT NULL DEFAULT 'Pakistan';
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""State"" text;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""IsTrialActive"" boolean NOT NULL DEFAULT true;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TrialEndsAt"" timestamp with time zone NOT NULL DEFAULT NOW();
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""SubscriptionPaidUntil"" timestamp with time zone;
@@ -4787,6 +4789,14 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
         ? parsedTier
         : SubscriptionTier.Starter;
 
+    // Drives currency/phone/tax starting defaults below. Falls back to Pakistan's own profile
+    // (first entry in Detailed) when the country wasn't recognized — same behavior as before this
+    // country picker existed.
+    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)
+        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan")!;
+    var matchedState = countryProfile.States?.FirstOrDefault(s =>
+        s.Code == dto.StateCode || (dto.StateName != null && s.Name.Equals(dto.StateName, StringComparison.OrdinalIgnoreCase)));
+
     using var transaction = await db.Database.BeginTransactionAsync();
 
     try
@@ -4800,6 +4810,8 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
             ContactEmail = dto.Email.Trim().ToLower(),
             ContactPhone = dto.Phone.Trim(),
             City = dto.City?.Trim(),
+            Country = countryProfile.Name,
+            State = matchedState?.Name ?? dto.StateName?.Trim(),
             BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
             Tier = tier,
             IsActive = true,
@@ -4808,7 +4820,9 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
         };
         db.Tenants.Add(tenant);
 
-        // 2. Create head office branch, sized to the chosen plan's per-branch limits.
+        // 2. Create head office branch, sized to the chosen plan's per-branch limits. Pakistan's
+        // provincial tax jurisdiction (PK-PB, PK-SD, ...) is looked up by RegionCode elsewhere in
+        // this file — wiring it here means the province picked at signup takes effect immediately.
         var branch = new Branch
         {
             TenantId = tenant.Id,
@@ -4818,6 +4832,7 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
             City = dto.City ?? "Islamabad",
             Phone = dto.Phone,
             IsHeadOffice = true,
+            RegionCode = countryProfile.Iso2 == "PK" ? matchedState?.Code : null,
             AllowedCounters = chosenPackage?.MaxCounters ?? 1,
             AllowedOrderTabs = chosenPackage?.MaxOrderTabs ?? 3
         };
@@ -4841,22 +4856,29 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
         };
         db.Users.Add(adminUser);
 
-        // Seed default tenant settings
+        // Seed default tenant settings from the chosen country's profile. Numbers here are a
+        // starting point the owner can edit in Tax Configuration — not a compliance guarantee
+        // (see the long comment on CountryTaxProfiles for why).
+        var isPakistan = countryProfile.Iso2 == "PK";
         var tenantSettings = new TenantSettings
         {
             TenantId = tenant.Id,
-            CurrencyCode = "PKR",
-            CurrencySymbol = "₨",
-            DecimalPlaces = 0,
-            TaxAuthorityName = "FBR",
-            DefaultTaxRate = 16,
-            UseDualTaxRate = true,
-            DigitalTaxRate = 8,
-            PhoneCode = "+92",
-            DefaultCity = "Islamabad",
+            CountryCode = countryProfile.Iso2,
+            CurrencyCode = countryProfile.CurrencyCode,
+            CurrencySymbol = countryProfile.CurrencySymbol,
+            DecimalPlaces = countryProfile.CurrencyCode == "PKR" ? 0 : 2,
+            TaxAuthorityName = countryProfile.TaxAuthorityName ?? "Not yet configured",
+            DefaultTaxRate = countryProfile.DefaultTaxRate ?? 0,
+            UseDualTaxRate = countryProfile.UseDualTaxRate,
+            DigitalTaxRate = countryProfile.DigitalTaxRate ?? 0,
+            UseProvincialTax = isPakistan && matchedState != null,
+            PhoneCode = countryProfile.PhoneCode,
+            DefaultCity = dto.City?.Trim() ?? "",
             DateFormat = "dd/MM/yyyy",
             ReceiptFooter = "Thank you for your visit!",
-            AllowedPaymentMethods = "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
+            AllowedPaymentMethods = isPakistan
+                ? "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
+                : "Cash,Card,CustomerKhata"
         };
         db.TenantSettings.Add(tenantSettings);
 
@@ -4873,6 +4895,10 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
                 slug = tenant.Slug,
                 tier = tenant.Tier.ToString(),
                 businessType = tenant.BusinessType.ToString(),
+                country = tenant.Country,
+                state = tenant.State,
+                currencyCode = countryProfile.CurrencyCode,
+                taxNote = countryProfile.TaxNote,
                 trialEndsAt = tenant.TrialEndsAt
             },
             admin = new
@@ -4908,7 +4934,7 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
         .Select(t => new
         {
             t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
-            t.City, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
+            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
             t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt,
             branchCount = t.Branches.Count,
             userCount = t.Branches.SelectMany(b => b.Terminals).Count()
@@ -5300,6 +5326,9 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
         .ToListAsync();
     return Results.Ok(packages);
 });
+
+// Reference data for the signup wizard's country/state picker + starting tax config preview.
+app.MapGet("/api/public/countries", () => Results.Ok(Pos.Api.Data.CountryTaxProfiles.All));
 
 // Get tenant's current package features (for runtime gating)
 app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =>
@@ -7672,7 +7701,7 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
-public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey);
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName);
 public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil);
 public record WhatsAppConfigDto(string Provider, string? ApiKey, string? ApiSecret, string? PhoneNumberId, string? AccessToken, string? WebhookUrl, bool IsEnabled, bool AutoSendOrderUpdates, bool AutoSendReceipt);
 public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);

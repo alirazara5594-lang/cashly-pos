@@ -38,6 +38,27 @@ export interface TaxJurisdiction {
 export type BusinessType = 'Restaurant' | 'Retail' | 'CashAndCarry' | 'Hybrid';
 export type SubscriptionTier = 'Starter' | 'Standard' | 'Professional';
 
+export interface CountryState {
+  code: string;
+  name: string;
+}
+
+/** Shape returned by the anonymous GET /api/public/countries, used to build the signup country/state picker. */
+export interface CountryProfile {
+  name: string;
+  iso2: string;
+  phoneCode: string;
+  currencyCode: string;
+  currencySymbol: string;
+  taxAuthorityName: string | null;
+  defaultTaxRate: number | null;
+  digitalTaxRate: number | null;
+  useDualTaxRate: boolean;
+  useProvincialTax: boolean;
+  taxNote: string;
+  states: CountryState[] | null;
+}
+
 /** Shape returned by the anonymous GET /api/public/packages, used to build the plan picker on signup. */
 export interface PublicPackage {
   packageKey: string;
@@ -207,6 +228,7 @@ export interface Tenant {
   tier: SubscriptionTier;
   isActive: boolean;
   branches: Branch[];
+  country?: string;
 }
 
 export interface DirectorKPIs {
