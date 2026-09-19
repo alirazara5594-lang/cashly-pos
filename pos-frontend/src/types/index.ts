@@ -37,6 +37,28 @@ export interface TaxJurisdiction {
 
 export type BusinessType = 'Restaurant' | 'Retail' | 'CashAndCarry' | 'Hybrid';
 export type SubscriptionTier = 'Starter' | 'Standard' | 'Professional';
+
+/** Shape returned by the anonymous GET /api/public/packages, used to build the plan picker on signup. */
+export interface PublicPackage {
+  packageKey: string;
+  displayName: string;
+  monthlyPricePKR: number;
+  yearlyPricePKR: number;
+  maxBranches: number;
+  maxCounters: number;
+  maxOrderTabs: number;
+  maxUsers: number;
+  hasKitchenDisplay: boolean;
+  hasDeliveryCOD: boolean;
+  hasInventoryManagement: boolean;
+  hasStockTransfers: boolean;
+  hasDirectorDashboard: boolean;
+  hasConsolidatedReports: boolean;
+  hasWhatsAppMessaging: boolean;
+  hasAdvancedReports: boolean;
+  hasMultiBranch: boolean;
+  whatsAppMessagesPerMonth: number;
+}
 export type TerminalType = 'Counter' | 'OrderTab' | 'KitchenDisplay';
 export type OrderType = 'DineIn' | 'Takeaway' | 'Delivery' | 'CallOrder';
 export type OrderStatus = 'New' | 'InKitchen' | 'ReadyForDispatch' | 'OutForDelivery' | 'Completed' | 'Cancelled';
@@ -350,6 +372,7 @@ export interface CurrentUser {
 
 export interface LoginResponse {
   token: string;
+  refreshToken?: string;
   user: CurrentUser & { permissions?: AuthPermissions };
 }
 

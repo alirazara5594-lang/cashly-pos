@@ -69,6 +69,7 @@ public class AppDbContext : DbContext
     public DbSet<LeaveRequest> LeaveRequests => Set<LeaveRequest>();
     public DbSet<BankReconciliation> BankReconciliations => Set<BankReconciliation>();
     public DbSet<AddOnCatalogItem> AddOnCatalogItems => Set<AddOnCatalogItem>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -502,6 +503,13 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<AddOnSubscription>()
             .HasIndex(a => new { a.TenantId, a.AddOnKey });
+
+        modelBuilder.Entity<RefreshToken>()
+            .HasIndex(r => r.TokenHash)
+            .IsUnique();
+
+        modelBuilder.Entity<RefreshToken>()
+            .HasIndex(r => new { r.UserId, r.RevokedAt, r.ExpiresAt });
 
         modelBuilder.Entity<AddOnSubscription>()
             .HasOne(aos => aos.Tenant)

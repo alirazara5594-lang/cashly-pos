@@ -1323,3 +1323,26 @@ public class AddOnCatalogItem
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
+
+// ============================================================
+// Refresh tokens — lets a signed-in session outlive the short-lived access JWT
+// without forcing a re-login. Only the SHA-256 hash is stored (never the raw
+// token), same principle as PinCodeHash: a DB read alone can't impersonate a
+// session. Rotated on every use (old one revoked, new one issued) so a stolen
+// token that gets reused after the legitimate client already rotated is a
+// detectable signal, not a silent free pass.
+// ============================================================
+
+public class RefreshToken
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public Guid TenantId { get; set; }
+    public string TokenHash { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime ExpiresAt { get; set; }
+    public DateTime? RevokedAt { get; set; }
+    public Guid? ReplacedByTokenId { get; set; }
+    public string? CreatedByIp { get; set; }
+    public bool IsSuperAdminToken { get; set; } = false;
+}

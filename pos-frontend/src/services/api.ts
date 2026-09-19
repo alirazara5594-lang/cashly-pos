@@ -70,7 +70,9 @@ import type {
   AccountingPeriod,
   UnreconciledReport,
   BankReconciliation,
-  CustomerPayment
+  CustomerPayment,
+  BusinessType,
+  PublicPackage
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -100,6 +102,7 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/login',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
+  '/api/auth/refresh',
   '/api/setup/status',
   '/api/setup/initialize',
   '/api/setup/pairing-info',
@@ -136,23 +139,59 @@ export function registerAuthRedirect(fn: UnauthorizedHandler | null) {
   onUnauthorized = fn;
 }
 
+function clearSession() {
+  localStorage.removeItem('cashly_pos_token');
+  localStorage.removeItem('cashly_pos_refresh_token');
+  localStorage.removeItem('cashly_pos_user');
+}
+
+// The access token is short-lived (2h) on purpose — this is what keeps a shift-long
+// session alive without kicking the cashier back to the PIN screen mid-order. Concurrent
+// 401s share one in-flight refresh call instead of each firing their own.
+let refreshInFlight: Promise<string | null> | null = null;
+
+async function tryRefreshToken(): Promise<string | null> {
+  const storedRefreshToken = localStorage.getItem('cashly_pos_refresh_token');
+  if (!storedRefreshToken) return null;
+  if (!refreshInFlight) {
+    refreshInFlight = api
+      .post<LoginResponse>('/api/auth/refresh', { refreshToken: storedRefreshToken })
+      .then((res) => {
+        if (!res.data.token) return null;
+        localStorage.setItem('cashly_pos_token', res.data.token);
+        if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+        localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+        return res.data.token;
+      })
+      .catch(() => null)
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     // Every /api/* endpoint except the public ones above now requires a valid JWT.
-    // A 401 therefore means the session is invalid or expired: drop it and send
-    // the user back to the mandatory login gate.
+    // A 401 therefore means the session is invalid or expired.
     if (error.response?.status === 401 && !isPublicEndpoint(error.config?.url)) {
-      // Only tear down when a token was actually sent. A 401 on a request that
-      // carried no token just means we're not signed in yet (e.g. the setup
-      // wizard probing tenants) — tearing down there would eject the user from
-      // the installation flow.
+      // Only act when a token was actually sent. A 401 on a request that carried no
+      // token just means we're not signed in yet (e.g. the setup wizard probing
+      // tenants) — tearing down there would eject the user from the installation flow.
       const sentToken = !!error.config?.headers?.Authorization;
+      if (sentToken && !error.config?._retriedAfterRefresh) {
+        const newToken = await tryRefreshToken();
+        if (newToken) {
+          error.config._retriedAfterRefresh = true;
+          error.config.headers.Authorization = `Bearer ${newToken}`;
+          return api.request(error.config);
+        }
+      }
       if (sentToken) {
-        // Clear the raw keys first so the request interceptor stops sending a
-        // dead token even if the handler below is not registered yet.
-        localStorage.removeItem('cashly_pos_token');
-        localStorage.removeItem('cashly_pos_user');
+        // Refresh failed too (or there was nothing to refresh) — the session is
+        // genuinely over. Clear the raw keys first so the request interceptor stops
+        // sending a dead token even if the handler below is not registered yet.
+        clearSession();
         try {
           onUnauthorized?.();
         } catch {
@@ -170,13 +209,19 @@ export const posApi = {
     const res = await api.post<LoginResponse>('/api/auth/login', { username, pinCode });
     if (res.data.token) {
       localStorage.setItem('cashly_pos_token', res.data.token);
+      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
       localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
     }
     return res.data;
   },
   logout: () => {
-    localStorage.removeItem('cashly_pos_token');
-    localStorage.removeItem('cashly_pos_user');
+    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    clearSession();
+    if (refreshToken) {
+      // Best-effort — revokes the refresh token server-side so a copy of it left in an
+      // old browser tab or a stolen device can't silently mint new access tokens later.
+      api.post('/api/auth/logout', { refreshToken }).catch(() => {});
+    }
   },
 
   /**
@@ -874,6 +919,8 @@ export const posApi = {
     address?: string;
     adminUsername: string;
     adminPin: string;
+    businessType?: BusinessType;
+    packageKey?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;
@@ -881,7 +928,12 @@ export const posApi = {
 
   // SAAS — Super Admin Login
   superAdminLogin: async (username: string, pinCode: string) => {
-    const res = await api.post('/api/auth/super-admin-login', { username, pinCode });
+    const res = await api.post<LoginResponse>('/api/auth/super-admin-login', { username, pinCode });
+    if (res.data.token) {
+      localStorage.setItem('cashly_pos_token', res.data.token);
+      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+    }
     return res.data;
   },
 
@@ -946,7 +998,7 @@ export const posApi = {
     return res.data;
   },
   getPublicPackages: async () => {
-    const res = await api.get('/api/public/packages');
+    const res = await api.get<PublicPackage[]>('/api/public/packages');
     return res.data;
   },
   createPackage: async (data: any) => {

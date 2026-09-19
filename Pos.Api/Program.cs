@@ -1059,6 +1059,30 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // Refresh tokens — lets a session outlive the short-lived access JWT without re-login.
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""RefreshTokens"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""UserId"" uuid NOT NULL,
+                ""TenantId"" uuid NOT NULL,
+                ""TokenHash"" text NOT NULL,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ExpiresAt"" timestamp with time zone NOT NULL,
+                ""RevokedAt"" timestamp with time zone,
+                ""ReplacedByTokenId"" uuid,
+                ""CreatedByIp"" text,
+                ""IsSuperAdminToken"" boolean NOT NULL DEFAULT false
+            );
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_RefreshTokens_TokenHash') THEN
+                    CREATE UNIQUE INDEX ""IX_RefreshTokens_TokenHash"" ON ""RefreshTokens"" (""TokenHash"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_RefreshTokens_UserId_RevokedAt_ExpiresAt') THEN
+                    CREATE INDEX ""IX_RefreshTokens_UserId_RevokedAt_ExpiresAt"" ON ""RefreshTokens"" (""UserId"", ""RevokedAt"", ""ExpiresAt"");
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -1196,6 +1220,72 @@ static async Task<(Guid? TenantId, Guid? BranchId, IResult? Error)> ResolveScope
     var (branchId, error) = await ResolveBranchScopeAsync(http, db, tenantId.Value, requestedBranchId);
     if (error != null) return (tenantId, null, error);
     return (tenantId, branchId, null);
+}
+
+/// <summary>
+/// Issues an access JWT + a rotating refresh token for a just-authenticated user.
+/// The refresh token's raw value is only ever returned to the client here — the DB stores
+/// nothing but its SHA-256 hash, mirroring the PinCodeHash design (a DB read alone can't
+/// impersonate a session). Caller must SaveChangesAsync after this stages the new row.
+/// </summary>
+static (string accessToken, string refreshToken, RefreshToken refreshTokenEntity) IssueTokenPair(
+    AppDbContext db, IConfiguration config, AppUser user, bool isSuperAdmin, string? clientIp)
+{
+    var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
+    var key = Encoding.UTF8.GetBytes(config["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
+
+    var claims = new Dictionary<string, object>
+    {
+        { "userId", user.Id.ToString() },
+        { "tenantId", (isSuperAdmin ? Guid.Empty : user.TenantId).ToString() },
+        { "branchId", isSuperAdmin ? "" : (user.BranchId?.ToString() ?? "") },
+        { "role", user.Role.ToString() }
+    };
+    if (!isSuperAdmin)
+    {
+        claims["canViewFinancialReports"] = user.CanViewFinancialReports.ToString().ToLower();
+        claims["canManageInventory"] = user.CanManageInventory.ToString().ToLower();
+        claims["canManageMenuAndTax"] = user.CanManageMenuAndTax.ToString().ToLower();
+        claims["canGiveDiscounts"] = user.CanGiveDiscounts.ToString().ToLower();
+        claims["canVoidOrders"] = user.CanVoidOrders.ToString().ToLower();
+        claims["permissions"] = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            user.CanViewFinancialReports,
+            user.CanManageInventory,
+            user.CanManageMenuAndTax,
+            user.CanGiveDiscounts,
+            user.CanVoidOrders
+        });
+    }
+    else
+    {
+        claims["permissions"] = "{}";
+    }
+
+    var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
+    {
+        // Short-lived on purpose — the refresh token (below) is what keeps a shift-long session
+        // alive without a re-login; a stolen access token alone now has a small window.
+        Expires = DateTime.UtcNow.AddHours(2),
+        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+        Claims = claims
+    };
+    var accessToken = tokenHandler.WriteToken(tokenHandler.CreateToken(tokenDescriptor));
+
+    var rawRefreshToken = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(48));
+    var refreshTokenHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(rawRefreshToken)));
+    var refreshTokenEntity = new RefreshToken
+    {
+        UserId = user.Id,
+        TenantId = isSuperAdmin ? Guid.Empty : user.TenantId,
+        TokenHash = refreshTokenHash,
+        ExpiresAt = DateTime.UtcNow.AddDays(14),
+        CreatedByIp = clientIp,
+        IsSuperAdminToken = isSuperAdmin
+    };
+    db.RefreshTokens.Add(refreshTokenEntity);
+
+    return (accessToken, rawRefreshToken, refreshTokenEntity);
 }
 
 static async Task WriteAuditAsync(AppDbContext db, Guid tenantId, AppUser? user, string action, string entityType, Guid? entityId, string? oldValue, string? newValue)
@@ -1767,10 +1857,11 @@ app.MapGet("/", () => Results.Ok(new
 // --- Auth: PIN Login ---
 var authApi = app.MapGroup("/api/auth").RequireRateLimiting("auth");
 
-authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
+authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
 {
     const int MaxFailedAttempts = 5;
     var lockoutDuration = TimeSpan.FromMinutes(15);
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
 
     var user = await db.Users.FirstOrDefaultAsync(u => u.Username == dto.Username.ToLower().Trim() && u.IsActive);
 
@@ -1790,11 +1881,14 @@ authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
         if (user != null)
         {
             user.FailedLoginAttempts += 1;
-            if (user.FailedLoginAttempts >= MaxFailedAttempts)
+            var lockedOut = user.FailedLoginAttempts >= MaxFailedAttempts;
+            if (lockedOut)
             {
                 user.LockedUntil = DateTime.UtcNow.Add(lockoutDuration);
                 user.FailedLoginAttempts = 0;
             }
+            await WriteAuditAsync(db, user.TenantId, user, lockedOut ? "AccountLocked" : "LoginFailed", "AppUser", user.Id,
+                null, lockedOut ? $"Locked for {lockoutDuration.TotalMinutes} min after {MaxFailedAttempts} failed attempts (IP {clientIp})" : $"Wrong PIN (IP {clientIp})");
             await db.SaveChangesAsync();
         }
         return Results.Unauthorized();
@@ -1802,42 +1896,15 @@ authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
 
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
-    await db.SaveChangesAsync();
+    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null, $"IP {clientIp}");
 
-    var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
-    var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
-    var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
-    {
-        Expires = DateTime.UtcNow.AddHours(12),
-        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
-        Claims = new Dictionary<string, object>
-        {
-            { "userId", user.Id.ToString() },
-            { "tenantId", user.TenantId.ToString() },
-            { "branchId", user.BranchId?.ToString() ?? "" },
-            { "role", user.Role.ToString() },
-            // Explicit per-permission claims so the client (and HttpContext.HasPermission) can
-            // read them without parsing the legacy JSON blob. The DB remains authoritative.
-            { "canViewFinancialReports", user.CanViewFinancialReports.ToString().ToLower() },
-            { "canManageInventory", user.CanManageInventory.ToString().ToLower() },
-            { "canManageMenuAndTax", user.CanManageMenuAndTax.ToString().ToLower() },
-            { "canGiveDiscounts", user.CanGiveDiscounts.ToString().ToLower() },
-            { "canVoidOrders", user.CanVoidOrders.ToString().ToLower() },
-            { "permissions", System.Text.Json.JsonSerializer.Serialize(new
-            {
-                user.CanViewFinancialReports,
-                user.CanManageInventory,
-                user.CanManageMenuAndTax,
-                user.CanGiveDiscounts,
-                user.CanVoidOrders
-            })}
-        }
-    };
-    var token = tokenHandler.CreateToken(tokenDescriptor);
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp);
+    await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
-        token = tokenHandler.WriteToken(token),
+        token = accessToken,
+        refreshToken,
         user = new
         {
             id = user.Id,
@@ -1856,6 +1923,55 @@ authApi.MapPost("/login", async (AppDbContext db, LoginDto dto) =>
             }
         }
     });
+});
+
+authApi.MapPost("/refresh", async (AppDbContext db, HttpContext http, RefreshTokenDto dto) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RefreshToken)) return Results.Unauthorized();
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.RefreshToken)));
+
+    var existing = await db.RefreshTokens.FirstOrDefaultAsync(r => r.TokenHash == hash);
+    if (existing == null || existing.RevokedAt != null || existing.ExpiresAt <= DateTime.UtcNow)
+        return Results.Unauthorized();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == existing.UserId && u.IsActive);
+    if (user == null) return Results.Unauthorized();
+
+    // Rotate: the presented token is single-use. Revoking it here means a copy that gets replayed
+    // after the legitimate client already refreshed is rejected, not silently accepted.
+    var (accessToken, newRefreshToken, newTokenEntity) = IssueTokenPair(db, builder.Configuration, user, existing.IsSuperAdminToken, clientIp);
+    existing.RevokedAt = DateTime.UtcNow;
+    existing.ReplacedByTokenId = newTokenEntity.Id;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        token = accessToken,
+        refreshToken = newRefreshToken,
+        user = existing.IsSuperAdminToken
+            ? new { id = user.Id, fullName = user.FullName, username = user.Username, role = "SuperAdmin", tenantId = Guid.Empty, branchId = (Guid?)null }
+            : new
+            {
+                id = user.Id, fullName = user.FullName, username = user.Username, role = user.Role.ToString(),
+                tenantId = user.TenantId, branchId = user.BranchId
+            } as object
+    });
+});
+
+authApi.MapPost("/logout", async (AppDbContext db, RefreshTokenDto dto) =>
+{
+    if (!string.IsNullOrWhiteSpace(dto.RefreshToken))
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.RefreshToken)));
+        var existing = await db.RefreshTokens.FirstOrDefaultAsync(r => r.TokenHash == hash);
+        if (existing != null && existing.RevokedAt == null)
+        {
+            existing.RevokedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+    return Results.Ok(new { message = "Logged out" });
 });
 
 // ============================================================
@@ -4656,6 +4772,16 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
     if (await db.Users.AnyAsync(u => u.Username == dto.AdminUsername.ToLower().Trim()))
         return Results.BadRequest(new { error = "Username already taken. Choose a different one." });
 
+    // The chosen plan only shapes trial limits (branches/counters/tabs) — everyone gets the same
+    // 30-day, all-features trial regardless of tier, same as before. Falls back to Starter for a
+    // missing/invalid key rather than failing signup over it.
+    var chosenPackage = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p =>
+        p.IsActive && p.PackageKey == (dto.PackageKey ?? "Starter"));
+    chosenPackage ??= await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.IsActive && p.PackageKey == "Starter");
+    var tier = chosenPackage != null && Enum.TryParse<SubscriptionTier>(chosenPackage.PackageKey, out var parsedTier)
+        ? parsedTier
+        : SubscriptionTier.Starter;
+
     using var transaction = await db.Database.BeginTransactionAsync();
 
     try
@@ -4669,15 +4795,15 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
             ContactEmail = dto.Email.Trim().ToLower(),
             ContactPhone = dto.Phone.Trim(),
             City = dto.City?.Trim(),
-            BusinessType = BusinessType.Restaurant,
-            Tier = SubscriptionTier.Starter,
+            BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
+            Tier = tier,
             IsActive = true,
             IsTrialActive = true,
             TrialEndsAt = DateTime.UtcNow.AddDays(30)
         };
         db.Tenants.Add(tenant);
 
-        // 2. Create head office branch
+        // 2. Create head office branch, sized to the chosen plan's per-branch limits.
         var branch = new Branch
         {
             TenantId = tenant.Id,
@@ -4687,8 +4813,8 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
             City = dto.City ?? "Islamabad",
             Phone = dto.Phone,
             IsHeadOffice = true,
-            AllowedCounters = 1,
-            AllowedOrderTabs = 3
+            AllowedCounters = chosenPackage?.MaxCounters ?? 1,
+            AllowedOrderTabs = chosenPackage?.MaxOrderTabs ?? 3
         };
         db.Branches.Add(branch);
 
@@ -4741,6 +4867,7 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
                 name = tenant.Name,
                 slug = tenant.Slug,
                 tier = tenant.Tier.ToString(),
+                businessType = tenant.BusinessType.ToString(),
                 trialEndsAt = tenant.TrialEndsAt
             },
             admin = new
@@ -4880,20 +5007,25 @@ app.MapPost("/api/admin/subscription-invoices/{id:guid}/cancel", async (AppDbCon
     return Results.Ok(invoice);
 }).RequireAuthorization();
 
-authApi.MapPost("/super-admin-login", async (AppDbContext db, LoginDto dto) =>
+authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
 {
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+
     // Super admin credentials from configuration (not hardcoded)
     var superAdminUsername = builder.Configuration["SuperAdmin:Username"] ?? "superadmin";
     var superAdminPin = builder.Configuration["SuperAdmin:Pin"] ?? Environment.GetEnvironmentVariable("SUPER_ADMIN_PIN") ?? "999999";
-    
+
     if (isProduction && dto.PinCode == superAdminPin && superAdminPin == "999999")
     {
         // Warn if using default PIN in production
         Console.WriteLine("[WARNING] Super admin is using the default PIN. Change SUPER_ADMIN_PIN in production!");
     }
-    
+
     if (dto.Username != superAdminUsername || dto.PinCode != superAdminPin)
+    {
+        Console.WriteLine($"[Auth] Failed platform-admin login attempt for '{dto.Username}' from IP {clientIp}");
         return Results.Unauthorized();
+    }
 
     // Find or create super admin user (no tenant)
     var superAdmin = await db.Users.FirstOrDefaultAsync(u => u.Username == "superadmin" && u.Role == UserRole.SuperAdmin);
@@ -4913,26 +5045,14 @@ authApi.MapPost("/super-admin-login", async (AppDbContext db, LoginDto dto) =>
         await db.SaveChangesAsync();
     }
 
-    var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
-    var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
-    var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
-    {
-        Expires = DateTime.UtcNow.AddHours(12),
-        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
-        Claims = new Dictionary<string, object>
-        {
-            { "userId", superAdmin.Id.ToString() },
-            { "tenantId", Guid.Empty.ToString() },
-            { "branchId", "" },
-            { "role", "SuperAdmin" },
-            { "permissions", "{}" }
-        }
-    };
-    var token = tokenHandler.CreateToken(tokenDescriptor);
+    await WriteAuditAsync(db, Guid.Empty, superAdmin, "UserLoggedIn", "AppUser", superAdmin.Id, null, $"Platform admin login, IP {clientIp}");
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, superAdmin, isSuperAdmin: true, clientIp);
+    await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
-        token = tokenHandler.WriteToken(token),
+        token = accessToken,
+        refreshToken,
         user = new
         {
             id = superAdmin.Id,
@@ -7507,6 +7627,7 @@ public record IngredientStockAdjustmentDto(Guid? TenantId, Guid BranchId, Guid I
 public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
 public record LoginDto(string Username, string PinCode);
+public record RefreshTokenDto(string RefreshToken);
 public record VoidOrderDto(string? Reason);
 public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
 public record CloseCashShiftDto(decimal ActualCashCounted, string? Notes);
@@ -7546,7 +7667,7 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
-public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin);
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey);
 public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil);
 public record WhatsAppConfigDto(string Provider, string? ApiKey, string? ApiSecret, string? PhoneNumberId, string? AccessToken, string? WebhookUrl, bool IsEnabled, bool AutoSendOrderUpdates, bool AutoSendReceipt);
 public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);

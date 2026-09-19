@@ -327,6 +327,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   },
 
   logout: () => {
+    posApi.logout(); // clears the refresh-token key and best-effort revokes it server-side
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
     localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
     localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
