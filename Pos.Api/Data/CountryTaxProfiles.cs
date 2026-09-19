@@ -1,7 +1,13 @@
 namespace Pos.Api.Data;
 
-/// <summary>State/province option shown once a country with known subdivisions is picked.</summary>
-public record CountryState(string Code, string Name);
+/// <summary>
+/// State/province option shown once a country with known subdivisions is picked.
+/// CashTaxRate/DigitalTaxRate are set only where the province genuinely changes the rate (today:
+/// Pakistan) — purely for the signup preview to show real numbers before the account exists.
+/// The actual applied rate always comes from <see cref="Pos.Api.Models.TaxJurisdiction"/> at
+/// runtime (seeded in DbSeeder.cs); if that table's numbers ever change, update both.
+/// </summary>
+public record CountryState(string Code, string Name, decimal? CashTaxRate = null, decimal? DigitalTaxRate = null);
 
 /// <summary>
 /// A country's signup defaults: locale (phone/currency) plus a starting tax configuration.
@@ -41,8 +47,8 @@ public static class CountryTaxProfiles
         new("Pakistan", "PK", "+92", "PKR", "₨", "FBR", 16, 8, true, true,
             "Cash vs. digital-payment tax split applies automatically (FBR policy). Pick your province to enable provincial rates.",
             new() {
-                new("PK-PB", "Punjab"), new("PK-SD", "Sindh"), new("PK-KP", "Khyber Pakhtunkhwa"),
-                new("PK-BA", "Balochistan"), new("PK-ICT", "Islamabad Capital Territory")
+                new("PK-PB", "Punjab", 16, 16), new("PK-SD", "Sindh", 15, 15), new("PK-KP", "Khyber Pakhtunkhwa", 15, 15),
+                new("PK-BA", "Balochistan", 15, 15), new("PK-ICT", "Islamabad Capital Territory", 16, 16)
             }),
         new("United Arab Emirates", "AE", "+971", "AED", "د.إ", "Federal Tax Authority (FTA)", 5, 5, false, false,
             "Flat 5% VAT nationwide.",

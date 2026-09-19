@@ -41,6 +41,8 @@ export type SubscriptionTier = 'Starter' | 'Standard' | 'Professional';
 export interface CountryState {
   code: string;
   name: string;
+  cashTaxRate: number | null;
+  digitalTaxRate: number | null;
 }
 
 /** Shape returned by the anonymous GET /api/public/countries, used to build the signup country/state picker. */
