@@ -1301,3 +1301,25 @@ public class BankReconciliation
     public DateTime? CompletedAt { get; set; }
     public string? CompletedBy { get; set; }
 }
+
+// ============================================================
+// Add-on catalog — what's sellable independent of tier, and its price. A grant to
+// a specific tenant is the existing AddOnSubscription row (TenantId + AddOnKey);
+// this table is the platform-wide definition: what the key means, its price, and
+// whether it's currently for sale. RequireFeatureFilter checks tier OR an active
+// AddOnSubscription with a matching key — either one unlocks the feature.
+// ============================================================
+
+public class AddOnCatalogItem
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    /// <summary>Matches a SaaSPackageConfig flag name (e.g. "HasKitchenDisplay") for a tier
+    /// feature sold standalone, or a free-form key (e.g. "EXTRA_COUNTER") for anything else.</summary>
+    public string Key { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public decimal MonthlyPricePKR { get; set; }
+    public decimal YearlyPricePKR { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}

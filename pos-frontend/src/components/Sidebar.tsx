@@ -36,7 +36,8 @@ import {
   Clock,
   Plug,
   Landmark,
-  History
+  History,
+  Puzzle
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import type { ModuleKey, PermissionAction } from '../types';
@@ -349,6 +350,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       platformSubItems.push({ label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare });
       platformSubItems.push({ label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard });
       platformSubItems.push({ label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug });
+      platformSubItems.push({ label: 'Add-ons', path: '/my-addons', icon: Puzzle });
       if (can('users', 'edit')) {
         platformSubItems.push({ label: 'Permissions', path: '/permissions', icon: Shield });
       }

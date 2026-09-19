@@ -108,6 +108,23 @@ public static class DbSeeder
             await db.SaveChangesAsync();
         }
 
+        // Seed the add-on catalog — the same tier-gated features above, sellable standalone to a
+        // tenant on a lower tier that doesn't want a full upgrade. Prices are editable defaults.
+        if (!await db.AddOnCatalogItems.AnyAsync())
+        {
+            db.AddOnCatalogItems.AddRange(
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasKitchenDisplay), DisplayName = "Kitchen Display System", Description = "Live kitchen ticket screen with per-station routing.", MonthlyPricePKR = 2000, YearlyPricePKR = 20000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasDeliveryCOD), DisplayName = "Delivery & COD Settlement", Description = "Delivery board, rider assignment, cash-on-delivery reconciliation.", MonthlyPricePKR = 2000, YearlyPricePKR = 20000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasInventoryManagement), DisplayName = "Inventory Management", Description = "Raw ingredient stock, recipes, and stock-level tracking.", MonthlyPricePKR = 3000, YearlyPricePKR = 30000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasStockTransfers), DisplayName = "Inter-Branch Stock Transfers", Description = "Move stock between branches with a request/dispatch/receive workflow.", MonthlyPricePKR = 2500, YearlyPricePKR = 25000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasDirectorDashboard), DisplayName = "Director Dashboard", Description = "Executive KPI overview across the business.", MonthlyPricePKR = 1500, YearlyPricePKR = 15000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasConsolidatedReports), DisplayName = "Consolidated Multi-Branch Reports", Description = "Chain-wide rollup reporting across all branches.", MonthlyPricePKR = 3000, YearlyPricePKR = 30000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasAdvancedReports), DisplayName = "Advanced Reports", Description = "Deeper sales, category, and payment-tender analytics.", MonthlyPricePKR = 2000, YearlyPricePKR = 20000 },
+                new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasMultiBranch), DisplayName = "Multi-Branch Support", Description = "Operate and switch between more than one outlet.", MonthlyPricePKR = 4000, YearlyPricePKR = 40000 }
+            );
+            await db.SaveChangesAsync();
+        }
+
         // Seed default Pakistan provincial tax jurisdictions.
         // NOTE: these are EDITABLE DEFAULTS for convenience, not verified legal/tax advice.
         // Owners must confirm current rates with their provincial authority and edit via

@@ -145,9 +145,14 @@ public class RequireFeatureFilter : IEndpointFilter
             _ => true
         };
 
+        // Tier grants it OR the tenant bought it standalone as an add-on — either unlocks it.
+        // Checked second (only when the tier alone says no) so the common case costs no extra query.
+        if (!enabled)
+            enabled = await db.AddOnSubscriptions.AnyAsync(a => a.TenantId == tenantId.Value && a.AddOnKey == _flagName && a.IsActive);
+
         if (!enabled)
             return Results.Json(
-                new { message = $"Your subscription plan does not include this feature ({_flagName}). Please upgrade your package.", feature = _flagName },
+                new { message = $"Your subscription plan does not include this feature ({_flagName}). Please upgrade your package or purchase it as an add-on.", feature = _flagName },
                 statusCode: StatusCodes.Status403Forbidden);
 
         return await next(context);

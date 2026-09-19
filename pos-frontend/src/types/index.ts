@@ -1021,6 +1021,34 @@ export interface CustomerPayment {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Add-ons
+// ─────────────────────────────────────────────────────────────
+
+export interface AddOnCatalogItem {
+  id: string;
+  key: string;
+  displayName: string;
+  description?: string;
+  monthlyPricePKR: number;
+  yearlyPricePKR: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface TenantAddOnCatalogRow extends AddOnCatalogItem {
+  isActiveForTenant: boolean;
+}
+
+export interface AddOnSubscriptionRow {
+  id: string;
+  tenantId: string;
+  addOnKey: string;
+  quantity: number;
+  pricePKR: number;
+  isActive: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Audit Log
 // ─────────────────────────────────────────────────────────────
 

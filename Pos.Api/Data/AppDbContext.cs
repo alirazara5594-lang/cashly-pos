@@ -68,6 +68,7 @@ public class AppDbContext : DbContext
     public DbSet<Designation> Designations => Set<Designation>();
     public DbSet<LeaveRequest> LeaveRequests => Set<LeaveRequest>();
     public DbSet<BankReconciliation> BankReconciliations => Set<BankReconciliation>();
+    public DbSet<AddOnCatalogItem> AddOnCatalogItems => Set<AddOnCatalogItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -494,6 +495,13 @@ public class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(br => br.AccountId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<AddOnCatalogItem>()
+            .HasIndex(a => a.Key)
+            .IsUnique();
+
+        modelBuilder.Entity<AddOnSubscription>()
+            .HasIndex(a => new { a.TenantId, a.AddOnKey });
 
         modelBuilder.Entity<AddOnSubscription>()
             .HasOne(aos => aos.Tenant)

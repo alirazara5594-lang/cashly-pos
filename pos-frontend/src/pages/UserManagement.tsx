@@ -14,6 +14,10 @@ import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { AppUser, UserRole, Department, Designation } from '../types';
 
+/** The server's sentinel for "clear this Guid? field" — a real empty Guid, since JSON `null`/omitted
+ * both mean "don't touch it" and can't express "remove the existing value" for a nullable value type. */
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
+
 export const UserManagement: React.FC = () => {
   const { selectedTenant, selectedBranch } = usePosStore();
 
@@ -210,11 +214,13 @@ export const UserManagement: React.FC = () => {
     if (!payrollUser) return;
     setPayrollSaving(true);
     try {
+      // This form always represents the account's full current payroll state (it's pre-filled by
+      // openPayrollEdit, not a partial patch), so every save resolves department/designation to
+      // either a real id or the server's "clear it" sentinel — never omits them, or picking
+      // "— None —" to remove an assignment would silently do nothing.
       await posApi.updateUser(payrollUser.id, {
-        // Guid? fields: omit (undefined) rather than send an empty string, which the server's
-        // Guid binder can't parse — "" is not a sentinel it understands, only a real Guid or absence.
-        departmentId: payrollForm.departmentId || undefined,
-        designationId: payrollForm.designationId || undefined,
+        departmentId: payrollForm.departmentId || EMPTY_GUID,
+        designationId: payrollForm.designationId || EMPTY_GUID,
         employmentType: payrollForm.employmentType,
         monthlyRatePKR: Number(payrollForm.monthlyRatePKR) || 0,
         hourlyRatePKR: Number(payrollForm.hourlyRatePKR) || 0,

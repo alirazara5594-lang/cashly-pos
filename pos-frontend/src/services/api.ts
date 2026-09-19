@@ -58,6 +58,9 @@ import type {
   ProfitLossReport,
   BalanceSheetReport,
   AuditLogPage,
+  AddOnCatalogItem,
+  TenantAddOnCatalogRow,
+  AddOnSubscriptionRow,
   Warehouse,
   SubscriptionInvoice,
   Department,
@@ -1289,6 +1292,36 @@ export const posApi = {
   // ── Audit log
   getAuditLog: async (params?: { tenantId?: string; action?: string; page?: number; pageSize?: number }) => {
     const res = await api.get<AuditLogPage>('/api/admin/audit-log', { params });
+    return res.data;
+  },
+
+  // ── Add-ons
+  getAddOnCatalog: async () => {
+    const res = await api.get<TenantAddOnCatalogRow[]>('/api/addons/catalog');
+    return res.data;
+  },
+  getAdminAddOnCatalog: async () => {
+    const res = await api.get<AddOnCatalogItem[]>('/api/admin/addons/catalog');
+    return res.data;
+  },
+  createAddOnCatalogItem: async (data: { key: string; displayName: string; description?: string; monthlyPricePKR: number; yearlyPricePKR: number }) => {
+    const res = await api.post<AddOnCatalogItem>('/api/admin/addons/catalog', data);
+    return res.data;
+  },
+  updateAddOnCatalogItem: async (id: string, data: { displayName?: string; description?: string; monthlyPricePKR?: number; yearlyPricePKR?: number; isActive?: boolean }) => {
+    const res = await api.put<AddOnCatalogItem>(`/api/admin/addons/catalog/${id}`, data);
+    return res.data;
+  },
+  getTenantAddOns: async (tenantId: string) => {
+    const res = await api.get<AddOnSubscriptionRow[]>(`/api/admin/tenants/${tenantId}/addons`);
+    return res.data;
+  },
+  grantTenantAddOn: async (tenantId: string, data: { addOnKey: string; pricePKR?: number; quantity?: number }) => {
+    const res = await api.post<AddOnSubscriptionRow>(`/api/admin/tenants/${tenantId}/addons`, data);
+    return res.data;
+  },
+  revokeTenantAddOn: async (tenantId: string, addOnId: string) => {
+    const res = await api.post<AddOnSubscriptionRow>(`/api/admin/tenants/${tenantId}/addons/${addOnId}/revoke`);
     return res.data;
   },
 

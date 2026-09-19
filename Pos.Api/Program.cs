@@ -1037,6 +1037,28 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // Add-on catalog — sells tier features standalone to a lower-tier tenant.
+        await db.Database.ExecuteSqlRawAsync(@"
+            CREATE TABLE IF NOT EXISTS ""AddOnCatalogItems"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""Key"" text NOT NULL,
+                ""DisplayName"" text NOT NULL,
+                ""Description"" text,
+                ""MonthlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""YearlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_AddOnCatalogItems_Key') THEN
+                    CREATE UNIQUE INDEX ""IX_AddOnCatalogItems_Key"" ON ""AddOnCatalogItems"" (""Key"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_AddOnSubscriptions_TenantId_AddOnKey') THEN
+                    CREATE INDEX ""IX_AddOnSubscriptions_TenantId_AddOnKey"" ON ""AddOnSubscriptions"" (""TenantId"", ""AddOnKey"");
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -5109,6 +5131,98 @@ app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =
 }).RequireAuthorization();
 
 // ============================================================
+// ADD-ONS — features sold standalone to a tenant on a lower tier who doesn't want
+// (or need) a full tier upgrade. Catalog pricing is SuperAdmin-managed; granting/
+// revoking a specific tenant's add-on is also SuperAdmin-only — this is a manual
+// sales process (the owner asks, you sell it), not self-serve checkout.
+// ============================================================
+
+// Any signed-in tenant user can see what's purchasable and what they already have.
+app.MapGet("/api/addons/catalog", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null) return Results.Unauthorized();
+    var catalog = await db.AddOnCatalogItems.Where(a => a.IsActive).OrderBy(a => a.DisplayName).ToListAsync();
+    var active = await db.AddOnSubscriptions.Where(a => a.TenantId == tenantId.Value && a.IsActive).Select(a => a.AddOnKey).ToListAsync();
+    return Results.Ok(catalog.Select(c => new { c.Id, c.Key, c.DisplayName, c.Description, c.MonthlyPricePKR, c.YearlyPricePKR, isActiveForTenant = active.Contains(c.Key) }));
+}).RequireAuthorization();
+
+// --- SuperAdmin: manage the sellable catalog itself ---
+app.MapGet("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await db.AddOnCatalogItems.OrderBy(a => a.DisplayName).ToListAsync());
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http, CreateAddOnCatalogItemDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (string.IsNullOrWhiteSpace(dto.Key) || string.IsNullOrWhiteSpace(dto.DisplayName))
+        return Results.BadRequest(new { message = "Key and display name are required." });
+    if (await db.AddOnCatalogItems.AnyAsync(a => a.Key == dto.Key))
+        return Results.BadRequest(new { message = $"An add-on with key {dto.Key} already exists." });
+    var item = new AddOnCatalogItem { Key = dto.Key.Trim(), DisplayName = dto.DisplayName.Trim(), Description = dto.Description, MonthlyPricePKR = dto.MonthlyPricePKR, YearlyPricePKR = dto.YearlyPricePKR };
+    db.AddOnCatalogItems.Add(item);
+    await db.SaveChangesAsync();
+    return Results.Ok(item);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/addons/catalog/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, UpdateAddOnCatalogItemDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var item = await db.AddOnCatalogItems.FindAsync(id);
+    if (item == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.DisplayName)) item.DisplayName = dto.DisplayName.Trim();
+    if (dto.Description != null) item.Description = dto.Description;
+    if (dto.MonthlyPricePKR.HasValue) item.MonthlyPricePKR = dto.MonthlyPricePKR.Value;
+    if (dto.YearlyPricePKR.HasValue) item.YearlyPricePKR = dto.YearlyPricePKR.Value;
+    if (dto.IsActive.HasValue) item.IsActive = dto.IsActive.Value;
+    await db.SaveChangesAsync();
+    return Results.Ok(item);
+}).RequireAuthorization();
+
+// --- SuperAdmin: grant/revoke a specific tenant's add-on ---
+app.MapGet("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await db.AddOnSubscriptions.Where(a => a.TenantId == tenantId).ToListAsync());
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http, GrantAddOnDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.FindAsync(tenantId);
+    if (tenant == null) return Results.NotFound(new { message = "Tenant not found." });
+    var catalogItem = await db.AddOnCatalogItems.FirstOrDefaultAsync(a => a.Key == dto.AddOnKey);
+    if (catalogItem == null) return Results.BadRequest(new { message = $"No catalog entry for {dto.AddOnKey}." });
+
+    var existing = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.TenantId == tenantId && a.AddOnKey == dto.AddOnKey);
+    if (existing != null)
+    {
+        existing.IsActive = true;
+        existing.PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR;
+        existing.Quantity = dto.Quantity ?? 1;
+    }
+    else
+    {
+        existing = new AddOnSubscription { TenantId = tenantId, AddOnKey = dto.AddOnKey, Quantity = dto.Quantity ?? 1, PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR, IsActive = true };
+        db.AddOnSubscriptions.Add(existing);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(existing);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", async (Guid tenantId, Guid addOnId, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var sub = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.Id == addOnId && a.TenantId == tenantId);
+    if (sub == null) return Results.NotFound();
+    sub.IsActive = false;
+    await db.SaveChangesAsync();
+    return Results.Ok(sub);
+}).RequireAuthorization();
+
+// ============================================================
 // MODULE-LEVEL PERMISSIONS
 // ============================================================
 
@@ -7366,6 +7480,9 @@ public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);
 public record OrderNotificationDto(Guid TenantId, Guid? OrderId, string OrderNumber, string PhoneNumber, string MessageType, string ItemSummary, decimal TotalPKR, string PaymentMethod, string? DeliveryAddress, string PackageTier, string? CustomMessage);
 public record CreatePackageDto(string PackageKey, string DisplayName, decimal MonthlyPricePKR, decimal YearlyPricePKR, int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers, bool HasKitchenDisplay, bool HasDeliveryCOD, bool HasInventoryManagement, bool HasStockTransfers, bool HasDirectorDashboard, bool HasConsolidatedReports, bool HasWhatsAppMessaging, bool HasAdvancedReports, bool HasMultiBranch, int WhatsAppMessagesPerMonth);
 public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
+public record CreateAddOnCatalogItemDto(string Key, string DisplayName, string? Description, decimal MonthlyPricePKR, decimal YearlyPricePKR);
+public record UpdateAddOnCatalogItemDto(string? DisplayName, string? Description, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, bool? IsActive);
+public record GrantAddOnDto(string AddOnKey, decimal? PricePKR, int? Quantity);
 public record UpdateModulePermissionDto(string ModuleKey, string SubModuleKey, bool CanView, bool CanEdit, bool CanDelete, bool CanExport);
 public record TenantSettingsDto(
     string? CountryCode,

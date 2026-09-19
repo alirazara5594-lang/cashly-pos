@@ -1,44 +1,60 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { TopHeader } from './components/TopHeader';
 import { CallOrderModal } from './components/CallOrderModal';
 import { PosTerminal } from './pages/PosTerminal';
-import { KitchenDisplay } from './pages/KitchenDisplay';
-import { OrderTab } from './pages/OrderTab';
-import { DeliveryBoard } from './pages/DeliveryBoard';
-import { MenuManagement } from './pages/MenuManagement';
-import { TaxConfiguration } from './pages/TaxConfiguration';
-import { AccountingManagement } from './pages/AccountingManagement';
-import { AuditLog } from './pages/AuditLog';
-import { DirectorDashboard } from './pages/DirectorDashboard';
-import { SuperAdmin } from './pages/SuperAdmin';
-import { InventoryManagement } from './pages/InventoryManagement';
-import { SupplyChainManagement } from './pages/SupplyChainManagement';
-import { ReportsManagement } from './pages/ReportsManagement';
-import { UserManagement } from './pages/UserManagement';
-import { FloorManagement } from './pages/FloorManagement';
-import { InstallationWizard } from './pages/InstallationWizard';
-import { SettingsManagement } from './pages/SettingsManagement';
-import { StockRequests } from './pages/StockRequests';
-import { TenantSignup } from './pages/TenantSignup';
-import { WhatsAppConfig } from './pages/WhatsAppConfig';
-import { PricingAdmin } from './pages/PricingAdmin';
-import { ModulePermissions } from './pages/ModulePermissions';
-import { SmartAnalytics } from './pages/SmartAnalytics';
-import { CustomerManagement } from './pages/CustomerManagement';
-import { LoyaltyGiftCards } from './pages/LoyaltyGiftCards';
-import { PromoCodes } from './pages/PromoCodes';
-import { LaborManagement } from './pages/LaborManagement';
-import { MenuEngineering } from './pages/MenuEngineering';
-import { PaymentSettings } from './pages/PaymentSettings';
-import { DeliveryIntegrationSettings } from './pages/DeliveryIntegrationSettings';
 import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
 import { usePosStore } from './store/posStore';
 import { posApi, registerAuthRedirect } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
+
+// PosTerminal is the "/" landing route — loaded eagerly so the first screen after
+// login never shows a loading flash. Every other page is code-split: each becomes
+// its own chunk fetched on navigation instead of bloating the initial bundle
+// (this is what the "chunks are larger than 500kB" build warning was pointing at).
+const KitchenDisplay = lazy(() => import('./pages/KitchenDisplay').then(m => ({ default: m.KitchenDisplay })));
+const OrderTab = lazy(() => import('./pages/OrderTab').then(m => ({ default: m.OrderTab })));
+const DeliveryBoard = lazy(() => import('./pages/DeliveryBoard').then(m => ({ default: m.DeliveryBoard })));
+const MenuManagement = lazy(() => import('./pages/MenuManagement').then(m => ({ default: m.MenuManagement })));
+const TaxConfiguration = lazy(() => import('./pages/TaxConfiguration').then(m => ({ default: m.TaxConfiguration })));
+const AccountingManagement = lazy(() => import('./pages/AccountingManagement').then(m => ({ default: m.AccountingManagement })));
+const AuditLog = lazy(() => import('./pages/AuditLog').then(m => ({ default: m.AuditLog })));
+const DirectorDashboard = lazy(() => import('./pages/DirectorDashboard').then(m => ({ default: m.DirectorDashboard })));
+const SuperAdmin = lazy(() => import('./pages/SuperAdmin').then(m => ({ default: m.SuperAdmin })));
+const InventoryManagement = lazy(() => import('./pages/InventoryManagement').then(m => ({ default: m.InventoryManagement })));
+const SupplyChainManagement = lazy(() => import('./pages/SupplyChainManagement').then(m => ({ default: m.SupplyChainManagement })));
+const ReportsManagement = lazy(() => import('./pages/ReportsManagement').then(m => ({ default: m.ReportsManagement })));
+const UserManagement = lazy(() => import('./pages/UserManagement').then(m => ({ default: m.UserManagement })));
+const FloorManagement = lazy(() => import('./pages/FloorManagement').then(m => ({ default: m.FloorManagement })));
+const InstallationWizard = lazy(() => import('./pages/InstallationWizard').then(m => ({ default: m.InstallationWizard })));
+const SettingsManagement = lazy(() => import('./pages/SettingsManagement').then(m => ({ default: m.SettingsManagement })));
+const StockRequests = lazy(() => import('./pages/StockRequests').then(m => ({ default: m.StockRequests })));
+const TenantSignup = lazy(() => import('./pages/TenantSignup').then(m => ({ default: m.TenantSignup })));
+const WhatsAppConfig = lazy(() => import('./pages/WhatsAppConfig').then(m => ({ default: m.WhatsAppConfig })));
+const PricingAdmin = lazy(() => import('./pages/PricingAdmin').then(m => ({ default: m.PricingAdmin })));
+const ModulePermissions = lazy(() => import('./pages/ModulePermissions').then(m => ({ default: m.ModulePermissions })));
+const SmartAnalytics = lazy(() => import('./pages/SmartAnalytics').then(m => ({ default: m.SmartAnalytics })));
+const CustomerManagement = lazy(() => import('./pages/CustomerManagement').then(m => ({ default: m.CustomerManagement })));
+const LoyaltyGiftCards = lazy(() => import('./pages/LoyaltyGiftCards').then(m => ({ default: m.LoyaltyGiftCards })));
+const PromoCodes = lazy(() => import('./pages/PromoCodes').then(m => ({ default: m.PromoCodes })));
+const LaborManagement = lazy(() => import('./pages/LaborManagement').then(m => ({ default: m.LaborManagement })));
+const MenuEngineering = lazy(() => import('./pages/MenuEngineering').then(m => ({ default: m.MenuEngineering })));
+const PaymentSettings = lazy(() => import('./pages/PaymentSettings').then(m => ({ default: m.PaymentSettings })));
+const DeliveryIntegrationSettings = lazy(() => import('./pages/DeliveryIntegrationSettings').then(m => ({ default: m.DeliveryIntegrationSettings })));
+const MyAddOns = lazy(() => import('./pages/MyAddOns').then(m => ({ default: m.MyAddOns })));
+
+/** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
+ * connection, but real on a slow one, so it's a spinner, not a blank screen. */
+function RouteLoadingFallback() {
+  return (
+    <div className="flex-1 flex items-center justify-center h-full min-h-[50vh]">
+      <div className="w-8 h-8 border-3 border-teal-200 border-t-teal-500 rounded-full animate-spin" />
+    </div>
+  );
+}
 
 function MainLayoutInner() {
   const location = useLocation();
@@ -206,6 +222,7 @@ function MainLayoutInner() {
         />
 
         <main className="flex-1 flex flex-col overflow-hidden">
+          <Suspense fallback={<RouteLoadingFallback />}>
           <Routes>
             {/* Operational screens — open to any signed-in active user (no module gate). */}
             <Route path="/" element={<PosTerminal />} />
@@ -256,11 +273,13 @@ function MainLayoutInner() {
             <Route path="/promo-codes" element={<RequireModule module="admin"><PromoCodes /></RequireModule>} />
             <Route path="/payment-settings" element={<RequireModule module="admin"><PaymentSettings /></RequireModule>} />
             <Route path="/delivery-integrations" element={<RequireModule module="admin"><DeliveryIntegrationSettings /></RequireModule>} />
+            <Route path="/my-addons" element={<RequireModule module="admin"><MyAddOns /></RequireModule>} />
 
             <Route path="/signup" element={<TenantSignup />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </Suspense>
         </main>
       </div>
 
