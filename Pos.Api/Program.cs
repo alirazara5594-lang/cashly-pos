@@ -168,6 +168,11 @@ if (app.Environment.IsDevelopment())
 }
 
 // --- Database Migration & Seeding ---
+// Do not block Kestrel from binding while the first-run schema setup is running.
+// The previous synchronous startup routine could leave the local API unavailable
+// on port 5288 for several minutes on a new or large database.
+_ = Task.Run(async () =>
+{
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -1108,6 +1113,7 @@ using (var scope = app.Services.CreateScope())
     }
     if (tenantsWithoutSettings.Count > 0) await db.SaveChangesAsync();
 }
+});
 
 // --- Helper: Generate unique order number ---
 static async Task<string> GenerateOrderNumberAsync(AppDbContext db, string prefix = "ORD")
@@ -7890,5 +7896,4 @@ public record CreateJournalEntryDto(Guid? TenantId, Guid? BranchId, DateTime? En
 public record ReverseJournalEntryDto(string? Reason);
 public record CreateAccountingPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd);
 public record CreateBankReconciliationDto(Guid? TenantId, string AccountCode, DateTime StatementDate, decimal StatementBalancePKR, List<Guid> LineIds);
-
 
