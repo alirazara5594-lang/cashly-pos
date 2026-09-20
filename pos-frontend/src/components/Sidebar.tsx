@@ -349,11 +349,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       if (isPlatformSuperAdmin) {
         platformSubItems.push({ label: 'Tenant Management', path: '/super-admin', icon: Building2 });
         platformSubItems.push({ label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard });
+      } else {
+        // The inverse of the block above: these configure ONE restaurant's own
+        // integrations. A platform SuperAdmin has no tenant of its own to scope
+        // them to (ResolveTenantScope has nothing to resolve without a tenant
+        // picker here), so the API 401s them — keep these Owner/staff-only.
+        platformSubItems.push({ label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare });
+        platformSubItems.push({ label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard });
+        platformSubItems.push({ label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug });
+        platformSubItems.push({ label: 'Add-ons', path: '/my-addons', icon: Puzzle });
       }
-      platformSubItems.push({ label: 'WhatsApp Config', path: '/whatsapp-config', icon: MessageSquare });
-      platformSubItems.push({ label: 'Payment Gateways', path: '/payment-settings', icon: CreditCard });
-      platformSubItems.push({ label: 'Delivery Integrations', path: '/delivery-integrations', icon: Plug });
-      platformSubItems.push({ label: 'Add-ons', path: '/my-addons', icon: Puzzle });
       if (can('users', 'edit')) {
         platformSubItems.push({ label: 'Permissions', path: '/permissions', icon: Shield });
       }

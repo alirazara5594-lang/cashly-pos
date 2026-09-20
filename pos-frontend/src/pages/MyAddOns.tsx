@@ -59,6 +59,7 @@ export const MyAddOns: React.FC = () => {
                   </span>
                 </div>
                 {item.description && <p className="text-[11px] text-slate-500">{item.description}</p>}
+                {item.unlocksModule && <p className="text-[10px] text-teal-600 font-semibold">Unlocks: {item.unlocksModule}</p>}
               </div>
             ))}
           </div>
@@ -79,6 +80,7 @@ export const MyAddOns: React.FC = () => {
               <div key={item.id} className="p-4 rounded-2xl bg-white border border-slate-200 space-y-1.5">
                 <span className="text-sm font-bold text-slate-900">{item.displayName}</span>
                 {item.description && <p className="text-[11px] text-slate-500">{item.description}</p>}
+                {item.unlocksModule && <p className="text-[10px] text-slate-400 font-semibold">Unlocks: {item.unlocksModule}</p>}
                 <div className="flex items-baseline gap-1 pt-1">
                   <span className="text-base font-black text-teal-600">{item.monthlyPricePKR.toLocaleString()}</span>
                   <span className="text-[10px] text-slate-400">PKR / month</span>

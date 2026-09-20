@@ -125,6 +125,24 @@ public static class DbSeeder
             await db.SaveChangesAsync();
         }
 
+        // Quantity add-ons (raise a numeric limit rather than flip a feature on/off) — added
+        // separately from the block above since that one only runs against an empty table and
+        // these were introduced later, against databases that already had the first 8 rows.
+        var quantityAddOnKeys = new[] { "EXTRA_COUNTER", "EXTRA_TABLET", "EXTRA_USER" };
+        var existingKeys = await db.AddOnCatalogItems.Where(a => quantityAddOnKeys.Contains(a.Key)).Select(a => a.Key).ToListAsync();
+        var missingQuantityAddOns = new List<AddOnCatalogItem>();
+        if (!existingKeys.Contains("EXTRA_COUNTER"))
+            missingQuantityAddOns.Add(new AddOnCatalogItem { Key = "EXTRA_COUNTER", DisplayName = "Extra Counter", Description = "+1 counter/register device for one branch, above your plan's included limit.", MonthlyPricePKR = 1000, YearlyPricePKR = 10000 });
+        if (!existingKeys.Contains("EXTRA_TABLET"))
+            missingQuantityAddOns.Add(new AddOnCatalogItem { Key = "EXTRA_TABLET", DisplayName = "Extra Tablet / Order Tab", Description = "+1 waiter tablet (order-tab device) for one branch, above your plan's included limit.", MonthlyPricePKR = 800, YearlyPricePKR = 8000 });
+        if (!existingKeys.Contains("EXTRA_USER"))
+            missingQuantityAddOns.Add(new AddOnCatalogItem { Key = "EXTRA_USER", DisplayName = "Extra Staff Account", Description = "+1 staff login for the whole restaurant, above your plan's included limit.", MonthlyPricePKR = 500, YearlyPricePKR = 5000 });
+        if (missingQuantityAddOns.Count > 0)
+        {
+            db.AddOnCatalogItems.AddRange(missingQuantityAddOns);
+            await db.SaveChangesAsync();
+        }
+
         // Seed default Pakistan provincial tax jurisdictions.
         // NOTE: these are EDITABLE DEFAULTS for convenience, not verified legal/tax advice.
         // Owners must confirm current rates with their provincial authority and edit via

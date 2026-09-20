@@ -32,6 +32,7 @@ interface TenantRow {
   contactEmail: string;
   contactPhone: string;
   city: string;
+  country?: string;
   businessType: string;
   tier: string;
   isActive: boolean;
@@ -41,6 +42,12 @@ interface TenantRow {
   createdAt: string;
   branchCount: number;
   userCount: number;
+  maxUsers?: number;
+  counterCount?: number;
+  maxCounters?: number;
+  tabletCount?: number;
+  maxTablets?: number;
+  activeAddOnsCount?: number;
 }
 
 interface AdminStats {
@@ -246,9 +253,10 @@ export const SuperAdmin: React.FC = () => {
                   <tr className="bg-slate-50 border-b border-slate-200">
                     <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Restaurant</th>
                     <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Contact</th>
-                    <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">City</th>
+                    <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Location / Type</th>
                     <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Tier</th>
                     <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Status</th>
+                    <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Usage vs. Plan</th>
                     <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Branches</th>
                     <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Expiry</th>
                     <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Actions</th>
@@ -266,7 +274,10 @@ export const SuperAdmin: React.FC = () => {
                         <div className="text-[10px] text-slate-500">{t.contactEmail}</div>
                         <div className="text-[10px] text-slate-500">{t.contactPhone}</div>
                       </td>
-                      <td className="text-center px-4 py-3 text-slate-700">{t.city || '—'}</td>
+                      <td className="text-center px-4 py-3">
+                        <div className="text-slate-700">{t.city || '—'}{t.country ? `, ${t.country}` : ''}</div>
+                        <div className="text-[10px] text-slate-400">{t.businessType || '—'}</div>
+                      </td>
                       <td className="text-center px-4 py-3">
                         <div className="relative inline-block">
                           <select
@@ -292,6 +303,24 @@ export const SuperAdmin: React.FC = () => {
                             <AlertTriangle className="w-3 h-3" /> Inactive
                           </span>
                         )}
+                      </td>
+                      <td className="text-center px-4 py-3">
+                        <div className="flex flex-col gap-0.5 text-[10px] font-mono text-slate-600">
+                          <span className={(t.counterCount ?? 0) >= (t.maxCounters ?? 0) ? 'text-amber-600 font-bold' : ''}>
+                            Counters {t.counterCount ?? 0}/{t.maxCounters ?? 0}
+                          </span>
+                          <span className={(t.tabletCount ?? 0) >= (t.maxTablets ?? 0) ? 'text-amber-600 font-bold' : ''}>
+                            Tablets {t.tabletCount ?? 0}/{t.maxTablets ?? 0}
+                          </span>
+                          <span className={(t.userCount ?? 0) >= (t.maxUsers ?? 0) ? 'text-amber-600 font-bold' : ''}>
+                            Users {t.userCount ?? 0}/{t.maxUsers ?? 0}
+                          </span>
+                          {!!t.activeAddOnsCount && (
+                            <span className="inline-flex items-center justify-center gap-1 mt-0.5 px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200 font-bold">
+                              <Puzzle className="w-2.5 h-2.5" /> {t.activeAddOnsCount} add-on{t.activeAddOnsCount > 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="text-center px-4 py-3 font-mono text-slate-700">{t.branchCount}</td>
                       <td className="text-center px-4 py-3">
@@ -324,7 +353,7 @@ export const SuperAdmin: React.FC = () => {
                   ))}
                   {filteredTenants.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="text-center py-12 text-slate-500">
+                      <td colSpan={9} className="text-center py-12 text-slate-500">
                         No restaurants found
                       </td>
                     </tr>

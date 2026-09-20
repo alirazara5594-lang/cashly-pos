@@ -559,10 +559,10 @@ export const TenantSignup: React.FC = () => {
 
         {/* Step 4: Review & Create */}
         {step === 4 && (
-          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
+          <div className="space-y-2.5 p-5 rounded-2xl bg-white border border-slate-200">
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
 
-            <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-x-5 gap-y-0.5">
               {[
                 { label: 'Business', value: form.restaurantName },
                 { label: 'Type', value: BUSINESS_TYPES.find(b => b.value === form.businessType)?.label },
@@ -576,14 +576,14 @@ export const TenantSignup: React.FC = () => {
                 { label: 'Admin PIN', value: '••••' },
                 { label: 'Plan', value: selectedPackage?.displayName ?? form.packageKey }
               ].map((item, i) => (
-                <div key={i} className="flex justify-between py-1.5 border-b border-slate-100 last:border-0">
-                  <span className="text-sm text-slate-500">{item.label}</span>
-                  <span className="text-sm text-slate-900 font-semibold">{item.value}</span>
+                <div key={i} className="flex justify-between gap-2 py-1 border-b border-slate-100">
+                  <span className="text-xs text-slate-500 shrink-0">{item.label}</span>
+                  <span className="text-xs text-slate-900 font-semibold truncate text-right">{item.value}</span>
                 </div>
               ))}
             </div>
 
-            <div className="px-3.5 py-2.5 rounded-xl bg-teal-50 border border-teal-200 text-sm text-teal-700">
+            <div className="px-3 py-1.5 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-700">
               <strong>Free Trial:</strong> 30 days, all features unlocked regardless of plan. No credit card required.
             </div>
 

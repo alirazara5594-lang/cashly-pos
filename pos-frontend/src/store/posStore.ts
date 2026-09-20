@@ -15,7 +15,8 @@ import type {
   ModulePermission,
   ModuleKey,
   PermissionAction,
-  UserRole
+  UserRole,
+  EffectivePackageFeatures
 } from '../types';
 
 import { offlineDb } from '../services/offlineDb';
@@ -186,6 +187,10 @@ interface PosState {
   loadMyModulePermissions: () => Promise<void>;
   can: (moduleKey: ModuleKey | string, action?: PermissionAction) => boolean;
 
+  // Tier + add-on merged feature flags — one true answer for "is X actually unlocked."
+  packageFeatures: EffectivePackageFeatures | null;
+  loadMyPackageFeatures: () => Promise<void>;
+
   // Network & Sync
   isOnline: boolean;
   isSyncing: boolean;
@@ -279,6 +284,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
   permissions: readStoredJson<AuthPermissions | null>(AUTH_PERMISSIONS_STORAGE_KEY, null),
   modulePermissions: readStoredJson<ModulePermission[]>(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, []),
+  packageFeatures: null,
 
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isSyncing: false,
@@ -323,7 +329,7 @@ export const usePosStore = create<PosState>((set, get) => ({
     } else {
       localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
     }
-    set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [] });
+    set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [], packageFeatures: null });
   },
 
   logout: () => {
@@ -336,7 +342,8 @@ export const usePosStore = create<PosState>((set, get) => ({
       currentUser: null,
       token: null,
       permissions: null,
-      modulePermissions: []
+      modulePermissions: [],
+      packageFeatures: null
     });
   },
 
@@ -356,6 +363,16 @@ export const usePosStore = create<PosState>((set, get) => ({
       get().setModulePermissions(Array.isArray(data) ? data : []);
     } catch (err) {
       console.warn('Failed to load module permissions:', err);
+    }
+  },
+
+  loadMyPackageFeatures: async () => {
+    try {
+      const data = await posApi.getMyPackage();
+      set({ packageFeatures: data?.features ?? null });
+    } catch (err) {
+      // SuperAdmin has no tenant to resolve this against (404) — that's expected, not an error.
+      set({ packageFeatures: null });
     }
   },
 

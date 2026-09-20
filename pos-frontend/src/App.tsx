@@ -6,6 +6,7 @@ import { CallOrderModal } from './components/CallOrderModal';
 import { PosTerminal } from './pages/PosTerminal';
 import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
+import { RequireFeature } from './components/RequireFeature';
 import { usePosStore } from './store/posStore';
 import { posApi, registerAuthRedirect } from './services/api';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -70,7 +71,8 @@ function MainLayoutInner() {
     currentUser,
     token,
     logout,
-    loadMyModulePermissions
+    loadMyModulePermissions,
+    loadMyPackageFeatures
   } = usePosStore();
   const { addToast } = useToast();
   const [isCallOrderOpen, setIsCallOrderOpen] = useState(false);
@@ -94,8 +96,9 @@ function MainLayoutInner() {
   useEffect(() => {
     if (isAuthenticated) {
       loadMyModulePermissions();
+      loadMyPackageFeatures();
     }
-  }, [isAuthenticated, currentUser?.id, loadMyModulePermissions]);
+  }, [isAuthenticated, currentUser?.id, loadMyModulePermissions, loadMyPackageFeatures]);
 
   // Tenants / branches now require a bearer token, so they load only once a
   // session exists — not during the pre-login setup check.
@@ -226,9 +229,9 @@ function MainLayoutInner() {
           <Routes>
             {/* Operational screens — open to any signed-in active user (no module gate). */}
             <Route path="/" element={<PosTerminal />} />
-            <Route path="/kitchen" element={<KitchenDisplay />} />
+            <Route path="/kitchen" element={<RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
             <Route path="/order-tab" element={<OrderTab />} />
-            <Route path="/delivery" element={<DeliveryBoard />} />
+            <Route path="/delivery" element={<RequireFeature flag="hasDeliveryCOD" label="Delivery & COD Board"><DeliveryBoard /></RequireFeature>} />
             {/* Customer lookup is part of taking an order, so viewing stays open to
                 any signed-in user; the page itself gates creating/editing on `admin` edit. */}
             <Route path="/customers" element={<CustomerManagement />} />

@@ -73,7 +73,8 @@ import type {
   CustomerPayment,
   BusinessType,
   PublicPackage,
-  CountryProfile
+  CountryProfile,
+  MyPackageInfo
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
@@ -1022,7 +1023,7 @@ export const posApi = {
     return res.data;
   },
   getMyPackage: async () => {
-    const res = await api.get('/api/tenant/my-package');
+    const res = await api.get<MyPackageInfo>('/api/tenant/my-package');
     return res.data;
   },
 
@@ -1376,7 +1377,7 @@ export const posApi = {
     const res = await api.get<AddOnSubscriptionRow[]>(`/api/admin/tenants/${tenantId}/addons`);
     return res.data;
   },
-  grantTenantAddOn: async (tenantId: string, data: { addOnKey: string; pricePKR?: number; quantity?: number }) => {
+  grantTenantAddOn: async (tenantId: string, data: { addOnKey: string; pricePKR?: number; quantity?: number; branchId?: string }) => {
     const res = await api.post<AddOnSubscriptionRow>(`/api/admin/tenants/${tenantId}/addons`, data);
     return res.data;
   },

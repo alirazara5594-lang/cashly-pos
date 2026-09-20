@@ -61,6 +61,34 @@ export interface CountryProfile {
   states: CountryState[] | null;
 }
 
+/** Effective, add-on-merged feature flags for the signed-in tenant — the one true answer for
+ * "is this feature actually available," since a tier flag OR an active add-on either unlocks it. */
+export interface EffectivePackageFeatures {
+  maxBranches: number;
+  maxCounters: number;
+  maxOrderTabs: number;
+  maxUsers: number;
+  hasKitchenDisplay: boolean;
+  hasDeliveryCOD: boolean;
+  hasInventoryManagement: boolean;
+  hasStockTransfers: boolean;
+  hasDirectorDashboard: boolean;
+  hasConsolidatedReports: boolean;
+  hasWhatsAppMessaging: boolean;
+  hasAdvancedReports: boolean;
+  hasMultiBranch: boolean;
+}
+
+export interface MyPackageInfo {
+  tier: string;
+  isActive: boolean;
+  isTrialActive: boolean;
+  trialEndsAt: string;
+  subscriptionPaidUntil: string | null;
+  features: EffectivePackageFeatures | null;
+  activeAddOnKeys: string[];
+}
+
 /** Shape returned by the anonymous GET /api/public/packages, used to build the plan picker on signup. */
 export interface PublicPackage {
   packageKey: string;
@@ -1080,6 +1108,9 @@ export interface AddOnCatalogItem {
   yearlyPricePKR: number;
   isActive: boolean;
   createdAt: string;
+  /** Which screen/module this key actually unlocks — derived server-side from the key itself. */
+  unlocksModule?: string;
+  unlocksRoute?: string | null;
 }
 
 export interface TenantAddOnCatalogRow extends AddOnCatalogItem {
@@ -1093,6 +1124,8 @@ export interface AddOnSubscriptionRow {
   quantity: number;
   pricePKR: number;
   isActive: boolean;
+  /** Set only for branch-scoped quantity add-ons (EXTRA_COUNTER, EXTRA_TABLET). */
+  branchId?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────

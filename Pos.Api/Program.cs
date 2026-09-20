@@ -302,6 +302,7 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Address"" text;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Country"" text NOT NULL DEFAULT 'Pakistan';
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""State"" text;
+            ALTER TABLE ""AddOnSubscriptions"" ADD COLUMN IF NOT EXISTS ""BranchId"" uuid;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""IsTrialActive"" boolean NOT NULL DEFAULT true;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TrialEndsAt"" timestamp with time zone NOT NULL DEFAULT NOW();
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""SubscriptionPaidUntil"" timestamp with time zone;
@@ -3338,12 +3339,17 @@ api.MapPost("/terminals", async (AppDbContext db, HttpContext http, CreateTermin
     if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
 
     var terminalCount = await db.Terminals.CountAsync(t => t.BranchId == branch.Id && t.TerminalType == dto.TerminalType);
-    // Branch quota AND the tenant's SaaS package ceiling both apply — take the lower.
+    // Branch quota AND the tenant's SaaS package ceiling both apply — take the lower — then add
+    // any EXTRA_COUNTER/EXTRA_TABLET add-ons purchased for this specific branch.
     var branchLimit = dto.TerminalType == TerminalType.OrderTab ? branch.AllowedOrderTabs : branch.AllowedCounters;
     var tenantTier = await db.Tenants.Where(t => t.Id == branch.TenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
     var pkg = tenantTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenantTier.Value.ToString());
     var packageLimit = pkg == null ? int.MaxValue : (dto.TerminalType == TerminalType.OrderTab ? pkg.MaxOrderTabs : pkg.MaxCounters);
-    var limit = Math.Min(branchLimit, packageLimit);
+    var addOnKey = dto.TerminalType == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
+    var addOnBonus = await db.AddOnSubscriptions
+        .Where(a => a.TenantId == branch.TenantId && a.BranchId == branch.Id && a.AddOnKey == addOnKey && a.IsActive)
+        .SumAsync(a => (int?)a.Quantity) ?? 0;
+    var limit = Math.Min(branchLimit, packageLimit) + addOnBonus;
     if (terminalCount >= limit)
         return Results.BadRequest(new { error = $"Branch limit reached: max {limit} {dto.TerminalType} devices allowed" });
 
@@ -3978,8 +3984,12 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     if (pkg != null)
     {
         var userCount = await db.Users.CountAsync(u => u.TenantId == scopedTenantId.Value);
-        if (userCount >= pkg.MaxUsers)
-            return Results.BadRequest(new { message = $"Your {pkg.DisplayName} package allows a maximum of {pkg.MaxUsers} users. Please upgrade." });
+        var extraUserSlots = await db.AddOnSubscriptions
+            .Where(a => a.TenantId == scopedTenantId.Value && a.AddOnKey == "EXTRA_USER" && a.IsActive)
+            .SumAsync(a => (int?)a.Quantity) ?? 0;
+        var userLimit = pkg.MaxUsers + extraUserSlots;
+        if (userCount >= userLimit)
+            return Results.BadRequest(new { message = $"Your {pkg.DisplayName} package allows a maximum of {userLimit} users{(extraUserSlots > 0 ? $" (including {extraUserSlots} extra from add-ons)" : "")}. Please upgrade or buy the Extra Staff Account add-on." });
     }
 
     var user = new AppUser
@@ -4936,12 +4946,49 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
             t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
             t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
             t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt,
-            branchCount = t.Branches.Count,
-            userCount = t.Branches.SelectMany(b => b.Terminals).Count()
+            branchCount = t.Branches.Count
         })
         .ToListAsync();
 
-    return Results.Ok(tenants);
+    // Real staff-account count — the old projection above counted Terminal devices under the name
+    // "userCount", which was actually device count, not staff. Fixed here by counting Users directly.
+    var realUserCounts = await db.Users.GroupBy(u => u.TenantId)
+        .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
+
+    var counterCounts = await db.Terminals.Where(t => t.TerminalType == TerminalType.Counter)
+        .GroupBy(t => t.Branch!.TenantId)
+        .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
+    var tabletCounts = await db.Terminals.Where(t => t.TerminalType == TerminalType.OrderTab)
+        .GroupBy(t => t.Branch!.TenantId)
+        .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
+
+    var addOnsByTenant = await db.AddOnSubscriptions.Where(a => a.IsActive)
+        .GroupBy(a => a.TenantId)
+        .Select(g => new { TenantId = g.Key, Count = g.Count(), ExtraCounters = g.Where(a => a.AddOnKey == "EXTRA_COUNTER").Sum(a => a.Quantity), ExtraTablets = g.Where(a => a.AddOnKey == "EXTRA_TABLET").Sum(a => a.Quantity), ExtraUsers = g.Where(a => a.AddOnKey == "EXTRA_USER").Sum(a => a.Quantity) })
+        .ToDictionaryAsync(x => x.TenantId, x => x);
+
+    var packages = await db.SaaSPackageConfigs.ToDictionaryAsync(p => p.PackageKey);
+
+    var result = tenants.Select(t =>
+    {
+        var pkg = packages.GetValueOrDefault(t.Tier.ToString());
+        var addOns = addOnsByTenant.GetValueOrDefault(t.Id);
+        return new
+        {
+            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
+            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
+            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt, t.branchCount,
+            userCount = realUserCounts.GetValueOrDefault(t.Id),
+            maxUsers = (pkg?.MaxUsers ?? 0) + (addOns?.ExtraUsers ?? 0),
+            counterCount = counterCounts.GetValueOrDefault(t.Id),
+            maxCounters = (pkg?.MaxCounters ?? 0) + (addOns?.ExtraCounters ?? 0),
+            tabletCount = tabletCounts.GetValueOrDefault(t.Id),
+            maxTablets = (pkg?.MaxOrderTabs ?? 0) + (addOns?.ExtraTablets ?? 0),
+            activeAddOnsCount = addOns?.Count ?? 0
+        };
+    });
+
+    return Results.Ok(result);
 }).RequireAuthorization();
 
 app.MapPut("/api/admin/tenants/{id:guid}/toggle-active", async (Guid id, AppDbContext db, HttpContext http) =>
@@ -5338,6 +5385,28 @@ app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =
     var tenant = await db.Tenants.FindAsync(tenantId.Value);
     if (tenant == null) return Results.NotFound();
     var pkg = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
+    var activeAddOnKeys = await db.AddOnSubscriptions
+        .Where(a => a.TenantId == tenantId.Value && a.IsActive)
+        .Select(a => a.AddOnKey).ToListAsync();
+
+    // The tier flags alone don't tell the frontend the whole story — an add-on can unlock a
+    // feature the tier itself doesn't include. Merge both here so any screen that wants to gate
+    // itself (e.g. "hide Kitchen Display unless entitled") has one true answer to check, instead
+    // of every screen re-implementing the same tier-OR-addon logic RequireFeatureFilter already does.
+    var effectiveFeatures = pkg == null ? null : new
+    {
+        pkg.MaxBranches, pkg.MaxCounters, pkg.MaxOrderTabs, pkg.MaxUsers,
+        hasKitchenDisplay = pkg.HasKitchenDisplay || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasKitchenDisplay)),
+        hasDeliveryCOD = pkg.HasDeliveryCOD || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasDeliveryCOD)),
+        hasInventoryManagement = pkg.HasInventoryManagement || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasInventoryManagement)),
+        hasStockTransfers = pkg.HasStockTransfers || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasStockTransfers)),
+        hasDirectorDashboard = pkg.HasDirectorDashboard || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasDirectorDashboard)),
+        hasConsolidatedReports = pkg.HasConsolidatedReports || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasConsolidatedReports)),
+        hasWhatsAppMessaging = pkg.HasWhatsAppMessaging,
+        hasAdvancedReports = pkg.HasAdvancedReports || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasAdvancedReports)),
+        hasMultiBranch = pkg.HasMultiBranch || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasMultiBranch))
+    };
+
     return Results.Ok(new
     {
         tier = tenant.Tier.ToString(),
@@ -5345,7 +5414,8 @@ app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =
         isTrialActive = tenant.IsTrialActive,
         trialEndsAt = tenant.TrialEndsAt,
         subscriptionPaidUntil = tenant.SubscriptionPaidUntil,
-        features = pkg
+        features = effectiveFeatures,
+        activeAddOnKeys
     });
 }).RequireAuthorization();
 
@@ -5356,6 +5426,25 @@ app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =
 // sales process (the owner asks, you sell it), not self-serve checkout.
 // ============================================================
 
+// Which screen/module an add-on key actually unlocks — derived from the key itself (every key is
+// either a SaaSPackageConfig flag name or one of the quantity keys) rather than relying on
+// whatever free-text description someone typed, so this can never drift out of sync with reality.
+static (string Module, string? Route) AddOnUnlockInfo(string key) => key switch
+{
+    nameof(SaaSPackageConfig.HasKitchenDisplay) => ("Kitchen Display (KDS)", "/kitchen"),
+    nameof(SaaSPackageConfig.HasDeliveryCOD) => ("Delivery & COD Board", "/delivery"),
+    nameof(SaaSPackageConfig.HasInventoryManagement) => ("Inventory Management", "/inventory"),
+    nameof(SaaSPackageConfig.HasStockTransfers) => ("Supply Chain (Stock Transfers)", "/transfers"),
+    nameof(SaaSPackageConfig.HasDirectorDashboard) => ("Executive Dashboard", "/director"),
+    nameof(SaaSPackageConfig.HasConsolidatedReports) => ("Financial Reports — Multi-Branch Consolidation", "/reports"),
+    nameof(SaaSPackageConfig.HasAdvancedReports) => ("Financial Reports — Advanced Analytics", "/reports"),
+    nameof(SaaSPackageConfig.HasMultiBranch) => ("Multi-Branch Operations (adding branches)", null),
+    "EXTRA_COUNTER" => ("POS Terminal Devices (Settings → Devices, per branch)", "/settings"),
+    "EXTRA_TABLET" => ("Tablet Waiter App Devices (per branch)", "/order-tab"),
+    "EXTRA_USER" => ("Staff & PIN Access (adding staff logins)", "/users"),
+    _ => ("Unknown — key does not match any known feature or quota", null)
+};
+
 // Any signed-in tenant user can see what's purchasable and what they already have.
 app.MapGet("/api/addons/catalog", async (AppDbContext db, HttpContext http) =>
 {
@@ -5363,14 +5452,23 @@ app.MapGet("/api/addons/catalog", async (AppDbContext db, HttpContext http) =>
     if (tenantId == null) return Results.Unauthorized();
     var catalog = await db.AddOnCatalogItems.Where(a => a.IsActive).OrderBy(a => a.DisplayName).ToListAsync();
     var active = await db.AddOnSubscriptions.Where(a => a.TenantId == tenantId.Value && a.IsActive).Select(a => a.AddOnKey).ToListAsync();
-    return Results.Ok(catalog.Select(c => new { c.Id, c.Key, c.DisplayName, c.Description, c.MonthlyPricePKR, c.YearlyPricePKR, isActiveForTenant = active.Contains(c.Key) }));
+    return Results.Ok(catalog.Select(c =>
+    {
+        var (module, route) = AddOnUnlockInfo(c.Key);
+        return new { c.Id, c.Key, c.DisplayName, c.Description, c.MonthlyPricePKR, c.YearlyPricePKR, isActiveForTenant = active.Contains(c.Key), unlocksModule = module, unlocksRoute = route };
+    }));
 }).RequireAuthorization();
 
 // --- SuperAdmin: manage the sellable catalog itself ---
 app.MapGet("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
-    return Results.Ok(await db.AddOnCatalogItems.OrderBy(a => a.DisplayName).ToListAsync());
+    var catalog = await db.AddOnCatalogItems.OrderBy(a => a.DisplayName).ToListAsync();
+    return Results.Ok(catalog.Select(c =>
+    {
+        var (module, route) = AddOnUnlockInfo(c.Key);
+        return new { c.Id, c.Key, c.DisplayName, c.Description, c.MonthlyPricePKR, c.YearlyPricePKR, c.IsActive, c.CreatedAt, unlocksModule = module, unlocksRoute = route };
+    }));
 }).RequireAuthorization();
 
 app.MapPost("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http, CreateAddOnCatalogItemDto dto) =>
@@ -5415,7 +5513,19 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
     var catalogItem = await db.AddOnCatalogItems.FirstOrDefaultAsync(a => a.Key == dto.AddOnKey);
     if (catalogItem == null) return Results.BadRequest(new { message = $"No catalog entry for {dto.AddOnKey}." });
 
-    var existing = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.TenantId == tenantId && a.AddOnKey == dto.AddOnKey);
+    // Branch-scoped add-ons — the device quota they raise (Branch.AllowedCounters/AllowedOrderTabs)
+    // lives per-branch, so granting one without picking a branch would be ambiguous on any
+    // multi-branch tenant. EXTRA_USER stays tenant-wide since MaxUsers is a tenant-level ceiling.
+    Guid? branchId = null;
+    if (dto.AddOnKey is "EXTRA_COUNTER" or "EXTRA_TABLET")
+    {
+        if (dto.BranchId == null) return Results.BadRequest(new { message = $"{dto.AddOnKey} needs a branch — pick which branch gets the extra device." });
+        var branchBelongsToTenant = await db.Branches.AnyAsync(b => b.Id == dto.BranchId.Value && b.TenantId == tenantId);
+        if (!branchBelongsToTenant) return Results.BadRequest(new { message = "That branch does not belong to this tenant." });
+        branchId = dto.BranchId.Value;
+    }
+
+    var existing = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.TenantId == tenantId && a.AddOnKey == dto.AddOnKey && a.BranchId == branchId);
     if (existing != null)
     {
         existing.IsActive = true;
@@ -5424,7 +5534,7 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
     }
     else
     {
-        existing = new AddOnSubscription { TenantId = tenantId, AddOnKey = dto.AddOnKey, Quantity = dto.Quantity ?? 1, PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR, IsActive = true };
+        existing = new AddOnSubscription { TenantId = tenantId, AddOnKey = dto.AddOnKey, BranchId = branchId, Quantity = dto.Quantity ?? 1, PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR, IsActive = true };
         db.AddOnSubscriptions.Add(existing);
     }
     await db.SaveChangesAsync();
@@ -6565,6 +6675,13 @@ api.MapGet("/integrations/delivery/{platform}/config", async (
     Pos.Api.Services.IDeliveryPlatformResolver connectors,
     string platform) =>
 {
+    // A platform SuperAdmin has no tenant of its own — this screen configures ONE restaurant's
+    // integration, which isn't a SuperAdmin concept without a tenant picker (none exists here).
+    // That's a scoping problem, not a bad session, so it must not be a 401 (the client treats any
+    // 401 as "session expired" and force-logs-out — which is exactly the bug this was causing).
+    if (http.IsSuperAdmin())
+        return Results.Json(new { message = "Delivery integration settings are configured per-restaurant. Sign in as that restaurant's Owner/Admin to view or change them." }, statusCode: StatusCodes.Status400BadRequest);
+
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null) return Results.Unauthorized();
 
@@ -6593,6 +6710,9 @@ api.MapPut("/integrations/delivery/{platform}/config", async (
     Pos.Api.Services.IDeliveryPlatformResolver connectors,
     string platform, DeliveryIntegrationConfigDto dto) =>
 {
+    if (http.IsSuperAdmin())
+        return Results.Json(new { message = "Delivery integration settings are configured per-restaurant. Sign in as that restaurant's Owner/Admin to view or change them." }, statusCode: StatusCodes.Status400BadRequest);
+
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null) return Results.Unauthorized();
 
@@ -7710,7 +7830,7 @@ public record CreatePackageDto(string PackageKey, string DisplayName, decimal Mo
 public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
 public record CreateAddOnCatalogItemDto(string Key, string DisplayName, string? Description, decimal MonthlyPricePKR, decimal YearlyPricePKR);
 public record UpdateAddOnCatalogItemDto(string? DisplayName, string? Description, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, bool? IsActive);
-public record GrantAddOnDto(string AddOnKey, decimal? PricePKR, int? Quantity);
+public record GrantAddOnDto(string AddOnKey, decimal? PricePKR, int? Quantity, Guid? BranchId);
 public record UpdateModulePermissionDto(string ModuleKey, string SubModuleKey, bool CanView, bool CanEdit, bool CanDelete, bool CanExport);
 public record TenantSettingsDto(
     string? CountryCode,

@@ -183,10 +183,14 @@ public class AddOnSubscription
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Tenant? Tenant { get; set; }
-    public string AddOnKey { get; set; } = string.Empty; // e.g. "EXTRA_COUNTER", "EXTRA_TAB", "FBR_TAX"
+    public string AddOnKey { get; set; } = string.Empty; // e.g. "EXTRA_COUNTER", "EXTRA_TABLET", "EXTRA_USER", or a SaaSPackageConfig flag name
     public int Quantity { get; set; } = 1;
     public decimal PricePKR { get; set; }
     public bool IsActive { get; set; } = true;
+    /// <summary>Set only for branch-scoped add-ons (EXTRA_COUNTER, EXTRA_TABLET) — which specific
+    /// branch's device quota this grant raises. Null for tenant-wide add-ons (EXTRA_USER, and every
+    /// boolean feature flag add-on, which apply across the whole tenant regardless of branch).</summary>
+    public Guid? BranchId { get; set; }
 }
 
 public class Category

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, CheckCircle2, Ban, Edit, Save, X } from 'lucide-react';
+import { RefreshCw, CheckCircle2, Ban, Edit, Save, X, ExternalLink } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import type { AddOnCatalogItem, AddOnSubscriptionRow } from '../types';
+import type { AddOnCatalogItem, AddOnSubscriptionRow, Branch } from '../types';
 
 interface TenantOption {
   id: string;
@@ -9,14 +9,20 @@ interface TenantOption {
   tier: string;
 }
 
+/** EXTRA_COUNTER/EXTRA_TABLET need a branch; EXTRA_USER and every boolean feature don't. */
+const BRANCH_SCOPED_KEYS = ['EXTRA_COUNTER', 'EXTRA_TABLET'];
+const QUANTITY_KEYS = ['EXTRA_COUNTER', 'EXTRA_TABLET', 'EXTRA_USER'];
+
 export const AddOnManagement: React.FC = () => {
   const [tenants, setTenants] = useState<TenantOption[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState('');
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [catalog, setCatalog] = useState<AddOnCatalogItem[]>([]);
   const [tenantAddOns, setTenantAddOns] = useState<AddOnSubscriptionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [quantityForm, setQuantityForm] = useState<Record<string, { branchId: string; quantity: string }>>({});
 
   const [editingItem, setEditingItem] = useState<AddOnCatalogItem | null>(null);
   const [editForm, setEditForm] = useState({ monthlyPricePKR: '', yearlyPricePKR: '' });
@@ -50,7 +56,18 @@ export const AddOnManagement: React.FC = () => {
   useEffect(() => { loadTenants(); }, [loadTenants]);
   useEffect(() => { loadCatalog(); }, [loadCatalog]);
 
+  useEffect(() => {
+    if (!selectedTenantId) { setBranches([]); return; }
+    let cancelled = false;
+    posApi.getBranches(selectedTenantId)
+      .then(data => { if (!cancelled) setBranches(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setBranches([]); });
+    return () => { cancelled = true; };
+  }, [selectedTenantId]);
+
   const activeForKey = (key: string) => tenantAddOns.find(a => a.addOnKey === key && a.isActive);
+  const activeGrantsForKey = (key: string) => tenantAddOns.filter(a => a.addOnKey === key && a.isActive);
+  const branchName = (branchId: string | null | undefined) => branches.find(b => b.id === branchId)?.name ?? 'Unknown branch';
 
   const handleToggle = async (item: AddOnCatalogItem) => {
     if (!selectedTenantId) return;
@@ -67,6 +84,47 @@ export const AddOnManagement: React.FC = () => {
       await loadCatalog();
     } catch (err) {
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to update add-on') });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleRevokeGrant = async (grant: AddOnSubscriptionRow) => {
+    if (!selectedTenantId) return;
+    setBusyKey(grant.addOnKey + (grant.branchId ?? ''));
+    try {
+      await posApi.revokeTenantAddOn(selectedTenantId, grant.id);
+      setMessage({ type: 'success', text: 'Add-on revoked' });
+      await loadCatalog();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to revoke add-on') });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleGrantQuantity = async (item: AddOnCatalogItem) => {
+    if (!selectedTenantId) return;
+    const form = quantityForm[item.key] || { branchId: '', quantity: '1' };
+    const isBranchScoped = BRANCH_SCOPED_KEYS.includes(item.key);
+    if (isBranchScoped && !form.branchId) {
+      setMessage({ type: 'error', text: 'Pick which branch gets this add-on.' });
+      return;
+    }
+    const quantity = Math.max(1, Number(form.quantity) || 1);
+    setBusyKey(item.key);
+    try {
+      await posApi.grantTenantAddOn(selectedTenantId, {
+        addOnKey: item.key,
+        pricePKR: item.monthlyPricePKR * quantity,
+        quantity,
+        branchId: isBranchScoped ? form.branchId : undefined
+      });
+      setMessage({ type: 'success', text: `${item.displayName} granted (x${quantity}${isBranchScoped ? ` for ${branchName(form.branchId)}` : ''})` });
+      setQuantityForm(prev => ({ ...prev, [item.key]: { branchId: '', quantity: '1' } }));
+      await loadCatalog();
+    } catch (err) {
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to grant add-on') });
     } finally {
       setBusyKey(null);
     }
@@ -138,6 +196,7 @@ export const AddOnManagement: React.FC = () => {
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
                 <th className="px-4 py-2.5">Feature</th>
+                <th className="px-4 py-2.5">Unlocks</th>
                 <th className="px-4 py-2.5">Description</th>
                 <th className="px-4 py-2.5 text-right">Monthly</th>
                 <th className="px-4 py-2.5 text-right">Yearly</th>
@@ -146,23 +205,35 @@ export const AddOnManagement: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-xs text-slate-400">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-400">Loading…</td></tr>
               ) : catalog.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-xs text-slate-400">No add-ons in the catalog yet.</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-xs text-slate-400">No add-ons in the catalog yet.</td></tr>
               ) : catalog.map(item => {
+                const isQuantity = QUANTITY_KEYS.includes(item.key);
+                const isBranchScoped = BRANCH_SCOPED_KEYS.includes(item.key);
                 const active = !!activeForKey(item.key);
+                const grants = isQuantity ? activeGrantsForKey(item.key) : [];
+                const form = quantityForm[item.key] || { branchId: '', quantity: '1' };
                 return (
-                  <tr key={item.id} className="hover:bg-slate-50">
+                  <tr key={item.id} className="hover:bg-slate-50 align-top">
                     <td className="px-4 py-2.5 text-xs font-bold text-slate-900">{item.displayName}</td>
+                    <td className="px-4 py-2.5 text-[11px] text-slate-600 max-w-[14rem]">
+                      {item.unlocksRoute ? (
+                        <span className="inline-flex items-center gap-1">
+                          {item.unlocksModule}
+                          <ExternalLink className="w-2.5 h-2.5 text-slate-400" />
+                        </span>
+                      ) : (item.unlocksModule || '—')}
+                    </td>
                     <td className="px-4 py-2.5 text-[11px] text-slate-500 max-w-xs">{item.description}</td>
                     <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-700">{item.monthlyPricePKR.toLocaleString()}</td>
                     <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-700">{item.yearlyPricePKR.toLocaleString()}</td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-2 mb-1.5">
                         <button onClick={() => openEdit(item)} className="p-1.5 rounded-lg bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 transition" title="Edit pricing">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        {selectedTenantId && (
+                        {selectedTenantId && !isQuantity && (
                           <button
                             onClick={() => handleToggle(item)}
                             disabled={busyKey === item.key}
@@ -175,6 +246,52 @@ export const AddOnManagement: React.FC = () => {
                           </button>
                         )}
                       </div>
+
+                      {selectedTenantId && isQuantity && (
+                        <div className="text-left space-y-1.5">
+                          {grants.map(g => (
+                            <div key={g.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded-lg bg-slate-50 border border-slate-200">
+                              <span className="text-[10px] text-slate-600">
+                                x{g.quantity}{isBranchScoped ? ` · ${branchName(g.branchId)}` : ' · tenant-wide'}
+                              </span>
+                              <button
+                                onClick={() => handleRevokeGrant(g)}
+                                disabled={busyKey === g.addOnKey + (g.branchId ?? '')}
+                                className="p-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-600 disabled:opacity-50"
+                                title="Revoke this grant"
+                              >
+                                <Ban className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
+                          <div className="flex items-center gap-1.5">
+                            {isBranchScoped && (
+                              <select
+                                value={form.branchId}
+                                onChange={(e) => setQuantityForm(prev => ({ ...prev, [item.key]: { ...form, branchId: e.target.value } }))}
+                                className="px-1.5 py-1 bg-white border border-slate-200 rounded-lg text-[10px] focus:outline-none focus:border-teal-500"
+                              >
+                                <option value="">Branch…</option>
+                                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                              </select>
+                            )}
+                            <input
+                              type="number"
+                              min={1}
+                              value={form.quantity}
+                              onChange={(e) => setQuantityForm(prev => ({ ...prev, [item.key]: { ...form, quantity: e.target.value } }))}
+                              className="w-12 px-1.5 py-1 bg-white border border-slate-200 rounded-lg text-[10px] focus:outline-none focus:border-teal-500"
+                            />
+                            <button
+                              onClick={() => handleGrantQuantity(item)}
+                              disabled={busyKey === item.key}
+                              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-teal-50 hover:bg-teal-100 text-teal-600 transition disabled:opacity-50"
+                            >
+                              <CheckCircle2 className="w-3 h-3" /> Grant
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
