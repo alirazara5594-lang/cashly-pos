@@ -76,11 +76,36 @@ public class Tenant
     public string? State { get; set; }
     public BusinessType BusinessType { get; set; } = BusinessType.Restaurant;
     public SubscriptionTier Tier { get; set; } = SubscriptionTier.Starter;
+
+    /// <summary>
+    /// Kept as the hard on/off kill switch, but it is no longer how billing state is expressed —
+    /// see <see cref="Status"/>. IsActive false means "this account is off", full stop.
+    /// </summary>
     public bool IsActive { get; set; } = true;
+
+    /// <summary>
+    /// Graduated lifecycle state. Non-payment walks this down (PastDue, Restricted, ReadOnly)
+    /// rather than killing the register on day one.
+    /// </summary>
+    public TenantStatus Status { get; set; } = TenantStatus.Trial;
+
     public bool IsTrialActive { get; set; } = true;
     public DateTime TrialEndsAt { get; set; } = DateTime.UtcNow.AddDays(30);
     public DateTime? SubscriptionPaidUntil { get; set; } // null = not paid yet
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    // --- Provisioning ------------------------------------------------------
+    /// <summary>
+    /// How this tenant came to exist. Self-serve signups own their credentials from the start;
+    /// provider-provisioned ones are created by platform staff and the owner sets their own PIN
+    /// through a one-time invite, so staff never know a customer's credentials.
+    /// </summary>
+    public bool IsProviderProvisioned { get; set; } = false;
+
+    /// <summary>SHA-256 of the one-time owner invite token. Null once redeemed or never issued.</summary>
+    public string? OwnerInviteTokenHash { get; set; }
+    public DateTime? OwnerInviteExpiresAt { get; set; }
+    public DateTime? OwnerInviteRedeemedAt { get; set; }
 
     public ICollection<Branch> Branches { get; set; } = new List<Branch>();
     public ICollection<AddOnSubscription> AddOns { get; set; } = new List<AddOnSubscription>();
@@ -157,8 +182,21 @@ public class Branch
     public bool IsHeadOffice { get; set; } = false;
     public string? RegionCode { get; set; } // e.g. PK-PB, PK-SD, PK-KP, PK-BA, PK-ICT — resolves provincial tax jurisdiction
 
-    // Quotas (Starter: 1, Standard: 3, Pro: 5 base + add-ons)
+    // ------------------------------------------------------------------
+    // DEPRECATED device quotas.
+    //
+    // These were a second, independent store of the same limit that SaaSPackageConfig already
+    // held, reconciled ad hoc at each call site with a Math.Min — so the two could disagree and
+    // the defaults written here (5/15, 10/25, 2/10 in different code paths) frequently did.
+    //
+    // The authoritative answer now comes from IEntitlementService, which folds plan, add-ons and
+    // overrides into one number. The columns survive only so existing rows and older API clients
+    // do not break; nothing reads them for an authorization decision any more.
+    // ------------------------------------------------------------------
+    [Obsolete("Not authoritative. Use IEntitlementService.CanAddDeviceAsync — see the note above.")]
     public int AllowedCounters { get; set; } = 5;
+
+    [Obsolete("Not authoritative. Use IEntitlementService.CanAddDeviceAsync — see the note above.")]
     public int AllowedOrderTabs { get; set; } = 15;
 
     public ICollection<Terminal> Terminals { get; set; } = new List<Terminal>();
@@ -169,13 +207,63 @@ public class Branch
 public class Terminal
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
     public Guid BranchId { get; set; }
     public Branch? Branch { get; set; }
     public string TerminalName { get; set; } = string.Empty;
     public TerminalType TerminalType { get; set; } = TerminalType.Counter;
+
+    /// <summary>
+    /// Opaque device identity. Only ever compared, never shown after activation — the device's
+    /// actual credential is the signed licence (see <see cref="DeviceLicenseService"/>), and this
+    /// is the stable key that licence is issued against.
+    /// </summary>
     public string DeviceToken { get; set; } = Guid.NewGuid().ToString("N");
+
     public bool IsActive { get; set; } = true;
     public DateTime LastSeenAt { get; set; } = DateTime.UtcNow;
+
+    // --- Device licensing ---------------------------------------------------
+    // A Terminal row is a licence GRANT; the signed token the device holds is the licence
+    // ITSELF. Everything below is what makes that grant verifiable, expiring and revocable
+    // instead of a permanent GUID that works forever from any machine that has the string.
+
+    /// <summary>Hardware/browser fingerprint captured at activation. A licence renewal presenting
+    /// a different fingerprint is refused — that is a copied token, not a roaming device.</summary>
+    public string? DeviceFingerprint { get; set; }
+
+    /// <summary>Free-text device description captured at activation (OS, browser, screen), for
+    /// support. Never used for authorization.</summary>
+    public string? DeviceInfo { get; set; }
+
+    public DateTime? ActivatedAt { get; set; }
+    public DateTime? LicenseIssuedAt { get; set; }
+
+    /// <summary>When the device's current licence stops being accepted. The device keeps working
+    /// offline until this passes, then degrades — it is never cut off mid-shift.</summary>
+    public DateTime? LicenseExpiresAt { get; set; }
+
+    /// <summary>Entitlement snapshot version the last issued licence was stamped with. When the
+    /// tenant's snapshot moves ahead of this, the next heartbeat hands the device a fresh licence.</summary>
+    public int LicenseSnapshotVersion { get; set; } = 0;
+
+    /// <summary>Set when the licence is deliberately killed (lost device, refund, fraud).
+    /// Revocation is permanent for this row; the slot is freed immediately.</summary>
+    public DateTime? RevokedAt { get; set; }
+    public string? RevokedReason { get; set; }
+
+    /// <summary>Set when a device is retired normally. The slot stays counted against quota until
+    /// <see cref="DeviceSlotCooldownHours"/> has passed, so a tenant cannot cycle add/delete/add to
+    /// run more devices than they pay for.</summary>
+    public DateTime? DeactivatedAt { get; set; }
+
+    /// <summary>How long a retired device keeps occupying its quota slot.</summary>
+    public const int DeviceSlotCooldownHours = 12;
+
+    /// <summary>True while this row should still be counted against the branch device quota.</summary>
+    public bool OccupiesQuotaSlot(DateTime now) =>
+        RevokedAt == null
+        && (DeactivatedAt == null || DeactivatedAt.Value.AddHours(DeviceSlotCooldownHours) > now);
 }
 
 public class AddOnSubscription
@@ -347,6 +435,31 @@ public class Order
     /// </summary>
     public decimal GiftCardRedeemedPKR { get; set; } = 0;
 
+    // --- Offline origin & reconciliation -----------------------------------
+    // An offline sale already happened: the customer handed over money at a price the device
+    // showed them. Re-deriving the total from today's catalog at sync time silently rewrites
+    // history, so the device-reported figures are kept and any drift is recorded, not erased.
+
+    /// <summary>Device-generated id, unique per tenant. Makes sync idempotent: a retried batch
+    /// (or a response lost after the server already committed) cannot post the sale twice.</summary>
+    public string? ClientLocalId { get; set; }
+
+    /// <summary>True when this order was captured offline and posted later by sync.</summary>
+    public bool IsOfflineOrigin { get; set; } = false;
+
+    /// <summary>When the sale actually happened on the device, as opposed to when it reached the
+    /// server. Reports and Z-readings should use this.</summary>
+    public DateTime? CapturedAt { get; set; }
+
+    /// <summary>Total the device charged the customer. Authoritative for the sale.</summary>
+    public decimal? DeviceReportedTotalPKR { get; set; }
+
+    /// <summary>Server-recomputed total minus the device total. Non-zero means the catalog moved
+    /// between capture and sync — surfaced for reconciliation rather than silently applied.</summary>
+    public decimal PriceVariancePKR { get; set; } = 0;
+
+    public bool HasPriceVariance { get; set; } = false;
+
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public ICollection<KitchenTicket> KitchenTickets { get; set; } = new List<KitchenTicket>();
 }
@@ -365,6 +478,13 @@ public class OrderItem
     public string? ModifiersSummary { get; set; }
     public string? SpecialNotes { get; set; }
     public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
+
+    /// <summary>
+    /// Unit price the device actually charged, when it differs from the catalog price the server
+    /// would apply now. Null for ordinary online sales (where the two are the same by definition).
+    /// Kept so an offline receipt can always be reproduced exactly as the customer received it.
+    /// </summary>
+    public decimal? DeviceReportedUnitPricePKR { get; set; }
 }
 
 public class KitchenTicket

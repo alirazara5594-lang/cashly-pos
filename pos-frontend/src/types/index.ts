@@ -79,14 +79,144 @@ export interface EffectivePackageFeatures {
   hasMultiBranch: boolean;
 }
 
+/** Where a tenant sits on the billing ladder. Mirrors the server's TenantStatus. */
+export type TenantStatus =
+  | 'Trial' | 'Active' | 'PastDue' | 'Restricted' | 'ReadOnly' | 'Suspended' | 'Cancelled';
+
+/** Which centre panel the POS renders — decided by the tenant's primary vertical pack. */
+export type PosLayout = 'ProductGrid' | 'FloorPlan' | 'ScanFirst' | 'AppointmentBook' | 'OrderSheet';
+
+/** What shape a product takes in this business's sector. */
+export interface ItemCapabilities {
+  variants: boolean;
+  modifiers: boolean;
+  batchExpiry: boolean;
+  serialNumbers: boolean;
+  weighable: boolean;
+  recipeBom: boolean;
+  serviceDuration: boolean;
+  prescriptionRequired: boolean;
+  tieredPricing: boolean;
+}
+
+/** How a sale is taken in this business's sector. */
+export interface FlowCapabilities {
+  tableService: boolean;
+  kitchenRouting: boolean;
+  quickSale: boolean;
+  appointments: boolean;
+  delivery: boolean;
+  creditAccounts: boolean;
+  staffCommission: boolean;
+  deliveryNotes: boolean;
+}
+
+export interface VerticalPackInfo {
+  key: string;
+  displayName: string;
+  description: string;
+  posLayout: PosLayout;
+  catalogNoun: string;
+  saleNoun: string;
+  capabilities: Partial<ItemCapabilities & FlowCapabilities>;
+}
+
 export interface MyPackageInfo {
   tier: string;
+  snapshotVersion: number;
   isActive: boolean;
+  status: TenantStatus;
   isTrialActive: boolean;
   trialEndsAt: string;
   subscriptionPaidUntil: string | null;
+
+  /** What the tenant's billing state permits — resolved server-side so no screen re-derives it. */
+  canSell: boolean;
+  canUseBackOffice: boolean;
+  canRead: boolean;
+  showBillingWarning: boolean;
+
   features: EffectivePackageFeatures | null;
   activeAddOnKeys: string[];
+
+  /** The sector contract: what this business IS, not just what it bought. */
+  verticalPacks: string[];
+  primaryPack: string;
+  packDisplayName: string | null;
+  posLayout: PosLayout;
+  /** Trade-appropriate wording — "Menu" reads wrong in a pharmacy. */
+  catalogNoun: string;
+  saleNoun: string;
+  sectorModules: string[];
+  itemCapabilities: ItemCapabilities;
+  flowCapabilities: FlowCapabilities;
+}
+
+// --- Device activation & licensing ---
+
+export interface DeviceCapacity {
+  terminalType: 'Counter' | 'OrderTab' | 'KitchenDisplay';
+  inUse: number;
+  /** null means unmetered (kitchen displays are not charged for). */
+  limit: number | null;
+  canAdd: boolean;
+}
+
+export interface PairingCodeResponse {
+  /** Shown once at creation and never recoverable afterwards. */
+  pairingCode: string;
+  expiresAt: string;
+  terminalType: string;
+  terminalName: string;
+  branchName: string;
+  slotsInUse: number;
+  slotLimit: number;
+}
+
+export interface PendingPairingCode {
+  id: string;
+  /** Only the first 4 characters are stored in the clear, for telling two codes apart. */
+  codePrefix: string;
+  terminalType: number;
+  terminalName: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface DeviceActivationResponse {
+  license: string;
+  expiresAt: string;
+  graceEndsAt: string;
+  terminalId: string;
+  terminalName: string;
+  terminalType: string;
+  deviceToken: string;
+  tenantId: string;
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  isHeadOffice: boolean;
+  packs: string[];
+  primaryPack: string;
+}
+
+export interface HeartbeatResponse {
+  state: string;
+  canSell: boolean;
+  canUseBackOffice?: boolean;
+  showBillingWarning?: boolean;
+  tenantStatus?: TenantStatus;
+  license?: string;
+  expiresAt?: string;
+  graceEndsAt?: string;
+  snapshotVersion?: number;
+  terminalName?: string;
+  terminalType?: string;
+  packs?: string[];
+  primaryPack?: string;
+  features?: Record<string, boolean>;
+  reason?: string;
+  mustReactivate?: boolean;
 }
 
 /** Shape returned by the anonymous GET /api/public/packages, used to build the plan picker on signup. */

@@ -26,6 +26,7 @@ import {
 import { usePosStore } from '../store/posStore';
 import { posApi } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
+import { getStoredTerminal } from '../services/deviceLicense';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer } from '../types';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
@@ -309,12 +310,24 @@ export const PosTerminal: React.FC = () => {
         setCompletedOrder(newOrder);
       } else {
         const offlineId = `OFFLINE-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const capturedAt = new Date().toISOString();
+
+        // clientLocalId is the sale's identity for the rest of its life. The server has a
+        // unique index on it, so re-sending this batch after a dropped response records the
+        // sale once rather than twice. It has to be generated HERE, at the moment of sale, and
+        // never regenerated on retry — a fresh id on each attempt would defeat the whole point.
+        //
+        // Prefixed with the terminal so two tills that ring up at the same millisecond while
+        // both offline cannot collide.
+        const terminalId = getStoredTerminal()?.id ?? 'unpaired';
+        const clientLocalId = `${terminalId}:${offlineId}`;
 
         await offlineDb.offlineOrders.add({
           localId: offlineId,
-          orderData: { ...orderPayload, idempotencyKey },
-          createdAt: new Date().toISOString(),
+          // capturedAt is when the customer actually paid. Without it, a Tuesday outage lands
+          // in Wednesday's Z-report.
+          orderData: { ...orderPayload, clientLocalId, capturedAt },
+          createdAt: capturedAt,
           isSynced: 0 as any,
           syncRetries: 0
         });

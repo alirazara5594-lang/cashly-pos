@@ -16,7 +16,8 @@ import type {
   ModuleKey,
   PermissionAction,
   UserRole,
-  EffectivePackageFeatures
+  EffectivePackageFeatures,
+  MyPackageInfo
 } from '../types';
 
 import { offlineDb } from '../services/offlineDb';
@@ -189,6 +190,12 @@ interface PosState {
 
   // Tier + add-on merged feature flags — one true answer for "is X actually unlocked."
   packageFeatures: EffectivePackageFeatures | null;
+  /**
+   * The full entitlement answer: flags, resolved quotas, where the tenant sits on the billing
+   * ladder, and which vertical pack(s) it runs. Screens that need to know WHAT KIND of business
+   * this is — which decides the POS layout, the item fields and the wording — read this.
+   */
+  packageInfo: MyPackageInfo | null;
   loadMyPackageFeatures: () => Promise<void>;
 
   // Network & Sync
@@ -285,6 +292,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   permissions: readStoredJson<AuthPermissions | null>(AUTH_PERMISSIONS_STORAGE_KEY, null),
   modulePermissions: readStoredJson<ModulePermission[]>(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, []),
   packageFeatures: null,
+  packageInfo: null,
 
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   isSyncing: false,
@@ -329,7 +337,7 @@ export const usePosStore = create<PosState>((set, get) => ({
     } else {
       localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
     }
-    set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [], packageFeatures: null });
+    set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [], packageFeatures: null, packageInfo: null });
   },
 
   logout: () => {
@@ -343,7 +351,8 @@ export const usePosStore = create<PosState>((set, get) => ({
       token: null,
       permissions: null,
       modulePermissions: [],
-      packageFeatures: null
+      packageFeatures: null,
+      packageInfo: null
     });
   },
 
@@ -369,10 +378,12 @@ export const usePosStore = create<PosState>((set, get) => ({
   loadMyPackageFeatures: async () => {
     try {
       const data = await posApi.getMyPackage();
-      set({ packageFeatures: data?.features ?? null });
+      // Both are kept: `packageFeatures` is what the existing feature guards read, and
+      // `packageInfo` carries the billing state and sector contract the guards do not need.
+      set({ packageFeatures: data?.features ?? null, packageInfo: data ?? null });
     } catch (err) {
       // SuperAdmin has no tenant to resolve this against (404) — that's expected, not an error.
-      set({ packageFeatures: null });
+      set({ packageFeatures: null, packageInfo: null });
     }
   },
 

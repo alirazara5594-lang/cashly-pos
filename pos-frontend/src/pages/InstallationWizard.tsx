@@ -25,8 +25,8 @@ import {
 } from 'lucide-react';
 import { posApi } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
-import { offlineDb } from '../services/offlineDb';
 import { usePosStore } from '../store/posStore';
+import { activate as activateDevice, getStoredTerminal } from '../services/deviceLicense';
 import type { BusinessType, DeploymentMode, BranchInitPayload } from '../types';
 
 export const InstallationWizard: React.FC = () => {
@@ -150,42 +150,45 @@ export const InstallationWizard: React.FC = () => {
     setBranches(next);
   };
 
+  /**
+   * Activate THIS device against a branch using a one-time code an administrator generated.
+   *
+   * The old flow exchanged a permanent, guessable branch token for the tenant's whole catalogue,
+   * anonymously. Now the code is single-use and short-lived, activation returns a signed licence
+   * bound to this machine, and no business data comes back with it — the catalogue is fetched
+   * afterwards by an authenticated session, which is where it always belonged.
+   */
   const handlePairWithToken = async () => {
     if (!pairingInputToken.trim()) return;
     setIsPairing(true);
     setErrorMessage(null);
 
     try {
-      const res = await posApi.pairBranchWithToken(pairingInputToken.trim());
-      if (res && res.success) {
-        setDeploymentMode('MultiBranch');
-        setIsInstalled(true);
-        localStorage.setItem('cashly_is_installed', 'true');
-        localStorage.setItem('cashly_deployment_mode', 'MultiBranch');
-        localStorage.setItem('cashly_terminal_mode', 'CounterPOS');
-        localStorage.setItem('cashly_api_url', apiUrl);
+      await activateDevice(pairingInputToken.trim());
+      const terminal = getStoredTerminal();
 
-        // Cache products and categories in local IndexedDB
-        if (res.categories) {
-          await offlineDb.categories.bulkPut(res.categories);
-        }
-        if (res.products) {
-          await offlineDb.products.bulkPut(res.products);
-        }
+      setDeploymentMode('MultiBranch');
+      setIsInstalled(true);
+      localStorage.setItem('cashly_is_installed', 'true');
+      localStorage.setItem('cashly_deployment_mode', 'MultiBranch');
+      // The device class chosen when the code was issued decides what this machine becomes,
+      // so a tablet code cannot quietly turn into a full till.
+      localStorage.setItem(
+        'cashly_terminal_mode',
+        terminal?.type === 'OrderTab' ? 'WaiterTab' : terminal?.type === 'KitchenDisplay' ? 'KitchenKDS' : 'CounterPOS'
+      );
+      localStorage.setItem('cashly_api_url', apiUrl);
 
-        // Tenants now require a session. This is best-effort here — App reloads
-        // them properly once the user signs in at the login gate.
-        try {
-          setTenants(await posApi.getTenants());
-        } catch {
-          console.info('Tenant list will load after sign-in.');
-        }
 
-        navigate('/');
-      }
+      // Sign-in comes next: the catalogue now loads under the user's own session rather than
+      // being handed out at activation time.
+      navigate('/');
     } catch (err: any) {
-      console.error('Branch pairing failed:', err);
-      setErrorMessage(err?.response?.data?.message || 'Failed to pair branch. Verify the pairing token and ensure HQ server is reachable.');
+      console.error('Device activation failed:', err);
+      setErrorMessage(
+        err?.response?.data?.message
+          ?? 'Could not activate this device. Check the code with your administrator — codes expire after 15 minutes and work only once.'
+      );
     } finally {
       setIsPairing(false);
     }

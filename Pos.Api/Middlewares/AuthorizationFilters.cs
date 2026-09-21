@@ -64,6 +64,13 @@ public class RequireModuleFilter : IEndpointFilter
         var user = await accessor.GetCurrentUserAsync(context.HttpContext);
         if (user == null) return Results.Unauthorized();
 
+        // Every back-office module routes through this filter, so the tenant lifecycle check
+        // lives here rather than being bolted onto 60-odd call sites where it could be forgotten.
+        // Reads stay open as long as the account is not hard-locked — a customer who owes money
+        // must still be able to see their own figures and export their data.
+        var stateGate = await TenantStateGate.CheckAsync(context.HttpContext, _action is "view" or "export");
+        if (stateGate != null) return stateGate;
+
         if (user.Role == UserRole.OwnerAdmin || user.Role == UserRole.SuperAdmin)
             return await next(context);
 
@@ -78,6 +85,50 @@ public class RequireModuleFilter : IEndpointFilter
             return Results.Json(new { message = $"You don't have '{_action}' access to '{_moduleKey}'." }, statusCode: StatusCodes.Status403Forbidden);
 
         return await next(context);
+    }
+}
+
+public static partial class TenantStateGate
+{
+    /// <summary>
+    /// Returns a 402 result when the tenant's lifecycle state forbids this kind of access, or
+    /// null to let the request through. Shared by <see cref="RequireModuleFilter"/> and
+    /// <see cref="RequireTenantStateFilter"/> so both answer identically.
+    /// </summary>
+    public static async Task<IResult?> CheckAsync(HttpContext http, bool readOnlyAccess)
+    {
+        if (http.IsSuperAdmin()) return null;
+
+        var tenantId = http.GetTenantId();
+        if (tenantId == null || tenantId == Guid.Empty) return null; // unauthenticated paths handle their own auth
+
+        var entitlements = http.RequestServices.GetRequiredService<Pos.Api.Services.IEntitlementService>();
+        Pos.Api.Services.EffectiveEntitlements ent;
+        try
+        {
+            ent = await entitlements.GetAsync(tenantId.Value);
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Unauthorized();
+        }
+
+        var permitted = readOnlyAccess ? ent.CanRead : ent.CanUseBackOffice;
+        if (permitted) return null;
+
+        return Results.Json(new
+        {
+            message = ent.Status switch
+            {
+                TenantStatus.Restricted => "Changes are paused until your account is brought up to date. You can still view your data, and the POS is still selling.",
+                TenantStatus.ReadOnly => "Your account is read-only until payment is received. Your data is still available to view and export.",
+                TenantStatus.Suspended => "This account is suspended. Please contact support.",
+                TenantStatus.Cancelled => "This account has been closed.",
+                _ => "This action is not available on your account right now."
+            },
+            tenantStatus = ent.Status.ToString(),
+            billingAction = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
     }
 }
 
@@ -105,8 +156,12 @@ public static class ModuleBaseline
 }
 
 /// <summary>
-/// 403s when the caller's tenant is on a SaaS package whose feature flag is off.
-/// Flag name must match a boolean property on <see cref="SaaSPackageConfig"/> (e.g. "HasKitchenDisplay").
+/// 403s when the caller's tenant is not entitled to a feature.
+///
+/// This used to re-implement the tier-OR-add-on merge itself, reading SaaSPackageConfig directly.
+/// That meant it could not see support overrides at all, so a grant made in the admin console
+/// unlocked the screen but not the API behind it. It now asks the entitlement service, which is
+/// the only thing that knows the full answer.
 /// </summary>
 public class RequireFeatureFilter : IEndpointFilter
 {
@@ -122,39 +177,101 @@ public class RequireFeatureFilter : IEndpointFilter
         var tenantId = http.GetTenantId();
         if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
 
-        var db = http.RequestServices.GetRequiredService<AppDbContext>();
-        var tier = await db.Tenants.Where(t => t.Id == tenantId.Value).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
-        if (tier == null) return Results.Unauthorized();
-
-        var pkg = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tier.Value.ToString());
-        // If the platform owner hasn't configured a package row for this tier, fail open rather
-        // than locking a paying tenant out of their own data.
-        if (pkg == null) return await next(context);
-
-        var enabled = _flagName switch
+        var entitlements = http.RequestServices.GetRequiredService<Pos.Api.Services.IEntitlementService>();
+        Pos.Api.Services.EffectiveEntitlements ent;
+        try
         {
-            nameof(SaaSPackageConfig.HasKitchenDisplay) => pkg.HasKitchenDisplay,
-            nameof(SaaSPackageConfig.HasDeliveryCOD) => pkg.HasDeliveryCOD,
-            nameof(SaaSPackageConfig.HasInventoryManagement) => pkg.HasInventoryManagement,
-            nameof(SaaSPackageConfig.HasStockTransfers) => pkg.HasStockTransfers,
-            nameof(SaaSPackageConfig.HasDirectorDashboard) => pkg.HasDirectorDashboard,
-            nameof(SaaSPackageConfig.HasConsolidatedReports) => pkg.HasConsolidatedReports,
-            nameof(SaaSPackageConfig.HasWhatsAppMessaging) => pkg.HasWhatsAppMessaging,
-            nameof(SaaSPackageConfig.HasAdvancedReports) => pkg.HasAdvancedReports,
-            nameof(SaaSPackageConfig.HasMultiBranch) => pkg.HasMultiBranch,
-            _ => true
-        };
+            ent = await entitlements.GetAsync(tenantId.Value);
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Unauthorized(); // tenant no longer exists
+        }
 
-        // Tier grants it OR the tenant bought it standalone as an add-on — either unlocks it.
-        // Checked second (only when the tier alone says no) so the common case costs no extra query.
-        if (!enabled)
-            enabled = await db.AddOnSubscriptions.AnyAsync(a => a.TenantId == tenantId.Value && a.AddOnKey == _flagName && a.IsActive);
-
-        if (!enabled)
+        if (!ent.Has(_flagName))
             return Results.Json(
                 new { message = $"Your subscription plan does not include this feature ({_flagName}). Please upgrade your package or purchase it as an add-on.", feature = _flagName },
                 statusCode: StatusCodes.Status403Forbidden);
 
         return await next(context);
+    }
+}
+
+/// <summary>
+/// Enforces the tenant lifecycle ladder — the reason a graduated <see cref="TenantStatus"/>
+/// exists rather than one IsActive bool.
+///
+/// The ordering matters commercially: a tenant who has not paid keeps SELLING long after they
+/// lose the back office, because taking a restaurant's till away at 8pm on a Friday does not
+/// collect the invoice, it just ends the relationship.
+/// </summary>
+public class RequireTenantStateFilter : IEndpointFilter
+{
+    public enum Need
+    {
+        /// <summary>Reading or exporting existing data.</summary>
+        Read,
+        /// <summary>Creating a sale at the POS.</summary>
+        Sell,
+        /// <summary>Reports, settings, catalogue editing, admin.</summary>
+        BackOffice
+    }
+
+    private readonly Need _need;
+
+    public RequireTenantStateFilter(Need need) => _need = need;
+
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        var http = context.HttpContext;
+        if (http.IsSuperAdmin()) return await next(context);
+
+        var tenantId = http.GetTenantId();
+        if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+        var entitlements = http.RequestServices.GetRequiredService<Pos.Api.Services.IEntitlementService>();
+        Pos.Api.Services.EffectiveEntitlements ent;
+        try
+        {
+            ent = await entitlements.GetAsync(tenantId.Value);
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.Unauthorized();
+        }
+
+        var permitted = _need switch
+        {
+            Need.Read => ent.CanRead,
+            Need.Sell => ent.CanSell,
+            Need.BackOffice => ent.CanUseBackOffice,
+            _ => false
+        };
+
+        if (permitted) return await next(context);
+
+        // 402 rather than 403: this is a billing state, not a permissions problem, and the
+        // client should route the user to the billing screen rather than saying "access denied".
+        return Results.Json(new
+        {
+            message = _need == Need.Sell
+                ? ent.Status switch
+                {
+                    TenantStatus.ReadOnly => "New sales are paused until payment is received. Please contact your administrator.",
+                    TenantStatus.Suspended => "This account is suspended, so the till cannot take new sales.",
+                    TenantStatus.Cancelled => "This account has been closed.",
+                    _ => "New sales are not available on this account right now."
+                }
+                : ent.Status switch
+                {
+                    TenantStatus.Restricted => "Changes are paused until your account is brought up to date. The POS is still selling.",
+                    TenantStatus.ReadOnly => "Your account is read-only until payment is received.",
+                    TenantStatus.Suspended => "This account is suspended. Please contact support.",
+                    TenantStatus.Cancelled => "This account has been closed.",
+                    _ => "This action is not available on your account right now."
+                },
+            tenantStatus = ent.Status.ToString(),
+            billingAction = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
     }
 }

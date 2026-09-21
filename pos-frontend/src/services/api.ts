@@ -26,8 +26,12 @@ import type {
   ConsolidatedFinancialReport,
   SetupInitPayload,
   SetupStatusResponse,
-  BranchPairingInfo,
-  BranchPairResponse,
+  DeviceCapacity,
+  PairingCodeResponse,
+  PendingPairingCode,
+  DeviceActivationResponse,
+  HeartbeatResponse,
+  VerticalPackInfo,
   LoginResponse,
   ModulePermission,
   OverridePermissionKey,
@@ -105,10 +109,14 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/signup',
   '/api/auth/super-admin-login',
   '/api/auth/refresh',
+  '/api/auth/redeem-invite',
   '/api/setup/status',
   '/api/setup/initialize',
-  '/api/setup/pairing-info',
-  '/api/setup/pair-branch'
+  // Device activation: a brand-new terminal has no session yet, so a 401 here means a bad
+  // pairing code, not an expired login, and must not tear the current session down.
+  '/api/devices/activate',
+  '/api/terminals/heartbeat',
+  '/api/public/'
 ];
 
 function isPublicEndpoint(url?: string): boolean {
@@ -201,9 +209,30 @@ api.interceptors.response.use(
         }
       }
     }
+
+    // 402 is the billing ladder, not an auth failure: the session is perfectly valid, the
+    // ACCOUNT is in arrears. Signing the user out here would be exactly wrong — they need to
+    // stay in the app to see the message and pay. Surfaced to the shell instead.
+    if (error.response?.status === 402 && error.response?.data?.billingAction) {
+      try {
+        onBillingRestricted?.(error.response.data.tenantStatus, error.response.data.message);
+      } catch {
+        // best-effort
+      }
+    }
+
     return Promise.reject(error);
   }
 );
+
+/**
+ * Registered by App.tsx so a 402 can raise the billing banner without api.ts importing
+ * the store (which imports api.ts — same cycle the 401 handler avoids).
+ */
+let onBillingRestricted: ((status: string, message: string) => void) | null = null;
+export function registerBillingHandler(handler: (status: string, message: string) => void) {
+  onBillingRestricted = handler;
+}
 
 export const posApi = {
   // Auth
@@ -464,20 +493,52 @@ export const posApi = {
     const res = await api.get(`/api/terminals${params}`);
     return res.data;
   },
-  createTerminal: async (data: { branchId: string; terminalName: string; terminalType: number }) => {
-    const res = await api.post('/api/terminals', data);
-    return res.data;
-  },
   updateTerminal: async (id: string, data: { terminalName?: string; isActive?: boolean }) => {
     const res = await api.put(`/api/terminals/${id}`, data);
     return res.data;
   },
-  deleteTerminal: async (id: string) => {
-    const res = await api.delete(`/api/terminals/${id}`);
+  /**
+   * Retire a device (frees its slot after a cooldown), or `revoke` it outright for a lost or
+   * stolen machine, which kills the licence and frees the slot immediately.
+   */
+  retireTerminal: async (id: string, opts?: { revoke?: boolean; reason?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.revoke) params.set('revoke', 'true');
+    if (opts?.reason) params.set('reason', opts.reason);
+    const qs = params.toString();
+    const res = await api.delete(`/api/terminals/${id}${qs ? `?${qs}` : ''}`);
     return res.data;
   },
-  terminalHeartbeat: async (deviceToken: string) => {
-    const res = await api.post('/api/terminals/heartbeat', { deviceToken });
+
+  // --- Device activation & licensing ---
+  /** How many device slots of each class are used at a branch, and whether another fits. */
+  getDeviceCapacity: async (branchId: string) => {
+    const res = await api.get<DeviceCapacity[]>('/api/devices/capacity', { params: { branchId } });
+    return res.data;
+  },
+  /** Mint a one-time pairing code. The raw code is returned once and never again. */
+  createPairingCode: async (data: { branchId: string; terminalType: number; terminalName?: string }) => {
+    const res = await api.post<PairingCodeResponse>('/api/devices/pairing-codes', data);
+    return res.data;
+  },
+  listPairingCodes: async (branchId: string) => {
+    const res = await api.get<PendingPairingCode[]>('/api/devices/pairing-codes', { params: { branchId } });
+    return res.data;
+  },
+  cancelPairingCode: async (id: string) => {
+    const res = await api.delete(`/api/devices/pairing-codes/${id}`);
+    return res.data;
+  },
+  /** Redeem a pairing code on this device. Returns the signed licence it then lives on. */
+  activateDevice: async (pairingCode: string, deviceFingerprint: string, deviceInfo?: string) => {
+    const res = await api.post<DeviceActivationResponse>('/api/devices/activate', {
+      pairingCode, deviceFingerprint, deviceInfo
+    });
+    return res.data;
+  },
+  /** Renew the licence. This is also where revocations, downgrades and suspensions land. */
+  terminalHeartbeat: async (license: string, deviceFingerprint: string) => {
+    const res = await api.post<HeartbeatResponse>('/api/terminals/heartbeat', { license, deviceFingerprint });
     return res.data;
   },
 
@@ -901,13 +962,59 @@ export const posApi = {
     return res.data;
   },
 
-  // HQ Branch Pairing & Provisioning
-  getPairingInfo: async () => {
-    const res = await api.get<BranchPairingInfo[]>('/api/setup/pairing-info');
+  // --- Vertical packs (which business sector this tenant runs) ---
+  getVerticalPackCatalog: async () => {
+    const res = await api.get<VerticalPackInfo[]>('/api/public/vertical-packs');
     return res.data;
   },
-  pairBranchWithToken: async (pairingToken: string) => {
-    const res = await api.post<BranchPairResponse>('/api/setup/pair-branch', { pairingToken });
+  setVerticalPacks: async (packKeys: string[], primaryPackKey?: string) => {
+    const res = await api.put('/api/tenant/vertical-packs', { packKeys, primaryPackKey });
+    return res.data;
+  },
+
+  // --- Platform console: lifecycle, grants, provisioning, support ---
+  getTenantOverview: async (tenantId: string) => {
+    const res = await api.get(`/api/admin/tenants/${tenantId}/overview`);
+    return res.data;
+  },
+  previewPlanChange: async (tenantId: string, tier: string) => {
+    const res = await api.get(`/api/admin/tenants/${tenantId}/plan-change-preview`, { params: { tier } });
+    return res.data;
+  },
+  setTenantStatus: async (tenantId: string, status: string, reason: string) => {
+    const res = await api.put(`/api/admin/tenants/${tenantId}/status`, { status, reason });
+    return res.data;
+  },
+  getTenantOverrides: async (tenantId: string) => {
+    const res = await api.get(`/api/admin/tenants/${tenantId}/overrides`);
+    return res.data;
+  },
+  grantOverride: async (tenantId: string, data: { key: string; value: string; expiresAt?: string; reason: string }) => {
+    const res = await api.post(`/api/admin/tenants/${tenantId}/overrides`, data);
+    return res.data;
+  },
+  revokeOverride: async (overrideId: string) => {
+    const res = await api.delete(`/api/admin/overrides/${overrideId}`);
+    return res.data;
+  },
+  extendTrial: async (tenantId: string, days: number, reason?: string) => {
+    const res = await api.post(`/api/admin/tenants/${tenantId}/extend-trial`, { days, reason });
+    return res.data;
+  },
+  provisionTenant: async (data: Record<string, unknown>) => {
+    const res = await api.post('/api/admin/tenants/provision', data);
+    return res.data;
+  },
+  impersonateTenant: async (tenantId: string, reason: string, allowWrites = false) => {
+    const res = await api.post(`/api/admin/tenants/${tenantId}/impersonate`, { reason, allowWrites });
+    return res.data;
+  },
+  getDeviceHealth: async (staleHours = 24) => {
+    const res = await api.get('/api/admin/device-health', { params: { staleHours } });
+    return res.data;
+  },
+  redeemOwnerInvite: async (data: { inviteToken: string; username: string; pin: string; fullName?: string }) => {
+    const res = await api.post('/api/auth/redeem-invite', data);
     return res.data;
   },
 
@@ -926,6 +1033,8 @@ export const posApi = {
     adminPin: string;
     businessType?: BusinessType;
     packageKey?: string;
+    /** Which sector pack this business runs — decides its POS layout and item model. */
+    verticalPack?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;

@@ -1,12 +1,28 @@
+using System.Linq.Expressions;
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Pos.Api.Models;
+using Pos.Api.Services;
 
 namespace Pos.Api.Data;
 
 public class AppDbContext : DbContext
 {
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
+    private readonly ITenantProvider? _tenantProvider;
+
+    /// <summary>
+    /// The tenant every query is implicitly scoped to. Guid.Empty means "no tenant scope" and
+    /// disables the filter — that covers three legitimate cases: the SuperAdmin (whose token
+    /// deliberately carries Guid.Empty), startup seeding, and design-time tooling. Every other
+    /// caller is confined to their own rows whether the endpoint remembered to say so or not.
+    /// </summary>
+    private Guid CurrentTenantId => _tenantProvider?.TenantId ?? Guid.Empty;
+
+    public AppDbContext(DbContextOptions<AppDbContext> options, ITenantProvider? tenantProvider = null)
+        : base(options)
     {
+        _tenantProvider = tenantProvider;
     }
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
@@ -70,6 +86,13 @@ public class AppDbContext : DbContext
     public DbSet<BankReconciliation> BankReconciliations => Set<BankReconciliation>();
     public DbSet<AddOnCatalogItem> AddOnCatalogItems => Set<AddOnCatalogItem>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+    // --- Platform control plane ---
+    public DbSet<PairingCode> PairingCodes => Set<PairingCode>();
+    public DbSet<TenantEntitlementOverride> TenantEntitlementOverrides => Set<TenantEntitlementOverride>();
+    public DbSet<TenantEntitlementSnapshot> TenantEntitlementSnapshots => Set<TenantEntitlementSnapshot>();
+    public DbSet<TenantVerticalPack> TenantVerticalPacks => Set<TenantVerticalPack>();
+    public DbSet<DeviceLicenseEvent> DeviceLicenseEvents => Set<DeviceLicenseEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -614,5 +637,76 @@ public class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(s => s.UserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // --- New platform-layer indexes ---
+        modelBuilder.Entity<PairingCode>().HasIndex(p => p.CodeHash).IsUnique();
+        modelBuilder.Entity<PairingCode>().HasIndex(p => new { p.TenantId, p.BranchId, p.ExpiresAt });
+        modelBuilder.Entity<TenantEntitlementSnapshot>().HasIndex(s => s.TenantId).IsUnique();
+        modelBuilder.Entity<TenantEntitlementOverride>().HasIndex(o => new { o.TenantId, o.Key });
+        modelBuilder.Entity<TenantVerticalPack>().HasIndex(p => new { p.TenantId, p.PackKey }).IsUnique();
+        modelBuilder.Entity<DeviceLicenseEvent>().HasIndex(e => new { e.TenantId, e.CreatedAt });
+        modelBuilder.Entity<Terminal>().HasIndex(t => t.DeviceToken).IsUnique();
+        modelBuilder.Entity<Terminal>().HasIndex(t => new { t.TenantId, t.BranchId, t.TerminalType });
+
+        // Sync idempotency: a device-generated id may appear at most once per tenant, so a
+        // retried offline batch cannot post the same sale twice. Filtered to non-null because
+        // ordinary online orders have no client id and would otherwise all collide on NULL.
+        modelBuilder.Entity<Order>()
+            .HasIndex(o => new { o.TenantId, o.ClientLocalId })
+            .IsUnique()
+            .HasFilter("\"ClientLocalId\" IS NOT NULL");
+
+        ApplyTenantIsolation(modelBuilder);
     }
+
+    // ============================================================
+    // TENANT ISOLATION — applied by the model, not by each endpoint.
+    //
+    // Isolation used to be ~200 hand-written .Where(x => x.TenantId == ...) clauses. That is
+    // safe exactly as long as nobody ever forgets one, which is not a property a codebase can
+    // keep. Here every entity carrying a TenantId gets a global query filter automatically, so
+    // the DEFAULT is isolated and a cross-tenant read has to be asked for explicitly with
+    // IgnoreQueryFilters(). The existing per-endpoint clauses stay: they are now redundant
+    // rather than load-bearing, which is the right direction for a safety property.
+    //
+    // Deliberately NOT filtered: platform-wide catalogues (SaaSPackageConfig, AddOnCatalogItem,
+    // TaxJurisdiction) which are the same for everyone, and child tables (OrderItem, JournalLine,
+    // ...) which are reachable only through an already-filtered parent.
+    // ============================================================
+    private void ApplyTenantIsolation(ModelBuilder modelBuilder)
+    {
+        var applyMethod = typeof(AppDbContext)
+            .GetMethod(nameof(ApplyTenantFilter), BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            if (entityType.BaseType != null) continue; // owned/derived types inherit the root's filter
+            var tenantProperty = entityType.FindProperty("TenantId");
+            if (tenantProperty == null || tenantProperty.ClrType != typeof(Guid)) continue;
+
+            applyMethod.MakeGenericMethod(entityType.ClrType).Invoke(this, new object[] { modelBuilder });
+        }
+    }
+
+    private void ApplyTenantFilter<TEntity>(ModelBuilder modelBuilder) where TEntity : class
+    {
+        // Referencing the CurrentTenantId instance property (rather than a captured local) is
+        // what makes EF re-evaluate this per query instead of baking one tenant into the model.
+        modelBuilder.Entity<TEntity>().HasQueryFilter(
+            e => CurrentTenantId == Guid.Empty || EF.Property<Guid>(e, "TenantId") == CurrentTenantId);
+    }
+
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+    }
+
+    /// <summary>
+    /// Child tables (OrderItem, JournalLine, ...) intentionally have no filter of their own — they
+    /// are only ever reached through a filtered parent. EF warns about that asymmetry on every
+    /// required navigation, which would bury real warnings, so it is acknowledged once here.
+    /// </summary>
+    public static void ConfigureWarnings(DbContextOptionsBuilder options) =>
+        options.ConfigureWarnings(w =>
+            w.Ignore(CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning));
 }

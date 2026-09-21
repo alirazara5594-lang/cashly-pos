@@ -23,6 +23,7 @@ import { PricingAdmin } from './PricingAdmin';
 import { WhatsAppConfig } from './WhatsAppConfig';
 import { SubscriptionBilling } from './SubscriptionBilling';
 import { AddOnManagement } from './AddOnManagement';
+import { TenantDetailPanel } from '../components/TenantDetailPanel';
 
 interface TenantRow {
   id: string;
@@ -67,6 +68,8 @@ export const SuperAdmin: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive' | 'trial' | 'paid'>('all');
   const [changingTier, setChangingTier] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'tenants' | 'packages' | 'whatsapp' | 'billing' | 'addons'>('tenants');
+  /** Tenant whose detail panel is open — the console's main working surface. */
+  const [openTenantId, setOpenTenantId] = useState<string | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -337,17 +340,28 @@ export const SuperAdmin: React.FC = () => {
                         )}
                       </td>
                       <td className="text-center px-4 py-3">
-                        <button
-                          onClick={() => handleToggleActive(t.id)}
-                          className={`p-1.5 rounded-lg transition ${
-                            t.isActive
-                              ? 'bg-teal-100 text-teal-700 hover:bg-teal-200'
-                              : 'bg-red-100 text-red-700 hover:bg-red-200'
-                          }`}
-                          title={t.isActive ? 'Deactivate' : 'Activate'}
-                        >
-                          {t.isActive ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          {/* Everything beyond on/off lives in the detail panel: the lifecycle
+                              ladder, grants, trial extension, device health, impersonation. */}
+                          <button
+                            onClick={() => setOpenTenantId(t.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-bold transition"
+                            title="Open this tenant"
+                          >
+                            Manage
+                          </button>
+                          <button
+                            onClick={() => handleToggleActive(t.id)}
+                            className={`p-1.5 rounded-lg transition ${
+                              t.isActive
+                                ? 'bg-teal-100 text-teal-700 hover:bg-teal-200'
+                                : 'bg-red-100 text-red-700 hover:bg-red-200'
+                            }`}
+                            title={t.isActive ? 'Deactivate' : 'Activate'}
+                          >
+                            {t.isActive ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -369,6 +383,14 @@ export const SuperAdmin: React.FC = () => {
       {activeTab === 'billing' && <SubscriptionBilling />}
       {activeTab === 'addons' && <AddOnManagement />}
       {activeTab === 'whatsapp' && <WhatsAppConfig />}
+
+      {openTenantId && (
+        <TenantDetailPanel
+          tenantId={openTenantId}
+          onClose={() => setOpenTenantId(null)}
+          onChanged={loadData}
+        />
+      )}
     </div>
   );
 };

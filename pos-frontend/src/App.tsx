@@ -8,7 +8,9 @@ import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
 import { RequireFeature } from './components/RequireFeature';
 import { usePosStore } from './store/posStore';
-import { posApi, registerAuthRedirect } from './services/api';
+import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
+import { AccountStatusBanner } from './components/AccountStatusBanner';
+import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
 
@@ -72,13 +74,15 @@ function MainLayoutInner() {
     token,
     logout,
     loadMyModulePermissions,
-    loadMyPackageFeatures
+    loadMyPackageFeatures,
+    packageInfo
   } = usePosStore();
   const { addToast } = useToast();
   const [isCallOrderOpen, setIsCallOrderOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
+  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
 
   const isAuthenticated = !!currentUser && !!token;
 
@@ -90,6 +94,41 @@ function MainLayoutInner() {
     });
     return () => registerAuthRedirect(null);
   }, [navigate]);
+
+  // A 402 means the ACCOUNT is in arrears, not that the session is bad — so this refreshes the
+  // billing state and surfaces it, rather than signing anybody out.
+  useEffect(() => {
+    registerBillingHandler((_status, message) => {
+      addToast(message, 'error', 8000);
+      loadMyPackageFeatures();
+    });
+    return () => registerBillingHandler(() => {});
+  }, [addToast, loadMyPackageFeatures]);
+
+  /**
+   * Device licence heartbeat.
+   *
+   * Runs once on mount and then hourly. A licence lasts 26 hours with a 14-day grace window, so
+   * this is deliberately unhurried: the point is to catch a revocation or a plan change within a
+   * day, not to poll. Failure here is not treated as a licence problem — an unreachable server
+   * leaves the device on its cached verdict and it carries on selling.
+   */
+  useEffect(() => {
+    if (!isActivated()) {
+      setDeviceStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    const beat = async () => {
+      const status = await heartbeat();
+      if (!cancelled) setDeviceStatus(status);
+    };
+
+    beat();
+    const timer = setInterval(beat, 60 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isAuthenticated]);
 
   // Refresh module permissions whenever a session becomes active (e.g. after a
   // reload that restored the token from localStorage).
@@ -223,6 +262,9 @@ function MainLayoutInner() {
             navigate('/', { replace: true });
           }}
         />
+
+        {/* Account and device state, above everything. Graduated, never a hard block. */}
+        <AccountStatusBanner packageInfo={packageInfo} deviceStatus={deviceStatus} />
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <Suspense fallback={<RouteLoadingFallback />}>

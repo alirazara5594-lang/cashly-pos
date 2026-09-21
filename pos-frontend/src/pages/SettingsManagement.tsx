@@ -9,7 +9,7 @@ import {
   Copy, 
   Check, 
   X,
-  Download,
+
   Lock,
   Unlock, 
   Laptop, 
@@ -24,7 +24,7 @@ import {
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { posApi } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
-import type { BranchPairingInfo, DepartmentRole, ModuleKey } from '../types';
+import type { PendingPairingCode, PairingCodeResponse, DeviceCapacity, DepartmentRole, ModuleKey } from '../types';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 /**
@@ -116,10 +116,14 @@ export const SettingsManagement: React.FC = () => {
     }
   }, [location.state]);
 
-  // HQ Branch Pairing state
-  const [pairingBranches, setPairingBranches] = useState<BranchPairingInfo[]>([]);
+  // Device activation state
+  const [pairingBranches, setPairingBranches] = useState<PendingPairingCode[]>([]);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
-  const [hqUrl, setHqUrl] = useState(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288');
+  /** The raw code, held only in memory — the server keeps nothing but its hash. */
+  const [issuedCode, setIssuedCode] = useState<PairingCodeResponse | null>(null);
+  const [deviceCapacity, setDeviceCapacity] = useState<DeviceCapacity[]>([]);
+  const [newDeviceName, setNewDeviceName] = useState('');
+  const [newDeviceType, setNewDeviceType] = useState<number>(1);
 
   // Sync Diagnostics state
   const [dbStats, setDbStats] = useState<{ products: number; categories: number; offlineOrders: number }>({ products: 0, categories: 0, offlineOrders: 0 });
@@ -150,12 +154,15 @@ export const SettingsManagement: React.FC = () => {
     }
   }, [allowedDepartmentId, departmentIsAllowed, setActiveDepartment]);
 
+  // Outstanding pairing codes for THIS branch. The old version called an endpoint that listed
+  // every branch of every tenant on the platform, with its pairing token — that endpoint is gone.
   const loadPairingInfo = async () => {
+    if (!selectedBranch?.id) return;
     try {
-      const data = await posApi.getPairingInfo();
-      setPairingBranches(data);
+      const data = await posApi.listPairingCodes(selectedBranch.id);
+      setPairingBranches(data as any);
     } catch (err) {
-      console.warn('Failed to load pairing info:', err);
+      console.warn('Failed to load pairing codes:', err);
     }
   };
 
@@ -177,23 +184,76 @@ export const SettingsManagement: React.FC = () => {
     } catch (err) {
       console.warn('Failed to load terminals:', err);
     }
+    if (selectedBranch?.id) {
+      try {
+        setDeviceCapacity(await posApi.getDeviceCapacity(selectedBranch.id));
+      } catch {
+        // Capacity is informational — the server still enforces the real limit on mint.
+      }
+    }
   };
 
+  const handleGeneratePairingCode = async () => {
+    if (!selectedBranch?.id) return;
+    try {
+      const res = await posApi.createPairingCode({
+        branchId: selectedBranch.id,
+        terminalType: newDeviceType,
+        terminalName: newDeviceName.trim() || undefined
+      });
+      setIssuedCode(res);
+      setNewDeviceName('');
+      setTabMessage(null);
+      loadPairingInfo();
+      loadTerminals();
+    } catch (err: any) {
+      setIssuedCode(null);
+      setTabMessage({
+        type: 'error',
+        text: err?.response?.data?.message || err?.response?.data?.error || 'Could not generate a pairing code.'
+      });
+      setTimeout(() => setTabMessage(null), 6000);
+    }
+  };
+
+  const handleCancelPairingCode = async (id: string) => {
+    try {
+      await posApi.cancelPairingCode(id);
+      loadPairingInfo();
+    } catch (err) {
+      console.warn('Failed to cancel pairing code:', err);
+    }
+  };
+
+  /**
+   * A device is no longer created from the back office — that produced a Terminal row bound to
+   * no hardware, which no licence check could police. Instead this mints a one-time code that
+   * the tablet itself redeems, which is what binds the device and issues its licence.
+   *
+   * The raw code comes back exactly once, so it is put on screen immediately and never refetched.
+   */
   const handleAddTerminal = async () => {
     if (!newTabName.trim() || !selectedBranch?.id) return;
     try {
-      await posApi.createTerminal({
+      const res = await posApi.createPairingCode({
         branchId: selectedBranch.id,
-        terminalName: newTabName.trim(),
-        terminalType: 2 // OrderTab
+        terminalType: 2, // OrderTab
+        terminalName: newTabName.trim()
       });
       setNewTabName('');
-      setTabMessage({ type: 'success', text: 'Tab device added' });
+      setIssuedCode(res);
+      setTabMessage({
+        type: 'success',
+        text: `Pairing code ${res.pairingCode} — enter it on the tablet within 15 minutes. It will not be shown again.`
+      });
       loadTerminals();
-      setTimeout(() => setTabMessage(null), 2500);
+      loadPairingInfo();
     } catch (err: any) {
-      setTabMessage({ type: 'error', text: err?.response?.data?.error || 'Failed to add tab' });
-      setTimeout(() => setTabMessage(null), 3000);
+      setTabMessage({
+        type: 'error',
+        text: err?.response?.data?.message || err?.response?.data?.error || 'Failed to create pairing code'
+      });
+      setTimeout(() => setTabMessage(null), 5000);
     }
   };
 
@@ -218,13 +278,23 @@ export const SettingsManagement: React.FC = () => {
     }
   };
 
-  const handleDeleteTerminal = async (id: string) => {
-    if (!confirm('Delete this terminal device?')) return;
+  /**
+   * Retiring is the normal case and keeps the row (its sales history needs a device to point
+   * at); the slot frees after a cooldown so add/delete/add cannot be used to run more tills
+   * than the plan allows. Revoking is for a lost or stolen device: the licence dies at once.
+   */
+  const handleDeleteTerminal = async (id: string, revoke = false) => {
+    const prompt = revoke
+      ? 'Revoke this device\'s licence? It will stop working immediately. Use this for a lost or stolen device.'
+      : 'Retire this device? Its slot frees up after a short cooldown.';
+    if (!confirm(prompt)) return;
     try {
-      await posApi.deleteTerminal(id);
+      const res = await posApi.retireTerminal(id, revoke ? { revoke: true, reason: 'Revoked from settings' } : undefined);
+      setTabMessage({ type: 'success', text: res?.message ?? 'Device retired.' });
+      setTimeout(() => setTabMessage(null), 4000);
       loadTerminals();
     } catch (err) {
-      console.warn('Failed to delete terminal:', err);
+      console.warn('Failed to retire terminal:', err);
     }
   };
 
@@ -234,41 +304,6 @@ export const SettingsManagement: React.FC = () => {
     setTimeout(() => setCopiedToken(null), 2000);
   };
 
-  const handleCopyFullConfig = (branch: BranchPairingInfo) => {
-    const config = {
-      tenantId: branch.tenantId,
-      tenantName: branch.tenantName,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      hqApiUrl: hqUrl,
-      pairingToken: branch.pairingToken,
-      generatedAt: new Date().toISOString()
-    };
-    navigator.clipboard.writeText(JSON.stringify(config, null, 2));
-    setCopiedToken(`CONFIG-${branch.branchId}`);
-    setTimeout(() => setCopiedToken(null), 2000);
-  };
-
-  const handleDownloadConfig = (branch: BranchPairingInfo) => {
-    const config = {
-      tenantId: branch.tenantId,
-      tenantName: branch.tenantName,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      hqApiUrl: hqUrl,
-      pairingToken: branch.pairingToken,
-      generatedAt: new Date().toISOString()
-    };
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `cashly-branch-config-${branch.branchCode.toLowerCase()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const handleForceSync = async () => {
     setIsSyncingNow(true);
@@ -516,107 +551,154 @@ export const SettingsManagement: React.FC = () => {
           </div>
         )}
 
-        {/* TAB 2: HQ PROVISIONING & BRANCH PAIRING TOKENS */}
+        {/* TAB 2: DEVICE ACTIVATION — one-time pairing codes */}
         {activeTab === 'provisioning' && (
           <div className="space-y-6 animate-fadeIn">
             <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Building2 className="w-4 h-4 text-teal-600" />
-                    HQ Branch Provisioning & Auto-Pairing Center
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Use these unique pairing tokens to install and automatically bind branch counter PCs to Head Office.
-                  </p>
-                </div>
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-teal-600" />
+                  Device Activation
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Generate a one-time code, then enter it on the till or tablet itself. The code
+                  expires in 15 minutes, works once, and binds that device to this branch.
+                </p>
+              </div>
 
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-slate-500">HQ Server URL:</span>
-                  <input 
-                    type="text" 
-                    value={hqUrl}
-                    onChange={(e) => setHqUrl(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1 text-xs text-slate-900 font-mono focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+              {/* Slot usage. Shown before anything is generated so an owner learns they are at
+                  their limit here, rather than after walking over to the hardware. */}
+              {deviceCapacity.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {deviceCapacity.map((cap) => (
+                    <div key={cap.terminalType} className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                      <div className="text-[10px] uppercase font-semibold text-slate-500">
+                        {cap.terminalType === 'OrderTab' ? 'Tablets' : cap.terminalType === 'Counter' ? 'Counters' : 'Kitchen Displays'}
+                      </div>
+                      <div className="text-lg font-black text-slate-900">
+                        {cap.inUse}
+                        <span className="text-sm font-bold text-slate-400">
+                          {cap.limit === null ? ' / unlimited' : ` / ${cap.limit}`}
+                        </span>
+                      </div>
+                      {!cap.canAdd && (
+                        <div className="text-[10px] text-amber-600 font-semibold mt-1">All slots in use</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Generate */}
+              <div className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="text-xs font-bold text-slate-700">Generate a pairing code</div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    value={newDeviceType}
+                    onChange={(e) => setNewDeviceType(Number(e.target.value))}
+                    className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-500"
+                  >
+                    <option value={1}>Counter (full till)</option>
+                    <option value={2}>Tablet / mPOS</option>
+                    <option value={3}>Kitchen Display</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={newDeviceName}
+                    onChange={(e) => setNewDeviceName(e.target.value)}
+                    placeholder="Device name, e.g. Counter 2"
+                    className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-500"
                   />
+                  <button
+                    onClick={handleGeneratePairingCode}
+                    className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition"
+                  >
+                    Generate Code
+                  </button>
                 </div>
               </div>
 
-              {pairingBranches.length === 0 ? (
-                <div className="p-8 text-center rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-                  <Store className="w-8 h-8 text-slate-400 mx-auto" />
-                  <p className="text-sm font-semibold text-slate-700">No Outlet Branches Found</p>
-                  <p className="text-xs text-slate-500">Add outlet branches in Multi-Branch mode to generate quick pairing tokens.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {pairingBranches.map((branch) => (
-                      <div key={branch.branchId} className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-4 flex flex-col justify-between">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                              <Store className="w-4 h-4 text-teal-600" />
-                              {branch.branchName}
-                            </h3>
-                            <span className="text-[10px] px-2 py-0.5 rounded bg-teal-50 text-teal-600 border border-teal-200 font-mono font-bold">
-                              {branch.branchCode}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500">City: {branch.city} • Allowed Counters: {branch.allowedCounters}</p>
-
-                          <div className="p-3 rounded-lg bg-white border border-slate-200 flex items-center justify-between">
-                            <div className="space-y-0.5">
-                              <span className="text-[10px] text-slate-500 uppercase font-semibold">Branch Pairing Token</span>
-                              <div className="text-sm font-extrabold text-teal-600 font-mono tracking-wider">
-                                {branch.pairingToken}
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => handleCopyToken(branch.pairingToken)}
-                              className="px-3 py-1.5 rounded-md bg-teal-50 hover:bg-teal-100 text-teal-600 text-xs font-semibold flex items-center gap-1.5 border border-teal-200 transition"
-                            >
-                              {copiedToken === branch.pairingToken ? (
-                                <>
-                                  <Check className="w-3.5 h-3.5" /> Copied
-                                </>
-                              ) : (
-                                <>
-                                  <Copy className="w-3.5 h-3.5" /> Copy Code
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 pt-2 border-t border-slate-200">
-                          <button
-                            onClick={() => handleCopyFullConfig(branch)}
-                            className="flex-1 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 border border-slate-200 transition"
-                          >
-                            <Copy className="w-3.5 h-3.5 text-slate-500" />
-                            {copiedToken === `CONFIG-${branch.branchId}` ? 'Config Copied!' : 'Copy Config JSON'}
-                          </button>
-                          <button
-                            onClick={() => handleDownloadConfig(branch)}
-                            className="py-1.5 px-3 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-600 text-xs font-semibold flex items-center justify-center gap-1.5 border border-teal-200 transition"
-                            title="Download setup file for branch counter PC"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+              {/* The code, shown once. There is no way to recover it afterwards — only a SHA-256
+                  hash is stored — so it stays on screen until dismissed. */}
+              {issuedCode && (
+                <div className="p-5 rounded-xl bg-teal-50 border-2 border-teal-300 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="text-[10px] uppercase font-bold text-teal-700">
+                        Enter this on the {issuedCode.terminalType === 'OrderTab' ? 'tablet' : 'device'}
                       </div>
-                    ))}
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-700 flex items-start gap-3">
-                    <ShieldCheck className="w-5 h-5 shrink-0 text-teal-600 mt-0.5" />
-                    <div>
-                      <strong className="text-slate-900">How to use on branch PC:</strong> Open Cashly POS on the outlet PC $\rightarrow$ Click <strong>"Connect to HQ Chain"</strong> in the Setup Wizard $\rightarrow$ Paste this Token. The system will configure the branch database and lock to POS mode automatically.
+                      <div className="text-3xl font-black text-teal-700 font-mono tracking-[0.3em]">
+                        {issuedCode.pairingCode}
+                      </div>
+                      <div className="text-[11px] text-teal-700">
+                        {issuedCode.terminalName} · {issuedCode.branchName} · expires{' '}
+                        {new Date(issuedCode.expiresAt).toLocaleTimeString()}
+                      </div>
                     </div>
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={() => handleCopyToken(issuedCode.pairingCode)}
+                        className="px-3 py-1.5 rounded-md bg-white hover:bg-teal-100 text-teal-700 text-xs font-semibold flex items-center gap-1.5 border border-teal-300 transition"
+                      >
+                        {copiedToken === issuedCode.pairingCode
+                          ? (<><Check className="w-3.5 h-3.5" /> Copied</>)
+                          : (<><Copy className="w-3.5 h-3.5" /> Copy</>)}
+                      </button>
+                      <button
+                        onClick={() => setIssuedCode(null)}
+                        className="px-3 py-1.5 rounded-md bg-transparent hover:bg-teal-100 text-teal-700 text-xs font-semibold border border-transparent transition"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-teal-800 bg-white/60 rounded-lg px-3 py-2 border border-teal-200">
+                    This code will not be shown again. If it is lost, cancel it below and generate another.
                   </div>
                 </div>
               )}
+
+              {/* Outstanding codes — prefix only; the full value is unrecoverable by design. */}
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-slate-700">Codes awaiting activation</div>
+                {pairingBranches.length === 0 ? (
+                  <div className="p-6 text-center rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                    <ShieldCheck className="w-7 h-7 text-slate-400 mx-auto" />
+                    <p className="text-xs text-slate-500">No codes outstanding for this branch.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {pairingBranches.map((code: any) => (
+                      <div key={code.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-bold text-slate-900 font-mono">
+                            {code.codePrefix}<span className="text-slate-400">••••</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {code.terminalName} · expires {new Date(code.expiresAt).toLocaleTimeString()}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleCancelPairingCode(code.id)}
+                          className="px-3 py-1.5 rounded-md bg-white hover:bg-rose-50 text-rose-600 text-xs font-semibold border border-slate-200 hover:border-rose-200 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 flex items-start gap-3">
+                <ShieldCheck className="w-5 h-5 shrink-0 text-teal-600 mt-0.5" />
+                <div>
+                  <strong className="text-slate-900">On the device:</strong> open Cashly POS, choose
+                  <strong> Activate this device</strong>, and enter the code. The device receives a
+                  licence tied to that machine, renewed automatically whenever it is online. It keeps
+                  selling offline, and only stops if it goes unreachable for an extended period.
+                </div>
+              </div>
             </div>
           </div>
         )}

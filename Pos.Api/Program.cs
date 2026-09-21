@@ -88,7 +88,10 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(dbConnection));
+{
+    options.UseNpgsql(dbConnection);
+    AppDbContext.ConfigureWarnings(options);
+});
 
 // --- Rate Limiting ---
 builder.Services.AddRateLimiter(options =>
@@ -115,6 +118,8 @@ builder.Services.AddOpenApi();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<Pos.Api.Services.ITenantProvider, Pos.Api.Services.TenantProvider>();
 builder.Services.AddScoped<Pos.Api.Middlewares.ICurrentUserAccessor, Pos.Api.Middlewares.CurrentUserAccessor>();
+builder.Services.AddScoped<Pos.Api.Services.IEntitlementService, Pos.Api.Services.EntitlementService>();
+builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Services.DeviceLicenseService>();
 builder.Services.AddSingleton<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.NullFiscalInvoiceProvider>();
 
 // --- Payment gateways (all inert until merchant credentials are configured) ---
@@ -161,6 +166,9 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<TenantIsolationMiddleware>();
+// Runs after tenant resolution (it needs the tenant) and before any endpoint, so the billing
+// ladder applies to every write by default rather than only where a filter was remembered.
+app.UseMiddleware<TenantLifecycleMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -1091,6 +1099,155 @@ using (var scope = app.Services.CreateScope())
             END $$;
         ");
 
+        // ============================================================
+        // PLATFORM CONTROL PLANE — device licensing, entitlements, lifecycle, vertical packs.
+        // Written in the same idempotent style as everything above so it is safe on a fresh
+        // database and on one that has been running since before any of this existed.
+        // ============================================================
+        await db.Database.ExecuteSqlRawAsync(@"
+            -- Tenant lifecycle + provider provisioning.
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""Status"" integer NOT NULL DEFAULT 1;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""IsProviderProvisioned"" boolean NOT NULL DEFAULT false;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""OwnerInviteTokenHash"" text;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""OwnerInviteExpiresAt"" timestamp with time zone;
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""OwnerInviteRedeemedAt"" timestamp with time zone;
+
+            -- Existing tenants predate the lifecycle ladder: put each one on the rung that
+            -- matches the flags it already carries, rather than defaulting everybody to Trial.
+            UPDATE ""Tenants"" SET ""Status"" = CASE
+                WHEN ""IsActive"" = false THEN 6                                    -- Suspended
+                WHEN ""IsTrialActive"" = true AND ""TrialEndsAt"" > NOW() THEN 1      -- Trial
+                WHEN ""SubscriptionPaidUntil"" IS NOT NULL
+                     AND ""SubscriptionPaidUntil"" > NOW() THEN 2                    -- Active
+                ELSE 3                                                              -- PastDue
+            END
+            WHERE ""Status"" = 1 AND NOT (""IsTrialActive"" = true AND ""TrialEndsAt"" > NOW());
+
+            -- Device licensing on Terminals.
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""TenantId"" uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""DeviceFingerprint"" text;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""DeviceInfo"" text;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""ActivatedAt"" timestamp with time zone;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""LicenseIssuedAt"" timestamp with time zone;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""LicenseExpiresAt"" timestamp with time zone;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""LicenseSnapshotVersion"" integer NOT NULL DEFAULT 0;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""RevokedAt"" timestamp with time zone;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""RevokedReason"" text;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""DeactivatedAt"" timestamp with time zone;
+
+            -- Terminals only knew their branch before; the licence needs the tenant directly.
+            UPDATE ""Terminals"" t SET ""TenantId"" = b.""TenantId""
+            FROM ""Branches"" b WHERE t.""BranchId"" = b.""Id""
+              AND t.""TenantId"" = '00000000-0000-0000-0000-000000000000';
+
+            -- Offline sale provenance and reconciliation.
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""ClientLocalId"" text;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""IsOfflineOrigin"" boolean NOT NULL DEFAULT false;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""CapturedAt"" timestamp with time zone;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""DeviceReportedTotalPKR"" numeric(18,2);
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""PriceVariancePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""HasPriceVariance"" boolean NOT NULL DEFAULT false;
+            ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""DeviceReportedUnitPricePKR"" numeric(18,2);
+
+            CREATE TABLE IF NOT EXISTS ""PairingCodes"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""CodeHash"" text NOT NULL,
+                ""CodePrefix"" text NOT NULL DEFAULT '',
+                ""TerminalType"" integer NOT NULL DEFAULT 1,
+                ""TerminalName"" text NOT NULL DEFAULT '',
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""ExpiresAt"" timestamp with time zone NOT NULL,
+                ""CreatedByUserId"" uuid NOT NULL,
+                ""ConsumedAt"" timestamp with time zone,
+                ""ConsumedByTerminalId"" uuid,
+                ""ConsumedByIp"" text,
+                ""IsRevoked"" boolean NOT NULL DEFAULT false
+            );
+
+            CREATE TABLE IF NOT EXISTS ""TenantEntitlementOverrides"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Key"" text NOT NULL,
+                ""Value"" text NOT NULL,
+                ""ExpiresAt"" timestamp with time zone,
+                ""Reason"" text NOT NULL DEFAULT '',
+                ""CreatedByUserId"" uuid NOT NULL,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""IsActive"" boolean NOT NULL DEFAULT true
+            );
+
+            CREATE TABLE IF NOT EXISTS ""TenantEntitlementSnapshots"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""Version"" integer NOT NULL DEFAULT 1,
+                ""PlanKey"" text NOT NULL DEFAULT '',
+                ""MaxBranches"" integer NOT NULL DEFAULT 0,
+                ""MaxCounters"" integer NOT NULL DEFAULT 0,
+                ""MaxOrderTabs"" integer NOT NULL DEFAULT 0,
+                ""MaxUsers"" integer NOT NULL DEFAULT 0,
+                -- No literal default: a brace pair here is parsed as a format placeholder by the
+                -- raw-SQL path and blows up the whole bootstrap block. Every insert comes from
+                -- EF, whose entity default already supplies an empty JSON object.
+                ""FeaturesJson"" text NOT NULL,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""ComputedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS ""TenantVerticalPacks"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""PackKey"" text NOT NULL,
+                ""IsPrimary"" boolean NOT NULL DEFAULT false,
+                ""EnabledAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS ""DeviceLicenseEvents"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""TerminalId"" uuid,
+                ""BranchId"" uuid,
+                ""EventType"" text NOT NULL,
+                ""Detail"" text,
+                ""Ip"" text,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PairingCodes_CodeHash') THEN
+                    CREATE UNIQUE INDEX ""IX_PairingCodes_CodeHash"" ON ""PairingCodes"" (""CodeHash"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PairingCodes_Tenant_Branch_Expiry') THEN
+                    CREATE INDEX ""IX_PairingCodes_Tenant_Branch_Expiry"" ON ""PairingCodes"" (""TenantId"", ""BranchId"", ""ExpiresAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TenantEntitlementSnapshots_TenantId') THEN
+                    CREATE UNIQUE INDEX ""IX_TenantEntitlementSnapshots_TenantId"" ON ""TenantEntitlementSnapshots"" (""TenantId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TenantEntitlementOverrides_TenantId_Key') THEN
+                    CREATE INDEX ""IX_TenantEntitlementOverrides_TenantId_Key"" ON ""TenantEntitlementOverrides"" (""TenantId"", ""Key"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_TenantVerticalPacks_TenantId_PackKey') THEN
+                    CREATE UNIQUE INDEX ""IX_TenantVerticalPacks_TenantId_PackKey"" ON ""TenantVerticalPacks"" (""TenantId"", ""PackKey"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_DeviceLicenseEvents_TenantId_CreatedAt') THEN
+                    CREATE INDEX ""IX_DeviceLicenseEvents_TenantId_CreatedAt"" ON ""DeviceLicenseEvents"" (""TenantId"", ""CreatedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Terminals_DeviceToken') THEN
+                    CREATE UNIQUE INDEX ""IX_Terminals_DeviceToken"" ON ""Terminals"" (""DeviceToken"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Terminals_Tenant_Branch_Type') THEN
+                    CREATE INDEX ""IX_Terminals_Tenant_Branch_Type"" ON ""Terminals"" (""TenantId"", ""BranchId"", ""TerminalType"");
+                END IF;
+                -- Sync idempotency. Partial, so ordinary online orders (no client id) do not all
+                -- collide on NULL.
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Orders_TenantId_ClientLocalId') THEN
+                    CREATE UNIQUE INDEX ""IX_Orders_TenantId_ClientLocalId"" ON ""Orders"" (""TenantId"", ""ClientLocalId"")
+                        WHERE ""ClientLocalId"" IS NOT NULL;
+                END IF;
+            END $$;
+        ");
+
         // Seed data — clean slate, user creates everything
         await DbSeeder.SeedAsync(db);
     }
@@ -1211,6 +1368,99 @@ static async Task<(Guid? BranchId, IResult? Error)> ResolveBranchScopeAsync(Http
     if (!belongs) return (null, Results.Json(new { message = "Branch not found for this tenant." }, statusCode: 403));
     return (requestedBranchId, null);
 }
+
+// ============================================================
+// PLAN-CHANGE IMPACT
+//
+// Answers "what would break if this tenant moved to that plan?" before anything is written.
+// Used both for the preview endpoint and as the guard on the change itself, so the two can
+// never disagree about what counts as an overage.
+// ============================================================
+static async Task<PlanChangeImpact> AssessPlanChangeAsync(
+    AppDbContext db, Pos.Api.Services.IEntitlementService entitlements, Tenant tenant, SubscriptionTier targetTier)
+{
+    var current = await entitlements.GetAsync(tenant.Id);
+    var target = await db.SaaSPackageConfigs.AsNoTracking()
+        .FirstOrDefaultAsync(p => p.PackageKey == targetTier.ToString());
+
+    var blockers = new List<string>();
+
+    var branchCount = await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == tenant.Id);
+    var userCount = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == tenant.Id && u.IsActive);
+
+    var targetBranches = target?.MaxBranches ?? 1;
+    var targetCounters = target?.MaxCounters ?? 1;
+    var targetOrderTabs = target?.MaxOrderTabs ?? 0;
+    var targetUsers = target?.MaxUsers ?? 2;
+
+    if (branchCount > targetBranches)
+        blockers.Add($"{branchCount} branches in use, new plan allows {targetBranches}.");
+    if (userCount > targetUsers)
+        blockers.Add($"{userCount} active staff logins, new plan allows {targetUsers}.");
+
+    // Device limits are per branch, so an overage has to be reported per branch to be actionable.
+    var branches = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.TenantId == tenant.Id).Select(b => new { b.Id, b.Name }).ToListAsync();
+
+    foreach (var branch in branches)
+    {
+        var counters = await entitlements.CountDevicesInUseAsync(branch.Id, TerminalType.Counter);
+        if (counters > targetCounters)
+            blockers.Add($"{branch.Name}: {counters} counters active, new plan allows {targetCounters}.");
+
+        var tabs = await entitlements.CountDevicesInUseAsync(branch.Id, TerminalType.OrderTab);
+        if (tabs > targetOrderTabs)
+            blockers.Add($"{branch.Name}: {tabs} tablets active, new plan allows {targetOrderTabs}.");
+    }
+
+    // Features they are using today that the target plan does not include. Not blocking — losing
+    // a feature is an expected consequence of downgrading — but the customer should be told.
+    var losingFeatures = new List<string>();
+    if (target != null)
+    {
+        foreach (var flag in Pos.Api.Services.EntitlementService.FeatureFlagNames)
+        {
+            var hasNow = current.Has(flag);
+            var hasAfter = flag switch
+            {
+                nameof(SaaSPackageConfig.HasKitchenDisplay) => target.HasKitchenDisplay,
+                nameof(SaaSPackageConfig.HasDeliveryCOD) => target.HasDeliveryCOD,
+                nameof(SaaSPackageConfig.HasInventoryManagement) => target.HasInventoryManagement,
+                nameof(SaaSPackageConfig.HasStockTransfers) => target.HasStockTransfers,
+                nameof(SaaSPackageConfig.HasDirectorDashboard) => target.HasDirectorDashboard,
+                nameof(SaaSPackageConfig.HasConsolidatedReports) => target.HasConsolidatedReports,
+                nameof(SaaSPackageConfig.HasWhatsAppMessaging) => target.HasWhatsAppMessaging,
+                nameof(SaaSPackageConfig.HasAdvancedReports) => target.HasAdvancedReports,
+                nameof(SaaSPackageConfig.HasMultiBranch) => target.HasMultiBranch,
+                _ => false
+            };
+            // An add-on the tenant bought separately survives a plan change, so it is not a loss.
+            if (hasNow && !hasAfter)
+            {
+                var coveredByAddOn = await db.AddOnSubscriptions.IgnoreQueryFilters()
+                    .AnyAsync(a => a.TenantId == tenant.Id && a.AddOnKey == flag && a.IsActive);
+                if (!coveredByAddOn) losingFeatures.Add(flag);
+            }
+        }
+    }
+
+    var isDowngrade = (int)targetTier < (int)tenant.Tier;
+
+    return new PlanChangeImpact(
+        CurrentTier: tenant.Tier.ToString(),
+        TargetTier: targetTier.ToString(),
+        IsDowngrade: isDowngrade,
+        Blockers: blockers,
+        FeaturesLost: losingFeatures,
+        CurrentUsage: new PlanUsage(branchCount, userCount),
+        TargetLimits: new PlanLimits(targetBranches, targetCounters, targetOrderTabs, targetUsers));
+}
+
+// One-way hash for anything that is presented as a bearer secret and only ever compared —
+// refresh tokens, pairing codes, owner invites. Same convention throughout: uppercase hex of
+// SHA-256, so a database read alone never yields a usable credential.
+static string HashToken(string raw) =>
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
 
 // Combined helper: resolves tenant then branch in one shot for the common endpoint shape.
 static async Task<(Guid? TenantId, Guid? BranchId, IResult? Error)> ResolveScopeAsync(HttpContext http, AppDbContext db, Guid? clientTenantId, Guid? requestedBranchId)
@@ -1872,7 +2122,31 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
     var lockoutDuration = TimeSpan.FromMinutes(15);
     var clientIp = http.Connection.RemoteIpAddress?.ToString();
 
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Username == dto.Username.ToLower().Trim() && u.IsActive);
+    // Usernames are unique PER TENANT (see the AppUser index), so a global lookup could match
+    // several people across different businesses and silently pick one. When the caller names a
+    // tenant we scope to it; otherwise we only proceed if the name is unambiguous platform-wide,
+    // and ask which business it is when it is not.
+    var normalizedUsername = dto.Username.ToLower().Trim();
+    var candidateQuery = db.Users.IgnoreQueryFilters().Where(u => u.Username == normalizedUsername && u.IsActive);
+
+    if (!string.IsNullOrWhiteSpace(dto.TenantSlug))
+    {
+        var slug = dto.TenantSlug.Trim().ToLowerInvariant();
+        var slugTenantId = await db.Tenants.IgnoreQueryFilters()
+            .Where(t => t.Slug == slug).Select(t => (Guid?)t.Id).FirstOrDefaultAsync();
+        if (slugTenantId == null) return Results.Unauthorized();
+        candidateQuery = candidateQuery.Where(u => u.TenantId == slugTenantId.Value);
+    }
+
+    var candidates = await candidateQuery.Take(2).ToListAsync();
+    if (candidates.Count > 1)
+        return Results.BadRequest(new
+        {
+            message = "That username exists at more than one business. Please include your business identifier.",
+            requiresTenantSlug = true
+        });
+
+    var user = candidates.FirstOrDefault();
 
     // A locked account still returns a generic message for a wrong PIN below, but tells the
     // legitimate holder how long to wait — a nonexistent username never reaches this branch,
@@ -2064,7 +2338,7 @@ api.MapGet("/setup/status", async (AppDbContext db) =>
             t.IsActive,
             BranchCount = t.Branches.Count,
             HasHeadOffice = t.Branches.Any(b => b.IsHeadOffice),
-            Branches = t.Branches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice, b.AllowedCounters, b.AllowedOrderTabs })
+            Branches = t.Branches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice })
         })
         .ToListAsync();
 
@@ -2131,8 +2405,6 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
             City = dto.City ?? "Islamabad",
             Phone = dto.Phone ?? "",
             IsHeadOffice = true,
-            AllowedCounters = 10,
-            AllowedOrderTabs = 25
         };
         db.Branches.Add(hqBranch);
         createdBranches.Add(hqBranch);
@@ -2153,8 +2425,6 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
                     City = bDto.City ?? dto.City ?? "Islamabad",
                     Phone = bDto.Phone ?? dto.Phone ?? "",
                     IsHeadOffice = false,
-                    AllowedCounters = bDto.AllowedCounters > 0 ? bDto.AllowedCounters : 5,
-                    AllowedOrderTabs = bDto.AllowedOrderTabs > 0 ? bDto.AllowedOrderTabs : 15
                 };
                 db.Branches.Add(branch);
                 createdBranches.Add(branch);
@@ -2173,8 +2443,6 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
                 City = dto.City ?? "Islamabad",
                 Phone = dto.Phone ?? "",
                 IsHeadOffice = false,
-                AllowedCounters = 5,
-                AllowedOrderTabs = 15
             };
             db.Branches.Add(outlet1);
             createdBranches.Add(outlet1);
@@ -2193,8 +2461,6 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
             City = dto.City ?? "Islamabad",
             Phone = dto.Phone ?? "",
             IsHeadOffice = false,
-            AllowedCounters = dto.AllowedCounters ?? 2,
-            AllowedOrderTabs = dto.AllowedOrderTabs ?? 10
         };
         db.Branches.Add(singleBranch);
         createdBranches.Add(singleBranch);
@@ -2300,10 +2566,17 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 }).AllowAnonymous(); // bootstrap: creates the very first tenant + owner account
 
 // --- Offline Batch Sync ---
-// Offline orders were rung up without a live price check, so every one is RE-PRICED here
-// against current DB prices/tax rates. Where the recomputed subtotal drifts >2% from what the
-// terminal submitted, a SmartAlert is raised so an owner can review rather than the difference
-// being silently overwritten.
+// An offline sale ALREADY HAPPENED. The customer was shown a price and handed over money at it.
+// The previous behaviour re-priced every synced order against today's catalogue and saved the
+// server's figure, which silently rewrote what the customer actually paid and left the books
+// disagreeing with the receipt in their hand.
+//
+// Now: the server still re-prices, but only to CHECK. The device's figures are what get saved,
+// the variance is recorded on the order, and anything material raises an alert for a human.
+// The server figure is used only when the device sent nothing to go on.
+//
+// Sync is also idempotent — each order carries a device-generated ClientLocalId, so a retried
+// batch (or one whose response was lost after the server committed) cannot post a sale twice.
 api.MapPost("/sync/batch-orders", async (
     AppDbContext db,
     HttpContext http,
@@ -2329,6 +2602,23 @@ api.MapPost("/sync/batch-orders", async (
         var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
         if (branch == null) continue;
 
+        // Idempotency. Checked before anything is created, and backed by a unique index on
+        // (TenantId, ClientLocalId) so two concurrent syncs of the same batch cannot both win.
+        if (!string.IsNullOrWhiteSpace(dto.ClientLocalId))
+        {
+            var existing = await db.Orders
+                .Where(o => o.TenantId == branch.TenantId && o.ClientLocalId == dto.ClientLocalId)
+                .Select(o => new { o.Id, o.OrderNumber })
+                .FirstOrDefaultAsync();
+            if (existing != null)
+            {
+                // Report success, not an error: the device's goal (this sale is on the server)
+                // is satisfied, and it needs to hear that so it stops retrying.
+                syncedResults.Add(new { orderId = (Guid?)existing.Id, orderNumber = existing.OrderNumber, status = "AlreadySynced", reason = (string?)null });
+                continue;
+            }
+        }
+
         var orderNumber = await GenerateOrderNumberAsync(db);
         var order = new Order
         {
@@ -2349,7 +2639,12 @@ api.MapPost("/sync/batch-orders", async (
             IsPaid = dto.IsPaid,
             CashierName = dto.CashierName ?? "Counter 1 Cashier",
             CreatedByRole = dto.CreatedByRole ?? "Cashier (Offline Sync)",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            ClientLocalId = string.IsNullOrWhiteSpace(dto.ClientLocalId) ? null : dto.ClientLocalId.Trim(),
+            IsOfflineOrigin = true,
+            // When the sale actually happened. Reports and Z-readings should use this, not the
+            // moment connectivity came back — otherwise a Tuesday outage lands in Wednesday's books.
+            CapturedAt = dto.CapturedAt ?? DateTime.UtcNow
         };
 
         var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
@@ -2363,14 +2658,52 @@ api.MapPost("/sync/batch-orders", async (
         await ApplyOrderCommerceAsync(db, order, dto, priced);
         pricedByOrder[order.Id] = priced;
 
-        order.SubTotalPKR = priced.SubTotalPKR;
-        order.DiscountPKR = priced.DiscountPKR;
-        order.TaxPKR = priced.TaxPKR;
-        order.TotalPKR = priced.TotalPKR;
         foreach (var line in priced.Items) order.Items.Add(line);
         if (order.Status == OrderStatus.InKitchen) order.InKitchenAt = DateTime.UtcNow;
 
-        // Flag suspicious drift between the offline terminal's arithmetic and the server's.
+        // --- Whose numbers win -------------------------------------------------
+        // The device's, when it sent any. It is the only party that knows what the customer was
+        // charged. The server's recomputation becomes a control total, not a correction.
+        var deviceSentTotals = dto.SubTotalPKR > 0 || dto.TotalPKR > 0;
+
+        if (deviceSentTotals)
+        {
+            order.SubTotalPKR = dto.SubTotalPKR;
+            order.DiscountPKR = dto.DiscountPKR;
+            order.TaxPKR = dto.TaxPKR;
+            order.TotalPKR = dto.TotalPKR;
+            order.DeviceReportedTotalPKR = dto.TotalPKR;
+            order.PriceVariancePKR = priced.TotalPKR - dto.TotalPKR;
+            order.HasPriceVariance = Math.Abs(order.PriceVariancePKR) >= 0.01m;
+
+            // Keep the per-line price the customer saw, so the receipt can always be reproduced
+            // exactly. Matched by product and position — a synced order's lines arrive in the
+            // same order the device recorded them.
+            for (var i = 0; i < order.Items.Count && i < dto.Items.Count; i++)
+            {
+                var serverLine = order.Items.ElementAt(i);
+                var deviceLine = dto.Items[i];
+                if (deviceLine.ProductId == serverLine.ProductId && deviceLine.UnitPricePKR > 0
+                    && deviceLine.UnitPricePKR != serverLine.UnitPricePKR)
+                {
+                    serverLine.DeviceReportedUnitPricePKR = deviceLine.UnitPricePKR;
+                    serverLine.UnitPricePKR = deviceLine.UnitPricePKR;
+                    serverLine.TotalPricePKR = deviceLine.UnitPricePKR * serverLine.Quantity;
+                }
+            }
+        }
+        else
+        {
+            // Nothing to go on: an older client, or a genuinely priceless payload. The server
+            // figure is the only figure available.
+            order.SubTotalPKR = priced.SubTotalPKR;
+            order.DiscountPKR = priced.DiscountPKR;
+            order.TaxPKR = priced.TaxPKR;
+            order.TotalPKR = priced.TotalPKR;
+        }
+
+        // Alert on material drift so a human reconciles it. Threshold is the same 2% as before;
+        // what changed is that the difference is now surfaced instead of silently applied.
         if (dto.SubTotalPKR > 0)
         {
             var drift = Math.Abs(priced.SubTotalPKR - dto.SubTotalPKR) / dto.SubTotalPKR;
@@ -2383,15 +2716,17 @@ api.MapPost("/sync/batch-orders", async (
                     AlertType = "price_mismatch_offline_sync",
                     Severity = "warning",
                     Title = $"Price mismatch on synced order {order.OrderNumber}",
-                    Message = $"Offline terminal submitted a subtotal of {dto.SubTotalPKR:N2} but current menu prices give {priced.SubTotalPKR:N2} ({drift:P1} difference). The server figure was saved — please review.",
+                    Message = $"This sale was rung up offline at {dto.SubTotalPKR:N2}; current prices give {priced.SubTotalPKR:N2} ({drift:P1} difference). "
+                            + "The amount the customer actually paid was saved — review whether a price changed while the terminal was offline.",
                     Metadata = System.Text.Json.JsonSerializer.Serialize(new
                     {
                         orderId = order.Id,
                         orderNumber = order.OrderNumber,
-                        submittedSubTotal = dto.SubTotalPKR,
+                        chargedSubTotal = dto.SubTotalPKR,
                         recomputedSubTotal = priced.SubTotalPKR,
-                        submittedTotal = dto.TotalPKR,
-                        recomputedTotal = priced.TotalPKR
+                        chargedTotal = dto.TotalPKR,
+                        recomputedTotal = priced.TotalPKR,
+                        variance = priced.TotalPKR - dto.TotalPKR
                     })
                 });
             }
@@ -2458,66 +2793,221 @@ api.MapPost("/sync/batch-orders", async (
     return Results.Ok(new { count = syncedResults.Count, orders = syncedResults });
 });
 
-// --- Branch Provisioning & Pairing Hub ---
-api.MapGet("/setup/pairing-info", async (AppDbContext db) =>
+// ============================================================
+// DEVICE ACTIVATION
+//
+// The previous scheme had two anonymous endpoints: one that listed EVERY branch of EVERY tenant
+// on the platform together with its pairing token, and one that exchanged such a token for that
+// tenant's entire catalogue. The token itself was derived from the branch code plus the first
+// four hex characters of its id, so it was both guessable and permanent, and a prefix match
+// meant a two-character string could hit an arbitrary branch.
+//
+// What replaces it:
+//   * an admin who already has access to a branch mints a one-time code (authenticated),
+//   * the code is random, hashed at rest, expires in minutes, and dies when redeemed,
+//   * redeeming it binds a device fingerprint and returns a signed, expiring licence,
+//   * the catalogue is NOT part of activation — the device fetches it afterwards, with its licence.
+// ============================================================
+
+// Mint a pairing code for one branch. Requires an authenticated admin for that branch, and the
+// device quota is checked HERE as well as at redemption, so an owner is told "3 of 3 counters
+// used" while still at the back office rather than after walking to the till.
+api.MapPost("/devices/pairing-codes", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CreatePairingCodeDto dto) =>
 {
-    var branches = await db.Branches
-        .Include(b => b.Tenant)
-        .Where(b => !b.IsHeadOffice)
-        .Select(b => new
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser == null) return Results.Unauthorized();
+
+    // Minting a device licence is an owner/manager act, not something a cashier can do from a till.
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
+        return Results.Json(new { message = "Only an owner or branch manager can activate a device." }, statusCode: 403);
+
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
+    if (branch == null) return Results.BadRequest(new { message = "Branch not found." });
+
+    var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, branch.Id, dto.TerminalType);
+    if (!allowed)
+        return Results.BadRequest(new
         {
-            branchId = b.Id,
-            branchName = b.Name,
-            branchCode = b.Code,
-            city = b.City,
-            tenantId = b.TenantId,
-            tenantName = b.Tenant != null ? b.Tenant.Name : "Cashly Restaurant",
-            pairingToken = $"{b.Code.Replace(" ", "").ToUpper()}-{b.Id.ToString().Substring(0, 4).ToUpper()}",
-            allowedCounters = b.AllowedCounters,
-            allowedOrderTabs = b.AllowedOrderTabs
-        })
+            message = $"All {limit} {dto.TerminalType} device slots at this branch are in use ({inUse}/{limit}). Retire a device or add capacity.",
+            inUse,
+            limit,
+            addOnKey = dto.TerminalType == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER"
+        });
+
+    // Short, unambiguous alphabet: no O/0, I/1, so a code read aloud over a phone survives.
+    const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    var raw = new string(Enumerable.Range(0, 8)
+        .Select(_ => alphabet[System.Security.Cryptography.RandomNumberGenerator.GetInt32(alphabet.Length)])
+        .ToArray());
+
+    var code = new PairingCode
+    {
+        TenantId = scopedTenantId.Value,
+        BranchId = branch.Id,
+        CodeHash = HashToken(raw),
+        CodePrefix = raw[..4],
+        TerminalType = dto.TerminalType,
+        TerminalName = string.IsNullOrWhiteSpace(dto.TerminalName)
+            ? $"{dto.TerminalType} {inUse + 1}"
+            : dto.TerminalName.Trim(),
+        CreatedAt = DateTime.UtcNow,
+        ExpiresAt = DateTime.UtcNow.AddMinutes(15),
+        CreatedByUserId = actingUser.Id
+    };
+    db.PairingCodes.Add(code);
+
+    await WriteAuditAsync(db, scopedTenantId.Value, actingUser, "PairingCodeIssued", "PairingCode", code.Id,
+        null, $"{dto.TerminalType} for branch {branch.Name} (expires {code.ExpiresAt:u})");
+    await db.SaveChangesAsync();
+
+    // The raw code is returned exactly once and never stored — this response is the only place
+    // it exists in the clear.
+    return Results.Ok(new
+    {
+        pairingCode = raw,
+        expiresAt = code.ExpiresAt,
+        terminalType = code.TerminalType.ToString(),
+        terminalName = code.TerminalName,
+        branchName = branch.Name,
+        slotsInUse = inUse,
+        slotLimit = limit
+    });
+});
+
+// List outstanding codes for a branch, so an admin can see and cancel a code they issued.
+// Only ever shows the 4-character prefix — the full code is unrecoverable by design.
+api.MapGet("/devices/pairing-codes", async (AppDbContext db, HttpContext http, Guid? branchId) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+
+    var now = DateTime.UtcNow;
+    var codes = await db.PairingCodes
+        .Where(c => c.TenantId == scopedTenantId!.Value && c.BranchId == scopedBranchId!.Value
+                 && !c.IsRevoked && c.ConsumedAt == null && c.ExpiresAt > now)
+        .OrderByDescending(c => c.CreatedAt)
+        .Select(c => new { c.Id, c.CodePrefix, c.TerminalType, c.TerminalName, c.ExpiresAt, c.CreatedAt })
         .ToListAsync();
 
-    return Results.Ok(branches);
-}).AllowAnonymous(); // bootstrap: a fresh terminal has no token yet
+    return Results.Ok(codes);
+});
 
-api.MapPost("/setup/pair-branch", async (AppDbContext db, [Microsoft.AspNetCore.Mvc.FromBody] PairBranchDto dto) =>
+api.MapDelete("/devices/pairing-codes/{id:guid}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
-    var cleanToken = (dto.PairingToken ?? string.Empty).Trim().ToUpper();
-    var allBranches = await db.Branches.Include(b => b.Tenant).ToListAsync();
-    var branch = allBranches.FirstOrDefault(b => 
-        $"{b.Code.Replace(" ", "").ToUpper()}-{b.Id.ToString().Substring(0, 4).ToUpper()}" == cleanToken ||
-        b.Code.ToUpper() == cleanToken ||
-        b.Id.ToString().ToUpper().StartsWith(cleanToken)
-    );
+    var code = await db.PairingCodes.FirstOrDefaultAsync(c => c.Id == id);
+    if (code == null) return Results.NotFound(new { message = "Pairing code not found." });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, code.BranchId);
+    if (scopeError != null) return scopeError;
 
-    if (branch == null)
+    code.IsRevoked = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Pairing code cancelled." });
+});
+
+// Redeem a code. This is the ONE anonymous endpoint in the activation flow, because a fresh
+// device genuinely has no credential yet — which is exactly why the code must be unguessable,
+// single-use and short-lived, and why this returns a licence rather than any business data.
+api.MapPost("/devices/activate", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Services.IDeviceLicenseService licensing,
+    ActivateDeviceDto dto) =>
+{
+    var now = DateTime.UtcNow;
+    var submitted = (dto.PairingCode ?? string.Empty).Trim().ToUpperInvariant();
+
+    if (string.IsNullOrWhiteSpace(submitted) || string.IsNullOrWhiteSpace(dto.DeviceFingerprint))
+        return Results.BadRequest(new { message = "A pairing code and device fingerprint are both required." });
+
+    // Exact hash lookup only. No prefix matching, no fallbacks — the old prefix fallback is
+    // precisely how a short guess could land on somebody else's branch.
+    var hash = HashToken(submitted);
+    var code = await db.PairingCodes.IgnoreQueryFilters().FirstOrDefaultAsync(c => c.CodeHash == hash);
+
+    // One message for every failure mode: an attacker learns nothing about which part was wrong.
+    if (code == null || !code.IsRedeemable(now))
+        return Results.BadRequest(new { message = "That pairing code is not valid. Ask an administrator to generate a new one." });
+
+    var branch = await db.Branches.IgnoreQueryFilters().FirstOrDefaultAsync(b => b.Id == code.BranchId);
+    if (branch == null) return Results.BadRequest(new { message = "That pairing code is not valid. Ask an administrator to generate a new one." });
+
+    var ent = await entitlements.GetAsync(code.TenantId);
+    if (!ent.CanRead)
+        return Results.Json(new { message = "This account is suspended. Contact support." }, statusCode: 403);
+
+    // Re-check the quota at redemption: minutes may have passed since the code was issued, and
+    // another device may have taken the last slot in between.
+    var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(code.TenantId, branch.Id, code.TerminalType);
+    if (!allowed)
     {
-        return Results.NotFound(new { message = "Invalid Branch Pairing Token. Please verify the code generated at Head Office." });
+        db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+        {
+            TenantId = code.TenantId, BranchId = branch.Id, EventType = "QuotaExceeded",
+            Detail = $"Activation refused for {code.TerminalType}: {inUse}/{limit} in use.",
+            Ip = http.Connection.RemoteIpAddress?.ToString()
+        });
+        await db.SaveChangesAsync();
+        return Results.BadRequest(new { message = $"All {limit} {code.TerminalType} slots at this branch are in use.", inUse, limit });
     }
 
-    var categories = await db.Categories.Where(c => c.TenantId == branch.TenantId).OrderBy(c => c.SortOrder).ToListAsync();
-    var products = await db.Products.Include(p => p.Modifiers).Where(p => p.TenantId == branch.TenantId && p.IsActive).ToListAsync();
-    var tables = await db.DiningTables.Where(t => t.BranchId == branch.Id).ToListAsync();
+    var terminal = new Terminal
+    {
+        TenantId = code.TenantId,
+        BranchId = branch.Id,
+        TerminalName = code.TerminalName,
+        TerminalType = code.TerminalType,
+        DeviceToken = Guid.NewGuid().ToString("N"),
+        DeviceFingerprint = licensing.HashFingerprint(dto.DeviceFingerprint),
+        DeviceInfo = dto.DeviceInfo?.Trim(),
+        IsActive = true,
+        ActivatedAt = now,
+        LastSeenAt = now
+    };
+    db.Terminals.Add(terminal);
+
+    code.ConsumedAt = now;
+    code.ConsumedByTerminalId = terminal.Id;
+    code.ConsumedByIp = http.Connection.RemoteIpAddress?.ToString();
+
+    var license = await licensing.IssueAsync(terminal, ent);
+
+    db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+    {
+        TenantId = code.TenantId, TerminalId = terminal.Id, BranchId = branch.Id,
+        EventType = "Activated",
+        Detail = $"{terminal.TerminalType} '{terminal.TerminalName}' activated. {dto.DeviceInfo}",
+        Ip = http.Connection.RemoteIpAddress?.ToString()
+    });
+
+    await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
-        success = true,
-        tenantId = branch.TenantId,
-        tenantName = branch.Tenant?.Name ?? "Restaurant Chain",
+        license = license.Token,
+        expiresAt = license.ExpiresAt,
+        graceEndsAt = license.GraceEndsAt,
+        terminalId = terminal.Id,
+        terminalName = terminal.TerminalName,
+        terminalType = terminal.TerminalType.ToString(),
+        deviceToken = terminal.DeviceToken,
+        tenantId = code.TenantId,
         branchId = branch.Id,
         branchName = branch.Name,
         branchCode = branch.Code,
-        city = branch.City,
         isHeadOffice = branch.IsHeadOffice,
-        categoriesCount = categories.Count,
-        productsCount = products.Count,
-        tablesCount = tables.Count,
-        categories,
-        products,
-        diningTables = tables
+        packs = ent.PackKeys,
+        primaryPack = ent.PrimaryPackKey
     });
-}).AllowAnonymous(); // bootstrap: a fresh terminal pairs itself before login
+}).AllowAnonymous().RequireRateLimiting("auth");
 
 // --- Tenancy & Hierarchy ---
 // SuperAdmin sees every tenant; everyone else sees only their own.
@@ -2560,8 +3050,6 @@ api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Guid
     if (!string.IsNullOrWhiteSpace(dto.City)) branch.City = dto.City.Trim();
     if (dto.Phone != null) branch.Phone = dto.Phone;
     if (dto.RegionCode != null) branch.RegionCode = string.IsNullOrWhiteSpace(dto.RegionCode) ? null : dto.RegionCode.Trim().ToUpperInvariant();
-    if (dto.AllowedCounters.HasValue && http.IsSuperAdmin()) branch.AllowedCounters = dto.AllowedCounters.Value;
-    if (dto.AllowedOrderTabs.HasValue && http.IsSuperAdmin()) branch.AllowedOrderTabs = dto.AllowedOrderTabs.Value;
 
     await db.SaveChangesAsync();
     return Results.Ok(branch);
@@ -2791,7 +3279,8 @@ api.MapPost("/orders", async (
         loyaltyRejectedReason = priced.LoyaltyRejectedReason,
         fiscalInvoiceNumber = order.FiscalInvoiceNumber
     });
-});
+// Selling is the last thing a tenant loses. PastDue and Restricted both still pass this gate.
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireTenantStateFilter(Pos.Api.Middlewares.RequireTenantStateFilter.Need.Sell));
 
 // Shared order-creation core. Both POST /orders and the delivery-platform webhook go through this
 // so the server-side price/tax recompute, stock depletion, KOT fan-out and commerce extras apply
@@ -3279,12 +3768,22 @@ api.MapGet("/director/kpis", async (AppDbContext db, HttpContext http, Guid? ten
         .Select(g => new { branchId = g.Key, sales = g.Sum(o => o.TotalPKR), count = g.Count() })
         .ToDictionaryAsync(x => x.branchId);
 
+    // "Active counters" used to report the branch's LIMIT, which meant a branch with one till on
+    // a five-counter allowance showed five. Count the devices that are actually live instead.
+    var liveCounters = await db.Terminals
+        .Where(t => branchIds.Contains(t.BranchId)
+                 && t.TerminalType == TerminalType.Counter
+                 && t.IsActive && t.RevokedAt == null && t.DeactivatedAt == null)
+        .GroupBy(t => t.BranchId)
+        .Select(g => new { branchId = g.Key, count = g.Count() })
+        .ToDictionaryAsync(x => x.branchId, x => x.count);
+
     var branchSales = branches.Select(b => new
     {
         branchId = b.Id, branchName = b.Name, city = b.City,
         todaySalesPKR = branchOrderData.TryGetValue(b.Id, out var data) ? data.sales : 0m,
         ordersCount = branchOrderData.TryGetValue(b.Id, out var d) ? d.count : 0,
-        activeCounters = b.AllowedCounters
+        activeCounters = liveCounters.TryGetValue(b.Id, out var c) ? c : 0
     });
 
     return Results.Ok(new
@@ -3301,16 +3800,64 @@ api.MapGet("/director/kpis", async (AppDbContext db, HttpContext http, Guid? ten
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view the director dashboard."));
 
 // --- Super Admin ---
-api.MapPost("/super-admin/update-limits", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
+// Raising a tenant's device allowance now goes through the entitlement engine rather than
+// writing a second, competing number onto the branch row. The delta is expressed as an override
+// so it is visible in the console, attributable, and can be given an expiry date.
+api.MapPost("/super-admin/update-limits", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchLimitsDto dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
-    var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == dto.BranchId);
+    var branch = await db.Branches.IgnoreQueryFilters().Include(b => b.Tenant)
+        .FirstOrDefaultAsync(b => b.Id == dto.BranchId);
     if (branch == null) return Results.NotFound();
-    branch.AllowedCounters = dto.AllowedCounters;
-    branch.AllowedOrderTabs = dto.AllowedOrderTabs;
+
+    var tenantId = branch.TenantId;
     if (dto.Tier.HasValue && branch.Tenant != null) branch.Tenant.Tier = dto.Tier.Value;
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Limits updated", branchId = branch.Id, allowedCounters = branch.AllowedCounters, allowedOrderTabs = branch.AllowedOrderTabs, tier = branch.Tenant?.Tier.ToString() });
+
+    // Recompute first so the delta is measured against the (possibly just-changed) plan.
+    var current = await entitlements.RecomputeAsync(tenantId);
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+
+    async Task ApplyDeltaAsync(string key, int desired, int currentValue)
+    {
+        var delta = desired - currentValue;
+        if (delta == 0) return;
+
+        var existing = await db.TenantEntitlementOverrides.IgnoreQueryFilters()
+            .Where(o => o.TenantId == tenantId && o.Key == key && o.IsActive).ToListAsync();
+        foreach (var old in existing) old.IsActive = false;
+
+        db.TenantEntitlementOverrides.Add(new TenantEntitlementOverride
+        {
+            TenantId = tenantId,
+            Key = key,
+            // Stack on top of any delta already in force, so the resulting ceiling is the number
+            // that was actually asked for rather than the number plus whatever was there before.
+            Value = (delta + existing.Sum(e => int.TryParse(e.Value, out var v) ? v : 0)).ToString(),
+            Reason = $"Set via super-admin limits for branch {branch.Name}.",
+            CreatedByUserId = actingUser?.Id ?? Guid.Empty
+        });
+    }
+
+    await ApplyDeltaAsync(nameof(SaaSPackageConfig.MaxCounters), dto.AllowedCounters, current.MaxCounters);
+    await ApplyDeltaAsync(nameof(SaaSPackageConfig.MaxOrderTabs), dto.AllowedOrderTabs, current.MaxOrderTabs);
+    await db.SaveChangesAsync();
+
+    var updated = await entitlements.RecomputeAsync(tenantId);
+    return Results.Ok(new
+    {
+        message = "Limits updated",
+        branchId = branch.Id,
+        allowedCounters = updated.MaxCounters,
+        allowedOrderTabs = updated.MaxOrderTabs,
+        snapshotVersion = updated.Version,
+        tier = branch.Tenant?.Tier.ToString()
+    });
 });
 
 // --- Terminal Device Management (Counters, Order Tabs, Kitchen Displays) ---
@@ -3329,50 +3876,72 @@ api.MapGet("/terminals", async (AppDbContext db, HttpContext http, Guid? branchI
     {
         q = q.Where(t => t.BranchId == scopedBranchId!.Value);
     }
+    var now = DateTime.UtcNow;
     var terminals = await q.OrderByDescending(t => t.LastSeenAt).ToListAsync();
+
+    // DeviceToken is deliberately no longer returned. It is a device credential, not a display
+    // field, and the old UI printed it on screen for anyone standing behind the counter.
     return Results.Ok(terminals.Select(t => new
     {
-        t.Id, t.BranchId, t.TerminalName, t.TerminalType, t.DeviceToken, t.IsActive, t.LastSeenAt
+        t.Id,
+        t.BranchId,
+        t.TerminalName,
+        t.TerminalType,
+        t.IsActive,
+        t.LastSeenAt,
+        t.ActivatedAt,
+        t.DeviceInfo,
+        t.LicenseExpiresAt,
+        t.RevokedAt,
+        t.RevokedReason,
+        t.DeactivatedAt,
+        occupiesSlot = t.OccupiesQuotaSlot(now),
+        licenseState =
+            t.RevokedAt != null ? "Revoked"
+            : t.DeactivatedAt != null ? "Retired"
+            : t.LicenseExpiresAt == null ? "NeverActivated"
+            : t.LicenseExpiresAt > now ? "Valid"
+            : t.LicenseExpiresAt.Value.Add(Pos.Api.Services.DeviceLicenseService.GracePeriod) > now ? "Grace"
+            : "Expired",
+        // Minutes since last contact, so support can see a till that silently stopped syncing.
+        offlineForMinutes = (int)(now - t.LastSeenAt).TotalMinutes
     }));
 });
 
-api.MapPost("/terminals", async (AppDbContext db, HttpContext http, CreateTerminalDto dto) =>
+// Device slot usage per branch — what the back office needs to answer "can I add another till?"
+// before the owner walks over to the hardware.
+api.MapGet("/devices/capacity", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Guid? branchId) =>
 {
-    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
 
-    var branch = await db.Branches.FindAsync(scopedBranchId!.Value);
-    if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
-
-    var terminalCount = await db.Terminals.CountAsync(t => t.BranchId == branch.Id && t.TerminalType == dto.TerminalType);
-    // Branch quota AND the tenant's SaaS package ceiling both apply — take the lower — then add
-    // any EXTRA_COUNTER/EXTRA_TABLET add-ons purchased for this specific branch.
-    var branchLimit = dto.TerminalType == TerminalType.OrderTab ? branch.AllowedOrderTabs : branch.AllowedCounters;
-    var tenantTier = await db.Tenants.Where(t => t.Id == branch.TenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
-    var pkg = tenantTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenantTier.Value.ToString());
-    var packageLimit = pkg == null ? int.MaxValue : (dto.TerminalType == TerminalType.OrderTab ? pkg.MaxOrderTabs : pkg.MaxCounters);
-    var addOnKey = dto.TerminalType == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
-    var addOnBonus = await db.AddOnSubscriptions
-        .Where(a => a.TenantId == branch.TenantId && a.BranchId == branch.Id && a.AddOnKey == addOnKey && a.IsActive)
-        .SumAsync(a => (int?)a.Quantity) ?? 0;
-    var limit = Math.Min(branchLimit, packageLimit) + addOnBonus;
-    if (terminalCount >= limit)
-        return Results.BadRequest(new { error = $"Branch limit reached: max {limit} {dto.TerminalType} devices allowed" });
-
-    var terminal = new Terminal
+    var results = new List<object>();
+    foreach (var type in new[] { TerminalType.Counter, TerminalType.OrderTab, TerminalType.KitchenDisplay })
     {
-        Id = Guid.NewGuid(),
-        BranchId = branch.Id,
-        TerminalName = dto.TerminalName.Trim(),
-        TerminalType = dto.TerminalType,
-        DeviceToken = Guid.NewGuid().ToString("N"),
-        IsActive = true,
-        LastSeenAt = DateTime.UtcNow
-    };
-    db.Terminals.Add(terminal);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Terminal created", terminal.Id, terminal.TerminalName, terminal.DeviceToken });
+        var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, scopedBranchId!.Value, type);
+        results.Add(new
+        {
+            terminalType = type.ToString(),
+            inUse,
+            limit = limit == int.MaxValue ? (int?)null : limit, // null = unmetered (KDS)
+            canAdd = allowed
+        });
+    }
+    return Results.Ok(results);
 });
+
+// Direct terminal creation is gone: a Terminal row is now the product of redeeming a pairing
+// code at the device itself, which is what binds the fingerprint and issues the licence.
+// Creating one server-side would hand back an unbound device that no licence check can police.
+api.MapPost("/terminals", () => Results.Json(new
+{
+    message = "Devices are now activated from the device itself. Generate a pairing code "
+            + "(POST /api/devices/pairing-codes) and enter it on the terminal."
+}, statusCode: StatusCodes.Status410Gone));
 
 api.MapPut("/terminals/{id}", async (AppDbContext db, HttpContext http, Guid id, UpdateTerminalDto dto) =>
 {
@@ -3382,31 +3951,202 @@ api.MapPut("/terminals/{id}", async (AppDbContext db, HttpContext http, Guid id,
     if (scopeError != null) return scopeError;
 
     if (!string.IsNullOrWhiteSpace(dto.TerminalName)) terminal.TerminalName = dto.TerminalName.Trim();
-    if (dto.IsActive.HasValue) terminal.IsActive = dto.IsActive.Value;
-    terminal.LastSeenAt = DateTime.UtcNow;
+
+    // Re-enabling a terminal has to pass the quota again — otherwise disabling devices before a
+    // downgrade and re-enabling them afterwards would be a free way around the new plan.
+    if (dto.IsActive.HasValue && dto.IsActive.Value && !terminal.IsActive)
+    {
+        var entitlements = http.RequestServices.GetRequiredService<Pos.Api.Services.IEntitlementService>();
+        var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(terminal.TenantId, terminal.BranchId, terminal.TerminalType);
+        if (!allowed)
+            return Results.BadRequest(new { message = $"Cannot re-enable: {inUse}/{limit} {terminal.TerminalType} slots already in use." });
+        terminal.IsActive = true;
+        terminal.DeactivatedAt = null;
+    }
+    else if (dto.IsActive.HasValue && !dto.IsActive.Value)
+    {
+        terminal.IsActive = false;
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Terminal updated", terminal.Id, terminal.TerminalName, terminal.IsActive });
 });
 
-api.MapDelete("/terminals/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
+// Retire a device. Soft, not hard: the row survives so its sales history keeps a real device to
+// point at, and it holds its quota slot for a cooldown so add/delete/add cannot be used to run
+// more tills than the plan allows.
+api.MapDelete("/terminals/{id}", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id,
+    bool? revoke,
+    string? reason) =>
 {
     var terminal = await db.Terminals.FindAsync(id);
     if (terminal == null) return Results.NotFound(new { error = "Terminal not found" });
-    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, terminal.BranchId);
+    var (scopedTenantId, _, scopeError) = await ResolveScopeAsync(http, db, null, terminal.BranchId);
     if (scopeError != null) return scopeError;
-    db.Terminals.Remove(terminal);
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    var now = DateTime.UtcNow;
+
+    // Revoke is for a lost or stolen device: it kills the licence immediately and frees the slot
+    // at once, because waiting out a cooldown on a device you no longer control helps nobody.
+    if (revoke == true)
+    {
+        terminal.RevokedAt = now;
+        terminal.RevokedReason = string.IsNullOrWhiteSpace(reason) ? "Revoked by administrator." : reason.Trim();
+        terminal.IsActive = false;
+    }
+    else
+    {
+        terminal.DeactivatedAt = now;
+        terminal.IsActive = false;
+    }
+
+    db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+    {
+        TenantId = terminal.TenantId,
+        TerminalId = terminal.Id,
+        BranchId = terminal.BranchId,
+        EventType = revoke == true ? "Revoked" : "Deactivated",
+        Detail = terminal.RevokedReason ?? $"Retired by {actingUser?.FullName ?? "administrator"}.",
+        Ip = http.Connection.RemoteIpAddress?.ToString()
+    });
+
+    if (actingUser != null && scopedTenantId != null)
+        await WriteAuditAsync(db, scopedTenantId.Value, actingUser,
+            revoke == true ? "TerminalRevoked" : "TerminalRetired", "Terminal", terminal.Id,
+            terminal.TerminalName, terminal.RevokedReason);
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Terminal deleted" });
+    return Results.Ok(new
+    {
+        message = revoke == true
+            ? "Device licence revoked. The slot is free immediately."
+            : $"Device retired. Its slot frees up in {Terminal.DeviceSlotCooldownHours} hours.",
+        slotFreesAt = revoke == true ? (DateTime?)now : now.AddHours(Terminal.DeviceSlotCooldownHours)
+    });
 });
 
-api.MapPost("/terminals/heartbeat", async (AppDbContext db, TerminalHeartbeatDto dto) =>
+// ============================================================
+// HEARTBEAT — where a licence is actually renewed, and therefore the one place a revocation,
+// a downgrade or a suspension reaches a device that is already in the field.
+//
+// This used to set LastSeenAt and nothing else, which is why nothing could ever be taken away.
+// ============================================================
+api.MapPost("/terminals/heartbeat", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Services.IDeviceLicenseService licensing,
+    TerminalHeartbeatDto dto) =>
 {
-    var terminal = await db.Terminals.FirstOrDefaultAsync(t => t.DeviceToken == dto.DeviceToken);
-    if (terminal == null) return Results.NotFound(new { error = "Terminal not registered" });
-    terminal.LastSeenAt = DateTime.UtcNow;
+    var validation = await licensing.ValidateAsync(dto.License, dto.DeviceFingerprint);
+
+    if (validation.State is Pos.Api.Services.DeviceLicenseState.Invalid)
+        return Results.Json(new { state = "Invalid", canSell = false, reason = validation.Reason, mustReactivate = true },
+            statusCode: StatusCodes.Status401Unauthorized);
+
+    if (validation.State is Pos.Api.Services.DeviceLicenseState.Revoked)
+    {
+        if (validation.TenantId != null)
+            db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+            {
+                TenantId = validation.TenantId.Value, TerminalId = validation.TerminalId, BranchId = validation.BranchId,
+                EventType = "RenewalDenied", Detail = validation.Reason, Ip = http.Connection.RemoteIpAddress?.ToString()
+            });
+        await db.SaveChangesAsync();
+        return Results.Json(new { state = "Revoked", canSell = false, reason = validation.Reason, mustReactivate = true },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    var terminal = await db.Terminals.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == validation.TerminalId!.Value);
+    if (terminal == null)
+        return Results.Json(new { state = "Invalid", canSell = false, reason = "Terminal no longer exists.", mustReactivate = true },
+            statusCode: StatusCodes.Status401Unauthorized);
+
+    var ent = await entitlements.GetAsync(terminal.TenantId);
+
+    // A hard-suspended tenant loses its devices here — the graduated states above it deliberately
+    // do not, because a PastDue restaurant still has customers standing at the counter.
+    if (!ent.CanRead)
+    {
+        db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+        {
+            TenantId = terminal.TenantId, TerminalId = terminal.Id, BranchId = terminal.BranchId,
+            EventType = "RenewalDenied", Detail = $"Tenant status {ent.Status}.",
+            Ip = http.Connection.RemoteIpAddress?.ToString()
+        });
+        await db.SaveChangesAsync();
+        return Results.Json(new { state = "Suspended", canSell = false, reason = "This account is suspended.", mustReactivate = false },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    // A device may only keep operating if it is still inside its branch's current allowance.
+    // Sort by activation date so that after a downgrade the OLDEST devices keep working and the
+    // most recently added ones fall out — predictable, and it matches what an owner expects.
+    var slotOk = true;
+    if (terminal.TerminalType != TerminalType.KitchenDisplay)
+    {
+        var (_, _, limit) = await entitlements.CanAddDeviceAsync(terminal.TenantId, terminal.BranchId, terminal.TerminalType);
+        var rank = await db.Terminals.IgnoreQueryFilters()
+            .Where(t => t.BranchId == terminal.BranchId
+                     && t.TerminalType == terminal.TerminalType
+                     && t.RevokedAt == null && t.DeactivatedAt == null
+                     && (t.ActivatedAt < terminal.ActivatedAt
+                         || (t.ActivatedAt == terminal.ActivatedAt && t.Id != terminal.Id && t.LastSeenAt < terminal.LastSeenAt)))
+            .CountAsync();
+        slotOk = rank < limit;
+
+        if (!slotOk)
+        {
+            db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+            {
+                TenantId = terminal.TenantId, TerminalId = terminal.Id, BranchId = terminal.BranchId,
+                EventType = "RenewalDenied",
+                Detail = $"Device {rank + 1} of an allowance of {limit} {terminal.TerminalType}s after a plan change.",
+                Ip = http.Connection.RemoteIpAddress?.ToString()
+            });
+            await db.SaveChangesAsync();
+            return Results.Json(new
+            {
+                state = "OverLimit",
+                canSell = false,
+                reason = $"Your plan now allows {limit} {terminal.TerminalType} device(s) at this branch. "
+                       + "Retire another device or add capacity to bring this one back online.",
+                mustReactivate = false
+            }, statusCode: StatusCodes.Status402PaymentRequired);
+        }
+    }
+
+    var license = await licensing.IssueAsync(terminal, ent);
+    db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+    {
+        TenantId = terminal.TenantId, TerminalId = terminal.Id, BranchId = terminal.BranchId,
+        EventType = "Renewed", Detail = $"Snapshot v{ent.Version}.", Ip = http.Connection.RemoteIpAddress?.ToString()
+    });
     await db.SaveChangesAsync();
-    return Results.Ok(new { terminal.TerminalName, terminal.TerminalType });
-});
+
+    return Results.Ok(new
+    {
+        state = "Valid",
+        canSell = ent.CanSell,
+        canUseBackOffice = ent.CanUseBackOffice,
+        showBillingWarning = ent.ShowBillingWarning,
+        tenantStatus = ent.Status.ToString(),
+        license = license.Token,
+        expiresAt = license.ExpiresAt,
+        graceEndsAt = license.GraceEndsAt,
+        snapshotVersion = ent.Version,
+        terminal.TerminalName,
+        terminal.TerminalType,
+        packs = ent.PackKeys,
+        primaryPack = ent.PrimaryPackKey,
+        features = ent.Features
+    });
+}).AllowAnonymous();
 
 // --- Offline Batch Sync (fixed order numbers) ---
 // Same rule as /sync/batch-orders: totals are recomputed from current DB prices and tax rates.
@@ -3418,6 +4158,7 @@ api.MapPost("/sync/offline-batch", async (
 {
     var actingUser = await accessor.GetCurrentUserAsync(http);
     int syncedCount = 0;
+    int alreadySynced = 0;
     foreach (var dto in offlineOrders)
     {
         var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
@@ -3425,6 +4166,16 @@ api.MapPost("/sync/offline-batch", async (
         var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
         if (branch == null) continue;
 
+        // Same idempotency guard as /sync/batch-orders — this path is reached by the same
+        // retrying client, so it needs the same protection against double-posting.
+        if (!string.IsNullOrWhiteSpace(dto.ClientLocalId)
+            && await db.Orders.AnyAsync(o => o.TenantId == branch.TenantId && o.ClientLocalId == dto.ClientLocalId))
+        {
+            alreadySynced++;
+            continue;
+        }
+
+        var capturedAt = dto.CapturedAt ?? DateTime.UtcNow;
         var order = new Order
         {
             TenantId = branch.TenantId, BranchId = branch.Id,
@@ -3434,16 +4185,35 @@ api.MapPost("/sync/offline-batch", async (
             DeliveryAddress = dto.DeliveryAddress, PaymentMethod = dto.PaymentMethod,
             AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = true,
             CashierName = dto.CashierName ?? "Offline Cashier", CreatedByRole = "OfflineSync", CreatedAt = DateTime.UtcNow,
-            CompletedAt = DateTime.UtcNow
+            CompletedAt = capturedAt,
+            ClientLocalId = string.IsNullOrWhiteSpace(dto.ClientLocalId) ? null : dto.ClientLocalId.Trim(),
+            IsOfflineOrigin = true,
+            CapturedAt = capturedAt
         };
 
         var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
         if (priced.Error != null) continue;
-        order.SubTotalPKR = priced.SubTotalPKR;
-        order.DiscountPKR = priced.DiscountPKR;
-        order.TaxPKR = priced.TaxPKR;
-        order.TotalPKR = priced.TotalPKR;
         foreach (var line in priced.Items) order.Items.Add(line);
+
+        // The device's figures are authoritative here for the same reason as the other sync
+        // path: this money already changed hands at those numbers.
+        if (dto.SubTotalPKR > 0 || dto.TotalPKR > 0)
+        {
+            order.SubTotalPKR = dto.SubTotalPKR;
+            order.DiscountPKR = dto.DiscountPKR;
+            order.TaxPKR = dto.TaxPKR;
+            order.TotalPKR = dto.TotalPKR;
+            order.DeviceReportedTotalPKR = dto.TotalPKR;
+            order.PriceVariancePKR = priced.TotalPKR - dto.TotalPKR;
+            order.HasPriceVariance = Math.Abs(order.PriceVariancePKR) >= 0.01m;
+        }
+        else
+        {
+            order.SubTotalPKR = priced.SubTotalPKR;
+            order.DiscountPKR = priced.DiscountPKR;
+            order.TaxPKR = priced.TaxPKR;
+            order.TotalPKR = priced.TotalPKR;
+        }
 
         if (dto.SubTotalPKR > 0 && Math.Abs(priced.SubTotalPKR - dto.SubTotalPKR) / dto.SubTotalPKR > 0.02m)
         {
@@ -3454,8 +4224,9 @@ api.MapPost("/sync/offline-batch", async (
                 AlertType = "price_mismatch_offline_sync",
                 Severity = "warning",
                 Title = $"Price mismatch on synced order {order.OrderNumber}",
-                Message = $"Offline terminal submitted {dto.SubTotalPKR:N2}; current menu prices give {priced.SubTotalPKR:N2}. The server figure was saved — please review.",
-                Metadata = System.Text.Json.JsonSerializer.Serialize(new { orderId = order.Id, submittedSubTotal = dto.SubTotalPKR, recomputedSubTotal = priced.SubTotalPKR })
+                Message = $"This sale was rung up offline at {dto.SubTotalPKR:N2}; current prices give {priced.SubTotalPKR:N2}. "
+                        + "The amount the customer actually paid was saved — please review.",
+                Metadata = System.Text.Json.JsonSerializer.Serialize(new { orderId = order.Id, chargedSubTotal = dto.SubTotalPKR, recomputedSubTotal = priced.SubTotalPKR, variance = priced.TotalPKR - dto.TotalPKR })
             });
         }
 
@@ -3469,7 +4240,14 @@ api.MapPost("/sync/offline-batch", async (
         syncedCount++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = $"Synced {syncedCount} offline orders", syncedCount });
+    // alreadySynced is reported separately so a client can distinguish "nothing to do" from
+    // "nothing happened", and stop retrying either way.
+    return Results.Ok(new
+    {
+        message = $"Synced {syncedCount} offline orders" + (alreadySynced > 0 ? $"; {alreadySynced} were already on the server." : "."),
+        syncedCount,
+        alreadySynced
+    });
 });
 
 // --- Cash Shifts ---
@@ -4783,7 +5561,7 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, 
 // SAAS ENDPOINTS — SIGNUP + TENANT MANAGEMENT
 // ============================================================
 
-authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
+authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto dto) =>
 {
     // Validate unique slug
     var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
@@ -4791,9 +5569,13 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
     if (await db.Tenants.AnyAsync(t => t.Slug == slug))
         return Results.BadRequest(new { error = "A restaurant with a similar name already exists. Try a different name." });
 
-    // Validate unique admin username
-    if (await db.Users.AnyAsync(u => u.Username == dto.AdminUsername.ToLower().Trim()))
-        return Results.BadRequest(new { error = "Username already taken. Choose a different one." });
+    // Usernames only have to be unique WITHIN a tenant — the database index says so. A global
+    // check meant the first business to register "admin" took that name away from every business
+    // that would ever sign up afterwards. A brand-new tenant has no users, so the only real
+    // constraint here is that the name is well-formed.
+    var desiredUsername = dto.AdminUsername.ToLower().Trim();
+    if (desiredUsername.Length < 3)
+        return Results.BadRequest(new { error = "Username must be at least 3 characters." });
 
     // The chosen plan only shapes trial limits (branches/counters/tabs) — everyone gets the same
     // 30-day, all-features trial regardless of tier, same as before. Falls back to Starter for a
@@ -4849,8 +5631,6 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
             Phone = dto.Phone,
             IsHeadOffice = true,
             RegionCode = countryProfile.Iso2 == "PK" ? matchedState?.Code : null,
-            AllowedCounters = chosenPackage?.MaxCounters ?? 1,
-            AllowedOrderTabs = chosenPackage?.MaxOrderTabs ?? 3
         };
         db.Branches.Add(branch);
 
@@ -4898,12 +5678,39 @@ authApi.MapPost("/signup", async (AppDbContext db, SignupDto dto) =>
         };
         db.TenantSettings.Add(tenantSettings);
 
+        // Assign the vertical pack chosen at signup. This is what decides the POS layout, which
+        // item fields exist and which sector screens appear — the thing that lets one product
+        // serve a pharmacy and a restaurant without either being an afterthought.
+        var packKey = Pos.Api.Data.VerticalPacks.Find(dto.VerticalPack)?.Key
+                      ?? Pos.Api.Data.VerticalPacks.FromLegacyBusinessType(tenant.BusinessType);
+        db.TenantVerticalPacks.Add(new TenantVerticalPack
+        {
+            TenantId = tenant.Id,
+            PackKey = packKey,
+            IsPrimary = true
+        });
+
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
 
+        // Build the entitlement snapshot now, so the very first request from this tenant reads
+        // the same resolved limits as every request after it.
+        var newEntitlements = await http.RequestServices
+            .GetRequiredService<Pos.Api.Services.IEntitlementService>()
+            .RecomputeAsync(tenant.Id);
+
         return Results.Ok(new
         {
-            message = "Restaurant created successfully!",
+            message = "Business created successfully!",
+            verticalPack = packKey,
+            entitlements = new
+            {
+                newEntitlements.MaxBranches,
+                newEntitlements.MaxCounters,
+                newEntitlements.MaxOrderTabs,
+                newEntitlements.MaxUsers,
+                status = newEntitlements.Status.ToString()
+            },
             tenant = new
             {
                 id = tenant.Id,
@@ -4997,27 +5804,120 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
     return Results.Ok(result);
 }).RequireAuthorization();
 
-app.MapPut("/api/admin/tenants/{id:guid}/toggle-active", async (Guid id, AppDbContext db, HttpContext http) =>
+// Retained for the existing console, but it is now the blunt instrument at the end of the
+// lifecycle ladder. Prefer PUT /status, which records a reason and can stop somewhere gentler
+// than "your tills are off".
+app.MapPut("/api/admin/tenants/{id:guid}/toggle-active", async (
+    Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
-    var tenant = await db.Tenants.FindAsync(id);
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
     tenant.IsActive = !tenant.IsActive;
+
+    // Keep the ladder in step. Reactivating returns the tenant to PastDue rather than Active —
+    // whether they have actually paid is a separate fact, recorded by the plan-change endpoint.
+    tenant.Status = tenant.IsActive
+        ? (tenant.IsTrialActive && tenant.TrialEndsAt > DateTime.UtcNow ? TenantStatus.Trial : TenantStatus.PastDue)
+        : TenantStatus.Suspended;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { tenant.Id, tenant.IsActive, message = tenant.IsActive ? "Tenant activated" : "Tenant deactivated" });
+    var updated = await entitlements.RecomputeAsync(tenant.Id);
+
+    return Results.Ok(new
+    {
+        tenant.Id,
+        tenant.IsActive,
+        status = updated.Status.ToString(),
+        snapshotVersion = updated.Version,
+        message = tenant.IsActive ? "Tenant activated" : "Tenant deactivated"
+    });
 }).RequireAuthorization();
 
-app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (Guid id, AppDbContext db, HttpContext http, ChangeTierDto dto) =>
+// ============================================================
+// PLAN CHANGE
+//
+// This used to be two assignments and a save. Nothing checked whether the tenant actually FIT
+// the new plan, so downgrading a five-branch chain to a one-branch plan left it running five
+// branches forever and every quota check downstream quietly disagreed with what was being paid for.
+//
+// Now: an upgrade always proceeds; a downgrade is dry-run first and refused (unless explicitly
+// forced) when the tenant is over the new plan's limits, with the specific overage reported so
+// support can tell the customer exactly what to retire.
+// ============================================================
+app.MapGet("/api/admin/tenants/{id:guid}/plan-change-preview", async (
+    Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, SubscriptionTier tier) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    var impact = await AssessPlanChangeAsync(db, entitlements, tenant, tier);
+    return Results.Ok(impact);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ChangeTierDto dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
-    var tenant = await db.Tenants.FindAsync(id);
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
+
+    var previousTier = tenant.Tier;
+    if (previousTier == dto.Tier && dto.PaidUntil == tenant.SubscriptionPaidUntil)
+        return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil, message = "No change." });
+
+    var impact = await AssessPlanChangeAsync(db, entitlements, tenant, dto.Tier);
+
+    if (impact.IsDowngrade && impact.Blockers.Count > 0 && dto.Force != true)
+        return Results.BadRequest(new
+        {
+            message = "This tenant is over the limits of the plan they would move to. "
+                    + "Ask them to reduce first, or repeat with force=true to move them anyway "
+                    + "(devices beyond the new allowance will stop selling at their next heartbeat).",
+            blockers = impact.Blockers,
+            impact
+        });
+
     tenant.Tier = dto.Tier;
     tenant.SubscriptionPaidUntil = dto.PaidUntil;
+
+    // Paying for a plan ends the trial and clears any past-due state. Deliberately does not
+    // touch Restricted/ReadOnly/Suspended — those are support decisions, undone on purpose.
+    if (dto.PaidUntil != null && dto.PaidUntil > DateTime.UtcNow)
+    {
+        tenant.IsTrialActive = false;
+        if (tenant.Status is TenantStatus.Trial or TenantStatus.PastDue) tenant.Status = TenantStatus.Active;
+    }
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenant.Id, actingUser, "TenantTierChanged", "Tenant", tenant.Id,
+            previousTier.ToString(), $"{dto.Tier}{(dto.Force == true ? " (forced over limits)" : "")}");
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil });
+
+    // Recompute immediately so the new entitlements are live and every device picks them up on
+    // its next heartbeat — no reinstall, no support call.
+    var updated = await entitlements.RecomputeAsync(tenant.Id);
+
+    return Results.Ok(new
+    {
+        tenant.Id,
+        tier = tenant.Tier.ToString(),
+        tenant.SubscriptionPaidUntil,
+        status = updated.Status.ToString(),
+        snapshotVersion = updated.Version,
+        appliedLimits = new { updated.MaxBranches, updated.MaxCounters, updated.MaxOrderTabs, updated.MaxUsers },
+        warnings = impact.Blockers
+    });
 }).RequireAuthorization();
 
 // --- Subscription billing history — platform-vendor only, same reasoning as
@@ -5169,6 +6069,541 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
         totalBranches,
         totalOrders
     });
+}).RequireAuthorization();
+
+// ============================================================
+// PROVIDER CONSOLE
+//
+// The platform owner's own tooling. Previously this was three actions — list, toggle active,
+// change tier — which meant every other support request became a database query typed by hand.
+//
+// What is here now is the set you cannot run a SaaS without: a real per-tenant view, the
+// graduated suspension ladder, time-limited grants, read-only impersonation, and the ability to
+// create a tenant FOR a customer without ever knowing their credentials.
+// ============================================================
+
+// --- Tenant 360 -------------------------------------------------------------
+// Everything support needs on one screen, so answering "what is going on with this customer?"
+// does not require four tabs and a guess.
+app.MapGet("/api/admin/tenants/{id:guid}/overview", async (
+    Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    var ent = await entitlements.GetAsync(id);
+    var now = DateTime.UtcNow;
+    var monthAgo = now.AddDays(-30);
+
+    var branches = await db.Branches.IgnoreQueryFilters().Where(b => b.TenantId == id).ToListAsync();
+    var branchIds = branches.Select(b => b.Id).ToList();
+
+    var terminals = await db.Terminals.IgnoreQueryFilters()
+        .Where(t => branchIds.Contains(t.BranchId)).ToListAsync();
+
+    // Health signals. A till that has not checked in for a day is the single most useful early
+    // warning there is — it means either the shop is shut or the customer has a problem.
+    var staleDevices = terminals.Count(t => t.RevokedAt == null && t.DeactivatedAt == null && t.LastSeenAt < now.AddHours(-24));
+
+    var orders30d = await db.Orders.IgnoreQueryFilters()
+        .Where(o => o.TenantId == id && o.CreatedAt >= monthAgo && o.Status != OrderStatus.Cancelled)
+        .Select(o => new { o.TotalPKR, o.CreatedAt, o.HasPriceVariance })
+        .ToListAsync();
+
+    var activeDays = orders30d.Select(o => o.CreatedAt.Date).Distinct().Count();
+
+    var plan = await db.SaaSPackageConfigs.AsNoTracking().FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
+    var addOns = await db.AddOnSubscriptions.IgnoreQueryFilters().Where(a => a.TenantId == id && a.IsActive).ToListAsync();
+    var overrides = await db.TenantEntitlementOverrides.IgnoreQueryFilters()
+        .Where(o => o.TenantId == id && o.IsActive).OrderByDescending(o => o.CreatedAt).ToListAsync();
+
+    var mrr = (plan?.MonthlyPricePKR ?? 0) + addOns.Sum(a => a.PricePKR * a.Quantity);
+
+    var unpaidInvoices = await db.SubscriptionInvoices.IgnoreQueryFilters()
+        .Where(i => i.TenantId == id && i.Status != SubscriptionInvoiceStatus.Paid && i.Status != SubscriptionInvoiceStatus.Cancelled)
+        .OrderBy(i => i.IssuedAt)
+        .Select(i => new { i.Id, i.InvoiceNumber, i.AmountPKR, i.IssuedAt, i.DueAt, status = i.Status.ToString() })
+        .ToListAsync();
+
+    var recentLicenceEvents = await db.DeviceLicenseEvents.IgnoreQueryFilters()
+        .Where(e => e.TenantId == id).OrderByDescending(e => e.CreatedAt).Take(20)
+        .Select(e => new { e.EventType, e.Detail, e.CreatedAt, e.TerminalId })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        tenant = new
+        {
+            tenant.Id, tenant.Name, tenant.Slug, tenant.ContactName, tenant.ContactEmail, tenant.ContactPhone,
+            tenant.City, tenant.Country, tenant.CreatedAt, tenant.IsActive,
+            tier = tenant.Tier.ToString(),
+            status = ent.Status.ToString(),
+            tenant.TrialEndsAt, tenant.SubscriptionPaidUntil,
+            tenant.IsProviderProvisioned,
+            ownerInvitePending = tenant.OwnerInviteTokenHash != null && tenant.OwnerInviteRedeemedAt == null
+        },
+        entitlements = new
+        {
+            ent.Version, ent.MaxBranches, ent.MaxCounters, ent.MaxOrderTabs, ent.MaxUsers,
+            features = ent.Features, packs = ent.PackKeys, primaryPack = ent.PrimaryPackKey
+        },
+        usage = new
+        {
+            branches = branches.Count,
+            activeUsers = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == id && u.IsActive),
+            counters = terminals.Count(t => t.TerminalType == TerminalType.Counter && t.OccupiesQuotaSlot(now)),
+            tablets = terminals.Count(t => t.TerminalType == TerminalType.OrderTab && t.OccupiesQuotaSlot(now)),
+            products = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == id)
+        },
+        health = new
+        {
+            ordersLast30d = orders30d.Count,
+            revenueLast30d = orders30d.Sum(o => o.TotalPKR),
+            activeDaysLast30d = activeDays,
+            staleDevices,
+            lastOrderAt = orders30d.Count == 0 ? (DateTime?)null : orders30d.Max(o => o.CreatedAt),
+            unreconciledOfflineOrders = orders30d.Count(o => o.HasPriceVariance),
+            // Crude but honest: a tenant selling on fewer than a third of days in the last month
+            // is either seasonal or leaving. Either way somebody should look.
+            churnRisk = activeDays < 10 ? "high" : activeDays < 20 ? "watch" : "ok"
+        },
+        billing = new
+        {
+            estimatedMrrPKR = mrr,
+            planPricePKR = plan?.MonthlyPricePKR ?? 0,
+            addOns = addOns.Select(a => new { a.AddOnKey, a.Quantity, a.PricePKR, a.BranchId }),
+            unpaidInvoices
+        },
+        overrides = overrides.Select(o => new { o.Id, o.Key, o.Value, o.ExpiresAt, o.Reason, o.CreatedAt, inForce = o.IsInForce(now) }),
+        branches = branches.Select(b => new
+        {
+            b.Id, b.Name, b.Code, b.City, b.IsHeadOffice,
+            counters = terminals.Count(t => t.BranchId == b.Id && t.TerminalType == TerminalType.Counter && t.OccupiesQuotaSlot(now)),
+            tablets = terminals.Count(t => t.BranchId == b.Id && t.TerminalType == TerminalType.OrderTab && t.OccupiesQuotaSlot(now))
+        }),
+        devices = terminals.Select(t => new
+        {
+            t.Id, t.BranchId, t.TerminalName, terminalType = t.TerminalType.ToString(),
+            t.LastSeenAt, t.LicenseExpiresAt, t.DeviceInfo,
+            state = t.RevokedAt != null ? "Revoked" : t.DeactivatedAt != null ? "Retired"
+                  : t.LicenseExpiresAt == null ? "NeverActivated"
+                  : t.LicenseExpiresAt > now ? "Valid" : "Expired"
+        }),
+        recentLicenceEvents
+    });
+}).RequireAuthorization();
+
+// --- Lifecycle ladder -------------------------------------------------------
+// Replaces the binary active/inactive toggle. Support moves a tenant one rung at a time and the
+// reason is recorded, because "why is this customer suspended?" is a question that always comes up.
+app.MapPut("/api/admin/tenants/{id:guid}/status", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    SetTenantStatusDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    if (string.IsNullOrWhiteSpace(dto.Reason))
+        return Results.BadRequest(new { message = "A reason is required — this is recorded against the account." });
+
+    var previous = tenant.Status;
+    tenant.Status = dto.Status;
+
+    // IsActive is kept in step so older code paths that still read it agree with the ladder.
+    tenant.IsActive = dto.Status is not (TenantStatus.Suspended or TenantStatus.Cancelled);
+    if (dto.Status != TenantStatus.Trial) tenant.IsTrialActive = false;
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenant.Id, actingUser, "TenantStatusChanged", "Tenant", tenant.Id,
+            previous.ToString(), $"{dto.Status} — {dto.Reason.Trim()}");
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(tenant.Id);
+
+    return Results.Ok(new
+    {
+        tenant.Id,
+        previousStatus = previous.ToString(),
+        status = updated.Status.ToString(),
+        snapshotVersion = updated.Version,
+        effect = new { updated.CanSell, updated.CanUseBackOffice, updated.CanRead }
+    });
+}).RequireAuthorization();
+
+// --- Time-limited grants ----------------------------------------------------
+app.MapGet("/api/admin/tenants/{id:guid}/overrides", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var now = DateTime.UtcNow;
+    var rows = await db.TenantEntitlementOverrides.IgnoreQueryFilters()
+        .Where(o => o.TenantId == id).OrderByDescending(o => o.CreatedAt)
+        .Select(o => new { o.Id, o.Key, o.Value, o.ExpiresAt, o.Reason, o.CreatedAt, o.IsActive })
+        .ToListAsync();
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/tenants/{id:guid}/overrides", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CreateOverrideDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Id == id)) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(dto.Reason))
+        return Results.BadRequest(new { message = "A reason is required for every grant." });
+
+    var isQuota = dto.Key is "MaxBranches" or "MaxCounters" or "MaxOrderTabs" or "MaxUsers";
+    var isFlag = Pos.Api.Services.EntitlementService.FeatureFlagNames.Contains(dto.Key);
+    if (!isQuota && !isFlag)
+        return Results.BadRequest(new { message = $"'{dto.Key}' is not a known entitlement key." });
+    if (isQuota && !int.TryParse(dto.Value, out _))
+        return Results.BadRequest(new { message = "A quota override's value is a signed integer delta, e.g. \"3\" or \"-1\"." });
+    if (isFlag && !bool.TryParse(dto.Value, out _))
+        return Results.BadRequest(new { message = "A feature override's value must be true or false." });
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+
+    // Supersede rather than stack: two live overrides on the same key is how a support team
+    // loses track of what a customer is actually entitled to.
+    var existing = await db.TenantEntitlementOverrides.IgnoreQueryFilters()
+        .Where(o => o.TenantId == id && o.Key == dto.Key && o.IsActive).ToListAsync();
+    foreach (var old in existing) old.IsActive = false;
+
+    var ov = new TenantEntitlementOverride
+    {
+        TenantId = id,
+        Key = dto.Key,
+        Value = dto.Value,
+        ExpiresAt = dto.ExpiresAt,
+        Reason = dto.Reason.Trim(),
+        CreatedByUserId = actingUser?.Id ?? Guid.Empty
+    };
+    db.TenantEntitlementOverrides.Add(ov);
+
+    if (actingUser != null)
+        await WriteAuditAsync(db, id, actingUser, "EntitlementOverrideGranted", "TenantEntitlementOverride", ov.Id,
+            null, $"{dto.Key}={dto.Value} until {(dto.ExpiresAt?.ToString("u") ?? "forever")} — {ov.Reason}");
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(id);
+
+    return Results.Ok(new
+    {
+        ov.Id, ov.Key, ov.Value, ov.ExpiresAt,
+        snapshotVersion = updated.Version,
+        appliedLimits = new { updated.MaxBranches, updated.MaxCounters, updated.MaxOrderTabs, updated.MaxUsers }
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/admin/overrides/{overrideId:guid}", async (
+    Guid overrideId, AppDbContext db, HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var ov = await db.TenantEntitlementOverrides.IgnoreQueryFilters().FirstOrDefaultAsync(o => o.Id == overrideId);
+    if (ov == null) return Results.NotFound();
+
+    ov.IsActive = false;
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, ov.TenantId, actingUser, "EntitlementOverrideRevoked", "TenantEntitlementOverride", ov.Id, $"{ov.Key}={ov.Value}", null);
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(ov.TenantId);
+    return Results.Ok(new { message = "Override revoked.", snapshotVersion = updated.Version });
+}).RequireAuthorization();
+
+// --- Extend a trial ---------------------------------------------------------
+app.MapPost("/api/admin/tenants/{id:guid}/extend-trial", async (
+    Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ExtendTrialDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+    if (dto.Days is < 1 or > 180) return Results.BadRequest(new { message = "Extend by 1 to 180 days." });
+
+    // Extend from today when the trial already lapsed, otherwise from its current end — so an
+    // extension always means what the person clicking it thinks it means.
+    var from = tenant.TrialEndsAt > DateTime.UtcNow ? tenant.TrialEndsAt : DateTime.UtcNow;
+    tenant.TrialEndsAt = from.AddDays(dto.Days);
+    tenant.IsTrialActive = true;
+    tenant.Status = TenantStatus.Trial;
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, id, actingUser, "TrialExtended", "Tenant", id, null, $"+{dto.Days}d to {tenant.TrialEndsAt:u} — {dto.Reason}");
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(id);
+    return Results.Ok(new { tenant.TrialEndsAt, status = updated.Status.ToString(), snapshotVersion = updated.Version });
+}).RequireAuthorization();
+
+// --- Provider-provisioned tenants -------------------------------------------
+// The install-for-the-customer path. Platform staff create the account and hand over a one-time
+// invite link; the owner sets their own PIN. Staff never know a customer's credentials, which is
+// both the right default and the only version of this that survives a security review.
+app.MapPost("/api/admin/tenants/provision", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ProvisionTenantDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var slug = System.Text.RegularExpressions.Regex.Replace(
+        dto.BusinessName.ToLower().Trim().Replace(" ", "-"), @"[^a-z0-9\-]", "");
+    if (string.IsNullOrWhiteSpace(slug)) return Results.BadRequest(new { message = "Business name must contain letters or digits." });
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == slug))
+        return Results.BadRequest(new { message = "A business with a similar name already exists." });
+
+    var packKey = Pos.Api.Data.VerticalPacks.Find(dto.VerticalPack)?.Key ?? Pos.Api.Data.VerticalPacks.Retail;
+    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)
+        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan")!;
+    var tier = Enum.TryParse<SubscriptionTier>(dto.PackageKey ?? "Starter", out var parsed) ? parsed : SubscriptionTier.Starter;
+
+    // A one-time invite, hashed exactly like every other bearer secret in this codebase.
+    var rawInvite = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+    using var tx = await db.Database.BeginTransactionAsync();
+    try
+    {
+        var tenant = new Tenant
+        {
+            Name = dto.BusinessName.Trim(),
+            Slug = slug,
+            ContactName = dto.ContactName.Trim(),
+            ContactEmail = dto.ContactEmail.Trim().ToLower(),
+            ContactPhone = dto.ContactPhone?.Trim() ?? "",
+            City = dto.City?.Trim(),
+            Country = countryProfile.Name,
+            Tier = tier,
+            IsActive = true,
+            IsTrialActive = dto.TrialDays > 0,
+            Status = dto.TrialDays > 0 ? TenantStatus.Trial : TenantStatus.Active,
+            TrialEndsAt = DateTime.UtcNow.AddDays(dto.TrialDays > 0 ? dto.TrialDays : 0),
+            SubscriptionPaidUntil = dto.PaidUntil,
+            IsProviderProvisioned = true,
+            OwnerInviteTokenHash = HashToken(rawInvite),
+            OwnerInviteExpiresAt = DateTime.UtcNow.AddDays(14)
+        };
+        db.Tenants.Add(tenant);
+
+        var branch = new Branch
+        {
+            TenantId = tenant.Id,
+            Name = $"{dto.BusinessName.Trim()} — Main",
+            Code = "MAIN",
+            City = dto.City ?? "",
+            Address = dto.Address ?? "",
+            Phone = dto.ContactPhone ?? "",
+            IsHeadOffice = true
+        };
+        db.Branches.Add(branch);
+
+        db.TenantVerticalPacks.Add(new TenantVerticalPack { TenantId = tenant.Id, PackKey = packKey, IsPrimary = true });
+
+        db.TenantSettings.Add(new TenantSettings
+        {
+            TenantId = tenant.Id,
+            CountryCode = countryProfile.Iso2,
+            CurrencyCode = countryProfile.CurrencyCode,
+            CurrencySymbol = countryProfile.CurrencySymbol,
+            DecimalPlaces = countryProfile.CurrencyCode == "PKR" ? 0 : 2,
+            TaxAuthorityName = countryProfile.TaxAuthorityName ?? "Not yet configured",
+            DefaultTaxRate = countryProfile.DefaultTaxRate ?? 0,
+            UseDualTaxRate = countryProfile.UseDualTaxRate,
+            DigitalTaxRate = countryProfile.DigitalTaxRate ?? 0,
+            PhoneCode = countryProfile.PhoneCode,
+            DefaultCity = dto.City?.Trim() ?? ""
+        });
+
+        // Deliberately NO user is created here. The owner account comes into existence only when
+        // the invite is redeemed, with a PIN only the owner has ever seen.
+
+        var actingUser = await accessor.GetCurrentUserAsync(http);
+        if (actingUser != null)
+            await WriteAuditAsync(db, tenant.Id, actingUser, "TenantProvisioned", "Tenant", tenant.Id, null,
+                $"{tenant.Name} on {tier} by platform staff");
+
+        await db.SaveChangesAsync();
+        await tx.CommitAsync();
+
+        var ent = await entitlements.RecomputeAsync(tenant.Id);
+
+        return Results.Ok(new
+        {
+            tenantId = tenant.Id,
+            tenant.Slug,
+            tier = tier.ToString(),
+            verticalPack = packKey,
+            branchId = branch.Id,
+            // Shown once. Hand this to the customer; nobody can recover it afterwards.
+            ownerInviteToken = rawInvite,
+            ownerInviteExpiresAt = tenant.OwnerInviteExpiresAt,
+            entitlements = new { ent.MaxBranches, ent.MaxCounters, ent.MaxOrderTabs, ent.MaxUsers }
+        });
+    }
+    catch (Exception ex)
+    {
+        await tx.RollbackAsync();
+        return Results.BadRequest(new { message = "Failed to provision tenant.", details = ex.Message });
+    }
+}).RequireAuthorization();
+
+// Redeem an owner invite. Anonymous by necessity — the person redeeming it has no account yet,
+// which is the whole point — so the token is long, hashed, single-use and expiring.
+app.MapPost("/api/auth/redeem-invite", async (AppDbContext db, HttpContext http, RedeemInviteDto dto) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.InviteToken) || string.IsNullOrWhiteSpace(dto.Username) || string.IsNullOrWhiteSpace(dto.Pin))
+        return Results.BadRequest(new { message = "Invite token, username and PIN are all required." });
+    if (dto.Pin.Trim().Length < 4)
+        return Results.BadRequest(new { message = "PIN must be at least 4 digits." });
+
+    var hash = HashToken(dto.InviteToken.Trim());
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.OwnerInviteTokenHash == hash);
+
+    if (tenant == null || tenant.OwnerInviteRedeemedAt != null || tenant.OwnerInviteExpiresAt < DateTime.UtcNow)
+        return Results.BadRequest(new { message = "This invite is not valid. Please ask for a new one." });
+
+    var branch = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.TenantId == tenant.Id).OrderByDescending(b => b.IsHeadOffice).FirstOrDefaultAsync();
+
+    var username = dto.Username.ToLower().Trim();
+    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == tenant.Id && u.Username == username))
+        return Results.BadRequest(new { message = "That username is already taken in this business." });
+
+    var owner = new AppUser
+    {
+        TenantId = tenant.Id,
+        BranchId = branch?.Id,
+        FullName = string.IsNullOrWhiteSpace(dto.FullName) ? tenant.ContactName : dto.FullName.Trim(),
+        Username = username,
+        PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin.Trim()),
+        Role = UserRole.OwnerAdmin,
+        IsActive = true,
+        CanViewFinancialReports = true,
+        CanManageInventory = true,
+        CanManageMenuAndTax = true,
+        CanGiveDiscounts = true,
+        CanVoidOrders = true
+    };
+    db.Users.Add(owner);
+
+    // Burn the invite.
+    tenant.OwnerInviteRedeemedAt = DateTime.UtcNow;
+    tenant.OwnerInviteTokenHash = null;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        message = "Your owner account is ready. Please sign in.",
+        tenantSlug = tenant.Slug,
+        username = owner.Username
+    });
+}).AllowAnonymous().RequireRateLimiting("auth");
+
+// --- Support impersonation --------------------------------------------------
+// Read-only by default and always audited. Support will need this constantly; the thing that
+// makes it acceptable rather than alarming is that it is bounded, logged, and short-lived.
+app.MapPost("/api/admin/tenants/{id:guid}/impersonate", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ImpersonateDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (string.IsNullOrWhiteSpace(dto.Reason))
+        return Results.BadRequest(new { message = "A reason is required — impersonation is always recorded." });
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser == null) return Results.Unauthorized();
+
+    // Write access has to be asked for explicitly and is recorded differently, so an audit trail
+    // can distinguish "support looked" from "support changed something".
+    var writeAccess = dto.AllowWrites == true;
+
+    var claims = new List<System.Security.Claims.Claim>
+    {
+        new("userId", actingUser.Id.ToString()),
+        new("tenantId", tenant.Id.ToString()),
+        new("branchId", ""),
+        new("role", writeAccess ? UserRole.OwnerAdmin.ToString() : UserRole.BranchManager.ToString()),
+        new("impersonating", "true"),
+        new("impersonatedBy", actingUser.Username),
+        new("readOnly", writeAccess ? "false" : "true")
+    };
+
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+    var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+        claims: claims,
+        // Deliberately short. An impersonation session that outlives the support call is a
+        // standing key to somebody else's business.
+        expires: DateTime.UtcNow.AddMinutes(30),
+        signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
+
+    await WriteAuditAsync(db, tenant.Id, actingUser, "SupportImpersonation", "Tenant", tenant.Id, null,
+        $"{(writeAccess ? "READ-WRITE" : "read-only")} session — {dto.Reason.Trim()}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        token = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(token),
+        expiresInMinutes = 30,
+        readOnly = !writeAccess,
+        tenantName = tenant.Name,
+        warning = "This session is recorded against the customer's audit log."
+    });
+}).RequireAuthorization();
+
+// --- Platform-wide device health -------------------------------------------
+// The list support actually opens in the morning: who has stopped checking in.
+app.MapGet("/api/admin/device-health", async (AppDbContext db, HttpContext http, int? staleHours) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var cutoff = DateTime.UtcNow.AddHours(-(staleHours ?? 24));
+
+    var rows = await db.Terminals.IgnoreQueryFilters()
+        .Where(t => t.RevokedAt == null && t.DeactivatedAt == null && t.LastSeenAt < cutoff)
+        .Join(db.Branches.IgnoreQueryFilters(), t => t.BranchId, b => b.Id, (t, b) => new { t, b })
+        .Join(db.Tenants.IgnoreQueryFilters(), x => x.b.TenantId, tn => tn.Id, (x, tn) => new
+        {
+            terminalId = x.t.Id,
+            x.t.TerminalName,
+            terminalType = x.t.TerminalType.ToString(),
+            x.t.LastSeenAt,
+            x.t.LicenseExpiresAt,
+            branchName = x.b.Name,
+            tenantId = tn.Id,
+            tenantName = tn.Name,
+            tenantStatus = tn.Status.ToString()
+        })
+        .OrderBy(r => r.LastSeenAt)
+        .Take(500)
+        .ToListAsync();
+
+    return Results.Ok(new { cutoff, count = rows.Count, devices = rows });
 }).RequireAuthorization();
 
 // ============================================================
@@ -5383,46 +6818,156 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
 // Reference data for the signup wizard's country/state picker + starting tax config preview.
 app.MapGet("/api/public/countries", () => Results.Ok(Pos.Api.Data.CountryTaxProfiles.All));
 
-// Get tenant's current package features (for runtime gating)
-app.MapGet("/api/tenant/my-package", async (AppDbContext db, HttpContext http) =>
+
+// ============================================================
+// WHAT THIS TENANT IS ENTITLED TO — the one answer the whole frontend reads.
+//
+// Previously this rebuilt the tier-plus-add-on merge inline, which meant it could not see
+// support overrides and quietly disagreed with the filters guarding the actual endpoints.
+// It now returns the resolved snapshot, plus the vertical-pack capabilities that decide which
+// screens and item fields this business should even have.
+// ============================================================
+app.MapGet("/api/tenant/my-package", async (
+    AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
 {
     var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
-    var tenant = await db.Tenants.FindAsync(tenantId.Value);
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
     if (tenant == null) return Results.NotFound();
-    var pkg = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
-    var activeAddOnKeys = await db.AddOnSubscriptions
+
+    var ent = await entitlements.GetAsync(tenantId.Value);
+    var (items, flows, layout, modules) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
+    var primaryPack = Pos.Api.Data.VerticalPacks.Find(ent.PrimaryPackKey);
+
+    // camelCase feature keys are kept alongside the resolved set because the existing frontend
+    // guards read them by that name. Same values, two spellings, one source.
+    var features = new Dictionary<string, object?>
+    {
+        ["MaxBranches"] = ent.MaxBranches,
+        ["MaxCounters"] = ent.MaxCounters,
+        ["MaxOrderTabs"] = ent.MaxOrderTabs,
+        ["MaxUsers"] = ent.MaxUsers
+    };
+    foreach (var flag in Pos.Api.Services.EntitlementService.FeatureFlagNames)
+    {
+        var camel = char.ToLowerInvariant(flag[0]) + flag[1..];
+        features[camel] = ent.Has(flag);
+    }
+
+    var activeAddOnKeys = await db.AddOnSubscriptions.IgnoreQueryFilters()
         .Where(a => a.TenantId == tenantId.Value && a.IsActive)
         .Select(a => a.AddOnKey).ToListAsync();
 
-    // The tier flags alone don't tell the frontend the whole story — an add-on can unlock a
-    // feature the tier itself doesn't include. Merge both here so any screen that wants to gate
-    // itself (e.g. "hide Kitchen Display unless entitled") has one true answer to check, instead
-    // of every screen re-implementing the same tier-OR-addon logic RequireFeatureFilter already does.
-    var effectiveFeatures = pkg == null ? null : new
-    {
-        pkg.MaxBranches, pkg.MaxCounters, pkg.MaxOrderTabs, pkg.MaxUsers,
-        hasKitchenDisplay = pkg.HasKitchenDisplay || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasKitchenDisplay)),
-        hasDeliveryCOD = pkg.HasDeliveryCOD || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasDeliveryCOD)),
-        hasInventoryManagement = pkg.HasInventoryManagement || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasInventoryManagement)),
-        hasStockTransfers = pkg.HasStockTransfers || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasStockTransfers)),
-        hasDirectorDashboard = pkg.HasDirectorDashboard || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasDirectorDashboard)),
-        hasConsolidatedReports = pkg.HasConsolidatedReports || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasConsolidatedReports)),
-        hasWhatsAppMessaging = pkg.HasWhatsAppMessaging,
-        hasAdvancedReports = pkg.HasAdvancedReports || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasAdvancedReports)),
-        hasMultiBranch = pkg.HasMultiBranch || activeAddOnKeys.Contains(nameof(SaaSPackageConfig.HasMultiBranch))
-    };
-
     return Results.Ok(new
     {
-        tier = tenant.Tier.ToString(),
+        tier = ent.PlanKey,
+        snapshotVersion = ent.Version,
         isActive = tenant.IsActive,
-        isTrialActive = tenant.IsTrialActive,
+        status = ent.Status.ToString(),
+        isTrialActive = ent.Status == TenantStatus.Trial,
         trialEndsAt = tenant.TrialEndsAt,
         subscriptionPaidUntil = tenant.SubscriptionPaidUntil,
-        features = effectiveFeatures,
-        activeAddOnKeys
+
+        // What the lifecycle state permits, resolved once here so no screen has to infer it.
+        canSell = ent.CanSell,
+        canUseBackOffice = ent.CanUseBackOffice,
+        canRead = ent.CanRead,
+        showBillingWarning = ent.ShowBillingWarning,
+
+        features,
+        activeAddOnKeys,
+
+        // The vertical pack contract: what this business IS, not just what it bought.
+        verticalPacks = ent.PackKeys,
+        primaryPack = ent.PrimaryPackKey,
+        packDisplayName = primaryPack?.DisplayName,
+        posLayout = layout.ToString(),
+        catalogNoun = primaryPack?.CatalogNoun ?? "Catalog",
+        saleNoun = primaryPack?.SaleNoun ?? "Sale",
+        sectorModules = modules,
+        itemCapabilities = new
+        {
+            items.Variants, items.Modifiers, items.BatchExpiry, items.SerialNumbers,
+            items.Weighable, items.RecipeBom, items.ServiceDuration,
+            items.PrescriptionRequired, items.TieredPricing
+        },
+        flowCapabilities = new
+        {
+            flows.TableService, flows.KitchenRouting, flows.QuickSale, flows.Appointments,
+            flows.Delivery, flows.CreditAccounts, flows.StaffCommission, flows.DeliveryNotes
+        }
     });
+}).RequireAuthorization();
+
+// The pack catalogue, for the signup picker and the settings screen. Public: a prospect needs
+// to see which sectors are supported before they have an account.
+app.MapGet("/api/public/vertical-packs", () => Results.Ok(
+    Pos.Api.Data.VerticalPacks.Catalog.Select(p => new
+    {
+        p.Key,
+        p.DisplayName,
+        p.Description,
+        posLayout = p.PosLayout.ToString(),
+        p.CatalogNoun,
+        p.SaleNoun,
+        capabilities = new
+        {
+            p.Items.Variants, p.Items.Modifiers, p.Items.BatchExpiry, p.Items.SerialNumbers,
+            p.Items.Weighable, p.Items.RecipeBom, p.Items.ServiceDuration,
+            p.Items.PrescriptionRequired, p.Items.TieredPricing,
+            p.Flows.TableService, p.Flows.KitchenRouting, p.Flows.QuickSale,
+            p.Flows.Appointments, p.Flows.Delivery, p.Flows.CreditAccounts,
+            p.Flows.StaffCommission, p.Flows.DeliveryNotes
+        }
+    }))).AllowAnonymous();
+
+// Turn a pack on or off for this tenant. An owner can do this themselves — a grocery that opens
+// a cafe counter should not need a support ticket to get table service.
+app.MapPut("/api/tenant/vertical-packs", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    SetVerticalPacksDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser == null) return Results.Unauthorized();
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.SuperAdmin))
+        return Results.Json(new { message = "Only an owner can change which sectors this business runs." }, statusCode: 403);
+
+    var requested = (dto.PackKeys ?? new List<string>())
+        .Select(k => Pos.Api.Data.VerticalPacks.Find(k)?.Key)
+        .Where(k => k != null).Select(k => k!).Distinct().ToList();
+
+    if (requested.Count == 0)
+        return Results.BadRequest(new { message = "At least one valid sector pack is required." });
+
+    var primary = Pos.Api.Data.VerticalPacks.Find(dto.PrimaryPackKey)?.Key ?? requested[0];
+    if (!requested.Contains(primary)) requested.Insert(0, primary);
+
+    var existing = await db.TenantVerticalPacks.Where(p => p.TenantId == tenantId.Value).ToListAsync();
+    db.TenantVerticalPacks.RemoveRange(existing.Where(e => !requested.Contains(e.PackKey)));
+
+    foreach (var key in requested)
+    {
+        var row = existing.FirstOrDefault(e => e.PackKey == key);
+        if (row == null)
+            db.TenantVerticalPacks.Add(new TenantVerticalPack { TenantId = tenantId.Value, PackKey = key, IsPrimary = key == primary });
+        else
+            row.IsPrimary = key == primary;
+    }
+
+    await WriteAuditAsync(db, tenantId.Value, actingUser, "VerticalPacksChanged", "Tenant", tenantId.Value,
+        string.Join(",", existing.Select(e => e.PackKey)), string.Join(",", requested));
+    await db.SaveChangesAsync();
+
+    // Packs feed the snapshot, so the version has to move for devices to pick the change up.
+    var updated = await entitlements.RecomputeAsync(tenantId.Value);
+    return Results.Ok(new { packs = updated.PackKeys, primary = updated.PrimaryPackKey, snapshotVersion = updated.Version });
 }).RequireAuthorization();
 
 // ============================================================
@@ -5511,7 +7056,7 @@ app.MapGet("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, Ap
     return Results.Ok(await db.AddOnSubscriptions.Where(a => a.TenantId == tenantId).ToListAsync());
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http, GrantAddOnDto dto) =>
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, GrantAddOnDto dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
     var tenant = await db.Tenants.FindAsync(tenantId);
@@ -5519,9 +7064,9 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
     var catalogItem = await db.AddOnCatalogItems.FirstOrDefaultAsync(a => a.Key == dto.AddOnKey);
     if (catalogItem == null) return Results.BadRequest(new { message = $"No catalog entry for {dto.AddOnKey}." });
 
-    // Branch-scoped add-ons — the device quota they raise (Branch.AllowedCounters/AllowedOrderTabs)
-    // lives per-branch, so granting one without picking a branch would be ambiguous on any
-    // multi-branch tenant. EXTRA_USER stays tenant-wide since MaxUsers is a tenant-level ceiling.
+    // Branch-scoped add-ons — a device allowance applies to one branch's floor, so granting one
+    // without picking a branch would be ambiguous on any multi-branch tenant. EXTRA_USER stays
+    // tenant-wide since MaxUsers is a tenant-level ceiling.
     Guid? branchId = null;
     if (dto.AddOnKey is "EXTRA_COUNTER" or "EXTRA_TABLET")
     {
@@ -5544,17 +7089,23 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
         db.AddOnSubscriptions.Add(existing);
     }
     await db.SaveChangesAsync();
-    return Results.Ok(existing);
+
+    // Add-ons feed the entitlement snapshot, so the version has to move — otherwise the customer
+    // has paid for something their tills will not notice until their licence happens to lapse.
+    var afterGrant = await entitlements.RecomputeAsync(tenantId);
+    return Results.Ok(new { addOn = existing, snapshotVersion = afterGrant.Version });
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", async (Guid tenantId, Guid addOnId, AppDbContext db, HttpContext http) =>
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", async (Guid tenantId, Guid addOnId, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
-    var sub = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.Id == addOnId && a.TenantId == tenantId);
+    var sub = await db.AddOnSubscriptions.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.Id == addOnId && a.TenantId == tenantId);
     if (sub == null) return Results.NotFound();
     sub.IsActive = false;
     await db.SaveChangesAsync();
-    return Results.Ok(sub);
+
+    var afterRevoke = await entitlements.RecomputeAsync(tenantId);
+    return Results.Ok(new { addOn = sub, snapshotVersion = afterRevoke.Version });
 }).RequireAuthorization();
 
 // ============================================================
@@ -7749,7 +9300,12 @@ public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRa
 public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs);
 // The trailing CRM/loyalty/gift-card/promo fields are optional and default to null — a walk-in
 // order posted by an older client that omits them behaves exactly as it did before.
-public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null);
+/// <summary>
+/// ClientLocalId and CapturedAt are set only by offline sync: the first makes re-posting a
+/// batch safe, the second records when the sale really happened rather than when it reached us.
+/// Both are optional so the ordinary online checkout path is unchanged.
+/// </summary>
+public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null, string? ClientLocalId = null, DateTime? CapturedAt = null);
 public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station);
 public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
@@ -7786,7 +9342,9 @@ public record RecordSupplierPaymentDto(decimal AmountPKR, string? PaymentMethod,
 public record IngredientStockAdjustmentDto(Guid? TenantId, Guid BranchId, Guid IngredientId, string MovementType, decimal QuantityChange, string? Reason);
 public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
-public record LoginDto(string Username, string PinCode);
+/// <summary>TenantSlug disambiguates a username that exists at more than one business. Optional,
+/// because the overwhelmingly common case is a name that is unique platform-wide.</summary>
+public record LoginDto(string Username, string PinCode, string? TenantSlug = null);
 public record RefreshTokenDto(string RefreshToken);
 public record VoidOrderDto(string? Reason);
 public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
@@ -7819,16 +9377,34 @@ public record SetupInitDto(
     List<BranchInitDto>? Branches
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
-public record PairBranchDto(string PairingToken);
 public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
 public record UpdateTerminalDto(string? TerminalName, bool? IsActive);
-public record TerminalHeartbeatDto(string DeviceToken);
+
+// --- Device activation & licensing ---
+public record CreatePairingCodeDto(Guid BranchId, TerminalType TerminalType, string? TerminalName);
+public record ActivateDeviceDto(string PairingCode, string DeviceFingerprint, string? DeviceInfo);
+/// <summary>DeviceToken is retained only so an older build can still check in and be told to
+/// re-activate; the licence is what actually authenticates a heartbeat now.</summary>
+public record TerminalHeartbeatDto(string? License, string? DeviceFingerprint, string? DeviceToken);
 public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType, string? VendorName, string? Notes, string CreatedBy, Guid? CreatedByUserId, List<CreateStockRequestItemDto> Items);
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
-public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName);
-public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil);
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null);
+/// <summary>Force moves a tenant onto a smaller plan they do not currently fit. Reserved for
+/// "the customer insists" — devices beyond the new allowance stop selling at their next heartbeat.</summary>
+public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil, bool? Force = null);
+
+public record PlanUsage(int Branches, int ActiveUsers);
+public record PlanLimits(int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers);
+public record PlanChangeImpact(
+    string CurrentTier,
+    string TargetTier,
+    bool IsDowngrade,
+    List<string> Blockers,
+    List<string> FeaturesLost,
+    PlanUsage CurrentUsage,
+    PlanLimits TargetLimits);
 public record WhatsAppConfigDto(string Provider, string? ApiKey, string? ApiSecret, string? PhoneNumberId, string? AccessToken, string? WebhookUrl, bool IsEnabled, bool AutoSendOrderUpdates, bool AutoSendReceipt);
 public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);
 public record OrderNotificationDto(Guid TenantId, Guid? OrderId, string OrderNumber, string PhoneNumber, string MessageType, string ItemSummary, decimal TotalPKR, string PaymentMethod, string? DeliveryAddress, string PackageTier, string? CustomMessage);
@@ -7897,3 +9473,13 @@ public record ReverseJournalEntryDto(string? Reason);
 public record CreateAccountingPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd);
 public record CreateBankReconciliationDto(Guid? TenantId, string AccountCode, DateTime StatementDate, decimal StatementBalancePKR, List<Guid> LineIds);
 
+public record SetVerticalPacksDto(List<string> PackKeys, string? PrimaryPackKey);
+public record SetTenantStatusDto(TenantStatus Status, string Reason);
+public record CreateOverrideDto(string Key, string Value, DateTime? ExpiresAt, string Reason);
+public record ExtendTrialDto(int Days, string? Reason);
+public record ProvisionTenantDto(
+    string BusinessName, string ContactName, string ContactEmail, string? ContactPhone,
+    string? City, string? Address, string? Country, string? PackageKey, string? VerticalPack,
+    int TrialDays, DateTime? PaidUntil);
+public record RedeemInviteDto(string InviteToken, string Username, string Pin, string? FullName);
+public record ImpersonateDto(string Reason, bool? AllowWrites);

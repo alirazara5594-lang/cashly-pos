@@ -19,14 +19,36 @@ import {
   Globe
 } from 'lucide-react';
 import { posApi } from '../services/api';
-import type { BusinessType, PublicPackage, CountryProfile } from '../types';
+import type { BusinessType, PublicPackage, CountryProfile, VerticalPackInfo } from '../types';
 
-const BUSINESS_TYPES: { value: BusinessType; label: string; hint: string; icon: React.ElementType }[] = [
-  { value: 'Restaurant', label: 'Restaurant / Cafe', hint: 'Dine-in, takeaway, delivery, kitchen tickets', icon: UtensilsCrossed },
-  { value: 'Retail', label: 'Retail Shop', hint: 'Counter sales, barcodes, stock', icon: ShoppingBag },
-  { value: 'CashAndCarry', label: 'Cash & Carry / Wholesale', hint: 'Bulk sales, supplier purchasing', icon: Package },
-  { value: 'Hybrid', label: 'Hybrid', hint: 'A mix of dine-in and retail counter sales', icon: Layers }
-];
+/**
+ * The sector list is no longer four hard-coded options — it comes from the server's vertical-pack
+ * catalogue, which is what actually decides the POS layout, the item fields and the wording this
+ * business will see. Adding a sector is a server-side data change; this screen just renders it.
+ */
+const PACK_ICONS: Record<string, React.ElementType> = {
+  restaurant: UtensilsCrossed,
+  retail: ShoppingBag,
+  grocery: Package,
+  pharmacy: Layers,
+  salon: Layers,
+  wholesale: Package,
+  apparel: ShoppingBag,
+  services: Layers
+};
+
+/**
+ * Legacy BusinessType still exists on the tenant record and a few older screens read it, so a
+ * pack choice is mapped back onto it. The pack is authoritative; this keeps old code coherent.
+ */
+function packToLegacyBusinessType(packKey: string): BusinessType {
+  switch (packKey) {
+    case 'restaurant': return 'Restaurant';
+    case 'grocery':
+    case 'wholesale': return 'CashAndCarry';
+    default: return 'Retail';
+  }
+}
 
 /** ISO2 -> 🇵🇰-style flag emoji, via the regional-indicator-symbol Unicode trick. */
 function isoToFlagEmoji(iso2: string): string {
@@ -85,6 +107,7 @@ export const TenantSignup: React.FC = () => {
   const [success, setSuccess] = useState(false);
 
   const [packages, setPackages] = useState<PublicPackage[]>([]);
+  const [verticalPacks, setVerticalPacks] = useState<VerticalPackInfo[]>([]);
   const [packagesLoading, setPackagesLoading] = useState(true);
 
   const [countries, setCountries] = useState<CountryProfile[]>([]);
@@ -93,6 +116,8 @@ export const TenantSignup: React.FC = () => {
   const [form, setForm] = useState({
     restaurantName: '',
     businessType: 'Restaurant' as BusinessType,
+    /** The sector pack — what actually shapes this tenant's product. */
+    verticalPack: 'restaurant',
     city: '',
     address: '',
     country: 'Pakistan',
@@ -118,6 +143,9 @@ export const TenantSignup: React.FC = () => {
       .then(data => { if (!cancelled) setCountries(Array.isArray(data) ? data : []); })
       .catch(() => { /* falls back to a plain text country field if this doesn't load */ })
       .finally(() => { if (!cancelled) setCountriesLoading(false); });
+    posApi.getVerticalPackCatalog()
+      .then(data => { if (!cancelled) setVerticalPacks(Array.isArray(data) ? data : []); })
+      .catch(() => { /* the server still defaults the pack from BusinessType if this fails */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -175,7 +203,8 @@ export const TenantSignup: React.FC = () => {
         adminUsername: form.adminUsername.trim().toLowerCase(),
         adminPin: form.adminPin,
         businessType: form.businessType,
-        packageKey: form.packageKey
+        packageKey: form.packageKey,
+        verticalPack: form.verticalPack
       });
       setSuccess(true);
     } catch (err: any) {
@@ -264,20 +293,29 @@ export const TenantSignup: React.FC = () => {
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">What are you running?</h2>
 
             <div className="grid grid-cols-2 gap-3">
-              {BUSINESS_TYPES.map(bt => {
-                const Icon = bt.icon;
-                const active = form.businessType === bt.value;
+              {verticalPacks.map(pack => {
+                const Icon = PACK_ICONS[pack.key] ?? Layers;
+                const active = form.verticalPack === pack.key;
                 return (
                   <button
-                    key={bt.value}
+                    key={pack.key}
                     type="button"
-                    onClick={() => update('businessType', bt.value)}
-                    className={`text-left px-3.5 py-3 rounded-xl border transition flex items-center gap-2.5 ${
+                    onClick={() => {
+                      update('verticalPack', pack.key);
+                      // Keep the legacy field coherent for screens that still read it.
+                      update('businessType', packToLegacyBusinessType(pack.key));
+                    }}
+                    className={`text-left px-3.5 py-3 rounded-xl border transition flex items-start gap-2.5 ${
                       active ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
                     }`}
                   >
-                    <Icon className={`w-5 h-5 shrink-0 ${active ? 'text-teal-600' : 'text-slate-400'}`} />
-                    <span className={`text-sm font-bold leading-tight ${active ? 'text-teal-700' : 'text-slate-800'}`}>{bt.label}</span>
+                    <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${active ? 'text-teal-600' : 'text-slate-400'}`} />
+                    <span className="space-y-0.5">
+                      <span className={`block text-sm font-bold leading-tight ${active ? 'text-teal-700' : 'text-slate-800'}`}>
+                        {pack.displayName}
+                      </span>
+                      <span className="block text-[11px] text-slate-500 leading-snug">{pack.description}</span>
+                    </span>
                   </button>
                 );
               })}
@@ -565,7 +603,7 @@ export const TenantSignup: React.FC = () => {
             <div className="grid grid-cols-2 gap-x-5 gap-y-0.5">
               {[
                 { label: 'Business', value: form.restaurantName },
-                { label: 'Type', value: BUSINESS_TYPES.find(b => b.value === form.businessType)?.label },
+                { label: 'Sector', value: verticalPacks.find(p => p.key === form.verticalPack)?.displayName ?? form.verticalPack },
                 { label: 'Country', value: form.country },
                 ...(form.stateName ? [{ label: form.country === 'Pakistan' ? 'Province' : 'State/Region', value: form.stateName }] : []),
                 { label: 'City', value: form.city || 'Islamabad' },
