@@ -11,31 +11,54 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  UtensilsCrossed,
-  ShoppingBag,
-  Package,
   Layers,
   Check,
+  ChevronDown,
   Globe
 } from 'lucide-react';
 import { posApi } from '../services/api';
-import type { BusinessType, PublicPackage, CountryProfile, VerticalPackInfo } from '../types';
+import type {
+  BusinessType,
+  PublicPackage,
+  CountryProfile,
+  VerticalPackInfo,
+  ItemCapabilities,
+  FlowCapabilities
+} from '../types';
 
 /**
- * The sector list is no longer four hard-coded options — it comes from the server's vertical-pack
- * catalogue, which is what actually decides the POS layout, the item fields and the wording this
- * business will see. Adding a sector is a server-side data change; this screen just renders it.
+ * The business list is not hard-coded here — it comes from the server's vertical-pack catalogue,
+ * which is what actually decides the POS layout, the item fields and the wording this business
+ * will see. Adding a sector is a server-side data change; this screen just renders the list.
  */
-const PACK_ICONS: Record<string, React.ElementType> = {
-  restaurant: UtensilsCrossed,
-  retail: ShoppingBag,
-  grocery: Package,
-  pharmacy: Layers,
-  salon: Layers,
-  wholesale: Package,
-  apparel: ShoppingBag,
-  services: Layers
-};
+
+/**
+ * Plain-English labels for the capability flags a pack turns on, so the person choosing can see
+ * what the choice means. "Pharmacy" versus "Retail" tells you nothing until you can see that one
+ * gives you batch and expiry tracking and the other does not.
+ *
+ * Only flags present on the selected pack are rendered, so this list can safely outgrow any one
+ * sector, and a capability added server-side simply needs a label added here to become visible.
+ */
+const PACK_HIGHLIGHTS: { key: keyof (ItemCapabilities & FlowCapabilities); label: string }[] = [
+  { key: 'tableService', label: 'Tables & floor plan' },
+  { key: 'kitchenRouting', label: 'Kitchen tickets' },
+  { key: 'modifiers', label: 'Item options' },
+  { key: 'recipeBom', label: 'Recipes & ingredients' },
+  { key: 'quickSale', label: 'Fast barcode checkout' },
+  { key: 'variants', label: 'Size / colour variants' },
+  { key: 'batchExpiry', label: 'Batch & expiry tracking' },
+  { key: 'prescriptionRequired', label: 'Prescriptions' },
+  { key: 'weighable', label: 'Weighed items & scale' },
+  { key: 'serialNumbers', label: 'Serial numbers' },
+  { key: 'appointments', label: 'Appointments' },
+  { key: 'serviceDuration', label: 'Timed services' },
+  { key: 'staffCommission', label: 'Staff commission' },
+  { key: 'tieredPricing', label: 'Volume pricing' },
+  { key: 'creditAccounts', label: 'Customer credit' },
+  { key: 'deliveryNotes', label: 'Delivery notes' },
+  { key: 'delivery', label: 'Delivery & riders' }
+];
 
 /**
  * Legacy BusinessType still exists on the tenant record and a few older screens read it, so a
@@ -97,7 +120,7 @@ function formatPhoneLocal(iso2: string, raw: string): string {
   return digits.slice(0, 15);
 }
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
 
 export const TenantSignup: React.FC = () => {
   const navigate = useNavigate();
@@ -164,13 +187,31 @@ export const TenantSignup: React.FC = () => {
     setError('');
   }, []);
 
+  /** The pack currently chosen, for the capability preview under the dropdown. */
+  const selectedPack = verticalPacks.find(p => p.key === form.verticalPack) ?? null;
+
+  // Step 1 — business type only. The dropdown always holds a valid value once the catalogue
+  // loads, so the only real failure is answering before it arrives.
   const validateStep1 = () => {
-    if (!form.restaurantName.trim()) return setError('Business name is required'), false;
-    if (!form.businessType) return setError('Choose what kind of business this is'), false;
+    if (!form.verticalPack) return setError('Choose what kind of business this is'), false;
     return true;
   };
 
+  // Step 2 — plan. `packageKey` defaults to Starter, so this only guards the loading window.
   const validateStep2 = () => {
+    if (!form.packageKey) return setError('Choose a plan to continue'), false;
+    return true;
+  };
+
+  // Step 3 — the business itself: what it is called and where it is.
+  const validateStep3 = () => {
+    if (!form.restaurantName.trim()) return setError('Business name is required'), false;
+    return true;
+  };
+
+  // Step 4 — the owner's account. Kept apart from step 3 so a credential problem never sends
+  // someone back to re-check their address, and vice versa.
+  const validateStep4 = () => {
     if (!form.contactName.trim()) return setError('Your name is required'), false;
     if (!form.email.trim() || !form.email.includes('@')) return setError('Valid email is required'), false;
     if (!form.phone.trim()) return setError('Phone number is required'), false;
@@ -183,7 +224,8 @@ export const TenantSignup: React.FC = () => {
   const handleNext = () => {
     if (step === 1 && validateStep1()) setStep(2);
     else if (step === 2 && validateStep2()) setStep(3);
-    else if (step === 3) setStep(4);
+    else if (step === 3 && validateStep3()) setStep(4);
+    else if (step === 4 && validateStep4()) setStep(5);
   };
 
   const handleSubmit = async () => {
@@ -287,38 +329,147 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 1: What kind of business + basics */}
+        {/* Step 1: Which business is this? Everything downstream — the POS layout, the item
+            fields, the wording, which sector screens exist — follows from this one answer,
+            so it is asked first and on its own. */}
         {step === 1 && (
-          <div className="space-y-3 p-6 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">What are you running?</h2>
+          <div className="space-y-4 p-6 rounded-2xl bg-white border border-slate-200">
+            <div className="space-y-1">
+              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">What kind of business?</h2>
+              <p className="text-sm text-slate-500">This sets up the right screens and fields for your trade. You can add more later.</p>
+            </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              {verticalPacks.map(pack => {
-                const Icon = PACK_ICONS[pack.key] ?? Layers;
-                const active = form.verticalPack === pack.key;
-                return (
-                  <button
-                    key={pack.key}
-                    type="button"
-                    onClick={() => {
-                      update('verticalPack', pack.key);
-                      // Keep the legacy field coherent for screens that still read it.
-                      update('businessType', packToLegacyBusinessType(pack.key));
-                    }}
-                    className={`text-left px-3.5 py-3 rounded-xl border transition flex items-start gap-2.5 ${
-                      active ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                    }`}
-                  >
-                    <Icon className={`w-5 h-5 shrink-0 mt-0.5 ${active ? 'text-teal-600' : 'text-slate-400'}`} />
-                    <span className="space-y-0.5">
-                      <span className={`block text-sm font-bold leading-tight ${active ? 'text-teal-700' : 'text-slate-800'}`}>
-                        {pack.displayName}
+            <div className="relative">
+              <Layers className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              <select
+                value={form.verticalPack}
+                onChange={(e) => {
+                  update('verticalPack', e.target.value);
+                  // Keep the legacy BusinessType field coherent for older screens that read it.
+                  update('businessType', packToLegacyBusinessType(e.target.value));
+                }}
+                disabled={verticalPacks.length === 0}
+                className="w-full pl-9 pr-9 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none appearance-none disabled:opacity-50"
+              >
+                {verticalPacks.length === 0
+                  ? <option>Loading business types…</option>
+                  : verticalPacks.map(pack => (
+                      <option key={pack.key} value={pack.key}>{pack.displayName}</option>
+                    ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            </div>
+
+            {/* What the choice actually buys them. Shown because "Pharmacy" vs "Retail" is not
+                self-explanatory until you see that one gives you batch/expiry and the other does not. */}
+            {selectedPack && (
+              <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 space-y-2.5">
+                <p className="text-xs text-teal-800 leading-relaxed">{selectedPack.description}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {PACK_HIGHLIGHTS
+                    .filter(h => selectedPack.capabilities?.[h.key])
+                    .map(h => (
+                      <span key={h.key} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-teal-200 text-[11px] font-semibold text-teal-700">
+                        <Check className="w-3 h-3" /> {h.label}
                       </span>
-                      <span className="block text-[11px] text-slate-500 leading-snug">{pack.description}</span>
-                    </span>
-                  </button>
-                );
-              })}
+                    ))}
+                </div>
+                <div className="pt-1.5 border-t border-teal-200 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-teal-800">
+                  <span><span className="opacity-70">Your catalog:</span> <strong>{selectedPack.catalogNoun}</strong></span>
+                  <span><span className="opacity-70">Each sale:</span> <strong>{selectedPack.saleNoun}</strong></span>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={handleNext}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
+            >
+              Continue <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Step 2: Plan */}
+        {step === 2 && (
+          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
+            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
+            <p className="text-sm text-slate-500">Every plan gets the full 30-day trial — this just sets your branch/counter/user limits after that. Switch anytime.</p>
+
+            {packagesLoading ? (
+              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading plans…
+              </div>
+            ) : packages.length === 0 ? (
+              <div className="py-4 text-center text-xs text-slate-400">
+                Couldn't load plans — you'll start on Starter and can upgrade later.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {packages.map(pkg => {
+                  const active = form.packageKey === pkg.packageKey;
+                  return (
+                    <button
+                      key={pkg.packageKey}
+                      type="button"
+                      onClick={() => update('packageKey', pkg.packageKey)}
+                      className={`w-full text-left p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
+                        active ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
+                          {active && <Check className="w-4 h-4 text-teal-600" />}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1 leading-relaxed">
+                          {pkg.maxBranches >= 999 ? 'Unlimited branches' : `${pkg.maxBranches} branch${pkg.maxBranches > 1 ? 'es' : ''}`}
+                          {' · '}
+                          {pkg.maxCounters} counter{pkg.maxCounters > 1 ? 's' : ''}
+                          {' · '}
+                          {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
+                          {' · '}
+                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
+                          {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
+                          {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
+                          {pkg.hasInventoryManagement ? ' · Inventory' : ''}
+                          {pkg.hasMultiBranch ? ' · Multi-branch' : ''}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-base font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
+                        <div className="text-xs text-slate-400">/month</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStep(1)}
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
+              >
+                Continue <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: The business itself — its name and where it trades. Drives currency and
+            the starting tax profile, which is why the country/province picker lives here. */}
+        {step === 3 && (
+          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
+            <div className="space-y-1">
+              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Business Details</h2>
+              <p className="text-sm text-slate-500">Where you trade. This sets your currency and starting tax rates.</p>
             </div>
 
             <div className="relative">
@@ -404,20 +555,32 @@ export const TenantSignup: React.FC = () => {
               );
             })()}
 
-            <button
-              onClick={handleNext}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
-            >
-              Continue <ArrowRight className="w-4 h-4" />
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStep(2)}
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
+              >
+                Continue <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
 
-        {/* Step 2: Contact + Owner login */}
-        {step === 2 && (
+        {/* Step 4: The owner's own account — kept separate from the business details because
+            it is a different kind of answer (who you are, not where the shop is) and because
+            the PIN deserves a screen where it is the only thing being asked for. */}
+        {step === 4 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">You &amp; Your Login</h2>
-            <p className="text-sm text-slate-500">This becomes your Owner/Admin account — full access to everything.</p>
+            <div className="space-y-1">
+              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Owner Account</h2>
+              <p className="text-sm text-slate-500">This becomes your Owner/Admin login — full access to everything.</p>
+            </div>
 
             <div className="relative">
               <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -507,7 +670,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(1)}
+                onClick={() => setStep(3)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -522,81 +685,9 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 3: Choose a plan */}
-        {step === 3 && (
-          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
-            <p className="text-sm text-slate-500">Every plan gets the full 30-day trial — this just sets your branch/counter/user limits after that. Switch anytime.</p>
 
-            {packagesLoading ? (
-              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading plans…
-              </div>
-            ) : packages.length === 0 ? (
-              <div className="py-4 text-center text-xs text-slate-400">
-                Couldn't load plans — you'll start on Starter and can upgrade later.
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {packages.map(pkg => {
-                  const active = form.packageKey === pkg.packageKey;
-                  return (
-                    <button
-                      key={pkg.packageKey}
-                      type="button"
-                      onClick={() => update('packageKey', pkg.packageKey)}
-                      className={`w-full text-left p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
-                        active ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
-                          {active && <Check className="w-4 h-4 text-teal-600" />}
-                        </div>
-                        <div className="text-xs text-slate-500 mt-1 leading-relaxed">
-                          {pkg.maxBranches >= 999 ? 'Unlimited branches' : `${pkg.maxBranches} branch${pkg.maxBranches > 1 ? 'es' : ''}`}
-                          {' · '}
-                          {pkg.maxCounters} counter{pkg.maxCounters > 1 ? 's' : ''}
-                          {' · '}
-                          {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
-                          {' · '}
-                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
-                          {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
-                          {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
-                          {pkg.hasInventoryManagement ? ' · Inventory' : ''}
-                          {pkg.hasMultiBranch ? ' · Multi-branch' : ''}
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className={`text-base font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
-                        <div className="text-xs text-slate-400">/month</div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              <button
-                onClick={() => setStep(2)}
-                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleNext}
-                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
-              >
-                Continue <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4: Review & Create */}
-        {step === 4 && (
+        {/* Step 5: Review & Create */}
+        {step === 5 && (
           <div className="space-y-2.5 p-5 rounded-2xl bg-white border border-slate-200">
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
 
@@ -627,7 +718,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(4)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
