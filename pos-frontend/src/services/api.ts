@@ -1035,12 +1035,19 @@ export const posApi = {
     packageKey?: string;
     /** Which sector pack this business runs — decides its POS layout and item model. */
     verticalPack?: string;
+    /** 'Standalone' (one shop) or 'MultiBranch' (head office with outlets under it). */
+    deploymentMode?: string;
+    /** Outlets to create beneath the head office. Read only for MultiBranch, and validated
+     *  server-side against the chosen plan's multi-branch flag and branch allowance. */
+    branches?: { name: string; code?: string; city?: string; address?: string; phone?: string }[];
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;
   },
-  getCountries: async () => {
-    const res = await api.get<CountryProfile[]>('/api/public/countries');
+  getCountries: async (verticalPack?: string) => {
+    const res = await api.get<CountryProfile[]>('/api/public/countries', {
+      params: verticalPack ? { verticalPack } : undefined
+    });
     return res.data;
   },
 

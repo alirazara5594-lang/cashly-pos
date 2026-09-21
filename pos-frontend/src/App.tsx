@@ -83,6 +83,8 @@ function MainLayoutInner() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
+  /** Head office of a chain: back office only, no till anywhere. Resolved server-side. */
+  const isErpOnly = packageInfo?.appSurface === 'Erp';
 
   const isAuthenticated = !!currentUser && !!token;
 
@@ -269,11 +271,15 @@ function MainLayoutInner() {
         <main className="flex-1 flex flex-col overflow-hidden">
           <Suspense fallback={<RouteLoadingFallback />}>
           <Routes>
-            {/* Operational screens — open to any signed-in active user (no module gate). */}
-            <Route path="/" element={<PosTerminal />} />
-            <Route path="/kitchen" element={<RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
-            <Route path="/order-tab" element={<OrderTab />} />
-            <Route path="/delivery" element={<RequireFeature flag="hasDeliveryCOD" label="Delivery & COD Board"><DeliveryBoard /></RequireFeature>} />
+            {/* Operational screens — open to any signed-in active user (no module gate).
+                At the head office of a chain there is no selling at all, so these routes do not
+                exist: "/" becomes the executive dashboard and the till URLs redirect. Hiding the
+                links alone would not be enough — a bookmarked /order-tab has to land somewhere
+                sensible too. */}
+            <Route path="/" element={isErpOnly ? <Navigate to="/director" replace /> : <PosTerminal />} />
+            <Route path="/kitchen" element={isErpOnly ? <Navigate to="/director" replace /> : <RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
+            <Route path="/order-tab" element={isErpOnly ? <Navigate to="/director" replace /> : <OrderTab />} />
+            <Route path="/delivery" element={isErpOnly ? <Navigate to="/director" replace /> : <RequireFeature flag="hasDeliveryCOD" label="Delivery & COD Board"><DeliveryBoard /></RequireFeature>} />
             {/* Customer lookup is part of taking an order, so viewing stays open to
                 any signed-in user; the page itself gates creating/editing on `admin` edit. */}
             <Route path="/customers" element={<CustomerManagement />} />

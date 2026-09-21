@@ -1112,6 +1112,21 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""OwnerInviteExpiresAt"" timestamp with time zone;
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""OwnerInviteRedeemedAt"" timestamp with time zone;
 
+            -- Standalone (1) vs HeadOffice (2). Existing tenants are inferred from whether they
+            -- actually have outlets beneath head office, so a chain set up before this column
+            -- existed lands on the right surface without anyone re-registering.
+            ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""DeploymentMode"" integer NOT NULL DEFAULT 1;
+            UPDATE ""Tenants"" t SET ""DeploymentMode"" = 2
+            WHERE t.""DeploymentMode"" = 1
+              AND (SELECT COUNT(*) FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"") > 1;
+
+            -- Running a head office is a shape, not a paid feature: every plan may do it, and the
+            -- plan governs only HOW MANY locations fit. Starter previously allowed exactly one
+            -- location, which made a two-shop chain impossible at any price below Standard.
+            UPDATE ""SaaSPackageConfigs"" SET ""HasMultiBranch"" = true WHERE ""HasMultiBranch"" = false;
+            UPDATE ""SaaSPackageConfigs"" SET ""MaxBranches"" = 3 WHERE ""PackageKey"" = 'Starter' AND ""MaxBranches"" < 3;
+            UPDATE ""SaaSPackageConfigs"" SET ""MaxBranches"" = 10 WHERE ""PackageKey"" = 'Standard' AND ""MaxBranches"" < 10;
+
             -- Existing tenants predate the lifecycle ladder: put each one on the rung that
             -- matches the flags it already carries, rather than defaulting everybody to Trial.
             UPDATE ""Tenants"" SET ""Status"" = CASE
@@ -2831,6 +2846,19 @@ api.MapPost("/devices/pairing-codes", async (
 
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.BadRequest(new { message = "Branch not found." });
+
+    // A chain's head office runs the ERP and does not sell, so there is nothing for a till or a
+    // waiter tablet to do there. Refusing here keeps the customer from paying for a device slot
+    // that could never ring up a sale. Kitchen displays stay allowed: a central commissary
+    // legitimately has prep screens even though it has no customers.
+    var ent = await entitlements.GetAsync(scopedTenantId!.Value);
+    if (ent.HeadOfficeIsErpOnly && branch.IsHeadOffice && dto.TerminalType != TerminalType.KitchenDisplay)
+        return Results.BadRequest(new
+        {
+            message = "Head office runs the back office and does not take sales, so it cannot have a "
+                    + "till or a waiter tablet. Generate this code for one of your branches instead.",
+            headOfficeIsErpOnly = true
+        });
 
     var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, branch.Id, dto.TerminalType);
     if (!allowed)
@@ -5590,10 +5618,45 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
     // Drives currency/phone/tax starting defaults below. Falls back to Pakistan's own profile
     // (first entry in Detailed) when the country wasn't recognized — same behavior as before this
     // country picker existed.
-    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)
-        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan")!;
+    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country, dto.VerticalPack)
+        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan", dto.VerticalPack)!;
     var matchedState = countryProfile.States?.FirstOrDefault(s =>
         s.Code == dto.StateCode || (dto.StateName != null && s.Name.Equals(dto.StateName, StringComparison.OrdinalIgnoreCase)));
+
+    // ------------------------------------------------------------------
+    // How this business is SHAPED — standalone shop, or a head office with branches under it.
+    //
+    // Signup used to ignore this entirely and hard-create exactly one branch called "Main",
+    // which meant a chain had to sign up as a single shop and then rebuild its own structure
+    // afterwards. DeploymentMode was already on the DTO but nothing read it.
+    // ------------------------------------------------------------------
+    var isMultiBranch = string.Equals(dto.DeploymentMode, "MultiBranch", StringComparison.OrdinalIgnoreCase);
+    var requestedBranches = (dto.Branches ?? new List<SignupBranchDto>())
+        .Where(b => !string.IsNullOrWhiteSpace(b.Name))
+        .ToList();
+
+    if (isMultiBranch)
+    {
+        // Running a head office is a SHAPE, not a paid feature — every plan can do it. What the
+        // plan decides is how many locations fit underneath. Gating the shape itself would mean
+        // a small two-shop chain could not use the product as the chain it actually is.
+        //
+        // Head office counts against the allowance alongside the outlets beneath it.
+        var totalBranches = requestedBranches.Count + 1;
+        var maxBranches = chosenPackage?.MaxBranches ?? 1;
+        if (totalBranches > maxBranches)
+            return Results.BadRequest(new
+            {
+                error = $"The {chosenPackage?.DisplayName ?? "selected"} plan covers {maxBranches} location(s) "
+                      + $"in total, including head office. You listed {requestedBranches.Count} branch(es), "
+                      + $"which needs {totalBranches}. Remove one, or choose a larger plan."
+            });
+    }
+    else
+    {
+        // A standalone shop has no outlets under it, whatever was posted.
+        requestedBranches.Clear();
+    }
 
     using var transaction = await db.Database.BeginTransactionAsync();
 
@@ -5612,33 +5675,73 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             State = matchedState?.Name ?? dto.StateName?.Trim(),
             BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
             Tier = tier,
+            // Decides what the app IS for this customer: one hybrid shop, or an ERP head office
+            // with selling branches beneath it.
+            DeploymentMode = isMultiBranch ? DeploymentMode.HeadOffice : DeploymentMode.Standalone,
             IsActive = true,
             IsTrialActive = true,
             TrialEndsAt = DateTime.UtcNow.AddDays(30)
         };
         db.Tenants.Add(tenant);
 
-        // 2. Create head office branch, sized to the chosen plan's per-branch limits. Pakistan's
-        // provincial tax jurisdiction (PK-PB, PK-SD, ...) is looked up by RegionCode elsewhere in
-        // this file — wiring it here means the province picked at signup takes effect immediately.
+        // 2. The primary location. For a standalone business this IS the shop; for a chain it is
+        // the head office that the outlets below report into. Either way it carries IsHeadOffice,
+        // because every tenant needs exactly one place that owns the central catalogue.
+        //
+        // Pakistan's provincial tax jurisdiction (PK-PB, PK-SD, ...) is looked up by RegionCode
+        // elsewhere in this file — wiring it here means the province picked at signup applies
+        // from the first sale.
         var branch = new Branch
         {
             TenantId = tenant.Id,
-            Name = $"{dto.RestaurantName.Trim()} — Main Branch",
-            Code = "MAIN",
+            Name = isMultiBranch
+                ? $"{dto.RestaurantName.Trim()} — Head Office"
+                : $"{dto.RestaurantName.Trim()} — Main Branch",
+            Code = isMultiBranch ? "HQ" : "MAIN",
             Address = dto.Address ?? "",
-            City = dto.City ?? "Islamabad",
+            City = dto.City ?? "",
             Phone = dto.Phone,
             IsHeadOffice = true,
             RegionCode = countryProfile.Iso2 == "PK" ? matchedState?.Code : null,
         };
         db.Branches.Add(branch);
 
+        // 2b. Outlets under the head office. Codes are generated rather than trusted from the
+        // client so two branches cannot collide on one, and each inherits the tenant's province
+        // unless it names its own — a chain usually operates in one tax jurisdiction, and the
+        // ones that do not can change it per branch afterwards.
+        var createdOutlets = new List<Branch>();
+        for (var i = 0; i < requestedBranches.Count; i++)
+        {
+            var b = requestedBranches[i];
+            var outletState = countryProfile.States?.FirstOrDefault(s => s.Code == b.StateCode);
+            createdOutlets.Add(new Branch
+            {
+                TenantId = tenant.Id,
+                Name = b.Name.Trim(),
+                Code = string.IsNullOrWhiteSpace(b.Code)
+                    ? $"BR-{(i + 1):D2}"
+                    : b.Code.Trim().ToUpperInvariant(),
+                Address = b.Address?.Trim() ?? "",
+                City = string.IsNullOrWhiteSpace(b.City) ? (dto.City ?? "") : b.City.Trim(),
+                Phone = b.Phone?.Trim() ?? "",
+                IsHeadOffice = false,
+                RegionCode = countryProfile.Iso2 == "PK"
+                    ? (outletState?.Code ?? matchedState?.Code)
+                    : null
+            });
+        }
+        db.Branches.AddRange(createdOutlets);
+
         // 3. Create admin user
         var adminUser = new AppUser
         {
             TenantId = tenant.Id,
-            BranchId = branch.Id,
+            // NOT pinned to a branch. A null BranchId is what marks a user as tenant-wide —
+            // branch-scoped endpoints read it to decide whether someone sees one location or all
+            // of them. Pinning the owner to head office meant a chain's owner could not see
+            // their own outlets, which is the opposite of what owning the chain should mean.
+            BranchId = null,
             FullName = dto.ContactName.Trim(),
             Username = dto.AdminUsername.ToLower().Trim(),
             PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.AdminPin),
@@ -5656,6 +5759,9 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         // starting point the owner can edit in Tax Configuration — not a compliance guarantee
         // (see the long comment on CountryTaxProfiles for why).
         var isPakistan = countryProfile.Iso2 == "PK";
+        var normPack = (dto.VerticalPack ?? "restaurant").Trim().ToLowerInvariant();
+        var isProvincialServices = normPack == "restaurant" || normPack == "salon" || normPack == "services";
+
         var tenantSettings = new TenantSettings
         {
             TenantId = tenant.Id,
@@ -5663,11 +5769,13 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             CurrencyCode = countryProfile.CurrencyCode,
             CurrencySymbol = countryProfile.CurrencySymbol,
             DecimalPlaces = countryProfile.CurrencyCode == "PKR" ? 0 : 2,
-            TaxAuthorityName = countryProfile.TaxAuthorityName ?? "Not yet configured",
-            DefaultTaxRate = countryProfile.DefaultTaxRate ?? 0,
-            UseDualTaxRate = countryProfile.UseDualTaxRate,
-            DigitalTaxRate = countryProfile.DigitalTaxRate ?? 0,
-            UseProvincialTax = isPakistan && matchedState != null,
+            TaxAuthorityName = matchedState?.AuthorityName ?? countryProfile.TaxAuthorityName ?? "FBR",
+            DefaultTaxRate = matchedState?.CashTaxRate ?? countryProfile.DefaultTaxRate ?? 0,
+            UseDualTaxRate = matchedState != null
+                ? (matchedState.CashTaxRate != matchedState.DigitalTaxRate)
+                : countryProfile.UseDualTaxRate,
+            DigitalTaxRate = matchedState?.DigitalTaxRate ?? countryProfile.DigitalTaxRate ?? 0,
+            UseProvincialTax = isPakistan && matchedState != null && isProvincialServices,
             PhoneCode = countryProfile.PhoneCode,
             DefaultCity = dto.City?.Trim() ?? "",
             DateFormat = "dd/MM/yyyy",
@@ -5703,6 +5811,11 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         {
             message = "Business created successfully!",
             verticalPack = packKey,
+            deploymentMode = isMultiBranch ? "MultiBranch" : "Standalone",
+            // What was actually provisioned, so the client can confirm it rather than assume.
+            branches = new[] { new { id = branch.Id, name = branch.Name, code = branch.Code, isHeadOffice = true } }
+                .Concat(createdOutlets.Select(o => new { id = o.Id, name = o.Name, code = o.Code, isHeadOffice = false }))
+                .ToList(),
             entitlements = new
             {
                 newEntitlements.MaxBranches,
@@ -6374,8 +6487,8 @@ app.MapPost("/api/admin/tenants/provision", async (
         return Results.BadRequest(new { message = "A business with a similar name already exists." });
 
     var packKey = Pos.Api.Data.VerticalPacks.Find(dto.VerticalPack)?.Key ?? Pos.Api.Data.VerticalPacks.Retail;
-    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)
-        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan")!;
+    var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country, dto.VerticalPack)
+        ?? Pos.Api.Data.CountryTaxProfiles.FindByName("Pakistan", dto.VerticalPack)!;
     var tier = Enum.TryParse<SubscriptionTier>(dto.PackageKey ?? "Starter", out var parsed) ? parsed : SubscriptionTier.Starter;
 
     // A one-time invite, hashed exactly like every other bearer secret in this codebase.
@@ -6492,7 +6605,8 @@ app.MapPost("/api/auth/redeem-invite", async (AppDbContext db, HttpContext http,
     var owner = new AppUser
     {
         TenantId = tenant.Id,
-        BranchId = branch?.Id,
+        // Tenant-wide, not branch-pinned — same reasoning as the signup path above.
+        BranchId = null,
         FullName = string.IsNullOrWhiteSpace(dto.FullName) ? tenant.ContactName : dto.FullName.Trim(),
         Username = username,
         PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin.Trim()),
@@ -6816,7 +6930,7 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
 });
 
 // Reference data for the signup wizard's country/state picker + starting tax config preview.
-app.MapGet("/api/public/countries", () => Results.Ok(Pos.Api.Data.CountryTaxProfiles.All));
+app.MapGet("/api/public/countries", (string? verticalPack) => Results.Ok(Pos.Api.Data.CountryTaxProfiles.GetAll(verticalPack)));
 
 
 // ============================================================
@@ -6839,6 +6953,16 @@ app.MapGet("/api/tenant/my-package", async (
     var ent = await entitlements.GetAsync(tenantId.Value);
     var (items, flows, layout, modules) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
     var primaryPack = Pos.Api.Data.VerticalPacks.Find(ent.PrimaryPackKey);
+
+    // Which surface this particular user should see. A tenant-wide owner (no pinned branch) at a
+    // head-office chain administers the whole group, so they get the ERP; branch-pinned staff get
+    // the POS for their branch. A standalone shop gets the hybrid app either way.
+    var userBranchId = http.GetBranchId();
+    var atHeadOffice = userBranchId == null
+        ? true // not pinned: head office / owner view
+        : await db.Branches.IgnoreQueryFilters()
+            .Where(b => b.Id == userBranchId.Value).Select(b => b.IsHeadOffice).FirstOrDefaultAsync();
+    var surface = ent.SurfaceFor(atHeadOffice);
 
     // camelCase feature keys are kept alongside the resolved set because the existing frontend
     // guards read them by that name. Same values, two spellings, one source.
@@ -6879,6 +7003,14 @@ app.MapGet("/api/tenant/my-package", async (
         activeAddOnKeys,
 
         // The vertical pack contract: what this business IS, not just what it bought.
+        // How the business is organised, and therefore which app this person gets.
+        deploymentMode = ent.DeploymentMode.ToString(),
+        // "Erp" = back office only, no till anywhere in the UI. "Pos" = a selling branch.
+        // "Hybrid" = a standalone shop that does both.
+        appSurface = surface.ToString(),
+        isHeadOffice = atHeadOffice,
+        showPos = surface != AppSurface.Erp,
+
         verticalPacks = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey,
         packDisplayName = primaryPack?.DisplayName,
@@ -9390,7 +9522,16 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
-public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null);
+/// <summary>
+/// DeploymentMode is "Standalone" (one shop) or "MultiBranch" (a head office with outlets under
+/// it). Branches is only read for MultiBranch, and is validated against the chosen plan's
+/// HasMultiBranch flag and MaxBranches allowance before anything is created.
+/// </summary>
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null);
+
+/// <summary>One outlet listed at signup. Only Name is required; the rest fall back to the
+/// tenant's own city/province so a chain in one city does not have to retype it per branch.</summary>
+public record SignupBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode);
 /// <summary>Force moves a tenant onto a smaller plan they do not currently fit. Reserved for
 /// "the customer insists" — devices beyond the new allowance stop selling at their next heartbeat.</summary>
 public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil, bool? Force = null);

@@ -38,6 +38,42 @@ public enum TenantStatus
 }
 
 /// <summary>
+/// How a tenant's organisation is shaped. This is a structural fact about the business, not a
+/// paid feature — every plan can run either shape; the plan only decides HOW MANY locations.
+/// </summary>
+public enum DeploymentMode
+{
+    /// <summary>One location that both sells and administers itself.</summary>
+    Standalone = 1,
+
+    /// <summary>
+    /// A head office with branches beneath it. The head office does not sell — it runs the ERP
+    /// (catalogue, purchasing, warehousing, accounting, HR, consolidated reporting) and pushes
+    /// down to the branches, which are the only places a till exists.
+    /// </summary>
+    HeadOffice = 2
+}
+
+/// <summary>
+/// Which application surface a signed-in user or activated device should see.
+///
+/// This is derived, never stored: it falls out of the tenant's <see cref="DeploymentMode"/> and
+/// which branch the user sits at. Head-office staff at a chain get no POS at all — showing a till
+/// to someone who administers a warehouse is clutter at best and a mis-click at worst.
+/// </summary>
+public enum AppSurface
+{
+    /// <summary>Sells and administers in one app. A standalone shop.</summary>
+    Hybrid = 1,
+
+    /// <summary>Back office only — no till, no checkout, no cash drawer. Head office of a chain.</summary>
+    Erp = 2,
+
+    /// <summary>Selling plus the branch-level back office. A branch under a head office.</summary>
+    Pos = 3
+}
+
+/// <summary>
 /// A single-use, short-lived code that activates one device against one branch.
 ///
 /// Replaces the old scheme where a pairing token was DERIVED from public-ish data (branch code

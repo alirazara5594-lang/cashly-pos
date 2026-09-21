@@ -82,11 +82,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     selectedBranch,
     terminalMode,
     currentUser,
-    modulePermissions
+    modulePermissions,
+    packageInfo
   } = usePosStore();
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
+  // Head office of a chain runs the ERP only. The server resolves this (deployment mode plus
+  // which branch you sit at) so the sidebar, the router and the API cannot disagree about it.
+  const isErpOnly = packageInfo?.appSurface === 'Erp';
   // Retail/Cash & Carry tenants have no kitchen and no dine-in tables — those screens
   // would just be dead weight in their sidebar.
   const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';
@@ -123,7 +127,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // ── Operational screens: visible to ANY signed-in user. These are not module
     // gated (per the role baseline); the terminal profile only decides which of
     // them this particular device is set up to show.
-    if (terminalMode === 'KitchenKDS') {
+    //
+    // Except at the head office of a chain, which runs the ERP and never sells: no till, no
+    // kitchen screen, no waiter tablet. Selling happens at the branches. Showing a register to
+    // someone who administers a warehouse is clutter at best and a mis-click at worst.
+    if (isErpOnly) {
+      // Nothing operational to add — the sections below are the whole application here.
+    } else if (terminalMode === 'KitchenKDS') {
       sections.push({
         title: 'Kitchen Operations',
         items: [{
@@ -396,7 +406,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin, isRetailBiz]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin, isRetailBiz, isErpOnly]);
 
   return (
     <>

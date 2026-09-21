@@ -43,6 +43,7 @@ export interface CountryState {
   name: string;
   cashTaxRate: number | null;
   digitalTaxRate: number | null;
+  authorityName?: string;
 }
 
 /** Shape returned by the anonymous GET /api/public/countries, used to build the signup country/state picker. */
@@ -138,6 +139,19 @@ export interface MyPackageInfo {
 
   features: EffectivePackageFeatures | null;
   activeAddOnKeys: string[];
+
+  /** 'Standalone' (one shop) or 'HeadOffice' (a chain with branches under a head office). */
+  deploymentMode: 'Standalone' | 'HeadOffice';
+  /**
+   * Which application this person gets:
+   *  - 'Erp'    — head office of a chain: back office only, no till anywhere in the UI
+   *  - 'Pos'    — a branch under a head office: sells, plus its own branch back office
+   *  - 'Hybrid' — a standalone shop: sells and administers in one app
+   */
+  appSurface: 'Erp' | 'Pos' | 'Hybrid';
+  isHeadOffice: boolean;
+  /** Convenience mirror of appSurface !== 'Erp'. */
+  showPos: boolean;
 
   /** The sector contract: what this business IS, not just what it bought. */
   verticalPacks: string[];

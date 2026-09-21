@@ -89,6 +89,12 @@ public class Tenant
     /// </summary>
     public TenantStatus Status { get; set; } = TenantStatus.Trial;
 
+    /// <summary>
+    /// Standalone shop, or head office with branches beneath it. Chosen at signup and decisive
+    /// for what the app even looks like: a head office runs the ERP and never shows a till.
+    /// </summary>
+    public DeploymentMode DeploymentMode { get; set; } = DeploymentMode.Standalone;
+
     public bool IsTrialActive { get; set; } = true;
     public DateTime TrialEndsAt { get; set; } = DateTime.UtcNow.AddDays(30);
     public DateTime? SubscriptionPaidUntil { get; set; } // null = not paid yet

@@ -44,7 +44,7 @@ public static class DbSeeder
                     DisplayName = "Starter",
                     MonthlyPricePKR = 5000,
                     YearlyPricePKR = 50000,
-                    MaxBranches = 1,
+                    MaxBranches = 3,
                     MaxCounters = 1,
                     MaxOrderTabs = 3,
                     MaxUsers = 5,
@@ -56,7 +56,7 @@ public static class DbSeeder
                     HasConsolidatedReports = false,
                     HasWhatsAppMessaging = true,
                     HasAdvancedReports = false,
-                    HasMultiBranch = false,
+                    HasMultiBranch = true,
                     WhatsAppMessagesPerMonth = -1,
                     IsActive = true
                 },
@@ -66,7 +66,7 @@ public static class DbSeeder
                     DisplayName = "Standard",
                     MonthlyPricePKR = 12000,
                     YearlyPricePKR = 120000,
-                    MaxBranches = 3,
+                    MaxBranches = 10,
                     MaxCounters = 3,
                     MaxOrderTabs = 10,
                     MaxUsers = 20,
@@ -147,16 +147,45 @@ public static class DbSeeder
         // NOTE: these are EDITABLE DEFAULTS for convenience, not verified legal/tax advice.
         // Owners must confirm current rates with their provincial authority and edit via
         // Settings -> Tax Jurisdictions.
-        if (!await db.TaxJurisdictions.AnyAsync())
+        var pkJurisdictions = await db.TaxJurisdictions.Where(j => j.CountryCode == "PK").ToListAsync();
+        var defaultRows = new[]
         {
-            db.TaxJurisdictions.AddRange(
-                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-PB", AuthorityName = "PRA (Punjab)", CashTaxRate = 16, DigitalTaxRate = 16, IsActive = true },
-                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-SD", AuthorityName = "SRB (Sindh)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
-                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-KP", AuthorityName = "KPRA (Khyber Pakhtunkhwa)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
-                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-BA", AuthorityName = "BRA (Balochistan)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
-                new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-ICT", AuthorityName = "FBR (Islamabad Capital Territory)", CashTaxRate = 16, DigitalTaxRate = 16, IsActive = true }
-            );
+            new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-PB", AuthorityName = "PRA (Punjab)", CashTaxRate = 16, DigitalTaxRate = 5, IsActive = true },
+            new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-SD", AuthorityName = "SRB (Sindh)", CashTaxRate = 15, DigitalTaxRate = 8, IsActive = true },
+            new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-KP", AuthorityName = "KPRA (Khyber Pakhtunkhwa)", CashTaxRate = 15, DigitalTaxRate = 5, IsActive = true },
+            new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-BA", AuthorityName = "BRA (Balochistan)", CashTaxRate = 15, DigitalTaxRate = 15, IsActive = true },
+            new TaxJurisdiction { CountryCode = "PK", RegionCode = "PK-ICT", AuthorityName = "FBR (Islamabad Capital Territory)", CashTaxRate = 15, DigitalTaxRate = 5, IsActive = true }
+        };
+
+        if (pkJurisdictions.Count == 0)
+        {
+            db.TaxJurisdictions.AddRange(defaultRows);
             await db.SaveChangesAsync();
+        }
+        else
+        {
+            bool modified = false;
+            foreach (var def in defaultRows)
+            {
+                var existing = pkJurisdictions.FirstOrDefault(j => j.RegionCode == def.RegionCode);
+                if (existing != null)
+                {
+                    // Correct legacy un-discounted digital rates if they matched the old 16/16 or 15/15 defaults
+                    if (existing.RegionCode == "PK-PB" && existing.DigitalTaxRate == 16) { existing.DigitalTaxRate = 5; modified = true; }
+                    if (existing.RegionCode == "PK-SD" && existing.DigitalTaxRate == 15) { existing.DigitalTaxRate = 8; modified = true; }
+                    if (existing.RegionCode == "PK-KP" && existing.DigitalTaxRate == 15) { existing.DigitalTaxRate = 5; modified = true; }
+                    if (existing.RegionCode == "PK-ICT" && (existing.CashTaxRate == 16 || existing.DigitalTaxRate == 16)) { existing.CashTaxRate = 15; existing.DigitalTaxRate = 5; modified = true; }
+                }
+                else
+                {
+                    db.TaxJurisdictions.Add(def);
+                    modified = true;
+                }
+            }
+            if (modified)
+            {
+                await db.SaveChangesAsync();
+            }
         }
     }
 }

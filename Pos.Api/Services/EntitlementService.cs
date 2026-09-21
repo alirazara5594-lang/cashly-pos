@@ -44,7 +44,30 @@ public sealed record EffectiveEntitlements
     public required IReadOnlyList<string> PackKeys { get; init; }
     public required string PrimaryPackKey { get; init; }
 
+    /// <summary>Standalone shop, or head office with branches under it.</summary>
+    public required DeploymentMode DeploymentMode { get; init; }
+
     public bool Has(string flagName) => Features.TryGetValue(flagName, out var on) && on;
+
+    /// <summary>
+    /// Which app surface someone standing at <paramref name="isHeadOfficeBranch"/> should see.
+    ///
+    /// One rule, in one place, so the sidebar, the router, the device-activation check and the
+    /// API guards cannot drift into disagreeing about whether this person gets a till.
+    /// </summary>
+    public AppSurface SurfaceFor(bool isHeadOfficeBranch) =>
+        DeploymentMode != DeploymentMode.HeadOffice
+            ? AppSurface.Hybrid            // standalone: one app that both sells and administers
+            : isHeadOfficeBranch
+                ? AppSurface.Erp           // chain head office: administers, never sells
+                : AppSurface.Pos;          // chain branch: sells, plus its own back office
+
+    /// <summary>
+    /// True when this tenant's head office is a pure back office. Used to refuse activating a
+    /// till at head office — a location that does not sell has no business holding a counter
+    /// licence, and charging for one would be charging for nothing.
+    /// </summary>
+    public bool HeadOfficeIsErpOnly => DeploymentMode == DeploymentMode.HeadOffice;
 
     // --- What the tenant's lifecycle state permits ---------------------------
     // One place decides what each status actually blocks, so the API, the UI and the device
@@ -123,7 +146,9 @@ public class EntitlementService : IEntitlementService
         if (snapshot == null || await IsStaleAsync(tenantId, snapshot))
             return await RecomputeAsync(tenantId);
 
-        return Materialize(tenantId, snapshot, await GetPackKeysAsync(tenantId));
+        var mode = await _db.Tenants.AsNoTracking().IgnoreQueryFilters()
+            .Where(t => t.Id == tenantId).Select(t => t.DeploymentMode).FirstOrDefaultAsync();
+        return Materialize(tenantId, snapshot, await GetPackKeysAsync(tenantId), mode);
     }
 
     private async Task<bool> IsStaleAsync(Guid tenantId, TenantEntitlementSnapshot snapshot)
@@ -262,7 +287,7 @@ public class EntitlementService : IEntitlementService
 
         await _db.SaveChangesAsync();
 
-        return Materialize(tenantId, snapshot, await GetPackKeysAsync(tenantId, tenant.BusinessType));
+        return Materialize(tenantId, snapshot, await GetPackKeysAsync(tenantId, tenant.BusinessType), tenant.DeploymentMode);
     }
 
     /// <summary>
@@ -321,7 +346,8 @@ public class EntitlementService : IEntitlementService
     }
 
     private static EffectiveEntitlements Materialize(
-        Guid tenantId, TenantEntitlementSnapshot snapshot, (List<string> Keys, string Primary) packs)
+        Guid tenantId, TenantEntitlementSnapshot snapshot, (List<string> Keys, string Primary) packs,
+        DeploymentMode deploymentMode)
     {
         var features = JsonSerializer.Deserialize<Dictionary<string, bool>>(snapshot.FeaturesJson)
                        ?? new Dictionary<string, bool>();
@@ -338,7 +364,8 @@ public class EntitlementService : IEntitlementService
             MaxUsers = snapshot.MaxUsers,
             Features = new Dictionary<string, bool>(features, StringComparer.OrdinalIgnoreCase),
             PackKeys = packs.Keys,
-            PrimaryPackKey = packs.Primary
+            PrimaryPackKey = packs.Primary,
+            DeploymentMode = deploymentMode
         };
     }
 

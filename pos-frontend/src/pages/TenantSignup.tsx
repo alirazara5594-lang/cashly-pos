@@ -11,6 +11,9 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
+  Building2,
+  Trash2,
+  Plus,
   Layers,
   Check,
   ChevronDown,
@@ -120,7 +123,7 @@ function formatPhoneLocal(iso2: string, raw: string): string {
   return digits.slice(0, 15);
 }
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
 
 export const TenantSignup: React.FC = () => {
   const navigate = useNavigate();
@@ -153,7 +156,11 @@ export const TenantSignup: React.FC = () => {
     adminUsername: '',
     adminPin: '',
     adminPinConfirm: '',
-    packageKey: 'Starter'
+    packageKey: 'Starter',
+    /** 'Standalone' = one shop. 'MultiBranch' = a head office with outlets reporting into it. */
+    deploymentMode: 'Standalone' as 'Standalone' | 'MultiBranch',
+    /** Outlets under the head office. Only sent when deploymentMode is MultiBranch. */
+    branches: [] as { name: string; code: string; city: string; address: string; phone: string }[]
   });
 
   useEffect(() => {
@@ -162,15 +169,20 @@ export const TenantSignup: React.FC = () => {
       .then(data => { if (!cancelled) setPackages(Array.isArray(data) ? data : []); })
       .catch(() => { /* plan picker degrades to "Starter" default, signup still works */ })
       .finally(() => { if (!cancelled) setPackagesLoading(false); });
-    posApi.getCountries()
-      .then(data => { if (!cancelled) setCountries(Array.isArray(data) ? data : []); })
-      .catch(() => { /* falls back to a plain text country field if this doesn't load */ })
-      .finally(() => { if (!cancelled) setCountriesLoading(false); });
     posApi.getVerticalPackCatalog()
       .then(data => { if (!cancelled) setVerticalPacks(Array.isArray(data) ? data : []); })
       .catch(() => { /* the server still defaults the pack from BusinessType if this fails */ });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getCountries(form.verticalPack)
+      .then(data => { if (!cancelled) setCountries(Array.isArray(data) ? data : []); })
+      .catch(() => { /* falls back to a plain text country field if this doesn't load */ })
+      .finally(() => { if (!cancelled) setCountriesLoading(false); });
+    return () => { cancelled = true; };
+  }, [form.verticalPack]);
 
   const selectedCountry = countries.find(c => c.name === form.country) || null;
   const phoneDialCountry: Pick<CountryProfile, 'iso2' | 'phoneCode'> =
@@ -197,21 +209,73 @@ export const TenantSignup: React.FC = () => {
     return true;
   };
 
-  // Step 2 — plan. `packageKey` defaults to Starter, so this only guards the loading window.
+  const selectedPackage = packages.find(p => p.packageKey === form.packageKey);
+
+  /**
+   * How many locations this business needs in total. Head office counts as one alongside the
+   * branches beneath it, which is how the server counts them too.
+   */
+  const namedBranches = form.branches.filter(b => b.name.trim());
+  const locationsNeeded = form.deploymentMode === 'MultiBranch' ? namedBranches.length + 1 : 1;
+
+  /** Does a given plan cover the structure chosen at step 2? */
+  const planCovers = (pkg: PublicPackage) => pkg.maxBranches >= locationsNeeded;
+
+  // Step 2 — the shape of the business. Deliberately NOT gated on the plan: running a head
+  // office is a fact about how the business is organised, and every plan supports it. What the
+  // plan decides is how many locations fit, which step 3 checks.
   const validateStep2 = () => {
-    if (!form.packageKey) return setError('Choose a plan to continue'), false;
+    if (form.deploymentMode === 'MultiBranch' && namedBranches.length === 0) {
+      return setError('Add at least one branch, or switch to a single location.'), false;
+    }
     return true;
   };
 
-  // Step 3 — the business itself: what it is called and where it is.
+  const addBranchRow = () => {
+    setForm(prev => ({
+      ...prev,
+      branches: [...prev.branches, { name: '', code: '', city: '', address: '', phone: '' }]
+    }));
+    setError('');
+  };
+
+  const removeBranchRow = (index: number) => {
+    setForm(prev => ({ ...prev, branches: prev.branches.filter((_, i) => i !== index) }));
+    setError('');
+  };
+
+  const updateBranchRow = (index: number, field: 'name' | 'code' | 'city' | 'address' | 'phone', value: string) => {
+    setForm(prev => ({
+      ...prev,
+      branches: prev.branches.map((b, i) => (i === index ? { ...b, [field]: value } : b))
+    }));
+    setError('');
+  };
+
+  // Step 3 — the plan. The only structural check that belongs here: does the chosen plan cover
+  // the number of locations already described? Caught now rather than at submit, so nobody
+  // completes two more screens before finding out.
   const validateStep3 = () => {
+    if (!form.packageKey) return setError('Choose a plan to continue'), false;
+    if (selectedPackage && !planCovers(selectedPackage)) {
+      return setError(
+        `${selectedPackage.displayName} covers ${selectedPackage.maxBranches} location(s); ` +
+        `you need ${locationsNeeded} (head office plus ${namedBranches.length} branch(es)). ` +
+        'Pick a larger plan, or go back and remove a branch.'
+      ), false;
+    }
+    return true;
+  };
+
+  // Step 4 — the business itself: what it is called and where it is.
+  const validateStep4 = () => {
     if (!form.restaurantName.trim()) return setError('Business name is required'), false;
     return true;
   };
 
-  // Step 4 — the owner's account. Kept apart from step 3 so a credential problem never sends
+  // Step 5 — the owner's account. Kept apart from step 4 so a credential problem never sends
   // someone back to re-check their address, and vice versa.
-  const validateStep4 = () => {
+  const validateStep5 = () => {
     if (!form.contactName.trim()) return setError('Your name is required'), false;
     if (!form.email.trim() || !form.email.includes('@')) return setError('Valid email is required'), false;
     if (!form.phone.trim()) return setError('Phone number is required'), false;
@@ -226,7 +290,22 @@ export const TenantSignup: React.FC = () => {
     else if (step === 2 && validateStep2()) setStep(3);
     else if (step === 3 && validateStep3()) setStep(4);
     else if (step === 4 && validateStep4()) setStep(5);
+    else if (step === 5 && validateStep5()) setStep(6);
   };
+
+  // When the structure needs more locations than the currently-selected plan covers, move the
+  // selection up to the smallest plan that does fit. Silently leaving an impossible combination
+  // selected just defers the same error to the next click.
+  useEffect(() => {
+    if (packages.length === 0) return;
+    const current = packages.find(p => p.packageKey === form.packageKey);
+    if (current && planCovers(current)) return;
+    const smallestFit = [...packages].sort((a, b) => a.maxBranches - b.maxBranches).find(planCovers);
+    if (smallestFit && smallestFit.packageKey !== form.packageKey) {
+      setForm(prev => ({ ...prev, packageKey: smallestFit.packageKey }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationsNeeded, packages]);
 
   const handleSubmit = async () => {
     setLoading(true);
@@ -246,7 +325,21 @@ export const TenantSignup: React.FC = () => {
         adminPin: form.adminPin,
         businessType: form.businessType,
         packageKey: form.packageKey,
-        verticalPack: form.verticalPack
+        verticalPack: form.verticalPack,
+        deploymentMode: form.deploymentMode,
+        // Only meaningful for MultiBranch; blank rows are dropped so a half-filled row the user
+        // abandoned does not become an unnamed branch.
+        branches: form.deploymentMode === 'MultiBranch'
+          ? form.branches
+              .filter(b => b.name.trim())
+              .map(b => ({
+                name: b.name.trim(),
+                code: b.code.trim() || undefined,
+                city: b.city.trim() || undefined,
+                address: b.address.trim() || undefined,
+                phone: b.phone.trim() || undefined
+              }))
+          : undefined
       });
       setSuccess(true);
     } catch (err: any) {
@@ -255,8 +348,6 @@ export const TenantSignup: React.FC = () => {
       setLoading(false);
     }
   };
-
-  const selectedPackage = packages.find(p => p.packageKey === form.packageKey);
 
   if (success) {
     return (
@@ -390,59 +481,131 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 2: Plan */}
+        {/* Step 2: How the business is SHAPED — one shop, or a head office with branches under
+            it. Asked BEFORE the plan, because the shape is a fact about the business while the
+            plan is a commercial choice that follows from it. Every plan supports either shape;
+            the plan only decides how many locations fit. */}
         {step === 2 && (
-          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
-            <p className="text-sm text-slate-500">Every plan gets the full 30-day trial — this just sets your branch/counter/user limits after that. Switch anytime.</p>
+          <div className="space-y-4 p-6 rounded-2xl bg-white border border-slate-200">
+            <div className="space-y-1">
+              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">How many locations?</h2>
+              <p className="text-sm text-slate-500">
+                You can add more later — this just sets up the right structure from day one.
+              </p>
+            </div>
 
-            {packagesLoading ? (
-              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading plans…
-              </div>
-            ) : packages.length === 0 ? (
-              <div className="py-4 text-center text-xs text-slate-400">
-                Couldn't load plans — you'll start on Starter and can upgrade later.
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {packages.map(pkg => {
-                  const active = form.packageKey === pkg.packageKey;
-                  return (
-                    <button
-                      key={pkg.packageKey}
-                      type="button"
-                      onClick={() => update('packageKey', pkg.packageKey)}
-                      className={`w-full text-left p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
-                        active ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
-                          {active && <Check className="w-4 h-4 text-teal-600" />}
-                        </div>
-                        <div className="text-xs text-slate-500 mt-1 leading-relaxed">
-                          {pkg.maxBranches >= 999 ? 'Unlimited branches' : `${pkg.maxBranches} branch${pkg.maxBranches > 1 ? 'es' : ''}`}
-                          {' · '}
-                          {pkg.maxCounters} counter{pkg.maxCounters > 1 ? 's' : ''}
-                          {' · '}
-                          {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
-                          {' · '}
-                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
-                          {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
-                          {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
-                          {pkg.hasInventoryManagement ? ' · Inventory' : ''}
-                          {pkg.hasMultiBranch ? ' · Multi-branch' : ''}
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className={`text-base font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
-                        <div className="text-xs text-slate-400">/month</div>
-                      </div>
-                    </button>
-                  );
-                })}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => setForm(prev => ({ ...prev, deploymentMode: 'Standalone', branches: [] }))}
+                className={`w-full text-left px-4 py-3.5 rounded-xl border transition flex items-start gap-3 ${
+                  form.deploymentMode === 'Standalone'
+                    ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20'
+                    : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <Store className={`w-5 h-5 shrink-0 mt-0.5 ${form.deploymentMode === 'Standalone' ? 'text-teal-600' : 'text-slate-400'}`} />
+                <span>
+                  <span className={`block text-sm font-bold ${form.deploymentMode === 'Standalone' ? 'text-teal-700' : 'text-slate-800'}`}>
+                    Single location
+                  </span>
+                  <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
+                    One shop. Everything — stock, staff, reports — lives in one place.
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setForm(prev => ({
+                  ...prev,
+                  deploymentMode: 'MultiBranch',
+                  // Open with one empty row so the next action is obvious.
+                  branches: prev.branches.length > 0 ? prev.branches : [{ name: '', code: '', city: '', address: '', phone: '' }]
+                }))}
+                className={`w-full text-left px-4 py-3.5 rounded-xl border transition flex items-start gap-3 ${
+                  form.deploymentMode === 'MultiBranch'
+                    ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20'
+                    : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <Building2 className={`w-5 h-5 shrink-0 mt-0.5 ${form.deploymentMode === 'MultiBranch' ? 'text-teal-600' : 'text-slate-400'}`} />
+                <span className="flex-1">
+                  <span className={`block text-sm font-bold ${form.deploymentMode === 'MultiBranch' ? 'text-teal-700' : 'text-slate-800'}`}>
+                    Head office + branches
+                  </span>
+                  <span className="block text-[11px] text-slate-500 leading-snug mt-0.5">
+                    Head office runs the back office — catalogue, purchasing, warehouse, accounts
+                    and group reporting — and pushes down to the branches. The till runs at the
+                    branches; head office has no POS screen.
+                  </span>
+                </span>
+              </button>
+            </div>
+
+            {/* Branch rows. Only the name is required; anything left blank inherits the head
+                office's city and province, which is the common case for a chain in one city.
+                No cap here — the plan step reports whether the chosen plan covers the count. */}
+            {form.deploymentMode === 'MultiBranch' && (
+              <div className="space-y-2.5 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider">
+                    Branches under head office
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {locationsNeeded} location{locationsNeeded === 1 ? '' : 's'} in total
+                  </span>
+                </div>
+
+                {form.branches.map((b, i) => (
+                  <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black text-slate-400 w-8 shrink-0">
+                        BR-{String(i + 1).padStart(2, '0')}
+                      </span>
+                      <input
+                        value={b.name}
+                        onChange={(e) => updateBranchRow(i, 'name', e.target.value)}
+                        placeholder="Branch name (e.g. Gulberg Outlet)"
+                        className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeBranchRow(i)}
+                        className="shrink-0 p-2 rounded-lg hover:bg-rose-50 text-rose-500 transition"
+                        title="Remove this branch"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 pl-10">
+                      <input
+                        value={b.city}
+                        onChange={(e) => updateBranchRow(i, 'city', e.target.value)}
+                        placeholder={form.city ? `City (${form.city})` : 'City'}
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                      />
+                      <input
+                        value={b.phone}
+                        onChange={(e) => updateBranchRow(i, 'phone', e.target.value)}
+                        placeholder="Phone (optional)"
+                        className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={addBranchRow}
+                  className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 hover:border-teal-400 hover:bg-teal-50/50 text-slate-600 hover:text-teal-700 text-xs font-bold transition flex items-center justify-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add another branch
+                </button>
+                <p className="text-[11px] text-slate-500 leading-snug">
+                  List as many as you run — the next step shows which plan covers them. You can
+                  always add more branches later.
+                </p>
               </div>
             )}
 
@@ -463,13 +626,115 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 3: The business itself — its name and where it trades. Drives currency and
-            the starting tax profile, which is why the country/province picker lives here. */}
+        {/* Step 3: Plan. Each option shows whether it covers the structure chosen at step 2,
+            so the trade-off is visible at the moment of choosing rather than at submit. */}
         {step === 3 && (
+          <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
+            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
+            <p className="text-sm text-slate-500">
+              Every plan gets the full 30-day trial and every plan supports a head office —
+              this just sets your location, device and user limits. Switch anytime.
+            </p>
+
+            {/* What the structure from step 2 actually requires, stated plainly so the
+                "covers your setup / too small" labels below have something to refer to. */}
+            {form.deploymentMode === 'MultiBranch' && (
+              <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+                Your setup needs <strong className="text-slate-900">{locationsNeeded} locations</strong>{' '}
+                — head office plus {namedBranches.length} branch{namedBranches.length === 1 ? '' : 'es'}.
+              </div>
+            )}
+
+            {packagesLoading ? (
+              <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading plans…
+              </div>
+            ) : packages.length === 0 ? (
+              <div className="py-4 text-center text-xs text-slate-400">
+                Couldn't load plans — you'll start on Starter and can upgrade later.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {packages.map(pkg => {
+                  const active = form.packageKey === pkg.packageKey;
+                  // Every plan runs a head office; a plan is only "too small" when it cannot
+                  // hold the number of locations already described. Still selectable, so the
+                  // person can go back and drop a branch instead of being blocked here.
+                  const covers = planCovers(pkg);
+                  return (
+                    <button
+                      key={pkg.packageKey}
+                      type="button"
+                      onClick={() => update('packageKey', pkg.packageKey)}
+                      className={`w-full text-left p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
+                        active
+                          ? 'border-teal-500 bg-teal-50 ring-2 ring-teal-500/20'
+                          : covers
+                            ? 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                            : 'border-slate-200 bg-slate-50 opacity-60 hover:border-slate-300'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
+                          {active && <Check className="w-4 h-4 text-teal-600" />}
+                          {form.deploymentMode === 'MultiBranch' && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
+                              covers
+                                ? 'bg-teal-50 text-teal-700 border-teal-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}>
+                              {covers ? 'Covers your setup' : `Holds ${pkg.maxBranches} — too small`}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1 leading-relaxed">
+                          {pkg.maxBranches >= 999 ? 'Unlimited locations' : `${pkg.maxBranches} location${pkg.maxBranches > 1 ? 's' : ''}`}
+                          {' · '}
+                          {pkg.maxCounters} counter{pkg.maxCounters > 1 ? 's' : ''} per branch
+                          {' · '}
+                          {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
+                          {' · '}
+                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
+                          {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
+                          {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
+                          {pkg.hasInventoryManagement ? ' · Inventory' : ''}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-base font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
+                        <div className="text-xs text-slate-400">/month</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setStep(2)}
+                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
+              >
+                Continue <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: The business itself — its name and where it trades. Drives currency and
+            the starting tax profile, which is why the country/province picker lives here. */}
+        {step === 4 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
               <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Business Details</h2>
-              <p className="text-sm text-slate-500">Where you trade. This sets your currency and starting tax rates.</p>
+              <p className="text-sm text-slate-500">Where you trade. This sets your currency and store location.</p>
             </div>
 
             <div className="relative">
@@ -535,29 +800,9 @@ export const TenantSignup: React.FC = () => {
               className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
             />
 
-            {selectedCountry && (() => {
-              const st = selectedCountry.states?.find(s => s.code === form.stateCode);
-              const cash = st?.cashTaxRate ?? selectedCountry.defaultTaxRate;
-              const digital = st?.digitalTaxRate ?? selectedCountry.digitalTaxRate;
-              const usesDual = selectedCountry.useDualTaxRate || st?.cashTaxRate != null;
-              return (
-                <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 leading-snug">
-                  <span className="font-bold text-slate-800">
-                    Starting tax{st ? ` (${st.name})` : ''}: {selectedCountry.currencyCode} · {
-                      usesDual && cash != null
-                        ? `${cash}% cash / ${digital}% digital`
-                        : cash != null
-                          ? `${cash}% flat`
-                          : 'not configured'
-                    }.
-                  </span> Editable anytime in Tax Configuration.
-                </div>
-              );
-            })()}
-
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(2)}
+                onClick={() => setStep(3)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -572,10 +817,10 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 4: The owner's own account — kept separate from the business details because
+        {/* Step 5: The owner's own account — kept separate from the business details because
             it is a different kind of answer (who you are, not where the shop is) and because
             the PIN deserves a screen where it is the only thing being asked for. */}
-        {step === 4 && (
+        {step === 5 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
               <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Owner Account</h2>
@@ -670,7 +915,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(4)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -686,8 +931,8 @@ export const TenantSignup: React.FC = () => {
         )}
 
 
-        {/* Step 5: Review & Create */}
-        {step === 5 && (
+        {/* Step 6: Review & Create */}
+        {step === 6 && (
           <div className="space-y-2.5 p-5 rounded-2xl bg-white border border-slate-200">
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
 
@@ -695,6 +940,15 @@ export const TenantSignup: React.FC = () => {
               {[
                 { label: 'Business', value: form.restaurantName },
                 { label: 'Sector', value: verticalPacks.find(p => p.key === form.verticalPack)?.displayName ?? form.verticalPack },
+                {
+                  label: 'Structure',
+                  value: form.deploymentMode === 'MultiBranch'
+                    ? `Head office + ${form.branches.filter(b => b.name.trim()).length} branch(es)`
+                    : 'Single location'
+                },
+                ...(form.deploymentMode === 'MultiBranch'
+                  ? [{ label: 'Branches', value: form.branches.filter(b => b.name.trim()).map(b => b.name.trim()).join(', ') }]
+                  : []),
                 { label: 'Country', value: form.country },
                 ...(form.stateName ? [{ label: form.country === 'Pakistan' ? 'Province' : 'State/Region', value: form.stateName }] : []),
                 { label: 'City', value: form.city || 'Islamabad' },
@@ -718,7 +972,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(4)}
+                onClick={() => setStep(5)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back

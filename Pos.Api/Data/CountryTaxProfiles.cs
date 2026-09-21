@@ -7,7 +7,7 @@ namespace Pos.Api.Data;
 /// The actual applied rate always comes from <see cref="Pos.Api.Models.TaxJurisdiction"/> at
 /// runtime (seeded in DbSeeder.cs); if that table's numbers ever change, update both.
 /// </summary>
-public record CountryState(string Code, string Name, decimal? CashTaxRate = null, decimal? DigitalTaxRate = null);
+public record CountryState(string Code, string Name, decimal? CashTaxRate = null, decimal? DigitalTaxRate = null, string? AuthorityName = null);
 
 /// <summary>
 /// A country's signup defaults: locale (phone/currency) plus a starting tax configuration.
@@ -36,20 +36,67 @@ public record CountryProfile(
 
 public static class CountryTaxProfiles
 {
-    /// <summary>
-    /// The 5 countries with a real, maintained tax starting point. Pakistan's provincial rates
-    /// live in the existing <see cref="Pos.Api.Models.TaxJurisdiction"/> table (single source of
-    /// truth — not duplicated here); everyone else gets one flat national rate or an explicit
-    /// "we don't know, please set it" flag.
-    /// </summary>
-    private static readonly List<CountryProfile> Detailed = new()
+    public static CountryProfile BuildPakistanProfile(string? verticalPack)
     {
-        new("Pakistan", "PK", "+92", "PKR", "₨", "FBR", 16, 8, true, true,
-            "Cash vs. digital-payment tax split applies automatically (FBR policy). Pick your province to enable provincial rates.",
-            new() {
-                new("PK-PB", "Punjab", 16, 16), new("PK-SD", "Sindh", 15, 15), new("PK-KP", "Khyber Pakhtunkhwa", 15, 15),
-                new("PK-BA", "Balochistan", 15, 15), new("PK-ICT", "Islamabad Capital Territory", 16, 16)
-            }),
+        var norm = (verticalPack ?? "restaurant").Trim().ToLowerInvariant();
+        switch (norm)
+        {
+            case "retail":
+            case "apparel":
+            case "grocery":
+            case "wholesale":
+                return new("Pakistan", "PK", "+92", "PKR", "₨", "FBR", 18, 18, false, false,
+                    "Federal 18% General Sales Tax (GST) applies nationwide on retail goods across all provinces.",
+                    new() {
+                        new("PK-PB", "Punjab", 18, 18, "FBR (Punjab)"),
+                        new("PK-SD", "Sindh", 18, 18, "FBR (Sindh)"),
+                        new("PK-KP", "Khyber Pakhtunkhwa", 18, 18, "FBR (KP)"),
+                        new("PK-BA", "Balochistan", 18, 18, "FBR (Balochistan)"),
+                        new("PK-ICT", "Islamabad Capital Territory", 18, 18, "FBR (ICT)")
+                    });
+
+            case "pharmacy":
+                return new("Pakistan", "PK", "+92", "PKR", "₨", "FBR / DRAP", 0, 0, false, false,
+                    "0% Sales Tax Exempt on prescription medicines and life-saving drugs under FBR/DRAP regulations.",
+                    new() {
+                        new("PK-PB", "Punjab", 0, 0, "FBR / DRAP (Tax-Exempt)"),
+                        new("PK-SD", "Sindh", 0, 0, "FBR / DRAP (Tax-Exempt)"),
+                        new("PK-KP", "Khyber Pakhtunkhwa", 0, 0, "FBR / DRAP (Tax-Exempt)"),
+                        new("PK-BA", "Balochistan", 0, 0, "FBR / DRAP (Tax-Exempt)"),
+                        new("PK-ICT", "Islamabad Capital Territory", 0, 0, "FBR / DRAP (Tax-Exempt)")
+                    });
+
+            case "salon":
+            case "services":
+                return new("Pakistan", "PK", "+92", "PKR", "₨", "Provincial Revenue Authorities", 16, 16, false, true,
+                    "Provincial sales tax on services: Punjab 16% (PRA), Sindh 13% (SRB), Islamabad 15% (FBR), KPK 15% (KPRA), Balochistan 15% (BRA).",
+                    new() {
+                        new("PK-PB", "Punjab", 16, 16, "PRA (Punjab)"),
+                        new("PK-SD", "Sindh", 13, 13, "SRB (Sindh)"),
+                        new("PK-KP", "Khyber Pakhtunkhwa", 15, 15, "KPRA (Khyber Pakhtunkhwa)"),
+                        new("PK-BA", "Balochistan", 15, 15, "BRA (Balochistan)"),
+                        new("PK-ICT", "Islamabad Capital Territory", 15, 15, "FBR (Islamabad)")
+                    });
+
+            case "restaurant":
+            default:
+                return new("Pakistan", "PK", "+92", "PKR", "₨", "PRA / Provincial Revenue Authorities", 16, 5, true, true,
+                    "Provincial sales tax on food & restaurant services: Punjab 16% cash / 5% digital (PRA), Sindh 15% cash / 8% digital (SRB), Islamabad 15% cash / 5% digital (FBR).",
+                    new() {
+                        new("PK-PB", "Punjab", 16, 5, "PRA (Punjab)"),
+                        new("PK-SD", "Sindh", 15, 8, "SRB (Sindh)"),
+                        new("PK-KP", "Khyber Pakhtunkhwa", 15, 5, "KPRA (Khyber Pakhtunkhwa)"),
+                        new("PK-BA", "Balochistan", 15, 15, "BRA (Balochistan)"),
+                        new("PK-ICT", "Islamabad Capital Territory", 15, 5, "FBR (Islamabad)")
+                    });
+        }
+    }
+
+    /// <summary>
+    /// Static country profiles for non-Pakistan countries where tax does not depend on the vertical pack.
+    /// </summary>
+    private static readonly List<CountryProfile> DetailedInternational = new()
+    {
         new("United Arab Emirates", "AE", "+971", "AED", "د.إ", "Federal Tax Authority (FTA)", 5, 5, false, false,
             "Flat 5% VAT nationwide.",
             new() {
@@ -159,11 +206,12 @@ public static class CountryTaxProfiles
         ("Zimbabwe","ZW","+263","ZWL","$"),
     };
 
-    public static readonly List<CountryProfile> All = BuildAll();
+    public static readonly List<CountryProfile> All = GetAll(null);
 
-    private static List<CountryProfile> BuildAll()
+    public static List<CountryProfile> GetAll(string? verticalPack = null)
     {
-        var list = new List<CountryProfile>(Detailed);
+        var list = new List<CountryProfile> { BuildPakistanProfile(verticalPack) };
+        list.AddRange(DetailedInternational);
         list.AddRange(Generic.Select(g => new CountryProfile(
             g.Name, g.Iso2, g.Phone, g.Cur, g.Sym,
             null, null, null, false, false,
@@ -172,6 +220,11 @@ public static class CountryTaxProfiles
         return list.OrderBy(c => c.Name, StringComparer.Ordinal).ToList();
     }
 
-    public static CountryProfile? FindByName(string? name) =>
-        string.IsNullOrWhiteSpace(name) ? null : All.FirstOrDefault(c => c.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase));
+    public static CountryProfile? FindByName(string? name, string? verticalPack = null)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var trimmed = name.Trim();
+        var profiles = GetAll(verticalPack);
+        return profiles.FirstOrDefault(c => c.Name.Equals(trimmed, StringComparison.OrdinalIgnoreCase) || c.Iso2.Equals(trimmed, StringComparison.OrdinalIgnoreCase));
+    }
 }
