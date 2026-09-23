@@ -3047,6 +3047,31 @@ api.MapPost("/devices/pairing-codes", async (
             headOfficeIsErpOnly = true
         });
 
+    // Two ceilings, both real. The per-branch one stops a single shop over-filling its floor;
+    // the org-wide one is what the plan actually sells. Checked here rather than as an endpoint
+    // filter because only the handler knows which DEVICE CLASS was asked for — a filter would
+    // have applied the counter limit to tablets and kitchen screens too.
+    var orgLimitCode = dto.TerminalType switch
+    {
+        TerminalType.Counter => Pos.Api.Data.FeatureCodes.PosTerminals,
+        TerminalType.OrderTab => Pos.Api.Data.FeatureCodes.Tablets,
+        _ => null // kitchen screens and back-office PCs do not sell, so they are not metered
+    };
+    if (orgLimitCode != null)
+    {
+        var subs = http.RequestServices.GetRequiredService<Pos.Api.Services.ISubscriptionService>();
+        var orgLimit = await subs.CheckLimitAsync(scopedTenantId!.Value, orgLimitCode);
+        if (!orgLimit.Allowed)
+            return Results.Json(new
+            {
+                message = orgLimit.Reason,
+                featureCode = orgLimitCode,
+                inUse = orgLimit.InUse,
+                limit = orgLimit.Limit,
+                upgradeRequired = true
+            }, statusCode: StatusCodes.Status402PaymentRequired);
+    }
+
     var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, branch.Id, dto.TerminalType);
     if (!allowed)
         return Results.BadRequest(new
