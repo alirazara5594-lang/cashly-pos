@@ -87,6 +87,17 @@ public class AppDbContext : DbContext
     public DbSet<AddOnCatalogItem> AddOnCatalogItems => Set<AddOnCatalogItem>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
+    // --- Subscription / entitlements ---
+    public DbSet<Plan> Plans => Set<Plan>();
+    public DbSet<PlanFeature> PlanFeatures => Set<PlanFeature>();
+    public DbSet<OrganizationSubscription> OrganizationSubscriptions => Set<OrganizationSubscription>();
+
+    // --- Operations ---
+    public DbSet<Expense> Expenses => Set<Expense>();
+    public DbSet<SyncCursor> SyncCursors => Set<SyncCursor>();
+    public DbSet<SyncLog> SyncLogs => Set<SyncLog>();
+    public DbSet<BusinessHost> BusinessHosts => Set<BusinessHost>();
+
     // --- Platform control plane ---
     public DbSet<PairingCode> PairingCodes => Set<PairingCode>();
     public DbSet<TenantEntitlementOverride> TenantEntitlementOverrides => Set<TenantEntitlementOverride>();
@@ -637,6 +648,22 @@ public class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(s => s.UserId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // --- Subscription indexes ---
+        modelBuilder.Entity<Plan>().HasIndex(p => p.Code).IsUnique();
+        modelBuilder.Entity<PlanFeature>().HasIndex(f => new { f.PlanId, f.FeatureCode }).IsUnique();
+        modelBuilder.Entity<OrganizationSubscription>().HasIndex(s => s.TenantId);
+
+        // --- Operations indexes ---
+        modelBuilder.Entity<Expense>().HasIndex(e => new { e.TenantId, e.ExpenseDate });
+        modelBuilder.Entity<Expense>().HasIndex(e => new { e.BranchId, e.Status });
+        modelBuilder.Entity<Expense>().HasIndex(e => e.ExpenseNumber);
+        modelBuilder.Entity<SyncLog>().HasIndex(s => new { s.TenantId, s.StartedAt });
+        modelBuilder.Entity<SyncLog>().HasIndex(s => new { s.Status, s.StartedAt });
+        modelBuilder.Entity<SyncLog>().HasIndex(s => s.BatchId);
+        modelBuilder.Entity<SyncCursor>().HasIndex(c => new { c.TenantId, c.EntityType }).IsUnique();
+        modelBuilder.Entity<BusinessHost>().HasIndex(h => h.HostCode).IsUnique();
+        modelBuilder.Entity<BusinessHost>().HasIndex(h => new { h.TenantId, h.BranchId });
 
         // --- New platform-layer indexes ---
         modelBuilder.Entity<PairingCode>().HasIndex(p => p.CodeHash).IsUnique();

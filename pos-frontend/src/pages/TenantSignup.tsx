@@ -123,7 +123,7 @@ function formatPhoneLocal(iso2: string, raw: string): string {
   return digits.slice(0, 15);
 }
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 5;
 
 export const TenantSignup: React.FC = () => {
   const navigate = useNavigate();
@@ -202,13 +202,6 @@ export const TenantSignup: React.FC = () => {
   /** The pack currently chosen, for the capability preview under the dropdown. */
   const selectedPack = verticalPacks.find(p => p.key === form.verticalPack) ?? null;
 
-  // Step 1 — business type only. The dropdown always holds a valid value once the catalogue
-  // loads, so the only real failure is answering before it arrives.
-  const validateStep1 = () => {
-    if (!form.verticalPack) return setError('Choose what kind of business this is'), false;
-    return true;
-  };
-
   const selectedPackage = packages.find(p => p.packageKey === form.packageKey);
 
   /**
@@ -218,13 +211,13 @@ export const TenantSignup: React.FC = () => {
   const namedBranches = form.branches.filter(b => b.name.trim());
   const locationsNeeded = form.deploymentMode === 'MultiBranch' ? namedBranches.length + 1 : 1;
 
-  /** Does a given plan cover the structure chosen at step 2? */
+  /** Does a given plan cover the structure chosen at step 1? */
   const planCovers = (pkg: PublicPackage) => pkg.maxBranches >= locationsNeeded;
 
-  // Step 2 — the shape of the business. Deliberately NOT gated on the plan: running a head
-  // office is a fact about how the business is organised, and every plan supports it. What the
-  // plan decides is how many locations fit, which step 3 checks.
-  const validateStep2 = () => {
+  // Step 1 — the shape of the business, asked first. Deliberately NOT gated on the plan:
+  // running a head office is a fact about how the business is organised, and every plan
+  // supports it. What the plan decides is how many locations fit, which step 2 checks.
+  const validateStep1 = () => {
     if (form.deploymentMode === 'MultiBranch' && namedBranches.length === 0) {
       return setError('Add at least one branch, or switch to a single location.'), false;
     }
@@ -252,10 +245,10 @@ export const TenantSignup: React.FC = () => {
     setError('');
   };
 
-  // Step 3 — the plan. The only structural check that belongs here: does the chosen plan cover
+  // Step 2 — the plan. The only structural check that belongs here: does the chosen plan cover
   // the number of locations already described? Caught now rather than at submit, so nobody
-  // completes two more screens before finding out.
-  const validateStep3 = () => {
+  // completes three more screens before finding out.
+  const validateStep2 = () => {
     if (!form.packageKey) return setError('Choose a plan to continue'), false;
     if (selectedPackage && !planCovers(selectedPackage)) {
       return setError(
@@ -267,15 +260,16 @@ export const TenantSignup: React.FC = () => {
     return true;
   };
 
-  // Step 4 — the business itself: what it is called and where it is.
-  const validateStep4 = () => {
+  // Step 3 — the business itself: what trade it is in, what it is called and where it is.
+  const validateStep3 = () => {
+    if (!form.verticalPack) return setError('Choose what kind of business this is'), false;
     if (!form.restaurantName.trim()) return setError('Business name is required'), false;
     return true;
   };
 
-  // Step 5 — the owner's account. Kept apart from step 4 so a credential problem never sends
+  // Step 4 — the owner's account. Kept apart from step 3 so a credential problem never sends
   // someone back to re-check their address, and vice versa.
-  const validateStep5 = () => {
+  const validateStep4 = () => {
     if (!form.contactName.trim()) return setError('Your name is required'), false;
     if (!form.email.trim() || !form.email.includes('@')) return setError('Valid email is required'), false;
     if (!form.phone.trim()) return setError('Phone number is required'), false;
@@ -290,7 +284,6 @@ export const TenantSignup: React.FC = () => {
     else if (step === 2 && validateStep2()) setStep(3);
     else if (step === 3 && validateStep3()) setStep(4);
     else if (step === 4 && validateStep4()) setStep(5);
-    else if (step === 5 && validateStep5()) setStep(6);
   };
 
   // When the structure needs more locations than the currently-selected plan covers, move the
@@ -420,72 +413,11 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 1: Which business is this? Everything downstream — the POS layout, the item
-            fields, the wording, which sector screens exist — follows from this one answer,
-            so it is asked first and on its own. */}
+        {/* Step 1: THE FIRST QUESTION — one shop, or a head office with branches under it.
+            Asked before anything else because it is the most structural fact about the business,
+            and because it changes what the rest of the wizard is even for. Every plan supports
+            either shape; the plan only decides how many locations fit. */}
         {step === 1 && (
-          <div className="space-y-4 p-6 rounded-2xl bg-white border border-slate-200">
-            <div className="space-y-1">
-              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">What kind of business?</h2>
-              <p className="text-sm text-slate-500">This sets up the right screens and fields for your trade. You can add more later.</p>
-            </div>
-
-            <div className="relative">
-              <Layers className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-              <select
-                value={form.verticalPack}
-                onChange={(e) => {
-                  update('verticalPack', e.target.value);
-                  // Keep the legacy BusinessType field coherent for older screens that read it.
-                  update('businessType', packToLegacyBusinessType(e.target.value));
-                }}
-                disabled={verticalPacks.length === 0}
-                className="w-full pl-9 pr-9 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none appearance-none disabled:opacity-50"
-              >
-                {verticalPacks.length === 0
-                  ? <option>Loading business types…</option>
-                  : verticalPacks.map(pack => (
-                      <option key={pack.key} value={pack.key}>{pack.displayName}</option>
-                    ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-            </div>
-
-            {/* What the choice actually buys them. Shown because "Pharmacy" vs "Retail" is not
-                self-explanatory until you see that one gives you batch/expiry and the other does not. */}
-            {selectedPack && (
-              <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 space-y-2.5">
-                <p className="text-xs text-teal-800 leading-relaxed">{selectedPack.description}</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {PACK_HIGHLIGHTS
-                    .filter(h => selectedPack.capabilities?.[h.key])
-                    .map(h => (
-                      <span key={h.key} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-teal-200 text-[11px] font-semibold text-teal-700">
-                        <Check className="w-3 h-3" /> {h.label}
-                      </span>
-                    ))}
-                </div>
-                <div className="pt-1.5 border-t border-teal-200 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-teal-800">
-                  <span><span className="opacity-70">Your catalog:</span> <strong>{selectedPack.catalogNoun}</strong></span>
-                  <span><span className="opacity-70">Each sale:</span> <strong>{selectedPack.saleNoun}</strong></span>
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={handleNext}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
-            >
-              Continue <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Step 2: How the business is SHAPED — one shop, or a head office with branches under
-            it. Asked BEFORE the plan, because the shape is a fact about the business while the
-            plan is a commercial choice that follows from it. Every plan supports either shape;
-            the plan only decides how many locations fit. */}
-        {step === 2 && (
           <div className="space-y-4 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
               <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">How many locations?</h2>
@@ -609,26 +541,18 @@ export const TenantSignup: React.FC = () => {
               </div>
             )}
 
-            <div className="flex gap-3">
-              <button
-                onClick={() => setStep(1)}
-                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleNext}
-                className="flex-1 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
-              >
-                Continue <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
+            <button
+              onClick={handleNext}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition flex items-center justify-center gap-2 shadow-lg shadow-teal-500/25"
+            >
+              Continue <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
         )}
 
-        {/* Step 3: Plan. Each option shows whether it covers the structure chosen at step 2,
-            so the trade-off is visible at the moment of choosing rather than at submit. */}
-        {step === 3 && (
+        {/* Step 2: Plan. Every plan runs either structure; each option says whether it covers
+            the number of locations described at step 1. */}
+        {step === 2 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
             <p className="text-sm text-slate-500">
@@ -713,7 +637,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(2)}
+                onClick={() => setStep(1)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -728,14 +652,57 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 4: The business itself — its name and where it trades. Drives currency and
-            the starting tax profile, which is why the country/province picker lives here. */}
-        {step === 4 && (
+        {/* Step 3: Everything about the business itself — what trade it is in, what it is called
+            and where it trades. The sector dropdown lives here now that the structure question
+            owns the opening screen. */}
+        {step === 3 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
               <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Business Details</h2>
-              <p className="text-sm text-slate-500">Where you trade. This sets your currency and store location.</p>
+              <p className="text-sm text-slate-500">Your trade, your name, and where you operate.</p>
             </div>
+
+            <div className="relative">
+              <Layers className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+              <select
+                value={form.verticalPack}
+                onChange={(e) => {
+                  update('verticalPack', e.target.value);
+                  // Keep the legacy BusinessType field coherent for older screens that read it.
+                  update('businessType', packToLegacyBusinessType(e.target.value));
+                }}
+                disabled={verticalPacks.length === 0}
+                className="w-full pl-9 pr-9 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none appearance-none disabled:opacity-50"
+              >
+                {verticalPacks.length === 0
+                  ? <option>Loading business types…</option>
+                  : verticalPacks.map(pack => (
+                      <option key={pack.key} value={pack.key}>{pack.displayName}</option>
+                    ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            </div>
+
+            {/* What the choice actually buys them. Shown because "Pharmacy" vs "Retail" is not
+                self-explanatory until you see that one gives you batch/expiry and the other does not. */}
+            {selectedPack && (
+              <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 space-y-2.5">
+                <p className="text-xs text-teal-800 leading-relaxed">{selectedPack.description}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {PACK_HIGHLIGHTS
+                    .filter(h => selectedPack.capabilities?.[h.key])
+                    .map(h => (
+                      <span key={h.key} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-teal-200 text-[11px] font-semibold text-teal-700">
+                        <Check className="w-3 h-3" /> {h.label}
+                      </span>
+                    ))}
+                </div>
+                <div className="pt-1.5 border-t border-teal-200 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-teal-800">
+                  <span><span className="opacity-70">Your catalog:</span> <strong>{selectedPack.catalogNoun}</strong></span>
+                  <span><span className="opacity-70">Each sale:</span> <strong>{selectedPack.saleNoun}</strong></span>
+                </div>
+              </div>
+            )}
 
             <div className="relative">
               <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -802,7 +769,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(2)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -817,10 +784,8 @@ export const TenantSignup: React.FC = () => {
           </div>
         )}
 
-        {/* Step 5: The owner's own account — kept separate from the business details because
-            it is a different kind of answer (who you are, not where the shop is) and because
-            the PIN deserves a screen where it is the only thing being asked for. */}
-        {step === 5 && (
+        {/* Step 4: The owner's own account. */}
+        {step === 4 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
               <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Owner Account</h2>
@@ -915,7 +880,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(4)}
+                onClick={() => setStep(3)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back
@@ -931,8 +896,8 @@ export const TenantSignup: React.FC = () => {
         )}
 
 
-        {/* Step 6: Review & Create */}
-        {step === 6 && (
+        {/* Step 5: Review & Create */}
+        {step === 5 && (
           <div className="space-y-2.5 p-5 rounded-2xl bg-white border border-slate-200">
             <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
 
@@ -972,7 +937,7 @@ export const TenantSignup: React.FC = () => {
 
             <div className="flex gap-3">
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep(4)}
                 className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition"
               >
                 Back

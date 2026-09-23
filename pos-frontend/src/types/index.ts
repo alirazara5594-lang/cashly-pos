@@ -169,9 +169,9 @@ export interface MyPackageInfo {
 // --- Device activation & licensing ---
 
 export interface DeviceCapacity {
-  terminalType: 'Counter' | 'OrderTab' | 'KitchenDisplay';
+  terminalType: TerminalType;
   inUse: number;
-  /** null means unmetered (kitchen displays are not charged for). */
+  /** null means unmetered — kitchen screens and back-office workstations do not sell. */
   limit: number | null;
   canAdd: boolean;
 }
@@ -210,6 +210,8 @@ export interface DeviceActivationResponse {
   branchName: string;
   branchCode: string;
   isHeadOffice: boolean;
+  /** Which app this machine just became — decided by the device class, not its address. */
+  appSurface: 'Erp' | 'Pos' | 'Hybrid';
   packs: string[];
   primaryPack: string;
 }
@@ -226,6 +228,7 @@ export interface HeartbeatResponse {
   snapshotVersion?: number;
   terminalName?: string;
   terminalType?: string;
+  appSurface?: 'Erp' | 'Pos' | 'Hybrid';
   packs?: string[];
   primaryPack?: string;
   features?: Record<string, boolean>;
@@ -254,7 +257,7 @@ export interface PublicPackage {
   hasMultiBranch: boolean;
   whatsAppMessagesPerMonth: number;
 }
-export type TerminalType = 'Counter' | 'OrderTab' | 'KitchenDisplay';
+export type TerminalType = 'Counter' | 'OrderTab' | 'KitchenDisplay' | 'BackOffice';
 export type OrderType = 'DineIn' | 'Takeaway' | 'Delivery' | 'CallOrder';
 export type OrderStatus = 'New' | 'InKitchen' | 'ReadyForDispatch' | 'OutForDelivery' | 'Completed' | 'Cancelled';
 export type PaymentMethod = 'Cash' | 'Card' | 'JazzCash' | 'EasyPaisa' | 'Raast' | 'CustomerKhata' | 'Split';
@@ -848,7 +851,12 @@ export interface SetupStatusResponse {
   }>;
 }
 
-export type TerminalOperatingMode = 'CounterPOS' | 'OwnerAdmin' | 'WaiterTab' | 'KitchenKDS';
+/**
+ * What this installed machine is set up to be. Chosen at activation via the pairing code, not
+ * by where the machine physically sits — an office PC in the same building as the till is still
+ * a 'BackOfficeERP' machine.
+ */
+export type TerminalOperatingMode = 'CounterPOS' | 'OwnerAdmin' | 'WaiterTab' | 'KitchenKDS' | 'BackOfficeERP';
 
 export interface Terminal {
   id: string;

@@ -50,17 +50,31 @@ public sealed record EffectiveEntitlements
     public bool Has(string flagName) => Features.TryGetValue(flagName, out var on) && on;
 
     /// <summary>
-    /// Which app surface someone standing at <paramref name="isHeadOfficeBranch"/> should see.
+    /// Which app surface this session should see.
     ///
     /// One rule, in one place, so the sidebar, the router, the device-activation check and the
     /// API guards cannot drift into disagreeing about whether this person gets a till.
+    ///
+    /// The DEVICE wins when there is one. A machine activated as a back-office workstation runs
+    /// the ERP no matter where it sits — which is the whole answer to "how does the software know
+    /// this PC is the office and that one is the counter?". It knows because somebody said so
+    /// when they activated it, not because of the address.
+    ///
+    /// With no device (a plain browser login) it falls back to the org shape: head office of a
+    /// chain administers, a branch sells, a standalone shop does both.
     /// </summary>
-    public AppSurface SurfaceFor(bool isHeadOfficeBranch) =>
-        DeploymentMode != DeploymentMode.HeadOffice
+    public AppSurface SurfaceFor(bool isHeadOfficeBranch, TerminalType? deviceType = null)
+    {
+        if (deviceType == TerminalType.BackOffice) return AppSurface.Erp;
+        if (deviceType is TerminalType.Counter or TerminalType.OrderTab or TerminalType.KitchenDisplay)
+            return AppSurface.Pos;
+
+        return DeploymentMode != DeploymentMode.HeadOffice
             ? AppSurface.Hybrid            // standalone: one app that both sells and administers
             : isHeadOfficeBranch
                 ? AppSurface.Erp           // chain head office: administers, never sells
                 : AppSurface.Pos;          // chain branch: sells, plus its own back office
+    }
 
     /// <summary>
     /// True when this tenant's head office is a pure back office. Used to refuse activating a
@@ -387,9 +401,10 @@ public class EntitlementService : IEntitlementService
     {
         var ent = await GetAsync(tenantId);
 
-        // KDS screens are not metered — they are a display, not a till, and charging for them
-        // just pushes kitchens back to paper.
-        if (type == TerminalType.KitchenDisplay)
+        // Non-selling devices are not metered. A kitchen screen and a back-office workstation
+        // both cost the business money to run and earn the platform nothing per-seat; metering
+        // them just pushes kitchens back to paper and accounts back into spreadsheets.
+        if (type is TerminalType.KitchenDisplay or TerminalType.BackOffice)
             return (true, await CountDevicesInUseAsync(branchId, type), int.MaxValue);
 
         var baseLimit = type == TerminalType.OrderTab ? ent.MaxOrderTabs : ent.MaxCounters;

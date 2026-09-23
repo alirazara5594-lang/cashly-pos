@@ -139,6 +139,12 @@ public static class ModuleBaseline
     // within them (void, discount) are gated separately via RequirePermissionFilter + AppUser.Can* flags.
     private static readonly HashSet<string> ReadOnlyByDefaultModules = new() { "menu", "inventory", "reports", "accounts", "supplychain" };
 
+    /// <summary>The books. An Accountant works here all day and should not need a grant to do it.</summary>
+    private static readonly HashSet<string> AccountingModules = new() { "accounts", "reports" };
+
+    /// <summary>Stock and supply. An Inventory User's whole job.</summary>
+    private static readonly HashSet<string> StockModules = new() { "inventory", "supplychain" };
+
     public static bool GetBaseline(UserRole role, string moduleKey, string action)
     {
         if (role == UserRole.BranchManager)
@@ -151,6 +157,27 @@ public static class ModuleBaseline
                 return action == "view"; // read/request-only until Owner grants more via ModulePermission UI
             return false; // "admin", "users" modules: no baseline access for BranchManager
         }
+
+        // A bookkeeper who can only LOOK at the ledger cannot do the job, so these get edit by
+        // baseline — the point of the role is that nobody has to hand them manager access to
+        // post a journal. They still get nothing outside the books: no roster, no staff, no POS.
+        if (role == UserRole.Accountant)
+        {
+            if (AccountingModules.Contains(moduleKey)) return action is "view" or "edit" or "export";
+            if (moduleKey == "inventory") return action == "view"; // stock valuation feeds the P&L
+            return false;
+        }
+
+        // Same reasoning for a storekeeper: receiving stock and raising a PO is the job, so it
+        // is baseline. Financial reporting is not — knowing what the shop earns is a separate
+        // question from knowing what is on the shelf.
+        if (role == UserRole.InventoryUser)
+        {
+            if (StockModules.Contains(moduleKey)) return action is "view" or "edit";
+            if (moduleKey == "menu") return action == "view"; // needs to see items to count them
+            return false;
+        }
+
         return false; // Cashier / KitchenChef / Waiter: no baseline back-office access
     }
 }

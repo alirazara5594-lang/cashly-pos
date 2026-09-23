@@ -11,6 +11,42 @@ public static class DbSeeder
     {
         await db.Database.EnsureCreatedAsync();
 
+        // --- Plans and their feature rows -----------------------------------
+        // Seeded from FeatureCatalog so the matrix has exactly one definition. Feature rows are
+        // reconciled on every start: adding a capability to the catalogue makes it appear on the
+        // existing plans without a migration, which is the whole reason features are rows.
+        foreach (var (code, name, description, monthly, yearly, rank) in FeatureCatalog.Plans)
+        {
+            var plan = await db.Plans.FirstOrDefaultAsync(p => p.Code == code);
+            if (plan == null)
+            {
+                plan = new Plan
+                {
+                    Code = code, Name = name, Description = description,
+                    MonthlyPricePKR = monthly, YearlyPricePKR = yearly, Rank = rank, IsActive = true
+                };
+                db.Plans.Add(plan);
+                await db.SaveChangesAsync();
+            }
+
+            var existingCodes = await db.PlanFeatures
+                .Where(f => f.PlanId == plan.Id)
+                .Select(f => f.FeatureCode)
+                .ToListAsync();
+
+            // Only ADD missing rows. An operator who deliberately raised a limit for a plan must
+            // not have that overwritten every time the service restarts.
+            var missing = FeatureCatalog.BuildFeatureRows(plan.Id, plan.Code)
+                .Where(r => !existingCodes.Contains(r.FeatureCode))
+                .ToList();
+
+            if (missing.Count > 0)
+            {
+                db.PlanFeatures.AddRange(missing);
+                await db.SaveChangesAsync();
+            }
+        }
+
         // Only seed super admin — everything else is created by the user
         if (!await db.Users.AnyAsync(u => u.Role == UserRole.SuperAdmin))
         {

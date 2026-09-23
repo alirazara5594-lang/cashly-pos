@@ -26,6 +26,17 @@ export interface DeviceStatus {
   graceEndsAt?: string;
   terminalName?: string;
   terminalType?: string;
+  /**
+   * Which application this machine is. Stored alongside the licence so an office PC boots
+   * straight into the ERP even with no network — the answer came from the pairing code that
+   * installed it, not from anything it has to look up.
+   */
+  appSurface?: 'Erp' | 'Pos' | 'Hybrid';
+}
+
+/** What this installed machine is, for screens that need it before a heartbeat completes. */
+export function getDeviceSurface(): 'Erp' | 'Pos' | 'Hybrid' | null {
+  return getCachedStatus().appSurface ?? null;
 }
 
 /**
@@ -109,12 +120,15 @@ export async function activate(pairingCode: string): Promise<DeviceStatus> {
 
   const status: DeviceStatus = {
     state: 'Valid',
-    canSell: true,
+    // A back-office workstation never sells, and saying otherwise here would let the ERP shell
+    // offer a checkout it has no business offering.
+    canSell: res.appSurface !== 'Erp',
     mustReactivate: false,
     expiresAt: res.expiresAt,
     graceEndsAt: res.graceEndsAt,
     terminalName: res.terminalName,
-    terminalType: res.terminalType
+    terminalType: res.terminalType,
+    appSurface: res.appSurface
   };
   safeSet(LAST_STATE_KEY, JSON.stringify(status));
   return status;
@@ -141,12 +155,13 @@ export async function heartbeat(): Promise<DeviceStatus> {
 
     const status: DeviceStatus = {
       state: 'Valid',
-      canSell: res.canSell !== false,
+      canSell: res.appSurface !== 'Erp' && res.canSell !== false,
       mustReactivate: false,
       expiresAt: res.expiresAt,
       graceEndsAt: res.graceEndsAt,
       terminalName: res.terminalName,
-      terminalType: res.terminalType
+      terminalType: res.terminalType,
+      appSurface: res.appSurface
     };
     safeSet(LAST_STATE_KEY, JSON.stringify(status));
     return status;

@@ -40,6 +40,7 @@ import {
   Puzzle
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
+import { getDeviceSurface } from '../services/deviceLicense';
 import type { ModuleKey, PermissionAction } from '../types';
 
 interface SidebarProps {
@@ -90,7 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
   // Head office of a chain runs the ERP only. The server resolves this (deployment mode plus
   // which branch you sit at) so the sidebar, the router and the API cannot disagree about it.
-  const isErpOnly = packageInfo?.appSurface === 'Erp';
+  const isErpOnly = getDeviceSurface() === 'Erp' || packageInfo?.appSurface === 'Erp';
   // Retail/Cash & Carry tenants have no kitchen and no dine-in tables — those screens
   // would just be dead weight in their sidebar.
   const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';

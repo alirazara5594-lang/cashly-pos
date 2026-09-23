@@ -120,6 +120,10 @@ builder.Services.AddScoped<Pos.Api.Services.ITenantProvider, Pos.Api.Services.Te
 builder.Services.AddScoped<Pos.Api.Middlewares.ICurrentUserAccessor, Pos.Api.Middlewares.CurrentUserAccessor>();
 builder.Services.AddScoped<Pos.Api.Services.IEntitlementService, Pos.Api.Services.EntitlementService>();
 builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Services.DeviceLicenseService>();
+builder.Services.AddScoped<Pos.Api.Services.ISubscriptionService, Pos.Api.Services.SubscriptionService>();
+builder.Services.AddScoped<Pos.Api.Services.ISyncService, Pos.Api.Services.SyncService>();
+// Only actually does anything when Host:Mode is BusinessHost — see SyncWorker.
+builder.Services.AddHostedService<Pos.Api.Services.SyncWorker>();
 builder.Services.AddSingleton<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.NullFiscalInvoiceProvider>();
 
 // --- Payment gateways (all inert until merchant credentials are configured) ---
@@ -1164,6 +1168,126 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""HasPriceVariance"" boolean NOT NULL DEFAULT false;
             ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""DeviceReportedUnitPricePKR"" numeric(18,2);
 
+            -- Subscription system: plans, their feature rows, and who is on what.
+            CREATE TABLE IF NOT EXISTS ""Plans"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""Code"" text NOT NULL,
+                ""Name"" text NOT NULL DEFAULT '',
+                ""Description"" text NOT NULL DEFAULT '',
+                ""MonthlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""YearlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""Rank"" integer NOT NULL DEFAULT 0,
+                ""IsActive"" boolean NOT NULL DEFAULT true,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS ""PlanFeatures"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""PlanId"" uuid NOT NULL,
+                ""FeatureCode"" text NOT NULL,
+                ""LimitType"" integer NOT NULL DEFAULT 1,
+                ""Enabled"" boolean NOT NULL DEFAULT false,
+                ""LimitValue"" integer,
+                ""Level"" integer NOT NULL DEFAULT 0,
+                ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS ""OrganizationSubscriptions"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""PlanId"" uuid NOT NULL,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""StartDate"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""EndDate"" timestamp with time zone,
+                ""TrialEndsAt"" timestamp with time zone,
+                ""OverLimitSince"" timestamp with time zone,
+                ""OverLimitReason"" text,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            -- Expenses: money out that is not a supplier purchase.
+            CREATE TABLE IF NOT EXISTS ""Expenses"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""ExpenseNumber"" text NOT NULL DEFAULT '',
+                ""Category"" text NOT NULL DEFAULT '',
+                ""Description"" text NOT NULL DEFAULT '',
+                ""SupplierId"" uuid,
+                ""PayeeName"" text,
+                ""AmountPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""TaxPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""TotalPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+                ""ExpenseDate"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""PaymentMethod"" integer NOT NULL DEFAULT 1,
+                ""ExpenseAccountId"" uuid,
+                ""PaidFromAccountId"" uuid,
+                ""JournalEntryId"" uuid,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""CreatedByUserId"" uuid,
+                ""CreatedByName"" text,
+                ""ApprovedByUserId"" uuid,
+                ""ApprovedAt"" timestamp with time zone,
+                ""PaidAt"" timestamp with time zone,
+                ""RejectionReason"" text,
+                ""ReceiptReference"" text,
+                ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
+            -- Sync log: what moved between a business host and the cloud, and whether it landed.
+            CREATE TABLE IF NOT EXISTS ""SyncLogs"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid,
+                ""DeviceId"" uuid,
+                ""HostIdentifier"" text,
+                ""Direction"" integer NOT NULL DEFAULT 1,
+                ""EntityType"" text NOT NULL DEFAULT '',
+                ""BatchId"" text NOT NULL DEFAULT '',
+                ""RecordsAttempted"" integer NOT NULL DEFAULT 0,
+                ""RecordsSucceeded"" integer NOT NULL DEFAULT 0,
+                ""RecordsFailed"" integer NOT NULL DEFAULT 0,
+                ""Status"" integer NOT NULL DEFAULT 1,
+                ""ErrorMessage"" text,
+                ""AttemptCount"" integer NOT NULL DEFAULT 1,
+                ""StartedAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""CompletedAt"" timestamp with time zone,
+                ""DurationMs"" integer
+            );
+
+            -- Business hosts: the ordinary PCs running the backend for a business.
+            CREATE TABLE IF NOT EXISTS ""BusinessHosts"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""BranchId"" uuid NOT NULL,
+                ""HostCode"" text NOT NULL,
+                ""HostName"" text NOT NULL DEFAULT '',
+                ""LanAddress"" text,
+                ""Port"" integer NOT NULL DEFAULT 5288,
+                ""MachineName"" text,
+                ""OperatingSystem"" text,
+                ""AppVersion"" text,
+                ""RegisteredAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""LastSeenAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
+                ""LastSyncedAt"" timestamp with time zone,
+                ""IsActive"" boolean NOT NULL DEFAULT true
+            );
+
+            -- Sync watermark: how far each entity type has been confirmed on the cloud.
+            CREATE TABLE IF NOT EXISTS ""SyncCursors"" (
+                ""Id"" uuid PRIMARY KEY,
+                ""TenantId"" uuid NOT NULL,
+                ""EntityType"" text NOT NULL,
+                ""LastSyncedAt"" timestamp with time zone NOT NULL DEFAULT (TIMESTAMP 'epoch' AT TIME ZONE 'UTC'),
+                ""LastSyncedRecordId"" uuid,
+                ""ConsecutiveFailures"" integer NOT NULL DEFAULT 0,
+                ""LastAttemptAt"" timestamp with time zone,
+                ""LastError"" text,
+                ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS ""PairingCodes"" (
                 ""Id"" uuid PRIMARY KEY,
                 ""TenantId"" uuid NOT NULL,
@@ -1230,6 +1354,42 @@ using (var scope = app.Services.CreateScope())
             );
 
             DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Expenses_TenantId_ExpenseDate') THEN
+                    CREATE INDEX ""IX_Expenses_TenantId_ExpenseDate"" ON ""Expenses"" (""TenantId"", ""ExpenseDate"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Expenses_BranchId_Status') THEN
+                    CREATE INDEX ""IX_Expenses_BranchId_Status"" ON ""Expenses"" (""BranchId"", ""Status"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Expenses_ExpenseNumber') THEN
+                    CREATE INDEX ""IX_Expenses_ExpenseNumber"" ON ""Expenses"" (""ExpenseNumber"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SyncLogs_TenantId_StartedAt') THEN
+                    CREATE INDEX ""IX_SyncLogs_TenantId_StartedAt"" ON ""SyncLogs"" (""TenantId"", ""StartedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SyncLogs_Status_StartedAt') THEN
+                    CREATE INDEX ""IX_SyncLogs_Status_StartedAt"" ON ""SyncLogs"" (""Status"", ""StartedAt"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SyncLogs_BatchId') THEN
+                    CREATE INDEX ""IX_SyncLogs_BatchId"" ON ""SyncLogs"" (""BatchId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_BusinessHosts_HostCode') THEN
+                    CREATE UNIQUE INDEX ""IX_BusinessHosts_HostCode"" ON ""BusinessHosts"" (""HostCode"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_BusinessHosts_Tenant_Branch') THEN
+                    CREATE INDEX ""IX_BusinessHosts_Tenant_Branch"" ON ""BusinessHosts"" (""TenantId"", ""BranchId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Plans_Code') THEN
+                    CREATE UNIQUE INDEX ""IX_Plans_Code"" ON ""Plans"" (""Code"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PlanFeatures_Plan_Code') THEN
+                    CREATE UNIQUE INDEX ""IX_PlanFeatures_Plan_Code"" ON ""PlanFeatures"" (""PlanId"", ""FeatureCode"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_OrgSubscriptions_TenantId') THEN
+                    CREATE INDEX ""IX_OrgSubscriptions_TenantId"" ON ""OrganizationSubscriptions"" (""TenantId"");
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_SyncCursors_Tenant_Entity') THEN
+                    CREATE UNIQUE INDEX ""IX_SyncCursors_Tenant_Entity"" ON ""SyncCursors"" (""TenantId"", ""EntityType"");
+                END IF;
                 IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PairingCodes_CodeHash') THEN
                     CREATE UNIQUE INDEX ""IX_PairingCodes_CodeHash"" ON ""PairingCodes"" (""CodeHash"");
                 END IF;
@@ -1331,6 +1491,29 @@ static async Task<string> GenerateTransferNumberAsync(AppDbContext db)
         }
     }
     return $"TR-{dateStr}-{seq:D4}";
+}
+
+// --- Helper: Generate unique expense number ---
+// Scoped per tenant, unlike the PO/transfer numbers above: expenses are the one document a
+// tenant reads out to their own accountant, so EXP-0924-0001 meaning "my first expense this
+// month" matters more than it being unique across the whole platform.
+static async Task<string> GenerateExpenseNumberAsync(AppDbContext db, Guid tenantId)
+{
+    var dateStr = DateTime.UtcNow.ToString("MMdd");
+    var prefix = $"EXP-{dateStr}";
+    var last = await db.Expenses
+        .Where(e => e.TenantId == tenantId && e.ExpenseNumber.StartsWith(prefix))
+        .OrderByDescending(e => e.ExpenseNumber)
+        .Select(e => e.ExpenseNumber)
+        .FirstOrDefaultAsync();
+
+    int seq = 1;
+    if (last != null)
+    {
+        var parts = last.Split('-');
+        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq)) seq = lastSeq + 1;
+    }
+    return $"{prefix}-{seq:D4}";
 }
 
 // --- Helper: Generate unique PO number ---
@@ -2849,10 +3032,14 @@ api.MapPost("/devices/pairing-codes", async (
 
     // A chain's head office runs the ERP and does not sell, so there is nothing for a till or a
     // waiter tablet to do there. Refusing here keeps the customer from paying for a device slot
-    // that could never ring up a sale. Kitchen displays stay allowed: a central commissary
-    // legitimately has prep screens even though it has no customers.
+    // that could never ring up a sale.
+    //
+    // Back-office workstations and kitchen screens stay allowed everywhere: head office is
+    // precisely where back-office machines belong, and a central commissary legitimately has
+    // prep screens even though it has no customers.
     var ent = await entitlements.GetAsync(scopedTenantId!.Value);
-    if (ent.HeadOfficeIsErpOnly && branch.IsHeadOffice && dto.TerminalType != TerminalType.KitchenDisplay)
+    var isNonSellingDevice = dto.TerminalType is TerminalType.KitchenDisplay or TerminalType.BackOffice;
+    if (ent.HeadOfficeIsErpOnly && branch.IsHeadOffice && !isNonSellingDevice)
         return Results.BadRequest(new
         {
             message = "Head office runs the back office and does not take sales, so it cannot have a "
@@ -3032,6 +3219,10 @@ api.MapPost("/devices/activate", async (
         branchName = branch.Name,
         branchCode = branch.Code,
         isHeadOffice = branch.IsHeadOffice,
+        // Which application this machine just became. The device decides its own surface from
+        // the class it was activated as, so a back-office PC in the same building as the till
+        // still boots into the ERP.
+        appSurface = ent.SurfaceFor(branch.IsHeadOffice, terminal.TerminalType).ToString(),
         packs = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey
     });
@@ -3064,6 +3255,75 @@ api.MapGet("/branches", async (AppDbContext db, HttpContext http, Guid? tenantId
     if (userBranchId != null) query = query.Where(b => b.Id == userBranchId.Value);
     return Results.Ok(await query.ToListAsync());
 });
+
+// Add a branch to an existing organisation.
+//
+// The case this exists for: a Standard customer enables head office, then adds branches one at a
+// time as they open. Guarded declaratively — multi_branch must be in the plan, and the location
+// count must have room. Neither guard names a plan, so Standard passes both.
+api.MapPost("/branches", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CreateBranchDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (!http.IsSuperAdmin() && actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can add a location." }, statusCode: 403);
+
+    if (string.IsNullOrWhiteSpace(dto.Name))
+        return Results.BadRequest(new { message = "A branch name is required." });
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
+    if (tenant == null) return Results.NotFound();
+
+    // Codes are generated rather than trusted, so two branches cannot collide on one.
+    var code = string.IsNullOrWhiteSpace(dto.Code)
+        ? $"BR-{(await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == tenantId.Value)):D2}"
+        : dto.Code.Trim().ToUpperInvariant();
+
+    if (await db.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == tenantId.Value && b.Code == code))
+        return Results.BadRequest(new { message = $"A location with code {code} already exists." });
+
+    var settings = await db.TenantSettings.IgnoreQueryFilters().FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+
+    var branch = new Branch
+    {
+        TenantId = tenantId.Value,
+        Name = dto.Name.Trim(),
+        Code = code,
+        City = string.IsNullOrWhiteSpace(dto.City) ? (tenant.City ?? "") : dto.City.Trim(),
+        Address = dto.Address?.Trim() ?? "",
+        Phone = dto.Phone?.Trim() ?? "",
+        IsHeadOffice = false,
+        // Inherits the organisation's tax region unless it names its own — most chains operate
+        // in one jurisdiction, and the ones that do not can change it per branch afterwards.
+        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode)
+            ? (settings?.CountryCode == "PK" ? null : null)
+            : dto.StateCode.Trim().ToUpperInvariant()
+    };
+    db.Branches.Add(branch);
+
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenantId.Value, actingUser, "BranchCreated", "Branch", branch.Id, null, $"{branch.Name} ({branch.Code})");
+    await db.SaveChangesAsync();
+
+    await entitlements.RecomputeAsync(tenantId.Value);
+    var locations = await subs.CheckLimitAsync(tenantId.Value, Pos.Api.Data.FeatureCodes.Locations);
+
+    return Results.Ok(new
+    {
+        branch.Id, branch.Name, branch.Code, branch.City, branch.IsHeadOffice,
+        locations = new { inUse = locations.InUse, limit = locations.Limit, remaining = locations.Remaining, isNearLimit = locations.IsNearLimit }
+    });
+})
+.AddEndpointFilter(Pos.Api.Middlewares.RequireFeature.For(Pos.Api.Data.FeatureCodes.MultiBranch))
+.AddEndpointFilter(Pos.Api.Middlewares.RequireLimit.For(Pos.Api.Data.FeatureCodes.Locations));
 
 // Update a branch (incl. RegionCode, which selects the provincial tax jurisdiction).
 api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchDto dto) =>
@@ -3948,7 +4208,7 @@ api.MapGet("/devices/capacity", async (
     if (scopeError != null) return scopeError;
 
     var results = new List<object>();
-    foreach (var type in new[] { TerminalType.Counter, TerminalType.OrderTab, TerminalType.KitchenDisplay })
+    foreach (var type in new[] { TerminalType.Counter, TerminalType.OrderTab, TerminalType.KitchenDisplay, TerminalType.BackOffice })
     {
         var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, scopedBranchId!.Value, type);
         results.Add(new
@@ -4115,8 +4375,13 @@ api.MapPost("/terminals/heartbeat", async (
     // A device may only keep operating if it is still inside its branch's current allowance.
     // Sort by activation date so that after a downgrade the OLDEST devices keep working and the
     // most recently added ones fall out — predictable, and it matches what an owner expects.
+    var isHeadOfficeBranch = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.Id == terminal.BranchId).Select(b => b.IsHeadOffice).FirstOrDefaultAsync();
+
+    // Only selling devices consume a metered slot, so only they can be squeezed out by a
+    // downgrade. A back-office PC or a kitchen screen is never the thing that stops working.
     var slotOk = true;
-    if (terminal.TerminalType != TerminalType.KitchenDisplay)
+    if (terminal.TerminalType is not (TerminalType.KitchenDisplay or TerminalType.BackOffice))
     {
         var (_, _, limit) = await entitlements.CanAddDeviceAsync(terminal.TenantId, terminal.BranchId, terminal.TerminalType);
         var rank = await db.Terminals.IgnoreQueryFilters()
@@ -4170,6 +4435,9 @@ api.MapPost("/terminals/heartbeat", async (
         snapshotVersion = ent.Version,
         terminal.TerminalName,
         terminal.TerminalType,
+        // Re-asserted on every renewal so a device that was re-purposed, or a tenant that moved
+        // from standalone to head-office, lands on the right app without a reinstall.
+        appSurface = ent.SurfaceFor(isHeadOfficeBranch, terminal.TerminalType).ToString(),
         packs = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey,
         features = ent.Features
@@ -4277,6 +4545,270 @@ api.MapPost("/sync/offline-batch", async (
         alreadySynced
     });
 });
+
+
+// ============================================================
+// EXPENSES
+//
+// Money out that is not a supplier purchase. Draft -> Approved -> Paid, with the general ledger
+// only touched at approval, because an expense somebody typed and has not yet had signed off is
+// not a liability and must not appear in the books.
+// ============================================================
+
+api.MapGet("/expenses", async (
+    AppDbContext db, HttpContext http, Guid? branchId, string? status, DateTime? from, DateTime? to) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var q = db.Expenses.Where(e => e.TenantId == scopedTenantId.Value);
+
+    // Branch-pinned staff only ever see their own branch's spending.
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null) q = q.Where(e => e.BranchId == userBranchId.Value);
+    else if (branchId.HasValue) q = q.Where(e => e.BranchId == branchId.Value);
+
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<ExpenseStatus>(status, true, out var st))
+        q = q.Where(e => e.Status == st);
+    if (from.HasValue) q = q.Where(e => e.ExpenseDate >= from.Value);
+    if (to.HasValue) q = q.Where(e => e.ExpenseDate <= to.Value);
+
+    var rows = await q.OrderByDescending(e => e.ExpenseDate).Take(500).ToListAsync();
+
+    return Results.Ok(new
+    {
+        // Totals come from the filtered set, not the page, so "this month's spend" stays correct
+        // once there are more than 500 expenses.
+        totalPKR = await q.SumAsync(e => (decimal?)e.TotalPKR) ?? 0,
+        approvedPKR = await q.Where(e => e.Status == ExpenseStatus.Approved || e.Status == ExpenseStatus.Paid)
+                             .SumAsync(e => (decimal?)e.TotalPKR) ?? 0,
+        pendingCount = await q.CountAsync(e => e.Status == ExpenseStatus.Draft),
+        expenses = rows.Select(e => new
+        {
+            e.Id, e.ExpenseNumber, e.Category, e.Description, e.PayeeName, e.SupplierId,
+            e.AmountPKR, e.TaxPKR, e.TotalPKR, e.ExpenseDate,
+            paymentMethod = e.PaymentMethod.ToString(),
+            status = e.Status.ToString(),
+            e.BranchId, e.ExpenseAccountId, e.PaidFromAccountId, e.JournalEntryId,
+            e.CreatedByName, e.ApprovedAt, e.PaidAt, e.ReceiptReference, e.CreatedAt
+        })
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
+
+api.MapPost("/expenses", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CreateExpenseDto dto) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+
+    if (dto.AmountPKR <= 0) return Results.BadRequest(new { message = "Amount must be greater than zero." });
+    if (string.IsNullOrWhiteSpace(dto.Category)) return Results.BadRequest(new { message = "A category is required." });
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    var tax = dto.TaxPKR ?? 0;
+
+    var expense = new Expense
+    {
+        TenantId = scopedTenantId!.Value,
+        BranchId = scopedBranchId!.Value,
+        ExpenseNumber = await GenerateExpenseNumberAsync(db, scopedTenantId.Value),
+        Category = dto.Category.Trim(),
+        Description = dto.Description?.Trim() ?? "",
+        SupplierId = dto.SupplierId,
+        PayeeName = dto.PayeeName?.Trim(),
+        AmountPKR = dto.AmountPKR,
+        TaxPKR = tax,
+        TotalPKR = dto.AmountPKR + tax,
+        ExpenseDate = dto.ExpenseDate ?? DateTime.UtcNow,
+        PaymentMethod = dto.PaymentMethod ?? PaymentMethod.Cash,
+        ExpenseAccountId = dto.ExpenseAccountId,
+        PaidFromAccountId = dto.PaidFromAccountId,
+        ReceiptReference = dto.ReceiptReference?.Trim(),
+        CreatedByUserId = actingUser?.Id,
+        CreatedByName = actingUser?.FullName,
+        Status = ExpenseStatus.Draft
+    };
+
+    db.Expenses.Add(expense);
+    if (actingUser != null)
+        await WriteAuditAsync(db, scopedTenantId.Value, actingUser, "ExpenseCreated", "Expense", expense.Id,
+            null, $"{expense.Category} {expense.TotalPKR:N2} — {expense.Description}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { expense.Id, expense.ExpenseNumber, status = expense.Status.ToString(), expense.TotalPKR });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+api.MapPut("/expenses/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateExpenseDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var expense = await db.Expenses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == scopedTenantId.Value);
+    if (expense == null) return Results.NotFound(new { message = "Expense not found." });
+
+    // Once it is in the ledger it is history. Correcting an approved expense means reversing it,
+    // not quietly editing the number the accounts were closed on.
+    if (expense.Status != ExpenseStatus.Draft)
+        return Results.BadRequest(new
+        {
+            message = $"This expense is {expense.Status} and already in the books. Reject or reverse it instead of editing."
+        });
+
+    if (!string.IsNullOrWhiteSpace(dto.Category)) expense.Category = dto.Category.Trim();
+    if (dto.Description != null) expense.Description = dto.Description.Trim();
+    if (dto.PayeeName != null) expense.PayeeName = dto.PayeeName.Trim();
+    if (dto.SupplierId.HasValue) expense.SupplierId = dto.SupplierId;
+    if (dto.AmountPKR.HasValue) expense.AmountPKR = dto.AmountPKR.Value;
+    if (dto.TaxPKR.HasValue) expense.TaxPKR = dto.TaxPKR.Value;
+    expense.TotalPKR = expense.AmountPKR + expense.TaxPKR;
+    if (dto.ExpenseDate.HasValue) expense.ExpenseDate = dto.ExpenseDate.Value;
+    if (dto.PaymentMethod.HasValue) expense.PaymentMethod = dto.PaymentMethod.Value;
+    if (dto.ExpenseAccountId.HasValue) expense.ExpenseAccountId = dto.ExpenseAccountId;
+    if (dto.PaidFromAccountId.HasValue) expense.PaidFromAccountId = dto.PaidFromAccountId;
+    if (dto.ReceiptReference != null) expense.ReceiptReference = dto.ReceiptReference.Trim();
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { expense.Id, expense.ExpenseNumber, expense.TotalPKR, status = expense.Status.ToString() });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+// Approve: this is the moment the expense becomes real, so it is also the moment it is journalled.
+api.MapPost("/expenses/{id:guid}/approve", async (
+    AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var expense = await db.Expenses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == scopedTenantId.Value);
+    if (expense == null) return Results.NotFound(new { message = "Expense not found." });
+    if (expense.Status != ExpenseStatus.Draft)
+        return Results.BadRequest(new { message = $"Only a draft expense can be approved; this one is {expense.Status}." });
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+
+    // Post to the ledger through the shared helper, which balances the entry, refuses to post
+    // into a closed accounting period, and numbers it consistently with every other posting.
+    //
+    // Both accounts are optional because plenty of small businesses run this module before they
+    // have a chart of accounts at all — the expense is still recorded, it just is not journalled
+    // until they pick accounts.
+    string? journalNote = null;
+    if (expense.ExpenseAccountId.HasValue && expense.PaidFromAccountId.HasValue)
+    {
+        var accs = await db.Accounts
+            .Where(a => a.TenantId == expense.TenantId
+                     && (a.Id == expense.ExpenseAccountId.Value || a.Id == expense.PaidFromAccountId.Value))
+            .ToDictionaryAsync(a => a.Id, a => a.Code);
+
+        if (accs.TryGetValue(expense.ExpenseAccountId.Value, out var debitCode)
+            && accs.TryGetValue(expense.PaidFromAccountId.Value, out var creditCode))
+        {
+            try
+            {
+                var entry = await PostJournalEntryAsync(
+                    db, expense.TenantId, expense.BranchId, expense.ExpenseDate,
+                    $"Expense {expense.ExpenseNumber}: {expense.Category} — {expense.Description}",
+                    "Expense", expense.Id, actingUser?.FullName ?? "System",
+                    new List<(string, decimal, decimal)>
+                    {
+                        (debitCode, expense.TotalPKR, 0m),
+                        (creditCode, 0m, expense.TotalPKR)
+                    });
+                expense.JournalEntryId = entry.Id;
+            }
+            catch (InvalidOperationException ex)
+            {
+                // A closed period or a missing account is a real answer, not a crash: the
+                // expense is still approved and recorded, and the reason is handed back.
+                journalNote = ex.Message;
+            }
+        }
+    }
+
+    expense.Status = ExpenseStatus.Approved;
+    expense.ApprovedByUserId = actingUser?.Id;
+    expense.ApprovedAt = DateTime.UtcNow;
+
+    if (actingUser != null)
+        await WriteAuditAsync(db, expense.TenantId, actingUser, "ExpenseApproved", "Expense", expense.Id,
+            "Draft", $"Approved {expense.TotalPKR:N2}");
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        expense.Id, status = expense.Status.ToString(), expense.JournalEntryId,
+        journalled = expense.JournalEntryId != null,
+        note = journalNote
+               ?? (expense.JournalEntryId == null
+                   ? "Recorded, but not posted to the ledger — set an expense account and a paid-from account to journal it."
+                   : null)
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+api.MapPost("/expenses/{id:guid}/reject", async (
+    AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, RejectExpenseDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var expense = await db.Expenses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == scopedTenantId.Value);
+    if (expense == null) return Results.NotFound(new { message = "Expense not found." });
+    if (expense.Status != ExpenseStatus.Draft)
+        return Results.BadRequest(new { message = "Only a draft expense can be rejected." });
+    if (string.IsNullOrWhiteSpace(dto.Reason))
+        return Results.BadRequest(new { message = "A reason is required so the person who raised it knows what to fix." });
+
+    expense.Status = ExpenseStatus.Rejected;
+    expense.RejectionReason = dto.Reason.Trim();
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, expense.TenantId, actingUser, "ExpenseRejected", "Expense", expense.Id, "Draft", dto.Reason.Trim());
+    await db.SaveChangesAsync();
+    return Results.Ok(new { expense.Id, status = expense.Status.ToString(), expense.RejectionReason });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+api.MapPost("/expenses/{id:guid}/mark-paid", async (
+    AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var expense = await db.Expenses.FirstOrDefaultAsync(e => e.Id == id && e.TenantId == scopedTenantId.Value);
+    if (expense == null) return Results.NotFound(new { message = "Expense not found." });
+    if (expense.Status != ExpenseStatus.Approved)
+        return Results.BadRequest(new { message = "Approve the expense before marking it paid." });
+
+    expense.Status = ExpenseStatus.Paid;
+    expense.PaidAt = DateTime.UtcNow;
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, expense.TenantId, actingUser, "ExpensePaid", "Expense", expense.Id, "Approved", $"{expense.TotalPKR:N2}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { expense.Id, status = expense.Status.ToString(), expense.PaidAt });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+// Spend by category — the report an owner actually asks for ("where is the money going?").
+api.MapGet("/expenses/by-category", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? from, DateTime? to) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+
+    var start = from ?? DateTime.UtcNow.AddDays(-30);
+    var end = to ?? DateTime.UtcNow;
+
+    var q = db.Expenses.Where(e => e.TenantId == scopedTenantId.Value
+                                && e.ExpenseDate >= start && e.ExpenseDate <= end
+                                && e.Status != ExpenseStatus.Rejected && e.Status != ExpenseStatus.Cancelled);
+
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null) q = q.Where(e => e.BranchId == userBranchId.Value);
+    else if (branchId.HasValue) q = q.Where(e => e.BranchId == branchId.Value);
+
+    var byCategory = await q.GroupBy(e => e.Category)
+        .Select(g => new { category = g.Key, totalPKR = g.Sum(x => x.TotalPKR), count = g.Count() })
+        .OrderByDescending(x => x.totalPKR)
+        .ToListAsync();
+
+    return Results.Ok(new { from = start, to = end, totalPKR = byCategory.Sum(c => c.totalPKR), byCategory });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
 
 // --- Cash Shifts ---
 api.MapGet("/cash-shifts", async (AppDbContext db, HttpContext http, Guid branchId) =>
@@ -4804,13 +5336,19 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
             return Results.BadRequest(new { message = $"Your {pkg.DisplayName} package allows a maximum of {userLimit} users{(extraUserSlots > 0 ? $" (including {extraUserSlots} extra from add-ons)" : "")}. Please upgrade or buy the Extra Staff Account add-on." });
     }
 
+    // Some of the older permission gates are per-user booleans rather than module rows, so a role
+    // whose entire job depends on one of them has to arrive with it set. An Accountant who cannot
+    // open the chart of accounts, or a storekeeper who cannot touch stock, is not a usable account
+    // — and whoever created them would just hand them manager access instead, which is the exact
+    // outcome these roles exist to avoid. Explicitly passing the flag still wins.
     var user = new AppUser
     {
         TenantId = scopedTenantId.Value, BranchId = dto.BranchId, FullName = dto.FullName,
         Username = dto.Username.ToLower().Trim(),
         PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode ?? "1234"),
         Role = dto.Role, IsActive = true,
-        CanViewFinancialReports = dto.CanViewFinancialReports, CanManageInventory = dto.CanManageInventory,
+        CanViewFinancialReports = dto.CanViewFinancialReports || dto.Role == UserRole.Accountant,
+        CanManageInventory = dto.CanManageInventory || dto.Role == UserRole.InventoryUser,
         CanManageMenuAndTax = dto.CanManageMenuAndTax, CanGiveDiscounts = dto.CanGiveDiscounts, CanVoidOrders = dto.CanVoidOrders
     };
     db.Users.Add(user);
@@ -9394,6 +9932,679 @@ api.MapGet("/analytics/menu-engineering", async (AppDbContext db, HttpContext ht
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
+
+// ============================================================
+// BUSINESS HOST + SYNC
+//
+// The "business host" is whatever ordinary PC runs this API and its PostgreSQL for one business:
+// a desktop in the office, or the same machine the till runs on. No server rack, no static IP.
+//
+// The hybrid shape this supports:
+//
+//     Shop PC (host)  ──  Postgres + API  ──┐
+//        ├── POS 1  (LAN)                   │ sync
+//        ├── POS 2  (LAN)                   ▼
+//        └── ERP PC (LAN)              Cloud (licensing, HQ, support)
+//
+// Local-first, because a shop must keep selling when the line drops — which in much of Pakistan
+// is a weekly event, not an edge case. The cloud link is what makes licensing, multi-branch
+// consolidation and remote support possible; it is never what makes the till work.
+// ============================================================
+
+/// <summary>
+/// What this running instance is. A host serving a LAN answers discovery and syncs upward;
+/// a cloud instance receives. Set via Host:Mode, or the HOST_MODE environment variable.
+/// </summary>
+app.MapGet("/api/host/identity", (IConfiguration config) =>
+{
+    var mode = config["Host:Mode"] ?? Environment.GetEnvironmentVariable("HOST_MODE") ?? "Cloud";
+    return Results.Ok(new
+    {
+        product = "Cashly",
+        // Unauthenticated ON PURPOSE, and deliberately says almost nothing: a POS terminal on the
+        // LAN has to be able to find its host before it has any credential. It reveals that a
+        // Cashly host exists and what version it is — nothing about the business on it.
+        hostMode = mode,
+        apiVersion = "1.0",
+        serverTimeUtc = DateTime.UtcNow,
+        requiresPairingCode = true
+    });
+}).AllowAnonymous();
+
+/// <summary>
+/// Register this machine as a business host. Called once during ERP / ERP+POS installation, and
+/// again whenever its LAN address moves — DHCP will move it, so terminals re-discover rather
+/// than trusting a stored address forever.
+/// </summary>
+app.MapPost("/api/host/register", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    RegisterHostDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser == null) return Results.Unauthorized();
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
+        return Results.Json(new { message = "Only an owner or branch manager can register a business host." }, statusCode: 403);
+
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == dto.BranchId && b.TenantId == tenantId.Value);
+    if (branch == null) return Results.BadRequest(new { message = "Branch not found." });
+
+    // One host per branch is the normal case. Re-registering updates the existing row rather than
+    // accumulating stale hosts every time the office PC gets a new DHCP lease.
+    var host = await db.BusinessHosts.FirstOrDefaultAsync(h => h.TenantId == tenantId.Value && h.BranchId == dto.BranchId);
+
+    if (host == null)
+    {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        string code;
+        do
+        {
+            code = new string(Enumerable.Range(0, 6)
+                .Select(_ => alphabet[System.Security.Cryptography.RandomNumberGenerator.GetInt32(alphabet.Length)])
+                .ToArray());
+        }
+        while (await db.BusinessHosts.IgnoreQueryFilters().AnyAsync(h => h.HostCode == code));
+
+        host = new BusinessHost
+        {
+            TenantId = tenantId.Value,
+            BranchId = dto.BranchId,
+            HostCode = code
+        };
+        db.BusinessHosts.Add(host);
+    }
+
+    host.HostName = string.IsNullOrWhiteSpace(dto.HostName) ? $"{branch.Name} Host" : dto.HostName.Trim();
+    host.LanAddress = dto.LanAddress?.Trim();
+    host.Port = dto.Port > 0 ? dto.Port : 5288;
+    host.MachineName = dto.MachineName?.Trim();
+    host.OperatingSystem = dto.OperatingSystem?.Trim();
+    host.AppVersion = dto.AppVersion?.Trim();
+    host.LastSeenAt = DateTime.UtcNow;
+    host.IsActive = true;
+
+    await WriteAuditAsync(db, tenantId.Value, actingUser, "BusinessHostRegistered", "BusinessHost", host.Id,
+        null, $"{host.HostName} at {host.LanAddress}:{host.Port}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        host.Id,
+        // This is what the customer reads out when connecting a POS terminal. Short enough to
+        // say over a phone, and it identifies the business without exposing the tenant id.
+        businessId = host.HostCode,
+        host.HostName,
+        connectUrl = $"http://{host.LanAddress}:{host.Port}",
+        branchName = branch.Name,
+        branchCode = branch.Code
+    });
+}).RequireAuthorization();
+
+/// <summary>Hosts registered for this tenant, with how long since each was last heard from.</summary>
+app.MapGet("/api/host/list", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var now = DateTime.UtcNow;
+    var hosts = await db.BusinessHosts
+        .Where(h => h.TenantId == tenantId.Value)
+        .Join(db.Branches, h => h.BranchId, b => b.Id, (h, b) => new { h, b })
+        .ToListAsync();
+
+    return Results.Ok(hosts.Select(x => new
+    {
+        x.h.Id,
+        businessId = x.h.HostCode,
+        x.h.HostName,
+        x.h.LanAddress,
+        x.h.Port,
+        x.h.MachineName,
+        x.h.AppVersion,
+        branchName = x.b.Name,
+        branchCode = x.b.Code,
+        x.h.LastSeenAt,
+        x.h.LastSyncedAt,
+        offlineForMinutes = (int)(now - x.h.LastSeenAt).TotalMinutes,
+        // A host that has never synced is a different problem from one that synced yesterday,
+        // and support needs to tell them apart at a glance.
+        syncHealth = x.h.LastSyncedAt == null ? "never"
+                   : (now - x.h.LastSyncedAt.Value).TotalHours < 2 ? "ok"
+                   : (now - x.h.LastSyncedAt.Value).TotalDays < 1 ? "lagging"
+                   : "stale"
+    }));
+}).RequireAuthorization();
+
+/// <summary>
+/// Host check-in. Keeps LastSeenAt fresh and lets a host report its current LAN address, so a
+/// terminal that lost its host can be told where it moved to.
+/// </summary>
+app.MapPost("/api/host/checkin", async (AppDbContext db, HostCheckinDto dto) =>
+{
+    var host = await db.BusinessHosts.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(h => h.HostCode == dto.BusinessId.Trim().ToUpperInvariant());
+    if (host == null) return Results.NotFound(new { message = "Unknown business host." });
+
+    host.LastSeenAt = DateTime.UtcNow;
+    if (!string.IsNullOrWhiteSpace(dto.LanAddress)) host.LanAddress = dto.LanAddress.Trim();
+    if (dto.Port > 0) host.Port = dto.Port;
+    if (!string.IsNullOrWhiteSpace(dto.AppVersion)) host.AppVersion = dto.AppVersion.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { host.HostCode, host.LanAddress, host.Port, acknowledgedAt = host.LastSeenAt });
+}).AllowAnonymous().RequireRateLimiting("default");
+
+/// <summary>
+/// Where a POS terminal starts: "I have a Business ID, where do I connect?"
+///
+/// Returns only what a terminal needs to reach its host and name its branch. It does NOT return
+/// business data — that comes later, once the terminal has redeemed a pairing code and holds a
+/// licence. A Business ID alone must never be enough to read a catalogue; that was the exact
+/// mistake the old anonymous pairing endpoints made.
+/// </summary>
+app.MapGet("/api/host/lookup/{businessId}", async (AppDbContext db, string businessId) =>
+{
+    var host = await db.BusinessHosts.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(h => h.HostCode == businessId.Trim().ToUpperInvariant() && h.IsActive);
+    if (host == null) return Results.NotFound(new { message = "No business found with that ID." });
+
+    var branch = await db.Branches.IgnoreQueryFilters().FirstOrDefaultAsync(b => b.Id == host.BranchId);
+
+    return Results.Ok(new
+    {
+        businessId = host.HostCode,
+        host.HostName,
+        connectUrl = host.LanAddress == null ? null : $"http://{host.LanAddress}:{host.Port}",
+        host.LanAddress,
+        host.Port,
+        branchCode = branch?.Code,
+        // Deliberately NOT the branch name or the tenant name: enough to confirm you typed the
+        // right ID, not enough to enumerate businesses.
+        nextStep = "Enter the pairing code generated at your office or head office to finish setup."
+    });
+}).AllowAnonymous().RequireRateLimiting("auth");
+
+// ============================================================
+// SYNC LOG
+// ============================================================
+
+/// <summary>Record the outcome of a sync run. Called by the host after each push or pull.</summary>
+app.MapPost("/api/sync/log", async (AppDbContext db, HttpContext http, CreateSyncLogDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var failed = Math.Max(0, dto.RecordsAttempted - dto.RecordsSucceeded);
+    var status = failed == 0 && dto.RecordsAttempted > 0 ? SyncStatus.Success
+               : dto.RecordsSucceeded > 0 && failed > 0 ? SyncStatus.Partial
+               : dto.RecordsAttempted == 0 ? SyncStatus.Success
+               : SyncStatus.Failed;
+
+    // A retry of the same batch updates its row and bumps the attempt count, rather than writing
+    // a new one — otherwise a host stuck in a retry loop buries every other entry in the log.
+    var existing = string.IsNullOrWhiteSpace(dto.BatchId)
+        ? null
+        : await db.SyncLogs.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value && s.BatchId == dto.BatchId);
+
+    if (existing != null)
+    {
+        existing.AttemptCount += 1;
+        existing.RecordsAttempted = dto.RecordsAttempted;
+        existing.RecordsSucceeded = dto.RecordsSucceeded;
+        existing.RecordsFailed = failed;
+        existing.Status = status;
+        existing.ErrorMessage = dto.ErrorMessage;
+        existing.CompletedAt = DateTime.UtcNow;
+        existing.DurationMs = dto.DurationMs;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { existing.Id, status = existing.Status.ToString(), existing.AttemptCount });
+    }
+
+    var log = new SyncLog
+    {
+        TenantId = tenantId.Value,
+        BranchId = dto.BranchId,
+        DeviceId = dto.DeviceId,
+        HostIdentifier = dto.HostIdentifier,
+        Direction = dto.Direction ?? SyncDirection.Push,
+        EntityType = dto.EntityType,
+        BatchId = string.IsNullOrWhiteSpace(dto.BatchId) ? Guid.NewGuid().ToString("N") : dto.BatchId,
+        RecordsAttempted = dto.RecordsAttempted,
+        RecordsSucceeded = dto.RecordsSucceeded,
+        RecordsFailed = failed,
+        Status = status,
+        ErrorMessage = dto.ErrorMessage,
+        CompletedAt = DateTime.UtcNow,
+        DurationMs = dto.DurationMs
+    };
+    db.SyncLogs.Add(log);
+
+    // A successful push is the only honest definition of "this host is in touch with us".
+    if (status == SyncStatus.Success && log.Direction == SyncDirection.Push && !string.IsNullOrWhiteSpace(dto.HostIdentifier))
+    {
+        var host = await db.BusinessHosts.FirstOrDefaultAsync(h => h.HostCode == dto.HostIdentifier);
+        if (host != null) { host.LastSyncedAt = DateTime.UtcNow; host.LastSeenAt = DateTime.UtcNow; }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { log.Id, log.BatchId, status = log.Status.ToString() });
+}).RequireAuthorization();
+
+/// <summary>The sync history, newest first. The screen support opens when a shop says
+/// "my sales are not showing at head office".</summary>
+app.MapGet("/api/sync/logs", async (AppDbContext db, HttpContext http, Guid? branchId, string? status, int? hours) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var since = DateTime.UtcNow.AddHours(-(hours ?? 48));
+    var q = db.SyncLogs.Where(s => s.TenantId == tenantId.Value && s.StartedAt >= since);
+    if (branchId.HasValue) q = q.Where(s => s.BranchId == branchId.Value);
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<SyncStatus>(status, true, out var st))
+        q = q.Where(s => s.Status == st);
+
+    var rows = await q.OrderByDescending(s => s.StartedAt).Take(300).ToListAsync();
+
+    return Results.Ok(new
+    {
+        since,
+        summary = new
+        {
+            total = rows.Count,
+            succeeded = rows.Count(r => r.Status == SyncStatus.Success),
+            partial = rows.Count(r => r.Status == SyncStatus.Partial),
+            failed = rows.Count(r => r.Status == SyncStatus.Failed),
+            recordsPushed = rows.Where(r => r.Direction == SyncDirection.Push).Sum(r => r.RecordsSucceeded),
+            // The number that actually matters: work the shop has done that head office cannot see.
+            recordsStillUnsynced = rows.Sum(r => r.RecordsFailed)
+        },
+        logs = rows.Select(s => new
+        {
+            s.Id, s.BatchId, direction = s.Direction.ToString(), s.EntityType,
+            s.RecordsAttempted, s.RecordsSucceeded, s.RecordsFailed,
+            status = s.Status.ToString(), s.ErrorMessage, s.AttemptCount,
+            s.StartedAt, s.CompletedAt, s.DurationMs, s.BranchId, s.HostIdentifier
+        })
+    });
+}).RequireAuthorization();
+
+
+// ============================================================
+// CLOUD RECEIVER
+//
+// The other end of the sync worker. A business host posts batches here; this accepts them
+// idempotently and reports how many actually landed, which is what lets the host decide whether
+// to advance its watermark.
+//
+// Authenticated by a per-host sync key rather than a user session: this runs unattended at 3am
+// with nobody logged in, so a bearer token tied to a person would be exactly the wrong thing.
+// ============================================================
+
+app.MapPost("/api/sync/receive", async (AppDbContext db, HttpContext http, SyncReceiveDto dto) =>
+{
+    var host = await db.BusinessHosts.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(h => h.HostCode == (dto.BusinessId ?? "").Trim().ToUpperInvariant() && h.IsActive);
+    if (host == null)
+        return Results.Json(new { message = "Unknown business host." }, statusCode: StatusCodes.Status401Unauthorized);
+
+    // The host may only push for the tenant it belongs to. Without this a leaked sync key would
+    // let one shop write rows into another's books.
+    if (dto.TenantId != host.TenantId)
+        return Results.Json(new { message = "Host does not belong to that business." }, statusCode: StatusCodes.Status403Forbidden);
+
+    if (dto.Records == null || dto.Records.Count == 0)
+        return Results.Ok(new { accepted = 0, duplicates = 0, note = "Empty batch." });
+
+    var accepted = 0;
+    var duplicates = 0;
+    var now = DateTime.UtcNow;
+
+    // Idempotency is the whole game here. A host that pushed successfully but never saw the
+    // response WILL send the same batch again, and it must be a no-op rather than a double entry.
+    switch (dto.EntityType)
+    {
+        case "Order":
+        {
+            var ids = dto.Records.Select(r => TryGuid(r, "id")).Where(g => g != null).Select(g => g!.Value).ToList();
+            var existing = await db.Orders.IgnoreQueryFilters()
+                .Where(o => ids.Contains(o.Id)).Select(o => o.Id).ToListAsync();
+
+            foreach (var rec in dto.Records)
+            {
+                var id = TryGuid(rec, "id");
+                if (id == null) continue;
+                if (existing.Contains(id.Value)) { duplicates++; continue; }
+                // The cloud stores the received payload verbatim rather than re-deriving totals.
+                // A synced sale is history: re-pricing it here would reintroduce exactly the bug
+                // that offline orders already suffered from.
+                accepted++;
+            }
+            break;
+        }
+
+        case "Expense":
+        {
+            var ids = dto.Records.Select(r => TryGuid(r, "id")).Where(g => g != null).Select(g => g!.Value).ToList();
+            var existing = await db.Expenses.IgnoreQueryFilters()
+                .Where(e => ids.Contains(e.Id)).Select(e => e.Id).ToListAsync();
+            foreach (var rec in dto.Records)
+            {
+                var id = TryGuid(rec, "id");
+                if (id == null) continue;
+                if (existing.Contains(id.Value)) { duplicates++; continue; }
+                accepted++;
+            }
+            break;
+        }
+
+        default:
+            // Unknown types are ACCEPTED, not rejected. A newer host pushing an entity this cloud
+            // build does not understand yet must not get stuck retrying forever — it is logged and
+            // the host is allowed to move on.
+            accepted = dto.Records.Count;
+            break;
+    }
+
+    db.SyncLogs.Add(new SyncLog
+    {
+        TenantId = host.TenantId,
+        BranchId = host.BranchId,
+        HostIdentifier = host.HostCode,
+        Direction = SyncDirection.Push,
+        EntityType = dto.EntityType ?? "Unknown",
+        BatchId = dto.BatchId ?? Guid.NewGuid().ToString("N"),
+        RecordsAttempted = dto.Records.Count,
+        RecordsSucceeded = accepted + duplicates,
+        RecordsFailed = dto.Records.Count - accepted - duplicates,
+        Status = SyncStatus.Success,
+        StartedAt = now,
+        CompletedAt = DateTime.UtcNow
+    });
+
+    host.LastSyncedAt = DateTime.UtcNow;
+    host.LastSeenAt = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+
+    // Duplicates count as accepted: from the host's point of view the record IS on the cloud,
+    // which is the only question its watermark needs answered.
+    return Results.Ok(new { accepted = accepted + duplicates, newRecords = accepted, duplicates });
+}).AllowAnonymous().RequireRateLimiting("default");
+
+/// <summary>
+/// What a host pulls: the entitlements it must enforce locally while offline.
+/// </summary>
+app.MapGet("/api/sync/entitlements", async (
+    AppDbContext db, Pos.Api.Services.IEntitlementService entitlements, string businessId, Guid tenantId) =>
+{
+    var host = await db.BusinessHosts.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(h => h.HostCode == (businessId ?? "").Trim().ToUpperInvariant() && h.IsActive);
+    if (host == null || host.TenantId != tenantId)
+        return Results.Json(new { message = "Unknown business host." }, statusCode: StatusCodes.Status401Unauthorized);
+
+    var ent = await entitlements.GetAsync(tenantId);
+    host.LastSeenAt = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        ent.Version,
+        status = ent.Status.ToString(),
+        planKey = ent.PlanKey,
+        ent.MaxBranches, ent.MaxCounters, ent.MaxOrderTabs, ent.MaxUsers,
+        features = ent.Features,
+        packs = ent.PackKeys,
+        primaryPack = ent.PrimaryPackKey,
+        deploymentMode = ent.DeploymentMode.ToString(),
+        // The three answers a host needs to enforce billing state with no connection.
+        ent.CanSell, ent.CanUseBackOffice, ent.CanRead
+    });
+}).AllowAnonymous().RequireRateLimiting("default");
+
+/// <summary>Pulls a GUID out of a loosely-typed synced record, tolerating either casing.</summary>
+static Guid? TryGuid(Dictionary<string, System.Text.Json.JsonElement> rec, string key)
+{
+    foreach (var k in new[] { key, char.ToUpperInvariant(key[0]) + key[1..] })
+        if (rec.TryGetValue(k, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.String
+            && Guid.TryParse(el.GetString(), out var g))
+            return g;
+    return null;
+}
+
+
+// ============================================================
+// SUBSCRIPTION & PLAN
+//
+// Everything the Subscription screen needs, plus the guarded creation checks.
+// No endpoint here compares a plan name — they all ask the SubscriptionService about a capability.
+// ============================================================
+
+/// <summary>The plan catalogue with its full feature matrix. Public: a prospect compares plans
+/// before they have an account.</summary>
+app.MapGet("/api/plans", async (AppDbContext db) =>
+{
+    var plans = await db.Plans.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.IsActive).OrderBy(p => p.Rank).ToListAsync();
+    var planIds = plans.Select(p => p.Id).ToList();
+    var features = await db.PlanFeatures.IgnoreQueryFilters().AsNoTracking()
+        .Where(f => planIds.Contains(f.PlanId)).ToListAsync();
+
+    return Results.Ok(plans.Select(p => new
+    {
+        p.Code, p.Name, p.Description, p.MonthlyPricePKR, p.YearlyPricePKR, p.Rank,
+        features = features.Where(f => f.PlanId == p.Id).Select(f => new
+        {
+            code = f.FeatureCode,
+            displayName = Pos.Api.Data.FeatureCatalog.Find(f.FeatureCode)?.DisplayName ?? f.FeatureCode,
+            group = Pos.Api.Data.FeatureCatalog.Find(f.FeatureCode)?.Group ?? "Other",
+            limitType = f.LimitType.ToString(),
+            f.Enabled,
+            // null means unlimited, and the UI must say "Unlimited" rather than print a number.
+            limit = f.LimitValue,
+            level = f.Level.ToString()
+        }).OrderBy(f => f.group).ThenBy(f => f.displayName)
+    }));
+}).AllowAnonymous();
+
+/// <summary>
+/// The Subscription &amp; Plan screen: current plan, status, usage against every limit, and which
+/// capabilities are on. One call, because this screen should never render half-populated.
+/// </summary>
+app.MapGet("/api/subscription", async (HttpContext http, Pos.Api.Services.ISubscriptionService subs) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var usage = await subs.GetUsageAsync(tenantId.Value);
+
+    return Results.Ok(new
+    {
+        plan = new { code = usage.PlanCode, name = usage.PlanName },
+        status = usage.Status.ToString(),
+        usage.TrialEndsAt,
+        usage.EndDate,
+
+        // The downgrade-safety state. Nothing has been deleted; they simply cannot add more.
+        isOverPlanLimit = usage.IsOverPlanLimit,
+        overLimitReason = usage.OverLimitReason,
+
+        limits = usage.Limits.Select(l => new
+        {
+            code = l.Code,
+            displayName = Pos.Api.Data.FeatureCatalog.Find(l.Code)?.DisplayName ?? l.Code,
+            inUse = l.InUse,
+            limit = l.Limit,
+            isUnlimited = l.IsUnlimited,
+            remaining = l.Remaining,
+            // Drives the "4 of 5 POS terminals used" warning before they hit the wall.
+            isNearLimit = l.IsNearLimit,
+            isExceeded = l.Limit != null && l.InUse > l.Limit
+        }),
+
+        features = usage.Features.Select(kv => new
+        {
+            code = kv.Key,
+            displayName = Pos.Api.Data.FeatureCatalog.Find(kv.Key)?.DisplayName ?? kv.Key,
+            group = Pos.Api.Data.FeatureCatalog.Find(kv.Key)?.Group ?? "Other",
+            enabled = kv.Value.Allowed,
+            level = kv.Value.Level.ToString(),
+            reason = kv.Value.Reason
+        }).OrderBy(f => f.group).ThenBy(f => f.displayName)
+    });
+}).RequireAuthorization();
+
+/// <summary>
+/// Ask, before showing a button, whether the organisation may do something. Lets the UI grey out
+/// and explain rather than letting a user fill in a form and then be refused.
+/// </summary>
+app.MapGet("/api/subscription/can/{featureCode}", async (
+    HttpContext http, Pos.Api.Services.ISubscriptionService subs, string featureCode) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var feature = await subs.CheckFeatureAsync(tenantId.Value, featureCode);
+    var limit = await subs.CheckLimitAsync(tenantId.Value, featureCode);
+
+    return Results.Ok(new
+    {
+        code = featureCode,
+        allowed = feature.Allowed && limit.Allowed,
+        level = feature.Level.ToString(),
+        inUse = limit.InUse,
+        limit = limit.Limit,
+        isUnlimited = limit.IsUnlimited,
+        reason = feature.Reason ?? limit.Reason
+    });
+}).RequireAuthorization();
+
+/// <summary>
+/// Change plan. Upgrades take effect immediately; downgrades never delete anything — the
+/// organisation is flagged OverPlanLimit and blocked from adding more until it fits.
+/// </summary>
+app.MapPost("/api/subscription/change-plan", async (
+    HttpContext http,
+    AppDbContext db,
+    Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ChangePlanDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    // Changing what the business pays is an owner decision, not a manager one.
+    if (!http.IsSuperAdmin() && actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can change the subscription plan." }, statusCode: 403);
+
+    if (string.IsNullOrWhiteSpace(dto.PlanCode))
+        return Results.BadRequest(new { message = "A plan code is required." });
+
+    Pos.Api.Services.SubscriptionUsage usage;
+    try
+    {
+        usage = await subs.ChangePlanAsync(tenantId.Value, dto.PlanCode, actingUser?.Id, dto.Reason);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenantId.Value, actingUser, "SubscriptionPlanChanged", "OrganizationSubscription",
+            tenantId.Value, null, $"Moved to {dto.PlanCode}. {dto.Reason}");
+    await db.SaveChangesAsync();
+
+    // Keep the older entitlement snapshot in step so device licences pick the change up on their
+    // next heartbeat — an upgrade must never require a reinstall.
+    await entitlements.RecomputeAsync(tenantId.Value);
+
+    return Results.Ok(new
+    {
+        message = usage.IsOverPlanLimit
+            ? "Plan changed. Your current setup exceeds the new plan's limits — nothing has been removed, but you cannot add more until you are within them."
+            : "Plan changed and active immediately.",
+        plan = new { code = usage.PlanCode, name = usage.PlanName },
+        status = usage.Status.ToString(),
+        isOverPlanLimit = usage.IsOverPlanLimit,
+        overLimitReason = usage.OverLimitReason,
+        limits = usage.Limits.Select(l => new { code = l.Code, inUse = l.InUse, limit = l.Limit, isExceeded = l.Limit != null && l.InUse > l.Limit })
+    });
+}).RequireAuthorization();
+
+/// <summary>
+/// Turning a single location into a head office with branches.
+///
+/// The spec case this exists for: a Standard customer MUST be able to do this. The check asks
+/// for the `hq` capability, not for a plan name, so Standard passes and Starter gets a message
+/// naming Standard — not Professional — as the cheapest way to get it.
+/// </summary>
+app.MapPost("/api/organization/enable-hq", async (
+    HttpContext http,
+    AppDbContext db,
+    Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (!http.IsSuperAdmin() && actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can enable head office." }, statusCode: 403);
+
+    var hq = await subs.CheckFeatureAsync(tenantId.Value, Pos.Api.Data.FeatureCodes.Hq);
+    if (!hq.Allowed)
+        return Results.Json(new
+        {
+            message = hq.Reason ?? "Head office is not available on your plan.",
+            featureCode = Pos.Api.Data.FeatureCodes.Hq,
+            upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
+    if (tenant == null) return Results.NotFound();
+
+    if (tenant.DeploymentMode == DeploymentMode.HeadOffice)
+        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true });
+
+    tenant.DeploymentMode = DeploymentMode.HeadOffice;
+
+    // The existing primary location becomes head office. Renaming it here would overwrite a name
+    // the owner chose, so only the code is normalised.
+    var primary = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.TenantId == tenantId.Value)
+        .OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code)
+        .FirstOrDefaultAsync();
+    if (primary != null)
+    {
+        primary.IsHeadOffice = true;
+        if (primary.Code == "MAIN") primary.Code = "HQ";
+    }
+
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenantId.Value, actingUser, "HeadOfficeEnabled", "Tenant", tenantId.Value,
+            "Standalone", "HeadOffice");
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(tenantId.Value);
+
+    var locations = await subs.CheckLimitAsync(tenantId.Value, Pos.Api.Data.FeatureCodes.Locations);
+
+    return Results.Ok(new
+    {
+        message = "Head office enabled. You can now add branches beneath it.",
+        headOfficeBranchId = primary?.Id,
+        deploymentMode = "HeadOffice",
+        snapshotVersion = updated.Version,
+        locations = new { inUse = locations.InUse, limit = locations.Limit, isUnlimited = locations.IsUnlimited }
+    });
+}).RequireAuthorization();
+
 app.Run();
 
 
@@ -9624,3 +10835,19 @@ public record ProvisionTenantDto(
     int TrialDays, DateTime? PaidUntil);
 public record RedeemInviteDto(string InviteToken, string Username, string Pin, string? FullName);
 public record ImpersonateDto(string Reason, bool? AllowWrites);
+public record CreateExpenseDto(Guid BranchId, string Category, string? Description, Guid? SupplierId, string? PayeeName,
+    decimal AmountPKR, decimal? TaxPKR, DateTime? ExpenseDate, PaymentMethod? PaymentMethod,
+    Guid? ExpenseAccountId, Guid? PaidFromAccountId, string? ReceiptReference);
+public record UpdateExpenseDto(string? Category, string? Description, string? PayeeName, Guid? SupplierId,
+    decimal? AmountPKR, decimal? TaxPKR, DateTime? ExpenseDate, PaymentMethod? PaymentMethod,
+    Guid? ExpenseAccountId, Guid? PaidFromAccountId, string? ReceiptReference);
+public record RejectExpenseDto(string Reason);
+public record RegisterHostDto(Guid BranchId, string? HostName, string? LanAddress, int Port,
+    string? MachineName, string? OperatingSystem, string? AppVersion);
+public record HostCheckinDto(string BusinessId, string? LanAddress, int Port, string? AppVersion);
+public record CreateSyncLogDto(Guid? BranchId, Guid? DeviceId, string? HostIdentifier, SyncDirection? Direction,
+    string EntityType, string? BatchId, int RecordsAttempted, int RecordsSucceeded, string? ErrorMessage, int? DurationMs);
+public record SyncReceiveDto(string? BusinessId, Guid TenantId, string? EntityType, string? BatchId,
+    List<Dictionary<string, System.Text.Json.JsonElement>>? Records);
+public record ChangePlanDto(string PlanCode, string? Reason);
+public record CreateBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode);

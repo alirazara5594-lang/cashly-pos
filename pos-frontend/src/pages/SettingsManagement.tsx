@@ -573,7 +573,10 @@ export const SettingsManagement: React.FC = () => {
                   {deviceCapacity.map((cap) => (
                     <div key={cap.terminalType} className="p-4 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] uppercase font-semibold text-slate-500">
-                        {cap.terminalType === 'OrderTab' ? 'Tablets' : cap.terminalType === 'Counter' ? 'Counters' : 'Kitchen Displays'}
+                        {cap.terminalType === 'OrderTab' ? 'Tablets'
+                          : cap.terminalType === 'Counter' ? 'Counters'
+                          : cap.terminalType === 'BackOffice' ? 'Office PCs'
+                          : 'Kitchen Displays'}
                       </div>
                       <div className="text-lg font-black text-slate-900">
                         {cap.inUse}
@@ -598,9 +601,12 @@ export const SettingsManagement: React.FC = () => {
                     onChange={(e) => setNewDeviceType(Number(e.target.value))}
                     className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-500"
                   >
-                    <option value={1}>Counter (full till)</option>
-                    <option value={2}>Tablet / mPOS</option>
-                    <option value={3}>Kitchen Display</option>
+                    <option value={1}>Counter — full till (uses a licence slot)</option>
+                    <option value={2}>Tablet / mPOS (uses a licence slot)</option>
+                    <option value={3}>Kitchen Display (free)</option>
+                    {/* The office machine. Same installer as the till — this choice is what makes
+                        it the ERP instead, whether the office is upstairs or across town. */}
+                    <option value={4}>Back-office workstation — ERP, no till (free)</option>
                   </select>
                   <input
                     type="text"

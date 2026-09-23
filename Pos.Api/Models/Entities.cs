@@ -19,11 +19,33 @@ public enum SubscriptionTier
     Professional = 3
 }
 
+/// <summary>
+/// What a given machine IS. This — not the building it stands in — is what decides whether it
+/// runs the till or the back office.
+///
+/// A single restaurant with an office upstairs, and one with an office across town, are the same
+/// case as far as the software is concerned: one counter machine and one back-office machine.
+/// Geography never enters into it; the pairing code does.
+/// </summary>
 public enum TerminalType
 {
+    /// <summary>A full till: takes payment, owns a cash drawer, prints receipts. Metered.</summary>
     Counter = 1,
+
+    /// <summary>Waiter tablet / mPOS: captures orders, may not settle payment. Metered.</summary>
     OrderTab = 2,
-    KitchenDisplay = 3
+
+    /// <summary>Kitchen or prep screen. Unmetered — charging for these pushes kitchens back to paper.</summary>
+    KitchenDisplay = 3,
+
+    /// <summary>
+    /// A back-office workstation: the ERP, with no till. This is what an operations office runs,
+    /// whether that office is a room above the restaurant or a separate building.
+    ///
+    /// Unmetered for the same reason as a kitchen screen: it does not sell, so charging per seat
+    /// for it just pushes the accounts work back into spreadsheets.
+    /// </summary>
+    BackOffice = 4
 }
 
 public enum OrderType
@@ -663,7 +685,19 @@ public enum UserRole
     BranchManager = 2,
     Cashier = 3,
     KitchenChef = 4,
-    Waiter = 5
+    Waiter = 5,
+
+    // Back-office specialists. These exist because "Branch Manager" was doing too much work:
+    // a bookkeeper who should see the ledger but never the roster, and a storekeeper who should
+    // receive stock but never the P&L, were both being handed manager access to get their job
+    // done. Each gets a narrow baseline here; ModulePermission still overrides per user.
+    /// <summary>Books and money: chart of accounts, journals, expenses, tax, financial reports.
+    /// No POS, no staff administration.</summary>
+    Accountant = 6,
+
+    /// <summary>Stock and supply: inventory, stock counts, transfers, purchase orders, suppliers.
+    /// No financial reports, no POS.</summary>
+    InventoryUser = 7
 }
 
 public class AppUser

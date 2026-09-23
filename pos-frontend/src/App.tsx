@@ -84,7 +84,10 @@ function MainLayoutInner() {
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
   /** Head office of a chain: back office only, no till anywhere. Resolved server-side. */
-  const isErpOnly = packageInfo?.appSurface === 'Erp';
+  // ERP-only when EITHER this machine was activated as a back-office workstation, or the
+  // tenant's shape puts this session at a chain's head office. The device wins, which is how a
+  // single restaurant runs a till downstairs and the accounts PC upstairs off one account.
+  const isErpOnly = deviceStatus?.appSurface === 'Erp' || packageInfo?.appSurface === 'Erp';
 
   const isAuthenticated = !!currentUser && !!token;
 
