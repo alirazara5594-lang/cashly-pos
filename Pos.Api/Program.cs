@@ -19,6 +19,13 @@ using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Run correctly when Windows starts us as a service rather than from a terminal.
+//
+// Without this the service registers and "starts", then stops seconds later with error 1053:
+// the host waits on console input that a service never receives, so the SCM times out and kills
+// it. This is a no-op when launched normally from a shell, so it is always safe to call.
+builder.Host.UseWindowsService(options => options.ServiceName = "Cashly Business Host");
+
 // --- Configuration ---
 var isProduction = builder.Environment.IsProduction();
 var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY");
@@ -2553,6 +2560,11 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
     slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
 
+    // Same rule the signup endpoint enforces: slug collisions blow up on the unique index, so
+    // reject with a message the wizard can show instead of a raw database error.
+    if (await db.Tenants.AnyAsync(t => t.Slug == slug))
+        return Results.BadRequest(new { message = "A restaurant with a similar name already exists. Try a different name." });
+
     var tenant = new Tenant
     {
         Id = Guid.NewGuid(),
@@ -2565,6 +2577,9 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         Address = dto.Address,
         BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
         Tier = dto.DeploymentMode == "MultiBranch" ? SubscriptionTier.Professional : SubscriptionTier.Standard,
+        // A multi-branch install IS a head office: setting it here (not only in the startup
+        // backfill) makes the ERP-only surface at HQ apply from the very first session.
+        DeploymentMode = dto.DeploymentMode == "MultiBranch" ? DeploymentMode.HeadOffice : DeploymentMode.Standalone,
         IsActive = true,
         IsTrialActive = false,
         SubscriptionPaidUntil = DateTime.UtcNow.AddYears(1),

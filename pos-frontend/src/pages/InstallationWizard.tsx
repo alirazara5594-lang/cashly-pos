@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Building2, 
@@ -21,21 +21,41 @@ import {
   Key,
   Monitor,
   Tablet,
-  Zap
+  Zap,
+  Mail
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { usePosStore } from '../store/posStore';
 import { activate as activateDevice, getStoredTerminal } from '../services/deviceLicense';
 import type { BusinessType, DeploymentMode, BranchInitPayload } from '../types';
 
-export const InstallationWizard: React.FC = () => {
+/**
+ * The setup wizard serves double duty:
+ *
+ *  - INSTALL: a fresh server with no tenants — creates the tenant via POST /setup/initialize.
+ *  - REGISTER: an already-configured server (or the /signup route, forced via `forceSignup`) —
+ *    creates the tenant via POST /api/auth/signup with slug checks, package limits and the
+ *    30-day trial, then hands the owner their credentials to sign in.
+ *
+ * Same screens either way; only the submit target and the wording change.
+ */
+export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceSignup = false }) => {
   const navigate = useNavigate();
   const { setTenants, setDeploymentMode, setIsInstalled } = usePosStore();
 
   const [step, setStep] = useState<number>(1);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Registration mode. Pinned by the /signup route; otherwise the server's own status decides
+  // on mount (configured = someone is registering a new business on this server).
+  const [signupMode, setSignupMode] = useState<boolean>(forceSignup);
+  // Set on successful registration — renders the credentials screen instead of the wizard.
+  const [signupSuccess, setSignupSuccess] = useState<{ restaurantName: string; username: string; pin: string } | null>(null);
+
+  // Step 1 choice: single shop, head office, or "this PC is a branch POS — connect to HQ".
+  const [choice, setChoice] = useState<'Single' | 'MultiBranch' | 'Connect'>('Single');
 
   // Form State
   const [deploymentMode, setMode] = useState<DeploymentMode>('Single');
@@ -119,6 +139,20 @@ export const InstallationWizard: React.FC = () => {
   const [adminFullName, setAdminFullName] = useState('Restaurant Owner');
   const [adminUsername, setAdminUsername] = useState('admin');
   const [adminPin, setAdminPin] = useState('1234');
+  // Only consumed by registration (signup); the install endpoint ignores it.
+  const [adminEmail, setAdminEmail] = useState('');
+
+  // Decide install vs. register once the server answers. forceSignup skips the check entirely.
+  useEffect(() => {
+    if (forceSignup) return;
+    let cancelled = false;
+    posApi.getSetupStatus()
+      .then((status) => {
+        if (!cancelled && status?.isConfigured) setSignupMode(true);
+      })
+      .catch(() => { /* can't reach the server — stay in install mode; submit reports errors */ });
+    return () => { cancelled = true; };
+  }, [forceSignup]);
 
   // Offline & Starter Options
   const [enableOfflineDb, setEnableOfflineDb] = useState(true);
@@ -126,7 +160,6 @@ export const InstallationWizard: React.FC = () => {
   const [seedStarterMenu, setSeedStarterMenu] = useState(true);
 
   // Quick Branch Pairing State
-  const [showTokenPairing, setShowTokenPairing] = useState(false);
   const [pairingInputToken, setPairingInputToken] = useState('');
   const [isPairing, setIsPairing] = useState(false);
 
@@ -164,6 +197,10 @@ export const InstallationWizard: React.FC = () => {
     setErrorMessage(null);
 
     try {
+      // The HQ address the user typed has to take effect FIRST — activation itself is a request
+      // that must reach that server, and every call after it (login, catalogue, heartbeat) lives
+      // there too. setApiBaseUrl persists it and re-points the live client in one step.
+      setApiBaseUrl(apiUrl);
       await activateDevice(pairingInputToken.trim());
       const terminal = getStoredTerminal();
 
@@ -177,7 +214,6 @@ export const InstallationWizard: React.FC = () => {
         'cashly_terminal_mode',
         terminal?.type === 'OrderTab' ? 'WaiterTab' : terminal?.type === 'KitchenDisplay' ? 'KitchenKDS' : 'CounterPOS'
       );
-      localStorage.setItem('cashly_api_url', apiUrl);
 
 
       // Sign-in comes next: the catalogue now loads under the user's own session rather than
@@ -185,20 +221,100 @@ export const InstallationWizard: React.FC = () => {
       navigate('/');
     } catch (err: any) {
       console.error('Device activation failed:', err);
-      setErrorMessage(
-        err?.response?.data?.message
-          ?? 'Could not activate this device. Check the code with your administrator — codes expire after 15 minutes and work only once.'
-      );
+      setErrorMessage(getApiErrorMessage(
+        err,
+        'Could not activate this device. Check the code with your administrator — codes expire after 15 minutes and work only once.'
+      ));
     } finally {
       setIsPairing(false);
     }
   };
 
+  /**
+   * Gate each step before its "Next Step". Errors show in the banner above the form, on the
+   * step where the mistake was made, instead of at the very end when the submit fails.
+   */
+  const validateStep = (s: number): string | null => {
+    if (s === 2) {
+      if (!restaurantName.trim()) return 'Restaurant / brand name is required.';
+      if (deploymentMode === 'MultiBranch') {
+        if (branches.some(b => !b.name.trim())) return 'Every branch needs a name — fill it in or remove the row.';
+      } else if (!mainBranchName.trim()) {
+        return 'Outlet branch name is required.';
+      }
+    }
+    if (s === 3) {
+      if (!adminFullName.trim()) return 'Full name is required.';
+      if (adminUsername.trim().length < 3) return 'Username must be at least 3 characters.';
+      if (!/^\d{4,6}$/.test(adminPin.trim())) return 'Security PIN must be 4 to 6 digits.';
+      if (signupMode && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
+        return 'A valid email address is required to register the business.';
+      }
+    }
+    if (s === 4 && !apiUrl.trim()) return 'Backend / Cloud API server URL is required.';
+    return null;
+  };
+
+  const handleNext = () => {
+    const err = validateStep(step);
+    if (err) {
+      setErrorMessage(err);
+      return;
+    }
+    setErrorMessage(null);
+    setStep(step + 1);
+  };
+
   const handleCompleteSetup = async () => {
+    const stepError = validateStep(step);
+    if (stepError) {
+      setErrorMessage(stepError);
+      return;
+    }
+
     setLoading(true);
     setErrorMessage(null);
 
     try {
+      // ---- REGISTRATION: already-configured server → public signup (trial + package limits) ----
+      if (signupMode) {
+        const country = getCountryByCode(countryCode);
+        await posApi.signup({
+          restaurantName: restaurantName.trim(),
+          contactName: adminFullName.trim(),
+          email: adminEmail.trim(),
+          phone: phone.trim(),
+          city: city.trim() || undefined,
+          address: address.trim() || undefined,
+          country: country?.name,
+          adminUsername: adminUsername.trim().toLowerCase(),
+          adminPin: adminPin.trim(),
+          businessType,
+          packageKey: selectedPlan,
+          deploymentMode: deploymentMode === 'MultiBranch' ? 'MultiBranch' : 'Standalone',
+          branches: deploymentMode === 'MultiBranch'
+            ? branches
+                .filter(b => b.name.trim())
+                .map(b => ({
+                  name: b.name.trim(),
+                  code: b.code?.trim() || undefined,
+                  city: b.city?.trim() || undefined,
+                  address: b.address?.trim() || undefined,
+                  phone: b.phone?.trim() || undefined
+                }))
+            : undefined
+        });
+        // Deliberately no device-flag writes: this machine is already installed, and its
+        // deployment mode belongs to it, not to the business just registered.
+        setSignupSuccess({
+          restaurantName: restaurantName.trim(),
+          username: adminUsername.trim().toLowerCase(),
+          pin: adminPin.trim()
+        });
+        return;
+      }
+
+      // ---- INSTALL: fresh server → first-run initialize ----
       const payload = {
         deploymentMode,
         restaurantName,
@@ -235,7 +351,8 @@ export const InstallationWizard: React.FC = () => {
       localStorage.setItem('cashly_is_installed', 'true');
       localStorage.setItem('cashly_deployment_mode', deploymentMode);
       localStorage.setItem('cashly_offline_enabled', enableOfflineDb ? 'true' : 'false');
-      localStorage.setItem('cashly_api_url', apiUrl);
+      // Persist AND live-apply the cloud/HQ API address the user chose in step 4.
+      setApiBaseUrl(apiUrl);
 
       // Fetch fresh tenants list to refresh store. Best-effort: this endpoint now
       // requires a session, and the admin created above has not signed in yet —
@@ -254,12 +371,57 @@ export const InstallationWizard: React.FC = () => {
         navigate('/');
       }
     } catch (err: any) {
-      console.error('Setup initialization failed:', err);
-      setErrorMessage(err?.response?.data?.message || err.message || 'Failed to initialize setup. Please verify the backend API is running.');
+      console.error('Setup/registration failed:', err);
+      setErrorMessage(getApiErrorMessage(
+        err,
+        signupMode
+          ? 'Registration failed. Please try again.'
+          : 'Failed to initialize setup. Please verify the backend API is running.'
+      ));
     } finally {
       setLoading(false);
     }
   };
+
+  // Registration succeeded — no auto-login, so the owner is handed their credentials here.
+  if (signupSuccess) {
+    return (
+      <div className="h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 overflow-y-auto selection:bg-emerald-500 selection:text-white">
+        <div className="w-full max-w-lg text-center space-y-6">
+          <div className="w-16 h-16 rounded-2xl bg-teal-100 flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-8 h-8 text-teal-500" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 mb-2">You're all set!</h1>
+            <p className="text-sm text-slate-600">
+              <span className="font-bold text-slate-900">{signupSuccess.restaurantName}</span> is now live on Cashly POS.
+            </p>
+            <p className="text-xs text-slate-500 mt-2">
+              Your 30-day free trial has started. No credit card required.
+            </p>
+          </div>
+          <div className="p-4 rounded-xl bg-white border border-slate-200 text-left space-y-2">
+            <div className="text-xs text-slate-500">Login credentials:</div>
+            <div className="flex justify-between">
+              <span className="text-xs text-slate-500">Username</span>
+              <span className="text-xs text-slate-900 font-mono font-bold">{signupSuccess.username}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-xs text-slate-500">PIN</span>
+              <span className="text-xs text-slate-900 font-mono font-bold">{signupSuccess.pin}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition shadow-lg shadow-teal-500/25 cursor-pointer"
+          >
+            Open POS Terminal
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-emerald-500 selection:text-white overflow-hidden">
@@ -270,7 +432,7 @@ export const InstallationWizard: React.FC = () => {
             <UtensilsCrossed className="w-3.5 h-3.5 text-white stroke-[2.5]" />
           </div>
           <h1 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-1.5">
-            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-semibold border border-emerald-200">Setup</span>
+            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-semibold border border-emerald-200">{signupMode ? 'Register' : 'Setup'}</span>
           </h1>
         </div>
 
@@ -281,7 +443,7 @@ export const InstallationWizard: React.FC = () => {
             { num: 2, label: 'Restaurant & Outlets' },
             { num: 3, label: 'Admin Security' },
             { num: 4, label: 'Offline & Sync' },
-            { num: 5, label: 'Deploy' }
+            { num: 5, label: signupMode ? 'Create' : 'Deploy' }
           ].map((s) => (
             <div
               key={s.num}
@@ -320,20 +482,20 @@ export const InstallationWizard: React.FC = () => {
           <div className="space-y-5">
             <div className="text-center md:text-left space-y-1">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your Restaurant Setup Mode</h2>
-              <p className="text-sm text-slate-500">Select whether Cashly POS will power a single standalone location or a multi-branch chain with central Head Office.</p>
+              <p className="text-sm text-slate-500">A single shop runs POS + ERP together. A chain's Head Office runs the ERP while each restaurant runs POS — or pair this PC to an HQ that already exists.</p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               {/* Single Restaurant Option */}
               <div
-                onClick={() => setMode('Single')}
+                onClick={() => { setChoice('Single'); setMode('Single'); }}
                 className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
-                  deploymentMode === 'Single'
+                  choice === 'Single'
                     ? 'border-emerald-500 bg-emerald-50 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/40'
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                {deploymentMode === 'Single' && (
+                {choice === 'Single' && (
                   <div className="absolute top-4 right-4 text-emerald-400">
                     <CheckCircle2 className="w-6 h-6 fill-emerald-500 text-white" />
                   </div>
@@ -370,14 +532,14 @@ export const InstallationWizard: React.FC = () => {
 
               {/* Multi-Branch Chain Option */}
               <div
-                onClick={() => setMode('MultiBranch')}
+                onClick={() => { setChoice('MultiBranch'); setMode('MultiBranch'); }}
                 className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
-                  deploymentMode === 'MultiBranch'
+                  choice === 'MultiBranch'
                     ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                {deploymentMode === 'MultiBranch' && (
+                {choice === 'MultiBranch' && (
                   <div className="absolute top-4 right-4 text-teal-400">
                     <CheckCircle2 className="w-6 h-6 fill-teal-500 text-white" />
                   </div>
@@ -387,13 +549,13 @@ export const InstallationWizard: React.FC = () => {
                     <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
                       <Building2 className="w-5 h-5" />
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900">Multi-Branch Chain with HQ</h3>
+                    <h3 className="text-lg font-bold text-slate-900">Head Office with Restaurants</h3>
                   </div>
-                  <p className="text-sm text-slate-500">For multi-location chains with a Central Commissary / Warehouse and branch outlets.</p>
+                  <p className="text-sm text-slate-500">Head Office runs the ERP only — accounting, supply &amp; staff. Each restaurant runs POS and connects back to HQ.</p>
 
                   <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
                     <li className="flex items-center gap-2">
-                      <span className="text-teal-600 font-bold">✓</span> Central Commissary & Recipe Management
+                      <span className="text-teal-600 font-bold">✓</span> Central Commissary &amp; Recipe Management
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="text-teal-600 font-bold">✓</span> Inter-Branch Stock Transfers
@@ -408,36 +570,67 @@ export const InstallationWizard: React.FC = () => {
                 </div>
 
                 <div className="mt-4 pt-3 text-xs font-semibold text-teal-600">
-                  Enterprise-grade • Full commissary supply chain
+                  ERP at the office • POS at every restaurant
+                </div>
+              </div>
+
+              {/* Third path: this PC is a branch till — install nothing, just pair to the HQ */}
+              <div
+                onClick={() => setChoice('Connect')}
+                className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
+                  choice === 'Connect'
+                    ? 'border-sky-500 bg-sky-50 shadow-lg shadow-sky-500/10 ring-1 ring-sky-500/40'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                {choice === 'Connect' && (
+                  <div className="absolute top-4 right-4 text-sky-400">
+                    <CheckCircle2 className="w-6 h-6 fill-sky-500 text-white" />
+                  </div>
+                )}
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-center text-sky-600 shrink-0">
+                      <Monitor className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900">Branch POS — Connect to HQ</h3>
+                  </div>
+                  <p className="text-sm text-slate-500">This PC sits at a restaurant/branch. It runs POS only and connects to your existing Head Office server.</p>
+
+                  <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
+                    <li className="flex items-center gap-2">
+                      <span className="text-sky-600 font-bold">✓</span> Pair with a code from HQ in seconds
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-sky-600 font-bold">✓</span> Menus, stock &amp; orders sync with the office
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-sky-600 font-bold">✓</span> Accounting &amp; payments stay at HQ
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-4 pt-3 text-xs font-semibold text-sky-600">
+                  POS only • No local database — talks to HQ
                 </div>
               </div>
             </div>
 
-            {/* Quick Pair Branch Option */}
-            <div className="pt-3 border-t border-slate-200">
-              <div className="p-4 rounded-xl bg-white border border-slate-200 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                <div className="space-y-1">
+            {/* Branch-POS connection — only relevant when "Connect to HQ" is chosen */}
+            {choice === 'Connect' && (
+              <div className="pt-3 border-t border-slate-200">
+                <div className="space-y-1 mb-3">
                   <div className="flex items-center gap-2">
-                    <Key className="w-4 h-4 text-emerald-600" />
-                    <h3 className="text-sm font-bold text-slate-900">Installing on a Restaurant Branch Counter PC?</h3>
+                    <Key className="w-4 h-4 text-sky-600" />
+                    <h3 className="text-sm font-bold text-slate-900">Connect this PC to your Head Office</h3>
                   </div>
                   <p className="text-xs text-slate-500">
-                    If your Head Office has already generated a <strong>Branch Pairing Token</strong>, connect this PC to HQ instantly in 5 seconds.
+                    Enter your HQ server address and a <strong>Branch Pairing Code</strong> generated at the Head Office
+                    (Settings → Devices). This PC becomes a POS-only terminal in about 5 seconds.
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setShowTokenPairing(!showTokenPairing)}
-                  className="px-4 py-2 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-600 border border-teal-200 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  {showTokenPairing ? 'Hide Token Input' : '⚡ Connect with Branch Token'}
-                </button>
-              </div>
-
-              {showTokenPairing && (
-                <div className="mt-3 p-4 rounded-2xl bg-white border border-teal-500/40 space-y-4 animate-fadeIn">
+                <div className="p-4 rounded-2xl bg-white border border-sky-500/40 space-y-4 animate-fadeIn">
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
                     <div className="md:col-span-4 space-y-1">
                       <label className="text-xs font-semibold text-slate-600">HQ Server API URL</label>
@@ -446,18 +639,18 @@ export const InstallationWizard: React.FC = () => {
                         value={apiUrl}
                         onChange={(e) => setApiUrl(e.target.value)}
                         placeholder="http://localhost:5288"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
                       />
                     </div>
 
                     <div className="md:col-span-5 space-y-1">
-                      <label className="text-xs font-semibold text-slate-600">Branch Pairing Token (From HQ Settings)</label>
+                      <label className="text-xs font-semibold text-slate-600">Branch Pairing Code (From HQ Settings)</label>
                       <input 
                         type="text"
                         value={pairingInputToken}
                         onChange={(e) => setPairingInputToken(e.target.value)}
                         placeholder="e.g. RG-DT-8912"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono font-bold tracking-wider uppercase focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 font-mono font-bold tracking-wider uppercase focus:outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
                       />
                     </div>
 
@@ -466,7 +659,7 @@ export const InstallationWizard: React.FC = () => {
                         type="button"
                         disabled={isPairing || !pairingInputToken.trim()}
                         onClick={handlePairWithToken}
-                        className="w-full py-2 px-4 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-teal-500/20 disabled:opacity-50 transition cursor-pointer"
+                        className="w-full py-2 px-4 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 disabled:opacity-50 transition cursor-pointer"
                       >
                         {isPairing ? (
                           <>
@@ -482,8 +675,8 @@ export const InstallationWizard: React.FC = () => {
                     </div>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -852,6 +1045,22 @@ export const InstallationWizard: React.FC = () => {
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                   />
                 </div>
+
+                {signupMode && (
+                  <div className="space-y-1.5 md:col-span-3">
+                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                      <Mail className="w-3.5 h-3.5 text-emerald-600" /> Email Address
+                      <span className="text-slate-400 font-normal">— for your business account</span>
+                    </label>
+                    <input 
+                      type="email" 
+                      value={adminEmail}
+                      onChange={(e) => setAdminEmail(e.target.value)}
+                      placeholder="owner@example.com"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 space-y-2.5">
@@ -942,8 +1151,14 @@ export const InstallationWizard: React.FC = () => {
         {step === 5 && (
           <div className="space-y-4">
             <div className="space-y-1">
-              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Ready to Initialize Cashly POS</h2>
-              <p className="text-sm text-slate-500">Review your deployment summary before finalizing installation.</p>
+              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
+                {signupMode ? 'Ready to Create Your Restaurant' : 'Ready to Initialize Cashly POS'}
+              </h2>
+              <p className="text-sm text-slate-500">
+                {signupMode
+                  ? 'Review your details before creating the business account.'
+                  : 'Review your deployment summary before finalizing installation.'}
+              </p>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
@@ -954,7 +1169,7 @@ export const InstallationWizard: React.FC = () => {
                     {deploymentMode === 'Single' ? (
                       <span className="text-emerald-600 flex items-center gap-1"><Store className="w-4 h-4" /> Single Restaurant Outlet</span>
                     ) : (
-                      <span className="text-teal-600 flex items-center gap-1"><Building2 className="w-4 h-4" /> Multi-Branch Chain with HQ</span>
+                      <span className="text-teal-600 flex items-center gap-1"><Building2 className="w-4 h-4" /> Head Office with Restaurants</span>
                     )}
                   </div>
                 </div>
@@ -981,13 +1196,18 @@ export const InstallationWizard: React.FC = () => {
                   <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Master Admin Account</span>
                   <div className="text-slate-700">
                     Username: <span className="text-emerald-600 font-mono font-semibold">{adminUsername}</span> • Name: {adminFullName}
+                    {signupMode && adminEmail.trim() && <> • Email: {adminEmail.trim()}</>}
                   </div>
                 </div>
               </div>
 
               <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 text-xs flex items-center gap-3">
                 <CheckCircle2 className="w-5 h-5 shrink-0" />
-                <span>All parameters validated. Clicking <strong>Complete Installation</strong> will configure database schemas, initialize users, and launch the POS terminal.</span>
+                {signupMode ? (
+                  <span>All details look good. Clicking <strong>Create Restaurant Account</strong> registers the business and starts its <strong>30-day free trial</strong> — your login credentials appear next.</span>
+                ) : (
+                  <span>All parameters validated. Clicking <strong>Complete Installation</strong> will configure database schemas, initialize users, and launch the POS terminal.</span>
+                )}
               </div>
             </div>
           </div>
@@ -1014,13 +1234,16 @@ export const InstallationWizard: React.FC = () => {
           </span>
 
           {step < 5 ? (
-            <button
-              type="button"
-              onClick={() => setStep(step + 1)}
-              className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-teal-500/20 transition-all cursor-pointer"
-            >
-              Next Step <ArrowRight className="w-4 h-4" />
-            </button>
+            // "Connect to HQ" finishes inside its own Pair button — there is no next step.
+            choice === 'Connect' ? <div /> : (
+              <button
+                type="button"
+                onClick={handleNext}
+                className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-teal-500/20 transition-all cursor-pointer"
+              >
+                Next Step <ArrowRight className="w-4 h-4" />
+              </button>
+            )
           ) : (
             <button
               type="button"
@@ -1031,7 +1254,11 @@ export const InstallationWizard: React.FC = () => {
               {loading ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Initializing System...
+                  {signupMode ? 'Creating Account…' : 'Initializing System...'}
+                </>
+              ) : signupMode ? (
+                <>
+                  <Sparkles className="w-4 h-4 fill-white" /> Create Restaurant Account
                 </>
               ) : (
                 <>

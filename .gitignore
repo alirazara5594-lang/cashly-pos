@@ -8,3 +8,6 @@
 # .NET build output (Pos.Api has no .gitignore of its own yet)
 Pos.Api/bin/
 Pos.Api/obj/
+
+# Database backups — never commit customer data
+backups/

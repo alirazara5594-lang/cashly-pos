@@ -81,7 +81,15 @@ import type {
   MyPackageInfo
 } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5288';
+/**
+ * Where the API lives. Baked at build time by default, but a branch/restaurant terminal must be
+ * able to point at its Head Office server after installation, so a stored override (written by
+ * the setup wizard's "HQ Server API URL" / "Cloud API Server URL" fields) wins over the build.
+ */
+const API_BASE_URL =
+  (typeof localStorage !== 'undefined' && localStorage.getItem('cashly_api_url')) ||
+  import.meta.env.VITE_API_BASE_URL ||
+  'http://localhost:5288';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -89,6 +97,20 @@ export const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+/**
+ * Re-point this device at a different server (e.g. a branch pairing to its Head Office).
+ * Persists the choice and updates the live client in one step, so the very next call —
+ * including the activation request itself — goes to the new address.
+ */
+export function setApiBaseUrl(url: string) {
+  const trimmed = url.trim().replace(/\/+$/, '');
+  if (!trimmed) return;
+  try {
+    localStorage.setItem('cashly_api_url', trimmed);
+  } catch { /* storage blocked — the in-memory re-point still applies for this session */ }
+  api.defaults.baseURL = trimmed;
+}
 
 // JWT Auth interceptor
 api.interceptors.request.use((config) => {

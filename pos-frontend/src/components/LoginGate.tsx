@@ -209,7 +209,7 @@ export const LoginGate: React.FC = () => {
           </button>
 
           <div className="text-center pt-1">
-            <a href="/signup" className="text-[10px] text-slate-400 hover:text-blue-600 transition font-semibold">
+            <a href="/setup" className="text-[10px] text-slate-400 hover:text-blue-600 transition font-semibold">
               New restaurant? Register here →
             </a>
           </div>

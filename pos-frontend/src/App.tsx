@@ -35,7 +35,6 @@ const FloorManagement = lazy(() => import('./pages/FloorManagement').then(m => (
 const InstallationWizard = lazy(() => import('./pages/InstallationWizard').then(m => ({ default: m.InstallationWizard })));
 const SettingsManagement = lazy(() => import('./pages/SettingsManagement').then(m => ({ default: m.SettingsManagement })));
 const StockRequests = lazy(() => import('./pages/StockRequests').then(m => ({ default: m.StockRequests })));
-const TenantSignup = lazy(() => import('./pages/TenantSignup').then(m => ({ default: m.TenantSignup })));
 const WhatsAppConfig = lazy(() => import('./pages/WhatsAppConfig').then(m => ({ default: m.WhatsAppConfig })));
 const PricingAdmin = lazy(() => import('./pages/PricingAdmin').then(m => ({ default: m.PricingAdmin })));
 const ModulePermissions = lazy(() => import('./pages/ModulePermissions').then(m => ({ default: m.ModulePermissions })));
@@ -208,9 +207,11 @@ function MainLayoutInner() {
     return <Navigate to="/setup" replace />;
   }
 
-  // Public self-serve signup must stay reachable without a session.
+  // Public self-serve signup must stay reachable without a session. It is the SAME wizard as
+  // /setup, just forced into registration mode (creates a tenant via /api/auth/signup with a
+  // 30-day trial instead of the first-run initialize).
   if (location.pathname === '/signup') {
-    return <TenantSignup />;
+    return <InstallationWizard forceSignup />;
   }
 
   // Hold the route tree back until the setup check resolves, so an unauthenticated
@@ -329,7 +330,7 @@ function MainLayoutInner() {
             <Route path="/delivery-integrations" element={<RequireModule module="admin"><DeliveryIntegrationSettings /></RequireModule>} />
             <Route path="/my-addons" element={<RequireModule module="admin"><MyAddOns /></RequireModule>} />
 
-            <Route path="/signup" element={<TenantSignup />} />
+            <Route path="/signup" element={<InstallationWizard forceSignup />} />
             <Route path="/setup" element={<InstallationWizard />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
