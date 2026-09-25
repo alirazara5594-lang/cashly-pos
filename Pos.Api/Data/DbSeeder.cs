@@ -90,10 +90,12 @@ public static class DbSeeder
                     HasStockTransfers = false,
                     HasDirectorDashboard = false,
                     HasConsolidatedReports = false,
-                    HasWhatsAppMessaging = true,
+                    // WhatsApp is the flagship sell-up from Starter: not included, but one
+                    // grant (or one plan move) away — see the add-on catalog below.
+                    HasWhatsAppMessaging = false,
                     HasAdvancedReports = false,
                     HasMultiBranch = true,
-                    WhatsAppMessagesPerMonth = -1,
+                    WhatsAppMessagesPerMonth = 0,
                     IsActive = true
                 },
                 new SaaSPackageConfig
@@ -158,6 +160,21 @@ public static class DbSeeder
                 new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasAdvancedReports), DisplayName = "Advanced Reports", Description = "Deeper sales, category, and payment-tender analytics.", MonthlyPricePKR = 2000, YearlyPricePKR = 20000 },
                 new AddOnCatalogItem { Key = nameof(SaaSPackageConfig.HasMultiBranch), DisplayName = "Multi-Branch Support", Description = "Operate and switch between more than one outlet.", MonthlyPricePKR = 4000, YearlyPricePKR = 40000 }
             );
+            await db.SaveChangesAsync();
+        }
+
+        // WhatsApp gets its own existence check: installs that already have a catalog skip the
+        // block above, and this is the row older catalogs are missing — the one support sells.
+        if (!await db.AddOnCatalogItems.AnyAsync(a => a.Key == nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+        {
+            db.AddOnCatalogItems.Add(new AddOnCatalogItem
+            {
+                Key = nameof(SaaSPackageConfig.HasWhatsAppMessaging),
+                DisplayName = "WhatsApp Notifications",
+                Description = "Order updates and receipts on WhatsApp, straight from the till.",
+                MonthlyPricePKR = 2500,
+                YearlyPricePKR = 25000
+            });
             await db.SaveChangesAsync();
         }
 

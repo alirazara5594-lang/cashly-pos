@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, CheckCircle2, Ban, Edit, Save, X, ExternalLink } from 'lucide-react';
+import { RefreshCw, CheckCircle2, Ban, Edit, Save, X, ExternalLink, Plus } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { AddOnCatalogItem, AddOnSubscriptionRow, Branch } from '../types';
 
@@ -27,6 +27,11 @@ export const AddOnManagement: React.FC = () => {
   const [editingItem, setEditingItem] = useState<AddOnCatalogItem | null>(null);
   const [editForm, setEditForm] = useState({ monthlyPricePKR: '', yearlyPricePKR: '' });
   const [editSaving, setEditSaving] = useState(false);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({ key: '', displayName: '', description: '', monthlyPricePKR: '', yearlyPricePKR: '' });
+  const [createSaving, setCreateSaving] = useState(false);
+  const [createError, setCreateError] = useState('');
 
   const loadTenants = useCallback(async () => {
     try {
@@ -153,6 +158,33 @@ export const AddOnManagement: React.FC = () => {
     }
   };
 
+  const handleCreate = async () => {
+    const key = createForm.key.trim();
+    if (!key || !createForm.displayName.trim()) {
+      setCreateError('Key and display name are required.');
+      return;
+    }
+    setCreateSaving(true);
+    setCreateError('');
+    try {
+      await posApi.createAddOnCatalogItem({
+        key,
+        displayName: createForm.displayName.trim(),
+        description: createForm.description.trim() || undefined,
+        monthlyPricePKR: Number(createForm.monthlyPricePKR) || 0,
+        yearlyPricePKR: Number(createForm.yearlyPricePKR) || 0
+      });
+      setCreateOpen(false);
+      setCreateForm({ key: '', displayName: '', description: '', monthlyPricePKR: '', yearlyPricePKR: '' });
+      setMessage({ type: 'success', text: `${createForm.displayName} added to the catalog` });
+      await loadCatalog();
+    } catch (err) {
+      setCreateError(getApiErrorMessage(err, 'Failed to create add-on'));
+    } finally {
+      setCreateSaving(false);
+    }
+  };
+
   const tenantName = tenants.find(t => t.id === selectedTenantId)?.name;
 
   return (
@@ -173,6 +205,13 @@ export const AddOnManagement: React.FC = () => {
           >
             <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loading ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
+          </button>
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New add-on
           </button>
         </div>
       </div>
@@ -327,6 +366,69 @@ export const AddOnManagement: React.FC = () => {
             >
               <Save className="w-3.5 h-3.5" />
               <span>{editSaving ? 'Saving…' : 'Save Pricing'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {createOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-slate-900">New catalog add-on</h2>
+              <button onClick={() => setCreateOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+            </div>
+            {createError && (
+              <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700">
+                {createError}
+              </div>
+            )}
+            <input
+              value={createForm.key}
+              onChange={(e) => setCreateForm({ ...createForm, key: e.target.value })}
+              placeholder="Key (e.g. HasKitchenDisplay)"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:border-teal-500"
+            />
+            <input
+              value={createForm.displayName}
+              onChange={(e) => setCreateForm({ ...createForm, displayName: e.target.value })}
+              placeholder="Display name *"
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-teal-500"
+            />
+            <textarea
+              value={createForm.description}
+              onChange={(e) => setCreateForm({ ...createForm, description: e.target.value })}
+              placeholder="What the customer gets"
+              rows={2}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs resize-none focus:outline-none focus:border-teal-500"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                value={createForm.monthlyPricePKR}
+                onChange={(e) => setCreateForm({ ...createForm, monthlyPricePKR: e.target.value })}
+                placeholder="Monthly PKR"
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-teal-500"
+              />
+              <input
+                type="number"
+                value={createForm.yearlyPricePKR}
+                onChange={(e) => setCreateForm({ ...createForm, yearlyPricePKR: e.target.value })}
+                placeholder="Yearly PKR"
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-teal-500"
+              />
+            </div>
+            <p className="text-[10px] text-slate-500 leading-snug">
+              The key is what a grant switches on: use a feature flag name (Has…) to flip a
+              feature, or a quota key (EXTRA_COUNTER, EXTRA_TABLET, EXTRA_USER) to sell units.
+            </p>
+            <button
+              onClick={handleCreate}
+              disabled={createSaving}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{createSaving ? 'Creating…' : 'Create add-on'}</span>
             </button>
           </div>
         </div>

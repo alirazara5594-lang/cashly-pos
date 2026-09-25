@@ -1410,3 +1410,167 @@ export interface MenuEngineeringReport {
   slowMovers: MenuEngineeringRow[];
 }
 
+// ─────────────────────────────────────────────────────────────
+// Platform console — SuperAdmin tenant command center
+// ─────────────────────────────────────────────────────────────
+
+export type TenantTierName = 'Starter' | 'Standard' | 'Professional';
+
+/** One row of the SuperAdmin tenant table (`GET /api/admin/tenants`). */
+export interface AdminTenantRow {
+  id: string;
+  name: string;
+  slug: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  city: string;
+  country?: string;
+  businessType: string;
+  tier: string;
+  isActive: boolean;
+  isTrialActive: boolean;
+  trialEndsAt: string;
+  subscriptionPaidUntil: string | null;
+  createdAt: string;
+  branchCount: number;
+  userCount: number;
+  maxUsers?: number;
+  counterCount?: number;
+  maxCounters?: number;
+  tabletCount?: number;
+  maxTablets?: number;
+  activeAddOnsCount?: number;
+}
+
+export interface AdminPlatformStats {
+  totalTenants: number;
+  activeTenants: number;
+  trialTenants: number;
+  paidTenants: number;
+  totalBranches: number;
+  totalOrders: number;
+  /** Monthly recurring revenue in PKR: plan price + active add-on subscriptions. */
+  mrrPKR: number;
+  planMix: { tier: string; count: number }[];
+  expiringSoon: { id: string; name: string; tier: string; paidUntil: string }[];
+  expiringSoonCount: number;
+  arrears: number;
+  staleDevices: number;
+}
+
+/** `GET /api/admin/device-health` — tills that have not checked in within the window. */
+export interface DeviceHealthReport {
+  cutoff: string;
+  count: number;
+  devices: {
+    terminalId: string;
+    terminalName: string;
+    terminalType: string;
+    lastSeenAt: string;
+    licenseExpiresAt: string | null;
+    branchName: string;
+    tenantId: string;
+    tenantName: string;
+    tenantStatus: string;
+  }[];
+}
+
+/** Row of `GET /api/admin/packages` — the sellable plan catalogue (SaaSPackageConfig). */
+export interface PlanOption {
+  id: string;
+  packageKey: string;
+  displayName: string;
+  monthlyPricePKR: number;
+  yearlyPricePKR: number;
+  maxBranches: number;
+  maxCounters: number;
+  maxOrderTabs: number;
+  maxUsers: number;
+  hasKitchenDisplay: boolean;
+  hasDeliveryCOD: boolean;
+  hasInventoryManagement: boolean;
+  hasStockTransfers: boolean;
+  hasDirectorDashboard: boolean;
+  hasConsolidatedReports: boolean;
+  hasWhatsAppMessaging: boolean;
+  hasAdvancedReports: boolean;
+  hasMultiBranch: boolean;
+  whatsappMessagesPerMonth: number;
+}
+
+/** `GET /api/admin/tenants/{id}/plan-change-preview` — dry-run of a tier move. */
+export interface PlanChangePreview {
+  currentTier: string;
+  targetTier: string;
+  isDowngrade: boolean;
+  /** Over-limit conditions that block a downgrade unless forced. */
+  blockers: string[];
+  /** Features the tenant uses today that the target plan does not include. */
+  featuresLost: string[];
+  currentUsage: { branches: number; activeUsers: number };
+  targetLimits: { maxBranches: number; maxCounters: number; maxOrderTabs: number; maxUsers: number };
+}
+
+/** `GET /api/admin/tenants/{id}/overview` — everything the detail panel renders. */
+export interface TenantOverview {
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+    contactName: string;
+    contactEmail: string;
+    contactPhone: string;
+    city: string | null;
+    country: string | null;
+    createdAt: string;
+    isActive: boolean;
+    tier: string;
+    status: string;
+    trialEndsAt: string | null;
+    subscriptionPaidUntil: string | null;
+    isProviderProvisioned: boolean;
+    deploymentMode: 'Standalone' | 'HeadOffice' | string;
+    ownerInvitePending: boolean;
+  };
+  entitlements: {
+    version: number;
+    maxBranches: number;
+    maxCounters: number;
+    maxOrderTabs: number;
+    maxUsers: number;
+    features: Record<string, boolean>;
+    packs: string[];
+    primaryPack: string;
+  };
+  usage: { branches: number; activeUsers: number; counters: number; tablets: number; products: number };
+  health: {
+    ordersLast30d: number;
+    revenueLast30d: number;
+    activeDaysLast30d: number;
+    staleDevices: number;
+    lastOrderAt: string | null;
+    unreconciledOfflineOrders: number;
+    churnRisk: 'ok' | 'watch' | 'high';
+  };
+  billing: {
+    estimatedMrrPKR: number;
+    planPricePKR: number;
+    addOns: { addOnKey: string; quantity: number; pricePKR: number; branchId?: string | null }[];
+    unpaidInvoices: { id: string; invoiceNumber: string; amountPKR: number; issuedAt: string; dueAt: string; status: string }[];
+  };
+  overrides: { id: string; key: string; value: string; expiresAt: string | null; reason: string; createdAt: string; inForce: boolean }[];
+  branches: { id: string; name: string; code: string; city: string | null; isHeadOffice: boolean; counters: number; tablets: number }[];
+  devices: {
+    id: string;
+    branchId: string;
+    terminalName: string;
+    terminalType: string;
+    lastSeenAt: string;
+    licenseExpiresAt: string | null;
+    deviceInfo?: string | null;
+    state: 'Valid' | 'Revoked' | 'Retired' | 'NeverActivated' | 'Expired';
+  }[];
+  recentLicenceEvents: { eventType: string; detail: string; createdAt: string; terminalId?: string | null }[];
+}
+

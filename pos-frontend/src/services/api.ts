@@ -78,7 +78,13 @@ import type {
   BusinessType,
   PublicPackage,
   CountryProfile,
-  MyPackageInfo
+  MyPackageInfo,
+  AdminTenantRow,
+  AdminPlatformStats,
+  PlanOption,
+  PlanChangePreview,
+  TenantOverview,
+  DeviceHealthReport
 } from '../types';
 
 /**
@@ -996,11 +1002,11 @@ export const posApi = {
 
   // --- Platform console: lifecycle, grants, provisioning, support ---
   getTenantOverview: async (tenantId: string) => {
-    const res = await api.get(`/api/admin/tenants/${tenantId}/overview`);
+    const res = await api.get<TenantOverview>(`/api/admin/tenants/${tenantId}/overview`);
     return res.data;
   },
   previewPlanChange: async (tenantId: string, tier: string) => {
-    const res = await api.get(`/api/admin/tenants/${tenantId}/plan-change-preview`, { params: { tier } });
+    const res = await api.get<PlanChangePreview>(`/api/admin/tenants/${tenantId}/plan-change-preview`, { params: { tier } });
     return res.data;
   },
   setTenantStatus: async (tenantId: string, status: string, reason: string) => {
@@ -1027,12 +1033,20 @@ export const posApi = {
     const res = await api.post('/api/admin/tenants/provision', data);
     return res.data;
   },
+  enableTenantHQ: async (tenantId: string) => {
+    const res = await api.post(`/api/admin/tenants/${tenantId}/enable-hq`);
+    return res.data;
+  },
+  createTenantBranch: async (tenantId: string, data: { name: string; code?: string; city?: string; address?: string; phone?: string; stateCode?: string }) => {
+    const res = await api.post(`/api/admin/tenants/${tenantId}/branches`, data);
+    return res.data;
+  },
   impersonateTenant: async (tenantId: string, reason: string, allowWrites = false) => {
     const res = await api.post(`/api/admin/tenants/${tenantId}/impersonate`, { reason, allowWrites });
     return res.data;
   },
   getDeviceHealth: async (staleHours = 24) => {
-    const res = await api.get('/api/admin/device-health', { params: { staleHours } });
+    const res = await api.get<DeviceHealthReport>('/api/admin/device-health', { params: { staleHours } });
     return res.data;
   },
   redeemOwnerInvite: async (data: { inviteToken: string; username: string; pin: string; fullName?: string }) => {
@@ -1086,7 +1100,7 @@ export const posApi = {
 
   // SAAS — Admin: List all tenants
   getAdminTenants: async () => {
-    const res = await api.get('/api/admin/tenants');
+    const res = await api.get<AdminTenantRow[]>('/api/admin/tenants');
     return res.data;
   },
 
@@ -1096,15 +1110,16 @@ export const posApi = {
     return res.data;
   },
 
-  // SAAS — Admin: Change tier
-  changeTenantTier: async (tenantId: string, tier: string, paidUntil?: string) => {
-    const res = await api.put(`/api/admin/tenants/${tenantId}/change-tier`, { tier, paidUntil });
+  // SAAS — Admin: Change tier. `force` moves a tenant onto a smaller plan even when they
+  // are over its limits — devices beyond the new allowance stop selling at next heartbeat.
+  changeTenantTier: async (tenantId: string, tier: string, paidUntil?: string, force?: boolean) => {
+    const res = await api.put(`/api/admin/tenants/${tenantId}/change-tier`, { tier, paidUntil, force });
     return res.data;
   },
 
   // SAAS — Admin: Dashboard stats
   getAdminStats: async () => {
-    const res = await api.get('/api/admin/stats');
+    const res = await api.get<AdminPlatformStats>('/api/admin/stats');
     return res.data;
   },
 
@@ -1141,7 +1156,7 @@ export const posApi = {
 
   // SAAS — Package Config (Platform Admin)
   getPackages: async () => {
-    const res = await api.get('/api/admin/packages');
+    const res = await api.get<PlanOption[]>('/api/admin/packages');
     return res.data;
   },
   getPublicPackages: async () => {

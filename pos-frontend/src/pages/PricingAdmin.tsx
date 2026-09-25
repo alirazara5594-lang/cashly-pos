@@ -17,6 +17,7 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
+import type { PlanOption } from '../types';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
@@ -24,7 +25,6 @@ interface PackageData {
   id: string;
   name: string;
   slug: string;
-  description: string;
   monthlyPricePKR: number;
   yearlyPricePKR: number;
   maxBranches: number;
@@ -35,21 +35,21 @@ interface PackageData {
   features: string[];
 }
 
-const AVAILABLE_FEATURES = [
-  'pos',
-  'kitchen_display',
-  'delivery_board',
-  'inventory',
-  'supply_chain',
-  'reports',
-  'multi_branch',
-  'staff_management',
-  'dining_tables',
-  'whatsapp_notifications',
-  'online_ordering',
-  'loyalty_program',
-  'advanced_reports',
-  'api_access',
+/**
+ * Every feature this screen can switch on maps to a real Has* column on the package row —
+ * anything else cannot be saved, so it is not offered. The old list showed toggles the
+ * backend silently discarded.
+ */
+const PACKAGE_FEATURES: { key: string; label: string; flag: keyof PlanOption }[] = [
+  { key: 'kitchen_display', label: 'Kitchen Display', flag: 'hasKitchenDisplay' },
+  { key: 'delivery_cod', label: 'Delivery & COD', flag: 'hasDeliveryCOD' },
+  { key: 'inventory', label: 'Inventory', flag: 'hasInventoryManagement' },
+  { key: 'stock_transfers', label: 'Stock Transfers', flag: 'hasStockTransfers' },
+  { key: 'director_dashboard', label: 'Executive Dashboard', flag: 'hasDirectorDashboard' },
+  { key: 'consolidated_reports', label: 'Consolidated Reports', flag: 'hasConsolidatedReports' },
+  { key: 'whatsapp_notifications', label: 'WhatsApp Notifications', flag: 'hasWhatsAppMessaging' },
+  { key: 'advanced_reports', label: 'Advanced Reports', flag: 'hasAdvancedReports' },
+  { key: 'multi_branch', label: 'Multi-Branch', flag: 'hasMultiBranch' }
 ];
 
 export const PricingAdmin: React.FC = () => {
@@ -76,43 +76,44 @@ export const PricingAdmin: React.FC = () => {
     setLoading(true);
     try {
       const data = await posApi.getPackages();
-      setPackages(Array.isArray(data) ? data.map((p: any) => ({
-        ...p,
+      // The API returns the raw package row; the screen works with friendly names and the
+      // Has* columns expressed as a feature list so the toggles show what is actually on.
+      setPackages(Array.isArray(data) ? data.map((p) => ({
+        id: p.id,
+        name: p.displayName || p.packageKey,
+        slug: p.packageKey,
         monthlyPricePKR: p.monthlyPricePKR ?? 0,
         yearlyPricePKR: p.yearlyPricePKR ?? 0,
         maxBranches: p.maxBranches ?? 1,
         maxCounters: p.maxCounters ?? 1,
-        maxTabs: p.maxTabs ?? 1,
+        maxTabs: p.maxOrderTabs ?? 1,
         maxUsers: p.maxUsers ?? 1,
         whatsappMessagesPerMonth: p.whatsappMessagesPerMonth ?? 0,
-        features: p.features ?? [],
+        features: PACKAGE_FEATURES.filter(f => p[f.flag] === true).map(f => f.key),
       })) : []);
     } catch (err) {
       console.error('Failed to load packages:', err);
       setPackages([
         {
           id: '1', name: 'Starter', slug: 'starter',
-          description: 'Single-branch restaurant with basic POS',
           monthlyPricePKR: 4999, yearlyPricePKR: 47990,
           maxBranches: 1, maxCounters: 2, maxTabs: 3, maxUsers: 5,
           whatsappMessagesPerMonth: 100,
-          features: ['pos', 'kitchen_display', 'delivery_board', 'reports', 'staff_management', 'dining_tables'],
+          features: ['kitchen_display', 'delivery_cod', 'inventory', 'multi_branch'],
         },
         {
           id: '2', name: 'Standard', slug: 'standard',
-          description: 'Multi-branch with inventory & supply chain',
           monthlyPricePKR: 12999, yearlyPricePKR: 124990,
           maxBranches: 3, maxCounters: 5, maxTabs: 10, maxUsers: 15,
           whatsappMessagesPerMonth: 500,
-          features: ['pos', 'kitchen_display', 'delivery_board', 'inventory', 'supply_chain', 'reports', 'multi_branch', 'staff_management', 'dining_tables', 'whatsapp_notifications'],
+          features: ['kitchen_display', 'delivery_cod', 'inventory', 'stock_transfers', 'director_dashboard', 'whatsapp_notifications', 'advanced_reports', 'multi_branch'],
         },
         {
           id: '3', name: 'Professional', slug: 'professional',
-          description: 'Enterprise-grade with all features',
           monthlyPricePKR: 29999, yearlyPricePKR: 287990,
           maxBranches: -1, maxCounters: -1, maxTabs: -1, maxUsers: -1,
           whatsappMessagesPerMonth: -1,
-          features: AVAILABLE_FEATURES,
+          features: PACKAGE_FEATURES.map(f => f.key),
         },
       ]);
     } finally {
@@ -144,10 +145,21 @@ export const PricingAdmin: React.FC = () => {
     setMessage(null);
     try {
       for (const pkg of packages) {
-        await posApi.updatePackage(pkg.id, {
-          ...pkg,
-          authorizedByUserId: override?.authorizedByUserId
-        });
+        // Explicit payload in the DTO's own field names — the old spread sent UI-only keys
+        // (name, maxTabs, features) that the backend ignored, so saves looked like they
+        // worked while changing nothing.
+        const payload: Record<string, unknown> = {
+          displayName: pkg.name,
+          monthlyPricePKR: pkg.monthlyPricePKR,
+          yearlyPricePKR: pkg.yearlyPricePKR,
+          maxBranches: pkg.maxBranches,
+          maxCounters: pkg.maxCounters,
+          maxOrderTabs: pkg.maxTabs,
+          maxUsers: pkg.maxUsers,
+          whatsappMessagesPerMonth: pkg.whatsappMessagesPerMonth
+        };
+        for (const f of PACKAGE_FEATURES) payload[f.flag] = pkg.features.includes(f.key);
+        await posApi.updatePackage(pkg.id, payload);
       }
       setMessage({
         type: 'success',
@@ -270,15 +282,6 @@ export const PricingAdmin: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Description</label>
-              <input
-                value={pkg.description}
-                onChange={(e) => updatePackage(pkg.id, 'description', e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-              />
-            </div>
-
-            <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Monthly Price (PKR)</label>
               <input
                 type="number"
@@ -360,15 +363,15 @@ export const PricingAdmin: React.FC = () => {
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase mb-2">Features</label>
               <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                {AVAILABLE_FEATURES.map((feature) => {
-                  const isEnabled = pkg.features.includes(feature);
+                {PACKAGE_FEATURES.map((feature) => {
+                  const isEnabled = pkg.features.includes(feature.key);
                   return (
                     <button
-                      key={feature}
-                      onClick={() => toggleFeature(pkg.id, feature)}
+                      key={feature.key}
+                      onClick={() => toggleFeature(pkg.id, feature.key)}
                       className="flex items-center justify-between w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 hover:bg-teal-50 transition text-left"
                     >
-                      <span className="text-[11px] text-slate-700 font-medium">{feature.replace(/_/g, ' ')}</span>
+                      <span className="text-[11px] text-slate-700 font-medium">{feature.label}</span>
                       {isEnabled ? (
                         <ToggleRight className="w-6 h-6 text-teal-500 shrink-0" />
                       ) : (

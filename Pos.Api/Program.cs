@@ -6744,12 +6744,58 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
+    var now = DateTime.UtcNow;
     var totalTenants = await db.Tenants.CountAsync();
     var activeTenants = await db.Tenants.CountAsync(t => t.IsActive);
-    var trialTenants = await db.Tenants.CountAsync(t => t.IsTrialActive && t.TrialEndsAt > DateTime.UtcNow);
-    var paidTenants = await db.Tenants.CountAsync(t => !t.IsTrialActive && t.SubscriptionPaidUntil > DateTime.UtcNow);
+    var trialTenants = await db.Tenants.CountAsync(t => t.IsTrialActive && t.TrialEndsAt > now);
+    var paidTenants = await db.Tenants.CountAsync(t => !t.IsTrialActive && t.SubscriptionPaidUntil > now);
     var totalBranches = await db.Branches.CountAsync();
     var totalOrders = await db.Orders.CountAsync();
+
+    // Money and mix — the numbers the dashboard exists for. Plan price comes from the
+    // package catalogue, add-ons from live subscriptions; a tenant's MRR is both.
+    var packages = await db.SaaSPackageConfigs.AsNoTracking().ToListAsync();
+    var priceByTier = packages.ToDictionary(p => p.PackageKey, p => p.MonthlyPricePKR);
+
+    var tenantRows = await db.Tenants.AsNoTracking()
+        .Select(t => new { t.Name, t.Id, t.Tier, t.IsTrialActive, t.SubscriptionPaidUntil, t.Status, t.IsActive })
+        .ToListAsync();
+    var addOnsByTenant = (await db.AddOnSubscriptions.AsNoTracking()
+            .Where(a => a.IsActive)
+            .Select(a => new { a.TenantId, a.PricePKR, a.Quantity })
+            .ToListAsync())
+        .GroupBy(a => a.TenantId)
+        .ToDictionary(g => g.Key, g => g.Sum(a => a.PricePKR * a.Quantity));
+
+    var mrrPKR = tenantRows
+        .Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now)
+        .Sum(t => (priceByTier.TryGetValue(t.Tier.ToString(), out var p) ? p : 0)
+                + (addOnsByTenant.TryGetValue(t.Id, out var extra) ? extra : 0));
+
+    var planMix = tenantRows
+        .Where(t => t.IsActive)
+        .GroupBy(t => t.Tier.ToString())
+        .Select(g => new { tier = g.Key, count = g.Count() })
+        .OrderByDescending(g => g.count)
+        .ToList();
+
+    var expiringSoonRows = tenantRows
+        .Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now
+                    && t.SubscriptionPaidUntil <= now.AddDays(14))
+        .OrderBy(t => t.SubscriptionPaidUntil)
+        .ToList();
+    var expiringSoon = expiringSoonRows
+        .Take(5)
+        .Select(t => new { t.Id, t.Name, tier = t.Tier.ToString(), paidUntil = t.SubscriptionPaidUntil })
+        .ToList();
+
+    var arrears = tenantRows.Count(t => t.Status is TenantStatus.PastDue or TenantStatus.Restricted or TenantStatus.ReadOnly);
+
+    // A till that has not checked in for a day is the earliest warning that a shop is shut
+    // or a customer has a problem — the dashboard shows how many are dark platform-wide.
+    var cutoff = now.AddHours(-24);
+    var staleDevices = await db.Terminals.IgnoreQueryFilters()
+        .CountAsync(t => t.RevokedAt == null && t.DeactivatedAt == null && t.LastSeenAt < cutoff);
 
     return Results.Ok(new
     {
@@ -6758,7 +6804,13 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
         trialTenants,
         paidTenants,
         totalBranches,
-        totalOrders
+        totalOrders,
+        mrrPKR,
+        planMix,
+        expiringSoon,
+        expiringSoonCount = expiringSoonRows.Count,
+        arrears,
+        staleDevices
     });
 }).RequireAuthorization();
 
@@ -6833,6 +6885,7 @@ app.MapGet("/api/admin/tenants/{id:guid}/overview", async (
             status = ent.Status.ToString(),
             tenant.TrialEndsAt, tenant.SubscriptionPaidUntil,
             tenant.IsProviderProvisioned,
+            deploymentMode = tenant.DeploymentMode.ToString(),
             ownerInvitePending = tenant.OwnerInviteTokenHash != null && tenant.OwnerInviteRedeemedAt == null
         },
         entitlements = new
@@ -7156,6 +7209,136 @@ app.MapPost("/api/admin/tenants/provision", async (
         await tx.RollbackAsync();
         return Results.BadRequest(new { message = "Failed to provision tenant.", details = ex.Message });
     }
+}).RequireAuthorization();
+
+// --- Head office & branches, on behalf of a tenant --------------------------
+// /organization/enable-hq and /branches act on the CALLER's tenant. The platform console acts
+// on whichever customer is open in the panel, so these admin twins carry the tenant in the
+// route, gate on SuperAdmin, and otherwise apply the exact same plan guards.
+app.MapPost("/api/admin/tenants/{id:guid}/enable-hq", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    if (tenant.DeploymentMode == DeploymentMode.HeadOffice)
+        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true });
+
+    // HQ is a Standard-and-up capability — Starter tenants get a 402 the console turns into
+    // an upgrade offer, exactly like the owner-facing endpoint does.
+    var hq = await subs.CheckFeatureAsync(id, Pos.Api.Data.FeatureCodes.Hq);
+    if (!hq.Allowed)
+        return Results.Json(new
+        {
+            message = hq.Reason ?? "Head office is not available on this plan.",
+            featureCode = Pos.Api.Data.FeatureCodes.Hq,
+            upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+
+    tenant.DeploymentMode = DeploymentMode.HeadOffice;
+
+    var primary = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.TenantId == id)
+        .OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code)
+        .FirstOrDefaultAsync();
+    if (primary != null)
+    {
+        primary.IsHeadOffice = true;
+        if (primary.Code == "MAIN") primary.Code = "HQ";
+    }
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, id, actingUser, "HeadOfficeEnabled", "Tenant", id, "Standalone", "HeadOffice");
+
+    await db.SaveChangesAsync();
+    var updated = await entitlements.RecomputeAsync(id);
+    var locations = await subs.CheckLimitAsync(id, Pos.Api.Data.FeatureCodes.Locations);
+
+    return Results.Ok(new
+    {
+        message = "Head office enabled. You can now add branches beneath it.",
+        headOfficeBranchId = primary?.Id,
+        deploymentMode = "HeadOffice",
+        snapshotVersion = updated.Version,
+        locations = new { inUse = locations.InUse, limit = locations.Limit, isUnlimited = locations.IsUnlimited }
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
+    Guid id,
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CreateBranchDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    if (string.IsNullOrWhiteSpace(dto.Name))
+        return Results.BadRequest(new { message = "A branch name is required." });
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    // Same declarative guards as the tenant-side endpoint: multi-branch must be in the plan,
+    // and there must be room under the location ceiling. Neither names a plan, so Standard
+    // passes both and Starter gets an upgrade offer.
+    var mb = await subs.CheckFeatureAsync(id, Pos.Api.Data.FeatureCodes.MultiBranch);
+    if (!mb.Allowed)
+        return Results.Json(new
+        {
+            message = mb.Reason ?? "Branches are not available on this plan.",
+            featureCode = Pos.Api.Data.FeatureCodes.MultiBranch,
+            upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+
+    var loc = await subs.CheckLimitAsync(id, Pos.Api.Data.FeatureCodes.Locations);
+    if (!loc.Allowed)
+        return Results.BadRequest(new { message = loc.Reason, locations = new { inUse = loc.InUse, limit = loc.Limit } });
+
+    // Codes are generated rather than trusted, so two branches cannot collide on one.
+    var code = string.IsNullOrWhiteSpace(dto.Code)
+        ? $"BR-{(await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == id)):D2}"
+        : dto.Code.Trim().ToUpperInvariant();
+
+    if (await db.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == id && b.Code == code))
+        return Results.BadRequest(new { message = $"A location with code {code} already exists." });
+
+    var branch = new Branch
+    {
+        TenantId = id,
+        Name = dto.Name.Trim(),
+        Code = code,
+        City = string.IsNullOrWhiteSpace(dto.City) ? (tenant.City ?? "") : dto.City.Trim(),
+        Address = dto.Address?.Trim() ?? "",
+        Phone = dto.Phone?.Trim() ?? "",
+        IsHeadOffice = false,
+        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant()
+    };
+    db.Branches.Add(branch);
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, id, actingUser, "BranchCreated", "Branch", branch.Id, null, $"{branch.Name} ({branch.Code})");
+    await db.SaveChangesAsync();
+
+    await entitlements.RecomputeAsync(id);
+    var after = await subs.CheckLimitAsync(id, Pos.Api.Data.FeatureCodes.Locations);
+
+    return Results.Ok(new
+    {
+        branch.Id, branch.Name, branch.Code, branch.City, branch.IsHeadOffice,
+        locations = new { inUse = after.InUse, limit = after.Limit, remaining = after.Remaining, isNearLimit = after.IsNearLimit }
+    });
 }).RequireAuthorization();
 
 // Redeem an owner invite. Anonymous by necessity — the person redeeming it has no account yet,
