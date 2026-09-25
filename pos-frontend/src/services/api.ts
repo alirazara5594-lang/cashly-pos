@@ -1124,24 +1124,25 @@ export const posApi = {
   },
 
   // SAAS — WhatsApp Config
-  getWhatsAppConfig: async () => {
-    const res = await api.get('/api/whatsapp/config');
+  // tenantId is only sent by the platform console; a tenant caller's own JWT scopes the request.
+  getWhatsAppConfig: async (tenantId?: string) => {
+    const res = await api.get('/api/whatsapp/config', { params: { tenantId } });
     return res.data;
   },
   saveWhatsAppConfig: async (data: {
     provider: string; apiKey?: string; apiSecret?: string;
     phoneNumberId?: string; accessToken?: string; webhookUrl?: string;
     isEnabled: boolean; autoSendOrderUpdates: boolean; autoSendReceipt: boolean;
-  }) => {
-    const res = await api.post('/api/whatsapp/config', data);
+  }, tenantId?: string) => {
+    const res = await api.post('/api/whatsapp/config', data, { params: { tenantId } });
     return res.data;
   },
-  getWhatsAppLogs: async (limit?: number) => {
-    const res = await api.get('/api/whatsapp/logs', { params: { limit } });
+  getWhatsAppLogs: async (limit?: number, tenantId?: string) => {
+    const res = await api.get('/api/whatsapp/logs', { params: { limit, tenantId } });
     return res.data;
   },
-  sendWhatsAppTest: async (phoneNumber: string, restaurantName: string) => {
-    const res = await api.post('/api/whatsapp/test', { phoneNumber, restaurantName });
+  sendWhatsAppTest: async (phoneNumber: string, restaurantName: string, tenantId?: string) => {
+    const res = await api.post('/api/whatsapp/test', { phoneNumber, restaurantName }, { params: { tenantId } });
     return res.data;
   },
   sendOrderNotification: async (data: {

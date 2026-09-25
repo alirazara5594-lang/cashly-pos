@@ -2,12 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   X, ShieldAlert, Clock, Gift, Eye, Activity, AlertTriangle,
   CreditCard, Server, RefreshCw, Trash2, LayoutDashboard, Puzzle,
-  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket
+  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type {
   TenantOverview, PlanChangePreview, PlanOption,
-  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice
+  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage
 } from '../types';
 
 /**
@@ -16,7 +16,7 @@ import type {
  * "they bought WhatsApp") ends here instead of in a hand-typed database query.
  */
 
-export type TenantPanelTab = 'overview' | 'plan' | 'addons' | 'entitlements' | 'deploy' | 'devices';
+export type TenantPanelTab = 'overview' | 'plan' | 'addons' | 'entitlements' | 'deploy' | 'devices' | 'audit';
 
 interface TenantDetailPanelProps {
   tenantId: string;
@@ -31,7 +31,8 @@ const TABS: { key: TenantPanelTab; label: string; icon: React.FC<{ className?: s
   { key: 'addons', label: 'Add-ons', icon: Puzzle },
   { key: 'entitlements', label: 'Entitlements', icon: KeyRound },
   { key: 'deploy', label: 'Deploy', icon: Building2 },
-  { key: 'devices', label: 'Devices', icon: Server }
+  { key: 'devices', label: 'Devices', icon: Server },
+  { key: 'audit', label: 'Audit log', icon: History }
 ];
 
 const STATUS_LADDER = [
@@ -130,6 +131,30 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
   }, [tenantId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Audit log — paged tenant history from the platform's own endpoint.
+  const [audit, setAudit] = useState<AuditLogPage | null>(null);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  useEffect(() => {
+    if (tab !== 'audit') return;
+    let cancelled = false;
+    setAuditLoading(true);
+    posApi.getAuditLog({ tenantId, page: auditPage, pageSize: 25 })
+      .then(res => { if (!cancelled) setAudit(res); })
+      .catch(() => { if (!cancelled) setAudit(null); })
+      .finally(() => { if (!cancelled) setAuditLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, auditPage, tenantId]);
+
+  // The panel component is reused when the parent swaps tenants or asks for a different tab
+  // (the parent keeps it mounted) — without this, initialTab would only apply on first mount.
+  useEffect(() => {
+    setTab(initialTab);
+    setAudit(null);
+    setAuditPage(1);
+  }, [initialTab, tenantId]);
 
   // Add-on catalogue and this tenant's subscriptions load when the tab is first opened.
   useEffect(() => {
@@ -431,6 +456,10 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
 
           {tab === 'devices' && (
             <DevicesTab devices={devices} events={recentLicenceEvents} branches={branches} />
+          )}
+
+          {tab === 'audit' && (
+            <AuditTab page={audit} loading={auditLoading} onPageChange={setAuditPage} />
           )}
         </div>
       </Shell>
@@ -1278,6 +1307,112 @@ const DevicesTab: React.FC<{
           ))}
         </div>
       </Section>
+    </div>
+  );
+};
+
+// ── Audit log ─────────────────────────────────────────────────
+// Read-only paged history of every change made in this tenant's account. The endpoint is
+// the platform console's (/api/admin/audit-log), so SuperAdmin sees it without impersonating.
+const AuditTab: React.FC<{
+  page: AuditLogPage | null;
+  loading: boolean;
+  onPageChange: (p: number) => void;
+}> = ({ page, loading, onPageChange }) => {
+  if (loading && !page) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <RefreshCw className="w-5 h-5 text-slate-400 animate-spin" />
+      </div>
+    );
+  }
+
+  const entries = page?.entries ?? [];
+  const trim = (s?: string) => (s && s.length > 80 ? `${s.slice(0, 80)}…` : s || '');
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider flex items-center gap-1.5">
+          <History className="w-3.5 h-3.5" /> Audit log
+        </div>
+        {page && (
+          <span className="text-[10px] font-mono text-slate-400">
+            {page.total} entries
+          </span>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-slate-200 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase text-[10px]">When</th>
+                <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase text-[10px]">Who</th>
+                <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase text-[10px]">Action</th>
+                <th className="text-left px-3 py-2.5 font-bold text-slate-500 uppercase text-[10px]">Change</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {entries.map((e) => (
+                <tr key={e.id} className="bg-white hover:bg-slate-50 transition align-top">
+                  <td className="px-3 py-2.5 text-[10px] font-mono text-slate-400 whitespace-nowrap">
+                    {new Date(e.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{e.userName || '—'}</td>
+                  <td className="px-3 py-2.5">
+                    <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 font-mono text-[10px] text-slate-700">
+                      {e.action}
+                    </span>
+                    <div className="text-[10px] text-slate-400 mt-0.5">{e.entityType}</div>
+                  </td>
+                  <td className="px-3 py-2.5 text-[11px] text-slate-600 min-w-0">
+                    {e.oldValue != null || e.newValue != null ? (
+                      <span title={`${e.oldValue ?? ''} → ${e.newValue ?? ''}`}>
+                        <span className="text-rose-500 line-through">{trim(e.oldValue)}</span>
+                        {' → '}
+                        <span className="text-teal-600">{trim(e.newValue)}</span>
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {entries.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="text-center py-10 text-slate-500">
+                    No audit entries yet
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {page && page.totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <button
+            onClick={() => onPageChange(Math.max(1, page.page - 1))}
+            disabled={page.page <= 1 || loading}
+            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold transition disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="text-[10px] font-mono text-slate-500">
+            {page.page} / {page.totalPages}
+          </span>
+          <button
+            onClick={() => onPageChange(Math.min(page.totalPages, page.page + 1))}
+            disabled={page.page >= page.totalPages || loading}
+            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold transition disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 };

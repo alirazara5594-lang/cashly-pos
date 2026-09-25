@@ -12,9 +12,12 @@ import {
   Clock,
   Save,
   TestTube2,
-  ChevronDown
+  ChevronDown,
+  Building2
 } from 'lucide-react';
-import { posApi, getApiErrorMessage } from '../services/api';
+import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
+import { usePosStore, normalizeRole } from '../store/posStore';
+import type { AdminTenantRow } from '../types';
 
 interface WhatsAppConfigData {
   provider: string;
@@ -45,6 +48,16 @@ interface WhatsAppLog {
 }
 
 export const WhatsAppConfig: React.FC = () => {
+  // In the platform console the caller has no tenant of its own, so every request carries the
+  // picked tenant in the query string; a tenant owner's JWT keeps scoping it server-side.
+  const currentUser = usePosStore((s) => s.currentUser);
+  const isPlatformMode = normalizeRole(currentUser?.role) === 'SuperAdmin';
+  const [tenants, setTenants] = useState<AdminTenantRow[]>([]);
+  const [tenantsLoading, setTenantsLoading] = useState(isPlatformMode);
+  const [selectedTenant, setSelectedTenant] = useState('');
+  const [featureDisabled, setFeatureDisabled] = useState(false);
+  const tenantId = isPlatformMode && selectedTenant ? selectedTenant : undefined;
+
   const [config, setConfig] = useState<WhatsAppConfigData>({
     provider: 'Manual',
     apiKey: '',
@@ -65,11 +78,18 @@ export const WhatsAppConfig: React.FC = () => {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const loadData = async () => {
+    if (isPlatformMode && !selectedTenant) return;
     setLoading(true);
+    setFeatureDisabled(false);
     try {
       const [configData, logsData] = await Promise.all([
-        posApi.getWhatsAppConfig().catch(() => null),
-        posApi.getWhatsAppLogs(50).catch(() => [])
+        posApi.getWhatsAppConfig(tenantId).catch((err) => {
+          // 403 = the tenant's plan/add-on doesn't include WhatsApp — surface it instead of
+          // showing a blank form that would 403 again on save.
+          if (getApiErrorStatus(err) === 403) setFeatureDisabled(true);
+          return null;
+        }),
+        posApi.getWhatsAppLogs(50, tenantId).catch(() => [])
       ]);
       if (configData) {
         // Secrets are never returned by the server — only whether one is already saved.
@@ -99,13 +119,26 @@ export const WhatsAppConfig: React.FC = () => {
     }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    if (!isPlatformMode) return;
+    let cancelled = false;
+    posApi.getAdminTenants().then((rows) => {
+      if (cancelled) return;
+      setTenants(rows);
+      setSelectedTenant((prev) => prev || rows[0]?.id || '');
+      setTenantsLoading(false);
+    }).catch(() => { if (!cancelled) setTenantsLoading(false); });
+    return () => { cancelled = true; };
+  }, [isPlatformMode]);
+
+  // Reload whenever the picked tenant changes (platform console) — no-op on first render.
+  useEffect(() => { loadData(); }, [selectedTenant]);
 
   const handleSave = async () => {
     setSaving(true);
     setMessage(null);
     try {
-      await posApi.saveWhatsAppConfig(config);
+      await posApi.saveWhatsAppConfig(config, tenantId);
       setMessage({ type: 'success', text: 'Configuration saved successfully' });
       await loadData(); // refresh secret-saved indicators
     } catch (err) {
@@ -120,7 +153,7 @@ export const WhatsAppConfig: React.FC = () => {
     setTestSending(true);
     setMessage(null);
     try {
-      const result = await posApi.sendWhatsAppTest(testPhone, 'CashlyPOS Test');
+      const result = await posApi.sendWhatsAppTest(testPhone, 'CashlyPOS Test', tenantId);
       // The server never fakes success — a rejected/unconfigured send comes back as sent:false.
       if (result?.sent) {
         setMessage({ type: 'success', text: `Test message sent to ${testPhone}` });
@@ -145,6 +178,35 @@ export const WhatsAppConfig: React.FC = () => {
     { sent: 0, failed: 0, pending: 0 }
   );
 
+  const waitingForTenant = isPlatformMode && !selectedTenant;
+
+  if (isPlatformMode && tenantsLoading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <RefreshCw className="w-8 h-8 text-teal-500 animate-spin mx-auto mb-3" />
+          <p className="text-sm text-slate-500">Loading tenants...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (waitingForTenant) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center max-w-sm">
+          <Building2 className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+          <p className="text-sm font-bold text-slate-700">No tenant selected</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {tenants.length === 0
+              ? 'There are no tenants in the platform yet — provision one from the Tenants tab first.'
+              : 'Pick a tenant above to view and edit its WhatsApp configuration.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -168,14 +230,44 @@ export const WhatsAppConfig: React.FC = () => {
             <p className="text-xs text-slate-500">Configure WhatsApp notifications for order updates</p>
           </div>
         </div>
-        <button
-          onClick={loadData}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {isPlatformMode && (
+            <div className="relative">
+              <Building2 className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+              <select
+                value={selectedTenant}
+                onChange={(e) => { setSelectedTenant(e.target.value); setMessage(null); }}
+                className="appearance-none pl-8 pr-7 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-xs font-semibold text-slate-700 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 cursor-pointer max-w-[240px]"
+              >
+                <option value="" disabled>Select tenant...</option>
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} · {t.tier}
+                    {!t.isActive && ' (inactive)'}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+            </div>
+          )}
+          <button
+            onClick={loadData}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Refresh
+          </button>
+        </div>
       </div>
+
+      {featureDisabled && (
+        <div className="flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          WhatsApp messaging is not included in this account&apos;s plan. Enable the WhatsApp add-on
+          (Platform Admin → Add-ons) or upgrade the plan first — the configuration below cannot be
+          saved until then.
+        </div>
+      )}
 
       {message && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold ${
@@ -347,7 +439,7 @@ export const WhatsAppConfig: React.FC = () => {
 
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || featureDisabled}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
         >
           <Save className="w-4 h-4" />
@@ -373,7 +465,7 @@ export const WhatsAppConfig: React.FC = () => {
           </div>
           <button
             onClick={handleSendTest}
-            disabled={testSending || !testPhone.trim()}
+            disabled={testSending || !testPhone.trim() || featureDisabled}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50"
           >
             <Send className="w-3.5 h-3.5" />

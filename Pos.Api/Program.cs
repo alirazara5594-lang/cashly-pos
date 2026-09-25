@@ -7485,11 +7485,15 @@ app.MapGet("/api/admin/device-health", async (AppDbContext db, HttpContext http,
 // WHATSAPP NOTIFICATION SYSTEM
 // ============================================================
 
-app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http) =>
+// The four endpoints below resolve their tenant the same way: the caller's own tenant, or —
+// for the platform console — a tenant picked in the UI and carried in the query string. The
+// feature/module filters already let SuperAdmin through; without this the panel could only
+// ever read the (nonexistent) platform tenant and 401'd.
+app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
 {
-    var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
-    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
+    var scope = ResolveTenantScope(http, tenantId);
+    if (scope == null || scope == Guid.Empty) return Results.Unauthorized();
+    var config = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == scope.Value);
     // Secrets are never echoed back — the UI shows whether each is set, not the value itself.
     return Results.Ok(new
     {
@@ -7507,11 +7511,11 @@ app.MapGet("/api/whatsapp/config", async (AppDbContext db, HttpContext http) =>
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
-app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, WhatsAppConfigDto dto) =>
+app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Guid? tenantId, WhatsAppConfigDto dto) =>
 {
-    var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
-    var existing = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == tenantId.Value);
+    var scope = ResolveTenantScope(http, tenantId);
+    if (scope == null || scope == Guid.Empty) return Results.Unauthorized();
+    var existing = await db.WhatsAppConfigs.FirstOrDefaultAsync(w => w.TenantId == scope.Value);
     if (existing != null)
     {
         existing.Provider = dto.Provider;
@@ -7530,7 +7534,7 @@ app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Wh
     {
         db.WhatsAppConfigs.Add(new WhatsAppConfig
         {
-            TenantId = tenantId.Value,
+            TenantId = scope.Value,
             Provider = dto.Provider,
             ApiKey = dto.ApiKey,
             ApiSecret = dto.ApiSecret,
@@ -7548,24 +7552,24 @@ app.MapPost("/api/whatsapp/config", async (AppDbContext db, HttpContext http, Wh
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
-app.MapGet("/api/whatsapp/logs", async (AppDbContext db, HttpContext http, int? limit) =>
+app.MapGet("/api/whatsapp/logs", async (AppDbContext db, HttpContext http, Guid? tenantId, int? limit) =>
 {
-    var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
-    var query = db.NotificationLogs.Where(n => n.TenantId == tenantId.Value).OrderByDescending(n => n.SentAt);
+    var scope = ResolveTenantScope(http, tenantId);
+    if (scope == null || scope == Guid.Empty) return Results.Unauthorized();
+    var query = db.NotificationLogs.Where(n => n.TenantId == scope.Value).OrderByDescending(n => n.SentAt);
     var logs = await query.Take(Math.Clamp(limit ?? 100, 1, 500)).ToListAsync();
     return Results.Ok(logs);
 }).RequireAuthorization()
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
-app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver resolver, TestWhatsAppDto dto) =>
+app.MapPost("/api/whatsapp/test", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver resolver, Guid? tenantId, TestWhatsAppDto dto) =>
 {
-    var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
+    var scope = ResolveTenantScope(http, tenantId);
+    if (scope == null || scope == Guid.Empty) return Results.Unauthorized();
 
     var message = $"Hello! This is a test message from Cashly POS.\n\nRestaurant: {dto.RestaurantName}\nStatus: Connected!";
-    var (skipped, sent, reason, logId) = await SendWhatsAppMessageAsync(db, resolver, tenantId.Value, null, dto.PhoneNumber, "test", message);
+    var (skipped, sent, reason, logId) = await SendWhatsAppMessageAsync(db, resolver, scope.Value, null, dto.PhoneNumber, "test", message);
 
     if (skipped) return Results.BadRequest(new { error = reason ?? "WhatsApp is not configured." });
     return Results.Ok(new { sent, message = sent ? "Test message sent." : (reason ?? "The provider rejected the message."), logId });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   ShieldCheck,
   Building2,
@@ -31,17 +32,39 @@ import { AddOnManagement } from './AddOnManagement';
 import { TenantDetailPanel, type TenantPanelTab } from '../components/TenantDetailPanel';
 import type { AdminTenantRow, AdminPlatformStats, DeviceHealthReport } from '../types';
 
+type SuperTab = 'dashboard' | 'tenants' | 'packages' | 'whatsapp' | 'billing' | 'addons';
+const SUPER_TABS: SuperTab[] = ['dashboard', 'tenants', 'packages', 'whatsapp', 'billing', 'addons'];
+const PANEL_TABS = ['overview', 'plan', 'addons', 'entitlements', 'deploy', 'devices', 'audit'] as const;
+
 export const SuperAdmin: React.FC = () => {
+  // Shareable console state: /super-admin?tab=whatsapp&tenant=<id>&ptab=plan restores
+  // exactly what the operator was looking at (dashboard rows link straight into panels).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab') as SuperTab | null;
+  const urlPanelTab = searchParams.get('ptab') as (typeof PANEL_TABS)[number] | null;
+
   const [tenants, setTenants] = useState<AdminTenantRow[]>([]);
   const [stats, setStats] = useState<AdminPlatformStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive' | 'trial' | 'paid'>('all');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tenants' | 'packages' | 'whatsapp' | 'billing' | 'addons'>('dashboard');
+  const [activeTab, setActiveTab] = useState<SuperTab>(
+    urlTab && SUPER_TABS.includes(urlTab) ? urlTab : 'dashboard'
+  );
   /** Tenant whose detail panel is open — the console's main working surface. */
-  const [openTenantId, setOpenTenantId] = useState<string | null>(null);
-  const [openPanelTab, setOpenPanelTab] = useState<TenantPanelTab>('overview');
+  const [openTenantId, setOpenTenantId] = useState<string | null>(searchParams.get('tenant'));
+  const [openPanelTab, setOpenPanelTab] = useState<TenantPanelTab>(
+    urlPanelTab && (PANEL_TABS as readonly string[]).includes(urlPanelTab) ? urlPanelTab : 'overview'
+  );
   const [provisionOpen, setProvisionOpen] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (activeTab !== 'dashboard') params.set('tab', activeTab);
+    if (openTenantId) params.set('tenant', openTenantId);
+    if (openTenantId && openPanelTab !== 'overview') params.set('ptab', openPanelTab);
+    setSearchParams(params, { replace: true });
+  }, [activeTab, openTenantId, openPanelTab, setSearchParams]);
 
   const loadData = async () => {
     setLoading(true);
