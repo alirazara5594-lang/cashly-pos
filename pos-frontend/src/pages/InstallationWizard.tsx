@@ -80,11 +80,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       counters: 1,
       tablets: 3,
       color: 'emerald',
-      ring: 'ring-emerald-500',
-      borderActive: 'border-emerald-500',
-      bgActive: 'bg-emerald-50',
-      badgeColor: 'bg-emerald-50 text-emerald-600 border-emerald-200',
-      checkFill: 'fill-emerald-500',
+      ring: 'ring-teal-500',
+      borderActive: 'border-teal-500',
+      bgActive: 'bg-teal-50',
+      badgeColor: 'bg-teal-50 text-teal-600 border-teal-200',
+      checkFill: 'fill-teal-500',
     },
     {
       key: 'Standard',
@@ -386,7 +386,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Registration succeeded — no auto-login, so the owner is handed their credentials here.
   if (signupSuccess) {
     return (
-      <div className="h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 overflow-y-auto selection:bg-emerald-500 selection:text-white">
+      <div className="h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 overflow-y-auto selection:bg-teal-500 selection:text-white">
         <div className="w-full max-w-lg text-center space-y-6">
           <div className="w-16 h-16 rounded-2xl bg-teal-100 flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-8 h-8 text-teal-500" />
@@ -424,15 +424,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   }
 
   return (
-    <div className="h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-emerald-500 selection:text-white overflow-hidden">
+    <div className="h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-teal-500 selection:text-white overflow-hidden">
       {/* Top Banner */}
       <div className="shrink-0 border-b border-slate-200 bg-white backdrop-blur px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow shadow-emerald-500/20 shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-teal-500 to-teal-400 flex items-center justify-center shadow shadow-teal-500/20 shrink-0">
             <UtensilsCrossed className="w-3.5 h-3.5 text-white stroke-[2.5]" />
           </div>
           <h1 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-1.5">
-            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 font-semibold border border-emerald-200">{signupMode ? 'Register' : 'Setup'}</span>
+            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600 font-semibold border border-teal-200">{signupMode ? 'Register' : 'Setup'}</span>
           </h1>
         </div>
 
@@ -449,14 +449,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               key={s.num}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all ${
                 step === s.num
-                  ? 'bg-emerald-500 border-emerald-500 text-white font-semibold'
+                  ? 'bg-teal-500 border-teal-500 text-white font-semibold'
                   : step > s.num
                   ? 'bg-slate-100 border-slate-200 text-slate-700'
                   : 'border-transparent text-slate-500'
               }`}
             >
               <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                step === s.num ? 'bg-white text-emerald-600' : step > s.num ? 'bg-emerald-500/40 text-white' : 'bg-slate-200 text-slate-500'
+                step === s.num ? 'bg-white text-teal-600' : step > s.num ? 'bg-teal-500/40 text-white' : 'bg-slate-200 text-slate-500'
               }`}>
                 {step > s.num ? '✓' : s.num}
               </span>
@@ -491,18 +491,18 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 onClick={() => { setChoice('Single'); setMode('Single'); }}
                 className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
                   choice === 'Single'
-                    ? 'border-emerald-500 bg-emerald-50 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/40'
+                    ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
                 {choice === 'Single' && (
-                  <div className="absolute top-4 right-4 text-emerald-400">
-                    <CheckCircle2 className="w-6 h-6 fill-emerald-500 text-white" />
+                  <div className="absolute top-4 right-4 text-teal-400">
+                    <CheckCircle2 className="w-6 h-6 fill-teal-500 text-white" />
                   </div>
                 )}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 shrink-0">
+                    <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
                       <Store className="w-5 h-5" />
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">Single Restaurant Outlet</h3>
@@ -511,21 +511,21 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                   <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
                     <li className="flex items-center gap-2">
-                      <span className="text-emerald-600 font-bold">✓</span> Direct Counter POS & Split-Second Billing
+                      <span className="text-teal-600 font-bold">✓</span> Direct Counter POS & Split-Second Billing
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className="text-emerald-600 font-bold">✓</span> Table Floor Management & Waiter Tabs
+                      <span className="text-teal-600 font-bold">✓</span> Table Floor Management & Waiter Tabs
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className="text-emerald-600 font-bold">✓</span> Kitchen Display System (KDS)
+                      <span className="text-teal-600 font-bold">✓</span> Kitchen Display System (KDS)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className="text-emerald-600 font-bold">✓</span> Local Stock & Cash Shift Register
+                      <span className="text-teal-600 font-bold">✓</span> Local Stock & Cash Shift Register
                     </li>
                   </ul>
                 </div>
 
-                <div className="mt-4 pt-3 text-xs font-semibold text-emerald-600">
+                <div className="mt-4 pt-3 text-xs font-semibold text-teal-600">
                   Fastest setup • Recommended for single spots
                 </div>
               </div>
@@ -692,7 +692,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="space-y-1.5 md:col-span-2">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <Store className="w-3.5 h-3.5 text-emerald-600" /> Restaurant / Brand Name
+                    <Store className="w-3.5 h-3.5 text-teal-600" /> Restaurant / Brand Name
                   </label>
                   <input 
                     type="text" 
@@ -705,7 +705,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <UtensilsCrossed className="w-3.5 h-3.5 text-emerald-600" /> Business Type
+                    <UtensilsCrossed className="w-3.5 h-3.5 text-teal-600" /> Business Type
                   </label>
                   <select 
                     value={businessType}
@@ -721,7 +721,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <DollarSign className="w-3.5 h-3.5 text-emerald-600" /> Country & Currency
+                    <DollarSign className="w-3.5 h-3.5 text-teal-600" /> Country & Currency
                   </label>
                   <select 
                     value={countryCode}
@@ -738,7 +738,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-emerald-600" /> Primary City
+                    <MapPin className="w-3.5 h-3.5 text-teal-600" /> Primary City
                   </label>
                   <input 
                     type="text" 
@@ -751,7 +751,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <MapPin className="w-3.5 h-3.5 text-emerald-600" /> Address / Main Area
+                    <MapPin className="w-3.5 h-3.5 text-teal-600" /> Address / Main Area
                   </label>
                   <input 
                     type="text" 
@@ -764,7 +764,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <Phone className="w-3.5 h-3.5 text-emerald-600" /> Official Phone / UAN
+                    <Phone className="w-3.5 h-3.5 text-teal-600" /> Official Phone / UAN
                   </label>
                   <input 
                     type="text" 
@@ -780,7 +780,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               {deploymentMode === 'Single' ? (
                 <div className="pt-3 border-t border-slate-200 space-y-3">
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                    <Store className="w-4 h-4 text-emerald-600" /> Single Outlet Configuration
+                    <Store className="w-4 h-4 text-teal-600" /> Single Outlet Configuration
                   </h3>
 
                   {/* Outlet name */}
@@ -1008,7 +1008,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-emerald-600" /> Full Name
+                    <User className="w-3.5 h-3.5 text-teal-600" /> Full Name
                   </label>
                   <input 
                     type="text" 
@@ -1021,7 +1021,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-emerald-600" /> Admin Username
+                    <User className="w-3.5 h-3.5 text-teal-600" /> Admin Username
                   </label>
                   <input 
                     type="text" 
@@ -1034,7 +1034,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                    <Lock className="w-3.5 h-3.5 text-emerald-600" /> Master Security PIN (4-6 Digits)
+                    <Lock className="w-3.5 h-3.5 text-teal-600" /> Master Security PIN (4-6 Digits)
                   </label>
                   <input 
                     type="password" 
@@ -1049,7 +1049,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 {signupMode && (
                   <div className="space-y-1.5 md:col-span-3">
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <Mail className="w-3.5 h-3.5 text-emerald-600" /> Email Address
+                      <Mail className="w-3.5 h-3.5 text-teal-600" /> Email Address
                       <span className="text-slate-400 font-normal">— for your business account</span>
                     </label>
                     <input 
@@ -1065,15 +1065,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 space-y-2.5">
                 <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" /> Default Permissions Granted:
+                  <ShieldCheck className="w-4 h-4 text-teal-600" /> Default Permissions Granted:
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5 text-slate-700">
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ Full Financial Reports</span>
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ Menu & Tax Adjustments</span>
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ Inventory Management</span>
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ Order Void & Discounts</span>
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ User & Role Management</span>
-                  <span className="flex items-center gap-1.5 text-emerald-600">✓ Central Transfers & POs</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ Full Financial Reports</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ Menu & Tax Adjustments</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ Inventory Management</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ Order Void & Discounts</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ User & Role Management</span>
+                  <span className="flex items-center gap-1.5 text-teal-600">✓ Central Transfers & POs</span>
                 </div>
               </div>
             </div>
@@ -1093,7 +1093,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div className="flex items-start justify-between gap-4 p-4 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <Database className="w-4 h-4 text-emerald-600" />
+                    <Database className="w-4 h-4 text-teal-600" />
                     <span className="text-sm font-bold text-slate-900">Local-First Storage Engine (IndexedDB)</span>
                   </div>
                   <p className="text-xs text-slate-500">
@@ -1104,14 +1104,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   type="checkbox"
                   checked={enableOfflineDb}
                   onChange={(e) => setEnableOfflineDb(e.target.checked)}
-                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-0.5 shrink-0"
+                  className="w-5 h-5 accent-teal-500 rounded cursor-pointer mt-0.5 shrink-0"
                 />
               </div>
 
               {/* Cloud Sync API Server */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                  <Wifi className="w-3.5 h-3.5 text-emerald-600" /> Backend / Cloud API Server URL
+                  <Wifi className="w-3.5 h-3.5 text-teal-600" /> Backend / Cloud API Server URL
                 </label>
                 <input
                   type="text"
@@ -1140,7 +1140,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   type="checkbox"
                   checked={seedStarterMenu}
                   onChange={(e) => setSeedStarterMenu(e.target.checked)}
-                  className="w-5 h-5 accent-emerald-500 rounded cursor-pointer mt-0.5 shrink-0"
+                  className="w-5 h-5 accent-teal-500 rounded cursor-pointer mt-0.5 shrink-0"
                 />
               </div>
             </div>
@@ -1167,7 +1167,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Deployment Architecture</span>
                   <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
                     {deploymentMode === 'Single' ? (
-                      <span className="text-emerald-600 flex items-center gap-1"><Store className="w-4 h-4" /> Single Restaurant Outlet</span>
+                      <span className="text-teal-600 flex items-center gap-1"><Store className="w-4 h-4" /> Single Restaurant Outlet</span>
                     ) : (
                       <span className="text-teal-600 flex items-center gap-1"><Building2 className="w-4 h-4" /> Head Office with Restaurants</span>
                     )}
@@ -1195,13 +1195,13 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
                   <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Master Admin Account</span>
                   <div className="text-slate-700">
-                    Username: <span className="text-emerald-600 font-mono font-semibold">{adminUsername}</span> • Name: {adminFullName}
+                    Username: <span className="text-teal-600 font-mono font-semibold">{adminUsername}</span> • Name: {adminFullName}
                     {signupMode && adminEmail.trim() && <> • Email: {adminEmail.trim()}</>}
                   </div>
                 </div>
               </div>
 
-              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 text-xs flex items-center gap-3">
+              <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-teal-600 text-xs flex items-center gap-3">
                 <CheckCircle2 className="w-5 h-5 shrink-0" />
                 {signupMode ? (
                   <span>All details look good. Clicking <strong>Create Restaurant Account</strong> registers the business and starts its <strong>30-day free trial</strong> — your login credentials appear next.</span>

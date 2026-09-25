@@ -236,7 +236,7 @@ function MainLayoutInner() {
   }
 
   return (
-    <div className={`min-h-screen flex flex-col bg-mesh selection:bg-emerald-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
+    <div className={`min-h-screen flex flex-col bg-mesh selection:bg-teal-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
       theme === 'light' ? 'theme-light' : 'theme-dark'
     }`}>
       {/* Left Side Navigation Sidebar with grouped submodules */}

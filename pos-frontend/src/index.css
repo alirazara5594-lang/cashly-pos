@@ -1,8 +1,32 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 @import "tailwindcss";
 
-/* shadcn/ui design tokens — mapped to this app's existing teal/slate palette (not
-   shadcn's zinc default) so new shadcn components match the pages already shipped. */
+/* ═══════════════════════════════════════════════════════════════
+   CASHLY BRAND — logo purple #863BFF (the favicon bolt).
+
+   Redefining Tailwind's built-in `teal` scale repaints every
+   `teal-*` utility already used across the app (buttons, badges,
+   focus rings, the works) in the brand colour — component class
+   names never change, only the paint under them. Tints run
+   lavender (50–400), shades run deep violet (600–950); the blue
+   #47BFFF from the logo's sparkle is used only in gradients.
+   ═══════════════════════════════════════════════════════════════ */
+@theme {
+  --color-teal-50: #f9f6ff;
+  --color-teal-100: #f3edff;
+  --color-teal-200: #e7d7ff;
+  --color-teal-300: #d3b8ff;
+  --color-teal-400: #af7cff;
+  --color-teal-500: #863bff;
+  --color-teal-600: #7232d9;
+  --color-teal-700: #5726a6;
+  --color-teal-800: #431e80;
+  --color-teal-900: #331661;
+  --color-teal-950: #220f40;
+}
+
+/* shadcn/ui design tokens — mapped to this app's brand purple (#863BFF) so
+   new shadcn components match the pages already shipped. */
 :root {
   --radius: 0.75rem;
   --background: oklch(1 0 0);
@@ -11,7 +35,7 @@
   --card-foreground: oklch(0.208 0.042 265.755);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.208 0.042 265.755);
-  --primary: oklch(0.6 0.118 184.704);
+  --primary: oklch(0.568 0.264 293.4);
   --primary-foreground: oklch(0.984 0.003 247.858);
   --secondary: oklch(0.968 0.007 247.896);
   --secondary-foreground: oklch(0.208 0.042 265.755);
@@ -22,7 +46,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.929 0.013 255.508);
   --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.6 0.118 184.704);
+  --ring: oklch(0.568 0.264 293.4);
 }
 
 @theme inline {
@@ -80,9 +104,9 @@
 /* Mesh gradient background — light */
 .bg-mesh {
   background:
-    radial-gradient(at 20% 80%, rgba(20, 184, 166, 0.06) 0px, transparent 50%),
-    radial-gradient(at 80% 20%, rgba(6, 182, 212, 0.04) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(14, 165, 233, 0.03) 0px, transparent 50%),
+    radial-gradient(at 20% 80%, rgba(134, 59, 255, 0.06) 0px, transparent 50%),
+    radial-gradient(at 80% 20%, rgba(126, 20, 255, 0.04) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(71, 191, 255, 0.03) 0px, transparent 50%),
     #f8fafc;
 }
 
@@ -118,7 +142,7 @@
 
 /* Gradient text */
 .text-gradient {
-  background: linear-gradient(135deg, #0d9488, #0891b2, #0284c7);
+  background: linear-gradient(135deg, #7232d9, #863bff, #a06bff);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -133,12 +157,13 @@
 
 /* Gradient buttons */
 .btn-gradient {
-  background: linear-gradient(135deg, #14b8a6, #8b5cf6);
+  background: linear-gradient(135deg, #7232d9, #863bff);
+  color: #fff;
   transition: all 0.3s ease;
-  box-shadow: 0 4px 15px rgba(20, 184, 166, 0.25);
+  box-shadow: 0 4px 15px rgba(134, 59, 255, 0.25);
 }
 .btn-gradient:hover {
-  box-shadow: 0 6px 25px rgba(20, 184, 166, 0.4);
+  box-shadow: 0 6px 25px rgba(134, 59, 255, 0.4);
   transform: translateY(-1px);
 }
 
@@ -164,7 +189,7 @@
 
 /* Glow effects — soft */
 .glow-teal {
-  box-shadow: 0 0 20px rgba(20, 184, 166, 0.1), 0 0 40px rgba(20, 184, 166, 0.03);
+  box-shadow: 0 0 20px rgba(134, 59, 255, 0.1), 0 0 40px rgba(134, 59, 255, 0.03);
 }
 
 .glow-emerald {
@@ -192,9 +217,9 @@
 
 /* Sidebar active item */
 .sidebar-active {
-  background: linear-gradient(135deg, rgba(20, 184, 166, 0.1), rgba(6, 182, 212, 0.06));
-  border: 1px solid rgba(20, 184, 166, 0.2);
-  color: #0d9488;
+  background: linear-gradient(135deg, rgba(134, 59, 255, 0.1), rgba(126, 20, 255, 0.06));
+  border: 1px solid rgba(134, 59, 255, 0.2);
+  color: #863bff;
   font-weight: 700;
 }
 
@@ -225,17 +250,17 @@
 
 /* Table row hover */
 .table-row-hover:hover {
-  background: rgba(20, 184, 166, 0.04);
+  background: rgba(134, 59, 255, 0.04);
 }
 
 /* Input focus glow — light */
 input:focus, select:focus {
-  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.15);
+  box-shadow: 0 0 0 2px rgba(134, 59, 255, 0.15);
 }
 
 /* Badge glow — light */
 .badge-glow {
-  box-shadow: 0 0 8px rgba(20, 184, 166, 0.2);
+  box-shadow: 0 0 8px rgba(134, 59, 255, 0.2);
 }
 
 /* Stats card gradient borders */
@@ -250,7 +275,7 @@ input:focus, select:focus {
   left: 0;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent-color, #14b8a6), transparent);
+  background: linear-gradient(90deg, transparent, var(--accent-color, #863bff), transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -264,9 +289,9 @@ input:focus, select:focus {
 
 .theme-dark .bg-mesh {
   background:
-    radial-gradient(at 20% 80%, rgba(45, 212, 191, 0.06) 0px, transparent 50%),
-    radial-gradient(at 80% 20%, rgba(34, 211, 238, 0.04) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(56, 189, 248, 0.03) 0px, transparent 50%),
+    radial-gradient(at 20% 80%, rgba(134, 59, 255, 0.06) 0px, transparent 50%),
+    radial-gradient(at 80% 20%, rgba(126, 20, 255, 0.04) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(71, 191, 255, 0.03) 0px, transparent 50%),
     #0b1120 !important;
 }
 
@@ -347,22 +372,22 @@ input:focus, select:focus {
 .theme-dark .hover\:text-slate-600:hover { color: #94a3b8 !important; }
 
 /* ── Accent backgrounds (subtle on dark) ── */
-.theme-dark .bg-teal-50 { background-color: rgba(45, 212, 191, 0.1) !important; }
+.theme-dark .bg-teal-50 { background-color: rgba(134, 59, 255, 0.1) !important; }
 .theme-dark .bg-amber-50 { background-color: rgba(251, 191, 36, 0.1) !important; }
 .theme-dark .bg-rose-50 { background-color: rgba(251, 113, 133, 0.1) !important; }
 .theme-dark .bg-blue-50 { background-color: rgba(96, 165, 250, 0.1) !important; }
 .theme-dark .bg-purple-50 { background-color: rgba(167, 139, 250, 0.1) !important; }
 .theme-dark .bg-emerald-50 { background-color: rgba(52, 211, 153, 0.1) !important; }
 
-.theme-dark .hover\:bg-teal-50:hover { background-color: rgba(45, 212, 191, 0.18) !important; }
+.theme-dark .hover\:bg-teal-50:hover { background-color: rgba(134, 59, 255, 0.18) !important; }
 .theme-dark .hover\:bg-rose-50:hover { background-color: rgba(251, 113, 133, 0.18) !important; }
 .theme-dark .hover\:bg-amber-50:hover { background-color: rgba(251, 191, 36, 0.18) !important; }
 .theme-dark .hover\:bg-blue-50:hover { background-color: rgba(96, 165, 250, 0.18) !important; }
 
 /* ── Accent text (brighter on dark) ── */
-.theme-dark .text-teal-700 { color: #2dd4bf !important; }
-.theme-dark .text-teal-600 { color: #2dd4bf !important; }
-.theme-dark .text-teal-500 { color: #14b8a6 !important; }
+.theme-dark .text-teal-700 { color: #b58aff !important; }
+.theme-dark .text-teal-600 { color: #b58aff !important; }
+.theme-dark .text-teal-500 { color: #9660ff !important; }
 .theme-dark .text-amber-700 { color: #fbbf24 !important; }
 .theme-dark .text-amber-600 { color: #fbbf24 !important; }
 .theme-dark .text-rose-700 { color: #fb7185 !important; }
@@ -375,20 +400,20 @@ input:focus, select:focus {
 .theme-dark .text-emerald-600 { color: #34d399 !important; }
 
 /* ── Accent borders ── */
-.theme-dark .border-teal-200 { border-color: rgba(45, 212, 191, 0.3) !important; }
+.theme-dark .border-teal-200 { border-color: rgba(134, 59, 255, 0.3) !important; }
 .theme-dark .border-amber-200 { border-color: rgba(251, 191, 36, 0.3) !important; }
 .theme-dark .border-rose-200 { border-color: rgba(251, 113, 133, 0.3) !important; }
 .theme-dark .border-blue-200 { border-color: rgba(96, 165, 250, 0.3) !important; }
 .theme-dark .border-purple-200 { border-color: rgba(167, 139, 250, 0.3) !important; }
 .theme-dark .border-emerald-200 { border-color: rgba(52, 211, 153, 0.3) !important; }
-.theme-dark .border-teal-500 { border-color: rgba(45, 212, 191, 0.5) !important; }
+.theme-dark .border-teal-500 { border-color: rgba(134, 59, 255, 0.5) !important; }
 
 /* ── Gradient button dark variant ── */
 .theme-dark .btn-gradient {
-  box-shadow: 0 4px 20px rgba(20, 184, 166, 0.2) !important;
+  box-shadow: 0 4px 20px rgba(134, 59, 255, 0.2) !important;
 }
 .theme-dark .btn-gradient:hover {
-  box-shadow: 0 6px 30px rgba(20, 184, 166, 0.35) !important;
+  box-shadow: 0 6px 30px rgba(134, 59, 255, 0.35) !important;
 }
 
 /* ── Shadows ── */
@@ -397,7 +422,7 @@ input:focus, select:focus {
 .theme-dark .shadow-lg { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important; }
 .theme-dark .shadow-xl { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55) !important; }
 .theme-dark .shadow-2xl { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.65) !important; }
-.theme-dark .shadow-teal-500\/25 { box-shadow: 0 4px 20px rgba(45, 212, 191, 0.15) !important; }
+.theme-dark .shadow-teal-500\/25 { box-shadow: 0 4px 20px rgba(134, 59, 255, 0.15) !important; }
 
 /* ── Modals ── */
 .theme-dark .fixed .bg-white { background-color: #111827 !important; }
@@ -411,15 +436,15 @@ input:focus, select:focus {
 .theme-dark input:focus,
 .theme-dark select:focus,
 .theme-dark textarea:focus {
-  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.25) !important;
-  border-color: rgba(45, 212, 191, 0.4) !important;
+  box-shadow: 0 0 0 2px rgba(134, 59, 255, 0.25) !important;
+  border-color: rgba(134, 59, 255, 0.4) !important;
 }
 
 /* ── Sidebar active ── */
 .theme-dark .sidebar-active {
-  background: linear-gradient(135deg, rgba(45, 212, 191, 0.15), rgba(34, 211, 238, 0.08)) !important;
-  border-color: rgba(45, 212, 191, 0.35) !important;
-  color: #2dd4bf !important;
+  background: linear-gradient(135deg, rgba(134, 59, 255, 0.15), rgba(126, 20, 255, 0.08)) !important;
+  border-color: rgba(134, 59, 255, 0.35) !important;
+  color: #b58aff !important;
 }
 
 /* ── Card hover ── */
@@ -430,15 +455,15 @@ input:focus, select:focus {
 
 /* ── Glow effects ── */
 .theme-dark .glow-teal {
-  box-shadow: 0 0 20px rgba(45, 212, 191, 0.15), 0 0 40px rgba(45, 212, 191, 0.05) !important;
+  box-shadow: 0 0 20px rgba(134, 59, 255, 0.15), 0 0 40px rgba(134, 59, 255, 0.05) !important;
 }
 .theme-dark .badge-glow {
-  box-shadow: 0 0 8px rgba(45, 212, 191, 0.35) !important;
+  box-shadow: 0 0 8px rgba(134, 59, 255, 0.35) !important;
 }
 
 /* ── Table row hover ── */
 .theme-dark .table-row-hover:hover {
-  background: rgba(45, 212, 191, 0.06) !important;
+  background: rgba(134, 59, 255, 0.06) !important;
 }
 
 /* ── Empty states ── */
