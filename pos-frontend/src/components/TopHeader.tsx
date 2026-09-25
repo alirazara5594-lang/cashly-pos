@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   Wifi, 
   WifiOff, 
@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 import { AlertsBell } from './AlertsBell';
+import { useClickOutside } from '../hooks/useClickOutside';
 
 interface TopHeaderProps {
   onOpenCallOrder: () => void;
@@ -60,6 +61,14 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Click anywhere outside dismisses a dropdown. Each ref wraps trigger +
+  // panel, so the trigger's own toggle keeps working (a plain outside-mousedown
+  // would close the panel a beat before the click re-opened it).
+  const tenantMenuRef = useRef<HTMLDivElement>(null);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
+  useClickOutside(tenantMenuRef, () => setShowTenantDropdown(false), showTenantDropdown);
+  useClickOutside(modeMenuRef, () => setShowModeDropdown(false), showModeDropdown);
+
   // Terminal mode is just this device's screen profile (which nav layout to show) —
   // it carries no authorization. Access to any given screen is decided by the real
   // signed-in user's role/permissions (RequireModule), so switching it never needs a PIN.
@@ -90,7 +99,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </button>
           )}
 
-          <div className="relative">
+          <div className="relative" ref={tenantMenuRef}>
             <button 
               onClick={() => isMultiBranchChain && setShowTenantDropdown(!showTenantDropdown)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-medium transition ${
@@ -155,7 +164,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative" ref={modeMenuRef}>
             <button
               onClick={() => setShowModeDropdown(!showModeDropdown)}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${

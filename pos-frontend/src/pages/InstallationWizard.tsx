@@ -495,15 +495,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                {choice === 'Single' && (
-                  <div className="absolute top-4 right-4 text-teal-400">
-                    <CheckCircle2 className="w-6 h-6 fill-teal-500 text-white" />
-                  </div>
-                )}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
+                    <div className="relative w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
                       <Store className="w-5 h-5" />
+                      {choice === 'Single' && (
+                        <span className="absolute -top-1.5 -right-1.5 drop-shadow">
+                          <CheckCircle2 className="w-4 h-4 fill-teal-500 text-white" />
+                        </span>
+                      )}
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">Single Restaurant Outlet</h3>
                   </div>
@@ -539,15 +539,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                {choice === 'MultiBranch' && (
-                  <div className="absolute top-4 right-4 text-teal-400">
-                    <CheckCircle2 className="w-6 h-6 fill-teal-500 text-white" />
-                  </div>
-                )}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
+                    <div className="relative w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
                       <Building2 className="w-5 h-5" />
+                      {choice === 'MultiBranch' && (
+                        <span className="absolute -top-1.5 -right-1.5 drop-shadow">
+                          <CheckCircle2 className="w-4 h-4 fill-teal-500 text-white" />
+                        </span>
+                      )}
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">Head Office with Restaurants</h3>
                   </div>
@@ -583,15 +583,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     : 'border-slate-200 bg-white hover:border-slate-300'
                 }`}
               >
-                {choice === 'Connect' && (
-                  <div className="absolute top-4 right-4 text-sky-400">
-                    <CheckCircle2 className="w-6 h-6 fill-sky-500 text-white" />
-                  </div>
-                )}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-center text-sky-600 shrink-0">
+                    <div className="relative w-11 h-11 rounded-xl bg-sky-50 border border-sky-200 flex items-center justify-center text-sky-600 shrink-0">
                       <Monitor className="w-5 h-5" />
+                      {choice === 'Connect' && (
+                        <span className="absolute -top-1.5 -right-1.5 drop-shadow">
+                          <CheckCircle2 className="w-4 h-4 fill-sky-500 text-white" />
+                        </span>
+                      )}
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">Branch POS — Connect to HQ</h3>
                   </div>

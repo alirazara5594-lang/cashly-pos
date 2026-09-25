@@ -457,7 +457,10 @@ export const PosTerminal: React.FC = () => {
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+          {/* content-start is load-bearing: this is a `flex-1` grid, so without it the default
+              align-content:stretch spreads the leftover column height across the rows and a
+              single row of products inflates to the full height of the terminal. */}
+          <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 content-start auto-rows-min">
             {filteredProducts.map((product) => (
               <div
                 key={product.id}
