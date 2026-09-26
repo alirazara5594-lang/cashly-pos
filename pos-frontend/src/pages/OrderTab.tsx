@@ -24,9 +24,14 @@ export const OrderTab: React.FC = () => {
     let cancelled = false;
 
     const load = async () => {
+      // Wait for a tenant before asking for its catalogue. Firing without one sends an unscoped
+      // request, which the server answers with 401 for anybody whose token carries no tenant of
+      // its own (the platform admin) — and a 401 is read as a dead session, so it would sign
+      // them out rather than simply returning nothing.
+      if (!selectedTenant?.id) return;
       try {
-        const cats = await posApi.getCategories(selectedTenant?.id);
-        const prods = await posApi.getProducts({ tenantId: selectedTenant?.id });
+        const cats = await posApi.getCategories(selectedTenant.id);
+        const prods = await posApi.getProducts({ tenantId: selectedTenant.id });
         if (cancelled) return;
         setCategories(cats);
         setProducts(prods);

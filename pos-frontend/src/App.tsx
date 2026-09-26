@@ -7,7 +7,7 @@ import { PosTerminal } from './pages/PosTerminal';
 import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
 import { RequireFeature } from './components/RequireFeature';
-import { usePosStore } from './store/posStore';
+import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
@@ -87,6 +87,17 @@ function MainLayoutInner() {
   // tenant's shape puts this session at a chain's head office. The device wins, which is how a
   // single restaurant runs a till downstairs and the accounts PC upstairs off one account.
   const isErpOnly = deviceStatus?.appSurface === 'Erp' || packageInfo?.appSurface === 'Erp';
+
+  /**
+   * The platform vendor, not a customer. They own no tenant, so every tenant-scoped screen is
+   * meaningless to them — and worse than meaningless: those screens fetch with whatever tenant
+   * happens to be selected, and before the tenant list resolves that is nothing at all. An
+   * unscoped catalogue request 401s, the response interceptor reads that as a dead session, and
+   * the platform admin is thrown straight back to the login card.
+   *
+   * The sidebar already hides every tenant screen from this role; the router has to agree.
+   */
+  const isPlatformSuperAdmin = normalizeRole(currentUser?.role) === 'SuperAdmin';
 
   const isAuthenticated = !!currentUser && !!token;
 
@@ -280,10 +291,22 @@ function MainLayoutInner() {
                 exist: "/" becomes the executive dashboard and the till URLs redirect. Hiding the
                 links alone would not be enough — a bookmarked /order-tab has to land somewhere
                 sensible too. */}
-            <Route path="/" element={isErpOnly ? <Navigate to="/director" replace /> : <PosTerminal />} />
-            <Route path="/kitchen" element={isErpOnly ? <Navigate to="/director" replace /> : <RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
-            <Route path="/order-tab" element={isErpOnly ? <Navigate to="/director" replace /> : <OrderTab />} />
-            <Route path="/delivery" element={isErpOnly ? <Navigate to="/director" replace /> : <RequireFeature flag="hasDeliveryCOD" label="Delivery & COD Board"><DeliveryBoard /></RequireFeature>} />
+            <Route path="/" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <PosTerminal />} />
+            <Route path="/kitchen" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
+            <Route path="/order-tab" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <OrderTab />} />
+            <Route path="/delivery" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <RequireFeature flag="hasDeliveryCOD" label="Delivery & COD Board"><DeliveryBoard /></RequireFeature>} />
             {/* Customer lookup is part of taking an order, so viewing stays open to
                 any signed-in user; the page itself gates creating/editing on `admin` edit. */}
             <Route path="/customers" element={<CustomerManagement />} />

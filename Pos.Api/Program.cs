@@ -1131,12 +1131,15 @@ using (var scope = app.Services.CreateScope())
             WHERE t.""DeploymentMode"" = 1
               AND (SELECT COUNT(*) FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"") > 1;
 
-            -- Running a head office is a shape, not a paid feature: every plan may do it, and the
-            -- plan governs only HOW MANY locations fit. Starter previously allowed exactly one
-            -- location, which made a two-shop chain impossible at any price below Standard.
-            UPDATE ""SaaSPackageConfigs"" SET ""HasMultiBranch"" = true WHERE ""HasMultiBranch"" = false;
-            UPDATE ""SaaSPackageConfigs"" SET ""MaxBranches"" = 3 WHERE ""PackageKey"" = 'Starter' AND ""MaxBranches"" < 3;
-            UPDATE ""SaaSPackageConfigs"" SET ""MaxBranches"" = 10 WHERE ""PackageKey"" = 'Standard' AND ""MaxBranches"" < 10;
+            -- (Removed) Three UPDATEs here used to force HasMultiBranch=true and raise Starter and
+            -- Standard branch ceilings on EVERY startup. They were the source of the split between
+            -- this table and FeatureCatalog: the product decision they encoded was applied only to
+            -- the package columns and never to the catalogue, so the two disagreed about what
+            -- Starter includes — and because they ran unconditionally, any correction was reverted
+            -- on the next restart.
+            --
+            -- Plan contents now come from FeatureCatalog alone. Use POST /api/admin/packages/resync
+            -- (dry-run by default) to pull the package rows back in line with it.
 
             -- Existing tenants predate the lifecycle ladder: put each one on the rung that
             -- matches the flags it already carries, rather than defaulting everybody to Trial.
@@ -7673,6 +7676,94 @@ app.MapDelete("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, 
     db.SaaSPackageConfigs.Remove(pkg);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Package deleted" });
+}).RequireAuthorization();
+
+// Pulls the package rows back in line with FeatureCatalog, which is the single definition of
+// what each plan contains.
+//
+// This is deliberately a manual action rather than something the seeder does on every boot: the
+// Package Pricing screen exists so prices and limits CAN be tuned per deployment, and silently
+// reverting an operator's change at 3am would be worse than the drift it fixes. Dry-run first —
+// it reports what would change without writing.
+app.MapPost("/api/admin/packages/resync", async (
+    AppDbContext db,
+    HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    bool? apply) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+
+    var changes = new List<object>();
+
+    foreach (var (code, _, _, _, _, _) in Pos.Api.Data.FeatureCatalog.Plans)
+    {
+        var packageKey = char.ToUpperInvariant(code[0]) + code[1..];
+        var desired = Pos.Api.Data.FeatureCatalog.BuildPackageConfig(code);
+        var current = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == packageKey);
+
+        if (current == null)
+        {
+            changes.Add(new { plan = packageKey, field = "(whole row)", from = "missing", to = "seeded from catalogue" });
+            if (apply == true) db.SaaSPackageConfigs.Add(desired);
+            continue;
+        }
+
+        void Diff(string field, object from, object to)
+        {
+            if (Equals(from, to)) return;
+            changes.Add(new { plan = packageKey, field, from, to });
+        }
+
+        Diff("MaxBranches", current.MaxBranches, desired.MaxBranches);
+        Diff("MaxCounters", current.MaxCounters, desired.MaxCounters);
+        Diff("MaxOrderTabs", current.MaxOrderTabs, desired.MaxOrderTabs);
+        Diff("MaxUsers", current.MaxUsers, desired.MaxUsers);
+        Diff("HasKitchenDisplay", current.HasKitchenDisplay, desired.HasKitchenDisplay);
+        Diff("HasDeliveryCOD", current.HasDeliveryCOD, desired.HasDeliveryCOD);
+        Diff("HasInventoryManagement", current.HasInventoryManagement, desired.HasInventoryManagement);
+        Diff("HasStockTransfers", current.HasStockTransfers, desired.HasStockTransfers);
+        Diff("HasDirectorDashboard", current.HasDirectorDashboard, desired.HasDirectorDashboard);
+        Diff("HasConsolidatedReports", current.HasConsolidatedReports, desired.HasConsolidatedReports);
+        Diff("HasWhatsAppMessaging", current.HasWhatsAppMessaging, desired.HasWhatsAppMessaging);
+        Diff("HasAdvancedReports", current.HasAdvancedReports, desired.HasAdvancedReports);
+        Diff("HasMultiBranch", current.HasMultiBranch, desired.HasMultiBranch);
+        Diff("MonthlyPricePKR", current.MonthlyPricePKR, desired.MonthlyPricePKR);
+        Diff("YearlyPricePKR", current.YearlyPricePKR, desired.YearlyPricePKR);
+
+        if (apply == true) Pos.Api.Data.FeatureCatalog.ApplyPackageConfig(current, code);
+    }
+
+    if (apply != true)
+        return Results.Ok(new
+        {
+            applied = false,
+            message = changes.Count == 0
+                ? "Package rows already match the catalogue."
+                : $"{changes.Count} difference(s) found. Repeat with ?apply=true to write them.",
+            changes
+        });
+
+    await db.SaveChangesAsync();
+
+    // Quotas just moved, so every cached snapshot is stale. Recomputing here bumps each tenant's
+    // entitlement version, which is what carries the change out to their tills on next heartbeat.
+    var tenantIds = await db.Tenants.IgnoreQueryFilters().Select(t => t.Id).ToListAsync();
+    foreach (var tenantId in tenantIds)
+        await entitlements.RecomputeAsync(tenantId);
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser != null)
+        await WriteAuditAsync(db, Guid.Empty, actingUser, "PackagesResynced", "SaaSPackageConfig", Guid.Empty,
+            null, $"{changes.Count} field(s) realigned to FeatureCatalog; {tenantIds.Count} tenant(s) recomputed");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        applied = true,
+        message = $"{changes.Count} field(s) realigned. {tenantIds.Count} tenant(s) recomputed.",
+        changes
+    });
 }).RequireAuthorization();
 
 // Get package config for frontend (public - used during signup)

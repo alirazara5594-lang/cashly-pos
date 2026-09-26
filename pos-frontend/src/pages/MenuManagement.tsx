@@ -116,9 +116,12 @@ export const MenuManagement: React.FC = () => {
   const [urduTouched, setUrduTouched] = useState(false);
 
   const fetchCatalog = async () => {
+    // See OrderTab: an unscoped catalogue request 401s for a token that carries no tenant, and
+    // the response interceptor treats that as an expired session and signs the user out.
+    if (!selectedTenant?.id) return;
     try {
-      const cats = await posApi.getCategories(selectedTenant?.id);
-      const prods = await posApi.getProducts({ tenantId: selectedTenant?.id });
+      const cats = await posApi.getCategories(selectedTenant.id);
+      const prods = await posApi.getProducts({ tenantId: selectedTenant.id });
       setCategories(cats);
       setProducts(prods);
     } catch (err) {

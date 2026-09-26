@@ -70,81 +70,23 @@ public static class DbSeeder
             await db.SaveChangesAsync();
         }
 
-        // Seed default SaaS package configs
-        if (!await db.SaaSPackageConfigs.AnyAsync())
+        // --- SaaS package configs -------------------------------------------
+        // Derived from FeatureCatalog, never hand-written. These rows used to carry their own
+        // independent numbers, which drifted from the catalogue until Starter was single-location
+        // in one and three-branch in the other. Projecting them keeps the two shapes — rows for
+        // feature depth, columns for device quotas — reading off one matrix.
+        //
+        // Only MISSING plans are added. A price the operator deliberately changed on the Package
+        // Pricing screen must survive a restart; POST /api/admin/packages/resync is the explicit
+        // way to pull values back from the catalogue.
+        foreach (var (code, _, _, _, _, _) in FeatureCatalog.Plans)
         {
-            db.SaaSPackageConfigs.AddRange(
-                new SaaSPackageConfig
-                {
-                    PackageKey = "Starter",
-                    DisplayName = "Starter",
-                    MonthlyPricePKR = 5000,
-                    YearlyPricePKR = 50000,
-                    MaxBranches = 3,
-                    MaxCounters = 1,
-                    MaxOrderTabs = 3,
-                    MaxUsers = 5,
-                    HasKitchenDisplay = false,
-                    HasDeliveryCOD = false,
-                    HasInventoryManagement = false,
-                    HasStockTransfers = false,
-                    HasDirectorDashboard = false,
-                    HasConsolidatedReports = false,
-                    // WhatsApp is the flagship sell-up from Starter: not included, but one
-                    // grant (or one plan move) away — see the add-on catalog below.
-                    HasWhatsAppMessaging = false,
-                    HasAdvancedReports = false,
-                    HasMultiBranch = true,
-                    WhatsAppMessagesPerMonth = 0,
-                    IsActive = true
-                },
-                new SaaSPackageConfig
-                {
-                    PackageKey = "Standard",
-                    DisplayName = "Standard",
-                    MonthlyPricePKR = 12000,
-                    YearlyPricePKR = 120000,
-                    MaxBranches = 10,
-                    MaxCounters = 3,
-                    MaxOrderTabs = 10,
-                    MaxUsers = 20,
-                    HasKitchenDisplay = true,
-                    HasDeliveryCOD = true,
-                    HasInventoryManagement = true,
-                    HasStockTransfers = false,
-                    HasDirectorDashboard = true,
-                    HasConsolidatedReports = false,
-                    HasWhatsAppMessaging = true,
-                    HasAdvancedReports = true,
-                    HasMultiBranch = true,
-                    WhatsAppMessagesPerMonth = -1,
-                    IsActive = true
-                },
-                new SaaSPackageConfig
-                {
-                    PackageKey = "Professional",
-                    DisplayName = "Professional",
-                    MonthlyPricePKR = 25000,
-                    YearlyPricePKR = 250000,
-                    MaxBranches = 999,
-                    MaxCounters = 10,
-                    MaxOrderTabs = 25,
-                    MaxUsers = 999,
-                    HasKitchenDisplay = true,
-                    HasDeliveryCOD = true,
-                    HasInventoryManagement = true,
-                    HasStockTransfers = true,
-                    HasDirectorDashboard = true,
-                    HasConsolidatedReports = true,
-                    HasWhatsAppMessaging = true,
-                    HasAdvancedReports = true,
-                    HasMultiBranch = true,
-                    WhatsAppMessagesPerMonth = -1,
-                    IsActive = true
-                }
-            );
-            await db.SaveChangesAsync();
+            var packageKey = char.ToUpperInvariant(code[0]) + code[1..];
+            if (await db.SaaSPackageConfigs.AnyAsync(p => p.PackageKey == packageKey)) continue;
+
+            db.SaaSPackageConfigs.Add(FeatureCatalog.BuildPackageConfig(code));
         }
+        await db.SaveChangesAsync();
 
         // Seed the add-on catalog — the same tier-gated features above, sellable standalone to a
         // tenant on a lower tier that doesn't want a full upgrade. Prices are editable defaults.
