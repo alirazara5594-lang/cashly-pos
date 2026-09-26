@@ -8,12 +8,27 @@ import {
   RefreshCw,
   X,
   Check,
-  FileText
+  FileText,
+  Inbox
 } from 'lucide-react';
 import { posApi } from '../services/api';
 
 import { usePosStore } from '../store/posStore';
 import type { Order, Rider, RiderSettlementRecord } from '../types';
+
+/**
+ * Placeholder for a stage with nothing in it.
+ *
+ * Kanban lanes are deliberately full-height so the four stages stay aligned and scan as one
+ * board, but an empty lane with no affordance just reads as a broken white slab — which is
+ * exactly what a quiet service period looks like here. This gives the height a reason to exist.
+ */
+const LaneEmpty: React.FC<{ label: string }> = ({ label }) => (
+  <div className="h-full min-h-24 flex flex-col items-center justify-center gap-2 text-slate-300 select-none">
+    <Inbox className="w-7 h-7" />
+    <span className="text-[11px] font-semibold text-slate-400">{label}</span>
+  </div>
+);
 
 export const DeliveryBoard: React.FC = () => {
   const { selectedBranch } = usePosStore();
@@ -199,7 +214,10 @@ export const DeliveryBoard: React.FC = () => {
       </div>
 
       {/* 4-Stage Kanban Columns */}
-      <div className="flex-1 overflow-x-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pb-2">
+      {/* content-start keeps the lanes at content height. Without it the grid's default
+          align-content:stretch spreads the leftover page height across the row and four
+          near-empty lanes swell to fill the whole viewport. */}
+      <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pb-2 content-start">
         {/* Column 1: In Kitchen */}
         <div className="flex flex-col bg-white border border-slate-200 rounded-2xl overflow-hidden">
           <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -212,7 +230,8 @@ export const DeliveryBoard: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 max-h-[55vh]">
+            {board.inKitchen.length === 0 && <LaneEmpty label="Nothing cooking" />}
             {board.inKitchen.map(order => (
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                 <div className="flex justify-between items-start">
@@ -257,7 +276,8 @@ export const DeliveryBoard: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 max-h-[55vh]">
+            {board.readyForDispatch.length === 0 && <LaneEmpty label="Nothing ready yet" />}
             {board.readyForDispatch.map(order => (
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-blue-200 space-y-2">
                 <div className="flex justify-between items-start">
@@ -305,7 +325,8 @@ export const DeliveryBoard: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 max-h-[55vh]">
+            {board.outForDelivery.length === 0 && <LaneEmpty label="No riders out" />}
             {board.outForDelivery.map(order => (
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-purple-200 space-y-2">
                 <div className="flex justify-between items-start">
@@ -349,7 +370,8 @@ export const DeliveryBoard: React.FC = () => {
             </span>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 max-h-[55vh]">
+            {board.completed.length === 0 && <LaneEmpty label="Nothing delivered yet" />}
             {board.completed.map(order => (
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 opacity-80">
                 <div className="flex justify-between items-start">

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Tablet, Send, Plus, Minus, Trash2, CheckCircle2, Utensils } from 'lucide-react';
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { ProductCard } from '../components/ProductCard';
 import type { Product, Category, CartItem } from '../types';
 
 export const OrderTab: React.FC = () => {
@@ -20,22 +21,42 @@ export const OrderTab: React.FC = () => {
   const [specialNote, setSpecialNote] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
+
     const load = async () => {
       try {
         const cats = await posApi.getCategories(selectedTenant?.id);
         const prods = await posApi.getProducts({ tenantId: selectedTenant?.id });
+        if (cancelled) return;
         setCategories(cats);
         setProducts(prods);
         if (selectedBranch?.id) {
           const tbls = await posApi.getTables(selectedBranch.id);
-          setTables(tbls);
+          if (!cancelled) setTables(tbls);
         }
       } catch (err) {
         console.error(err);
       }
     };
     load();
+
+    // A waiter tablet sits on the floor all shift without ever being reloaded, so refresh
+    // the menu whenever it comes back to the foreground — otherwise a price changed at the
+    // back office mid-service never reaches the captain taking the order.
+    const revalidate = () => {
+      if (!document.hidden) load();
+    };
+    window.addEventListener('focus', revalidate);
+    document.addEventListener('visibilitychange', revalidate);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', revalidate);
+      document.removeEventListener('visibilitychange', revalidate);
+    };
   }, [selectedTenant?.id, selectedBranch?.id]);
+
+  const getCategoryName = (catId: string) => categories.find(c => c.id === catId)?.name;
 
   const addToTabCart = (product: Product) => {
     const idx = tabCart.findIndex(i => i.productId === product.id);
@@ -201,24 +222,18 @@ export const OrderTab: React.FC = () => {
         </div>
 
         {/* Products Grid */}
-        <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+        {/* content-start is load-bearing: this is a `flex-1` grid, so without it the default
+            align-content:stretch spreads the leftover column height across the rows and a
+            single row of items inflates to the full height of the screen. Mirrors PosTerminal. */}
+        <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3 content-start auto-rows-min">
           {filteredProducts.map(p => (
-            <button
+            <ProductCard
               key={p.id}
-              onClick={() => addToTabCart(p)}
-              className="p-3 rounded-2xl bg-white border border-slate-200 hover:border-purple-500 text-left transition flex flex-col justify-between shadow-sm group"
-            >
-              <div>
-                <div className="font-bold text-xs text-slate-900 group-hover:text-purple-600 transition line-clamp-2">{p.name}</div>
-                {p.urduName && <div className="text-[11px] text-slate-500 font-sans mt-0.5">{p.urduName}</div>}
-              </div>
-              <div className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between">
-                <span className="text-teal-600 font-black text-xs">{p.sellingPricePKR.toLocaleString()}</span>
-                <span className="w-6 h-6 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center font-bold text-xs group-hover:bg-purple-500 group-hover:text-white transition">
-                  +
-                </span>
-              </div>
-            </button>
+              product={p}
+              categoryName={getCategoryName(p.categoryId)}
+              accent="purple"
+              onSelect={addToTabCart}
+            />
           ))}
         </div>
       </div>

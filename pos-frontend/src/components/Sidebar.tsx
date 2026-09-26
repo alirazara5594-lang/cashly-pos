@@ -110,16 +110,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const isOwnerOrUnlocked = can('admin') || can('accounts', 'edit');
 
-  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
-    pos: true,
-    inventory: false,
-    supplyChain: false,
-    reports: false,
-    management: false
-  });
+  // Accordion, not independent toggles: one group open at a time. The sidebar is taller than
+  // most screens once two or three groups are expanded, which pushed System & Administration
+  // below the fold and made the menu feel like it had lost items.
+  const [openMenu, setOpenMenu] = useState<string | null>('pos');
 
   const toggleMenu = (id: string) => {
-    setOpenMenus(prev => ({ ...prev, [id]: !prev[id] }));
+    setOpenMenu(prev => (prev === id ? null : id));
   };
 
   const navSections = useMemo<NavSection[]>(() => {
@@ -464,7 +461,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 const Icon = item.icon;
                 const isCurrentPath = location.pathname === item.path;
                 const hasSub = !!item.subItems && item.subItems.length > 0;
-                const isOpen = openMenus[item.id];
+                const isOpen = openMenu === item.id;
 
                 return (
                   <div key={item.id} className="space-y-1">

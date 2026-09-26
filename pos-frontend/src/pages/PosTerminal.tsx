@@ -30,30 +30,8 @@ import { getStoredTerminal } from '../services/deviceLicense';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer } from '../types';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
-
-const productEmojis: Record<string, string> = {
-  burger: '🍔',
-  pizza: '🍕',
-  salad: '🥗',
-  fries: '🍟',
-  drink: '🥤',
-  cake: '🍰',
-  chicken: '🍗',
-  sandwich: '🥪',
-  pasta: '🍝',
-  ice: '🍦',
-  coffee: '☕',
-  juice: '🧃',
-  default: '🍽️',
-};
-
-function getEmoji(name: string, category?: string): string {
-  const lower = (name + ' ' + (category || '')).toLowerCase();
-  for (const [key, emoji] of Object.entries(productEmojis)) {
-    if (lower.includes(key)) return emoji;
-  }
-  return productEmojis.default;
-}
+import { ProductCard } from '../components/ProductCard';
+import { getEmoji } from '../utils/productEmoji';
 
 export const PosTerminal: React.FC = () => {
   const {
@@ -167,40 +145,80 @@ export const PosTerminal: React.FC = () => {
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const loadCatalog = async () => {
-      if (!selectedTenant?.id) return;
+    const tenantId = selectedTenant?.id;
+    const branchId = selectedBranch?.id;
+    if (!tenantId) return;
 
+    let cancelled = false;
+
+    /**
+     * Stale-while-revalidate: paint from the offline cache so the till opens instantly and
+     * keeps trading through a dropped connection, then refresh from the server whenever it
+     * is reachable.
+     *
+     * This used to fetch ONLY when the cache was empty, which meant a price changed in the
+     * back office never reached the register — it went on charging the cached figure until
+     * somebody cleared browser storage. The cache is a fallback for being offline, not a
+     * substitute for the catalogue.
+     */
+    const loadCatalog = async () => {
       try {
-        const cached = await getCachedCatalog(selectedTenant.id);
-        if (cached.categories.length > 0) {
+        const cached = await getCachedCatalog(tenantId);
+        if (!cancelled && cached.categories.length > 0) {
           setCategories(cached.categories);
           setProducts(cached.products);
-        } else if (isOnline) {
-          const [cats, prods] = await Promise.all([
-            posApi.getCategories(selectedTenant.id),
-            posApi.getProducts({ tenantId: selectedTenant.id })
-          ]);
-          setCategories(cats);
-          setProducts(prods);
-          await cacheCatalog(selectedTenant.id, cats, prods);
         }
 
-        if (selectedBranch?.id) {
-          if (isOnline) {
-            const tbls = await posApi.getTables(selectedBranch.id);
-            setTables(tbls);
-            await cacheDiningTables(tbls);
-          } else {
-            const cachedTables = await getCachedDiningTables(selectedBranch.id);
-            setTables(cachedTables);
-          }
-        }
+        if (!isOnline) return;
+
+        const [cats, prods] = await Promise.all([
+          posApi.getCategories(tenantId),
+          posApi.getProducts({ tenantId })
+        ]);
+        if (cancelled) return;
+
+        setCategories(cats);
+        setProducts(prods);
+        await cacheCatalog(tenantId, cats, prods);
       } catch (err) {
         console.error('Failed to load catalog:', err);
       }
     };
 
+    const loadTables = async () => {
+      if (!branchId) return;
+      try {
+        if (isOnline) {
+          const tbls = await posApi.getTables(branchId);
+          if (cancelled) return;
+          setTables(tbls);
+          await cacheDiningTables(tbls);
+        } else {
+          const cachedTables = await getCachedDiningTables(branchId);
+          if (!cancelled) setTables(cachedTables);
+        }
+      } catch (err) {
+        console.error('Failed to load tables:', err);
+      }
+    };
+
     loadCatalog();
+    loadTables();
+
+    // A register is typically left open all day. Without this, a price changed in the back
+    // office at lunchtime would not reach it until someone reloaded the page — and the till
+    // would keep charging the morning's price in the meantime.
+    const revalidate = () => {
+      if (!document.hidden) loadCatalog();
+    };
+    window.addEventListener('focus', revalidate);
+    document.addEventListener('visibilitychange', revalidate);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', revalidate);
+      document.removeEventListener('visibilitychange', revalidate);
+    };
   }, [selectedTenant?.id, selectedBranch?.id, isOnline]);
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
@@ -462,61 +480,21 @@ export const PosTerminal: React.FC = () => {
               single row of products inflates to the full height of the terminal. */}
           <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 content-start auto-rows-min">
             {filteredProducts.map((product) => (
-              <div
+              <ProductCard
                 key={product.id}
-                onClick={() => {
-                  if (product.modifiers && product.modifiers.length > 0) {
-                    setActiveProductForModifier(product);
+                product={product}
+                categoryName={getCategoryName(product.categoryId)}
+                accent="teal"
+                onSelect={(p) => {
+                  if (p.modifiers && p.modifiers.length > 0) {
+                    setActiveProductForModifier(p);
                     setSelectedModifiers([]);
                     setItemNote('');
                   } else {
-                    addToCart(product);
+                    addToCart(p);
                   }
                 }}
-                className="bg-white border border-slate-200 rounded-2xl p-3 hover:shadow-lg hover:border-teal-200 transition-all cursor-pointer group flex flex-col"
-              >
-                <div className="relative w-full h-28 rounded-xl overflow-hidden bg-slate-50 flex items-center justify-center mb-2">
-                  {product.imageUrl ? (
-                    <img
-                      src={product.imageUrl}
-                      alt={product.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                    />
-                  ) : (
-                    <span className="text-4xl">{getEmoji(product.name, getCategoryName(product.categoryId))}</span>
-                  )}
-                  {product.modifiers && product.modifiers.length > 0 && (
-                    <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-amber-100 text-amber-700 text-[10px] font-bold uppercase">
-                      Custom
-                    </span>
-                  )}
-                </div>
-
-                <h3 className="text-sm font-semibold text-slate-900 truncate">{product.name}</h3>
-                {product.urduName && (
-                  <p className="text-[11px] text-slate-400 text-right truncate mt-0.5">{product.urduName}</p>
-                )}
-                <p className="text-xs text-slate-400 mt-0.5">{product.sku || product.barcode.slice(-4)}</p>
-
-                <div className="flex items-center justify-between mt-auto pt-2">
-                  <span className="text-sm font-bold text-teal-600">{product.sellingPricePKR.toLocaleString()}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (product.modifiers && product.modifiers.length > 0) {
-                        setActiveProductForModifier(product);
-                        setSelectedModifiers([]);
-                        setItemNote('');
-                      } else {
-                        addToCart(product);
-                      }
-                    }}
-                    className="px-3 py-1 rounded-lg bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 transition shadow-sm"
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
+              />
             ))}
           </div>
         </div>
