@@ -7801,7 +7801,13 @@ app.MapGet("/api/tenant/my-package", async (
     AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
 {
     var tenantId = http.GetTenantId();
-    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+    // No tenant scope = the platform SuperAdmin (tenantId Guid.Empty), not a missing session —
+    // the token was already authenticated by the auth middleware. 404 is the documented
+    // contract: the frontend's loadMyPackageFeatures expects "SuperAdmin has no tenant to
+    // resolve this against (404) — that's expected, not an error". A 401 here used to trip
+    // the axios response interceptor's clearSession(), logging the superadmin straight back
+    // out to the login gate the instant the app mounted.
+    if (tenantId == null || tenantId == Guid.Empty) return Results.NotFound();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
     if (tenant == null) return Results.NotFound();
