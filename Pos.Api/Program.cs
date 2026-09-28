@@ -3604,6 +3604,9 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         return Results.BadRequest(new { message = "A restaurant with a similar name already exists. Try a different name." });
 
     var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
+    var chosenTier = !string.IsNullOrWhiteSpace(dto.SelectedPlan) && Enum.TryParse<SubscriptionTier>(dto.SelectedPlan, true, out var parsedTier)
+        ? parsedTier
+        : (structure == BusinessStructures.ChainWithHeadOffice ? SubscriptionTier.Professional : SubscriptionTier.Standard);
 
     var tenant = new Tenant
     {
@@ -3616,7 +3619,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         City = dto.City,
         Address = dto.Address,
         BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
-        Tier = structure == BusinessStructures.ChainWithHeadOffice ? SubscriptionTier.Professional : SubscriptionTier.Standard,
+        Tier = chosenTier,
         // The shape itself (DeploymentMode) is set by CreateInitialStructure below.
         IsActive = true,
         IsTrialActive = false,
@@ -12811,7 +12814,10 @@ public record SetupInitDto(
     SetupCompanyDto? Company = null,
     SetupHeadOfficeDto? HeadOffice = null,
     SetupPoliciesDto? Policies = null,
-    bool SetUpAccounting = false
+    bool SetUpAccounting = false,
+    string? SelectedPlan = null,
+    string? InstallationType = null,
+    string? AppSurface = null
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
 public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
@@ -12833,7 +12839,7 @@ public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, str
 /// HasMultiBranch flag and MaxBranches allowance before anything is created.
 /// </summary>
 public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null,
-    string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false);
+    string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only

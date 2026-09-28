@@ -159,8 +159,8 @@ public static class FeatureCatalog
     /// <summary>Countable ceilings per plan. Null = unlimited.</summary>
     public static readonly Dictionary<string, (int? Starter, int? Standard, int? Professional)> Counts = new()
     {
-        // The location ladder IS the upgrade path, now that multi-branch itself is on every plan.
-        [FeatureCodes.Locations]     = (3, 10, null),
+        // Branches / Locations are unlimited on all plans (Starter, Standard, Professional)
+        [FeatureCodes.Locations]     = (null, null, null),
         [FeatureCodes.PosTerminals]  = (1, 5, null),
         [FeatureCodes.Tablets]       = (3, 10, null),
         [FeatureCodes.Users]         = (5, 15, null)
@@ -191,8 +191,8 @@ public static class FeatureCatalog
     /// <summary>The three plans, in commercial order.</summary>
     public static readonly (string Code, string Name, string Description, decimal Monthly, decimal Yearly, int Rank)[] Plans =
     {
-        ("starter", "Starter", "Up to three locations. Everything a shop or restaurant needs to trade, with a head office over the top.", 5000m, 50000m, 1),
-        ("standard", "Standard", "Up to ten locations, with full inventory, purchasing and accounting, and centralised control from head office.", 12000m, 120000m, 2),
+        ("starter", "Starter", "Unlimited locations. Everything a shop or restaurant chain needs to trade, with a head office over the top.", 5000m, 50000m, 1),
+        ("standard", "Standard", "Unlimited locations, with full inventory, purchasing and accounting, and centralised control from head office.", 12000m, 120000m, 2),
         ("professional", "Professional", "Unlimited locations and terminals, plus inter-branch stock transfers, group-wide consolidated reporting, API and integrations.", 25000m, 250000m, 3)
     };
 

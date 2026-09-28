@@ -969,6 +969,10 @@ export interface SetupHeadOfficePayload {
   holdsStock?: boolean;
 }
 
+export type InstallationSystemType = 'POS_ONLY' | 'POS_ERP';
+export type ErpDeploymentRole = 'ERP_SERVER' | 'POS_TERMINAL';
+export type PosServerTopology = 'SAME_SERVER' | 'DIFFERENT_SERVER';
+
 export interface SetupInitPayload {
   deploymentMode: DeploymentMode;
   restaurantName: string;
@@ -990,6 +994,9 @@ export interface SetupInitPayload {
   policies?: Partial<BusinessPolicies>;
   /** Set up the chart of accounts now, so every sale is booked from day one. */
   setUpAccounting?: boolean;
+  selectedPlan?: string;
+  installationType?: string;
+  appSurface?: string;
 }
 
 export interface SetupStatusResponse {

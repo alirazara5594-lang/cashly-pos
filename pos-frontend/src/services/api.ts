@@ -1254,6 +1254,8 @@ export const posApi = {
     headOffice?: SetupHeadOfficePayload;
     policies?: Partial<BusinessPolicies>;
     setUpAccounting?: boolean;
+    installationType?: string;
+    appSurface?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;
