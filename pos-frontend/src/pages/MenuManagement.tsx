@@ -13,14 +13,15 @@ import {
   Hash,
   ShieldCheck,
   Package,
-  Wand2
+  Wand2,
+  MapPin
 } from 'lucide-react';
 
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { toUrdu } from '../utils/urduTransliterate';
-import type { Product, Category, ProductRecipeItem, KitchenStation } from '../types';
+import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo } from '../types';
 
 /** Mirrors CreateProductDto on the server. */
 interface ProductForm {
@@ -64,8 +65,62 @@ export const MenuManagement: React.FC = () => {
     selectedTenant,
     currentUser,
     permissions,
-    modulePermissions
+    modulePermissions,
+    branches
   } = usePosStore();
+
+  // Per-branch prices and availability only mean something with more than one place that sells.
+  const hasSeveralSellingBranches = branches.filter(b => b.canSell !== false).length > 1;
+  const [branchPriceProduct, setBranchPriceProduct] = useState<Product | null>(null);
+  const [branchPriceInfo, setBranchPriceInfo] = useState<BranchPriceInfo | null>(null);
+  const [branchPriceDrafts, setBranchPriceDrafts] = useState<Record<string, { price: string; isAvailable: boolean }>>({});
+  const [branchPriceLoading, setBranchPriceLoading] = useState(false);
+  const [branchPriceSaving, setBranchPriceSaving] = useState(false);
+  const [branchPriceError, setBranchPriceError] = useState<string | null>(null);
+
+  const openBranchPrices = async (product: Product) => {
+    setBranchPriceProduct(product);
+    setBranchPriceInfo(null);
+    setBranchPriceError(null);
+    setBranchPriceLoading(true);
+    try {
+      const info = await posApi.getBranchPrices(product.id);
+      setBranchPriceInfo(info);
+      setBranchPriceDrafts(Object.fromEntries(info.branches.map(b => [
+        b.branchId,
+        { price: b.sellingPricePKR == null ? '' : String(b.sellingPricePKR), isAvailable: b.isAvailable }
+      ])));
+    } catch (err) {
+      setBranchPriceError(getApiErrorMessage(err, 'Could not load branch prices.'));
+    } finally {
+      setBranchPriceLoading(false);
+    }
+  };
+
+  const handleSaveBranchPrices = async () => {
+    if (!branchPriceProduct || !branchPriceInfo) return;
+    const rows = branchPriceInfo.branches.map(b => {
+      const draft = branchPriceDrafts[b.branchId] ?? { price: '', isAvailable: true };
+      // A blank price is the company price; own prices only count while branch pricing is on.
+      const price = branchPriceInfo.branchPricing && draft.price.trim() !== '' ? Number(draft.price) : null;
+      return { branchId: b.branchId, sellingPricePKR: price, isAvailable: draft.isAvailable };
+    });
+    if (rows.some(r => r.sellingPricePKR !== null && (Number.isNaN(r.sellingPricePKR) || r.sellingPricePKR < 0))) {
+      setBranchPriceError('Enter a valid price, or leave it blank for the company price.');
+      return;
+    }
+    setBranchPriceSaving(true);
+    setBranchPriceError(null);
+    try {
+      await posApi.setBranchPrices(branchPriceProduct.id, rows);
+      setPriceMessage({ type: 'success', text: `Branch prices saved for ${branchPriceProduct.name}.` });
+      setBranchPriceProduct(null);
+    } catch (err) {
+      setBranchPriceError(getApiErrorMessage(err, 'Could not save branch prices.'));
+    } finally {
+      setBranchPriceSaving(false);
+    }
+  };
 
   // Own permission to change prices / tax. The backend independently re-checks
   // this on every write — unlocking here only reveals the inputs.
@@ -862,6 +917,16 @@ export const MenuManagement: React.FC = () => {
                             </td>
                             <td className="py-3 text-right">
                               <div className="flex items-center justify-end gap-1.5">
+                                {hasSeveralSellingBranches && (
+                                  <button
+                                    onClick={() => openBranchPrices(p)}
+                                    disabled={!canEditPricing}
+                                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-teal-50 text-slate-500 hover:text-teal-600 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title={canEditPricing ? 'Price and availability at each branch' : 'Your account cannot change prices'}
+                                  >
+                                    <MapPin className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => openEditProduct(p)}
                                   disabled={!canEditPricing}
@@ -889,6 +954,90 @@ export const MenuManagement: React.FC = () => {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* ═══════ BRANCH PRICES MODAL ═══════ */}
+      {branchPriceProduct && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-teal-500" />
+                <h3 className="font-bold text-slate-900 text-base">{branchPriceProduct.name} — at each branch</h3>
+              </div>
+              <button onClick={() => setBranchPriceProduct(null)} className="text-slate-400 hover:text-slate-900"><X className="w-4 h-4" /></button>
+            </div>
+
+            {branchPriceLoading ? (
+              <div className="flex justify-center py-6">
+                <div className="w-6 h-6 border-2 border-teal-200 border-t-teal-500 rounded-full animate-spin" />
+              </div>
+            ) : branchPriceInfo && (
+              <>
+                <p className="text-xs text-slate-500">
+                  Company price: <span className="font-bold text-slate-800">{branchPriceInfo.companyPricePKR.toLocaleString()}</span>.{' '}
+                  {branchPriceInfo.branchPricing
+                    ? 'Leave a branch blank to charge the company price there.'
+                    : 'Every branch charges the company price. Turn on branch pricing under Locations → Policies to set a price per branch. You can still stop selling this item at a branch.'}
+                </p>
+                <div className="max-h-72 overflow-y-auto space-y-1.5">
+                  {branchPriceInfo.branches.map(b => {
+                    const draft = branchPriceDrafts[b.branchId] ?? { price: '', isAvailable: true };
+                    const setDraft = (next: Partial<typeof draft>) =>
+                      setBranchPriceDrafts(prev => ({ ...prev, [b.branchId]: { ...draft, ...next } }));
+                    return (
+                      <div key={b.branchId} className="flex items-center justify-between gap-3 p-2.5 rounded-xl border border-slate-200 text-xs">
+                        <div>
+                          <div className="font-semibold text-slate-900">{b.branchName}</div>
+                          <div className="text-[10px] text-slate-400">{b.branchCode}</div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-1.5 text-slate-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={draft.isAvailable}
+                              onChange={(e) => setDraft({ isAvailable: e.target.checked })}
+                              className="w-4 h-4 accent-teal-500"
+                            />
+                            Sold here
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={draft.price}
+                            disabled={!branchPriceInfo.branchPricing || !draft.isAvailable}
+                            onChange={(e) => setDraft({ price: e.target.value })}
+                            placeholder={String(branchPriceInfo.companyPricePKR)}
+                            className="w-28 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono text-right text-slate-900 disabled:opacity-50 focus:outline-none focus:border-teal-500"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {branchPriceError && (
+              <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold">{branchPriceError}</div>
+            )}
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button onClick={() => setBranchPriceProduct(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition">
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveBranchPrices}
+                disabled={branchPriceSaving || branchPriceLoading || !branchPriceInfo}
+                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{branchPriceSaving ? 'Saving…' : 'Save'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

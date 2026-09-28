@@ -171,9 +171,10 @@ export const PosTerminal: React.FC = () => {
 
         if (!isOnline) return;
 
+        // With the branch, the list is what THIS branch sells at the prices it charges.
         const [cats, prods] = await Promise.all([
           posApi.getCategories(tenantId),
-          posApi.getProducts({ tenantId })
+          posApi.getProducts({ tenantId, branchId })
         ]);
         if (cancelled) return;
 

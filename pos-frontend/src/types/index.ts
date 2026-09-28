@@ -150,6 +150,10 @@ export interface MyPackageInfo {
    */
   appSurface: 'Erp' | 'Pos' | 'Hybrid';
   isHeadOffice: boolean;
+  /** The signed-in location's type, when the user is signed in at one location. */
+  locationType?: LocationType | null;
+  /** Whether the signed-in location sells. */
+  locationSells?: boolean;
   /** Convenience mirror of appSurface !== 'Erp'. */
   showPos: boolean;
 
@@ -350,6 +354,9 @@ export interface Order {
   fiscalInvoiceNumber?: string | null;
   fiscalQrPayload?: string | null;
 
+  /** Money given back through returns so far. The sale itself is never edited. */
+  refundedPKR?: number;
+
   items: CartItem[];
 }
 
@@ -383,6 +390,9 @@ export interface Rider {
   isAvailable: boolean;
 }
 
+/** What a location IS: a selling branch, the head office, or a store room that never sells. */
+export type LocationType = 'Branch' | 'HeadOffice' | 'Warehouse';
+
 export interface Branch {
   id: string;
   tenantId: string;
@@ -391,11 +401,125 @@ export interface Branch {
   address: string;
   city: string;
   phone: string;
+  /** Mirror of locationType === 'HeadOffice', kept for older screens. */
   isHeadOffice: boolean;
   allowedCounters: number;
   allowedOrderTabs: number;
   /** TaxJurisdiction this branch belongs to, e.g. "PK-PB". Null until assigned. */
   regionCode?: string | null;
+  locationType?: LocationType;
+  /** May hold a till and ring up sales. False for a back-office-only head office and every warehouse. */
+  canSell?: boolean;
+  /** Keeps stock (receives, counts, transfers). False for a pure office. */
+  holdsStock?: boolean;
+  /** The legal entity this location trades under. */
+  companyId?: string | null;
+  /** Optional grouping for chains — not the tax region (that is regionCode). */
+  regionId?: string | null;
+}
+
+/** The three shapes a business can take at setup. */
+export type BusinessStructure = 'SingleShop' | 'SingleShopWithHeadOffice' | 'ChainWithHeadOffice';
+
+/** A legal entity: the name and tax numbers on receipts. */
+export interface Company {
+  id: string;
+  tenantId: string;
+  legalName: string;
+  tradeName?: string | null;
+  taxRegistrationNumber?: string | null;
+  salesTaxRegistrationNumber?: string | null;
+  address?: string | null;
+  isDefault: boolean;
+}
+
+export interface Region {
+  id: string;
+  tenantId: string;
+  name: string;
+  code?: string | null;
+}
+
+/** A branch the signed-in user may work at, for the branch switcher. */
+export interface MyBranch {
+  id: string;
+  name: string;
+  code: string;
+  city: string;
+  locationType: LocationType;
+  canSell: boolean;
+  isHeadOffice: boolean;
+  isHome: boolean;
+  isCurrent: boolean;
+}
+
+export type CatalogControl = 'HeadOfficeOnly' | 'BranchesMayEdit';
+export type PurchasingControl = 'HeadOfficeBuys' | 'BranchesMayBuy';
+
+/** Who decides what once there is more than one location. */
+export interface BusinessPolicies {
+  catalogControl: CatalogControl;
+  branchPricing: boolean;
+  purchasingControl: PurchasingControl;
+  allowNegativeStock: boolean;
+}
+
+export interface BranchPriceRow {
+  branchId: string;
+  branchName: string;
+  branchCode: string;
+  /** Null = the company price. */
+  sellingPricePKR: number | null;
+  isAvailable: boolean;
+  effectivePricePKR: number;
+}
+
+export interface BranchPriceInfo {
+  productId: string;
+  companyPricePKR: number;
+  branchPricing: boolean;
+  branches: BranchPriceRow[];
+}
+
+/** A company-wide ingredient and what each location holds of it. */
+export interface IngredientMasterRow {
+  id: string;
+  name: string;
+  category: string;
+  unit: string;
+  defaultCostPKR: number;
+  minAlertLevel: number;
+  supplierName?: string | null;
+  totalStock: number;
+  totalValuePKR: number;
+  locations: { branchId: string; branchName: string; currentStock: number; costPerUnitPKR: number }[];
+}
+
+/** A sale's lines with how much of each can still come back. */
+export interface ReturnableOrder {
+  orderId: string;
+  orderNumber: string;
+  totalPKR: number;
+  refundedPKR: number;
+  lines: {
+    orderItemId: string;
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitPricePKR: number;
+    returnedQuantity: number;
+    returnableQuantity: number;
+  }[];
+  returns: {
+    id: string;
+    returnNumber: string;
+    refundMethod: string;
+    totalRefundedPKR: number;
+    restocked: boolean;
+    reason?: string | null;
+    createdBy: string;
+    createdAt: string;
+  }[];
 }
 
 export interface Tenant {
@@ -569,7 +693,10 @@ export interface CurrentUser {
   username: string;
   role: UserRole;
   tenantId?: string | null;
+  /** The branch this session is signed in at (null = every location). */
   branchId?: string | null;
+  /** The user's own branch, when the session is at another branch they cover. */
+  homeBranchId?: string | null;
 }
 
 export interface LoginResponse {
@@ -616,10 +743,12 @@ export interface AppUser {
 
 export type TransferStatus = 'Requested' | 'InTransit' | 'Received' | 'Cancelled';
 
+/** A line moves an ingredient OR a finished product; ingredientName is the item's name either way. */
 export interface StockTransferItem {
   id: string;
   transferOrderId: string;
-  ingredientId: string;
+  ingredientId?: string | null;
+  productId?: string | null;
   ingredientName: string;
   unit: string;
   quantityRequested: number;
@@ -666,12 +795,17 @@ export interface Supplier {
 
 export type StockMovementType =
   | 'PurchaseReceipt' | 'SaleConsumption' | 'TransferOut' | 'TransferIn'
-  | 'Adjustment' | 'Waste' | 'OpeningBalance' | 'StockCount';
+  | 'Adjustment' | 'Waste' | 'OpeningBalance' | 'StockCount' | 'SaleReturn';
 
 export interface StockLedgerEntry {
   id: string;
   branchId: string;
-  ingredientId: string;
+  ingredientId?: string | null;
+  productId?: string | null;
+  /** 'Ingredient' or 'Product' — the ledger records both. */
+  itemType?: 'Ingredient' | 'Product';
+  /** The name of whichever item moved (ingredientName is kept for older screens). */
+  itemName?: string;
   ingredientName: string;
   movementType: StockMovementType;
   quantityChange: number;
@@ -686,10 +820,12 @@ export interface StockLedgerEntry {
 
 export type POStatus = 'Draft' | 'Ordered' | 'Received' | 'Cancelled';
 
+/** A line buys an ingredient OR goods to resell; ingredientName is the item's name either way. */
 export interface PurchaseOrderItem {
   id: string;
   purchaseOrderId: string;
-  ingredientId: string;
+  ingredientId?: string | null;
+  productId?: string | null;
   ingredientName: string;
   quantity: number;
   unit: string;
@@ -814,6 +950,25 @@ export interface BranchInitPayload {
   allowedOrderTabs?: number;
 }
 
+/** The legal entity as entered at setup; everything optional. */
+export interface SetupCompanyPayload {
+  legalName?: string;
+  tradeName?: string;
+  taxRegistrationNumber?: string;
+  salesTaxRegistrationNumber?: string;
+  address?: string;
+}
+
+/** The separate head office as entered at setup (or when set up later). */
+export interface SetupHeadOfficePayload {
+  name?: string;
+  city?: string;
+  address?: string;
+  phone?: string;
+  /** The office also keeps stock (a central store or commissary). */
+  holdsStock?: boolean;
+}
+
 export interface SetupInitPayload {
   deploymentMode: DeploymentMode;
   restaurantName: string;
@@ -829,6 +984,12 @@ export interface SetupInitPayload {
   adminPin?: string;
   seedStarterMenu: boolean;
   branches?: BranchInitPayload[];
+  businessStructure?: BusinessStructure;
+  company?: SetupCompanyPayload;
+  headOffice?: SetupHeadOfficePayload;
+  policies?: Partial<BusinessPolicies>;
+  /** Set up the chart of accounts now, so every sale is booked from day one. */
+  setUpAccounting?: boolean;
 }
 
 export interface SetupStatusResponse {

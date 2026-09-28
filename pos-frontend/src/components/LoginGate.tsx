@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Key, ShieldCheck, Store, Delete } from 'lucide-react';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
+import { getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { usePosStore } from '../store/posStore';
 import type { AuthPermissions, CurrentUser } from '../types';
 
@@ -38,9 +39,14 @@ export const LoginGate: React.FC = () => {
     setLoading(true);
     setError('');
     try {
+      // A till signs its staff in at its own branch, so every sale lands there. An office PC
+      // pins no one: head office staff use it for every location.
+      const terminal = isActivated() ? getStoredTerminal() : null;
+      const tillBranchId = terminal && terminal.type !== 'BackOffice' ? terminal.branchId : null;
+
       const result = isPlatformLogin
         ? await posApi.superAdminLogin(username.trim(), pinCode.trim())
-        : await posApi.login(username.trim(), pinCode.trim());
+        : await posApi.login(username.trim(), pinCode.trim(), tillBranchId);
 
       const user = result?.user as (CurrentUser & { permissions?: AuthPermissions }) | undefined;
       const token = result?.token as string | undefined;

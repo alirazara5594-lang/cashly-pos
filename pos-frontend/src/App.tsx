@@ -47,6 +47,8 @@ const MenuEngineering = lazy(() => import('./pages/MenuEngineering').then(m => (
 const PaymentSettings = lazy(() => import('./pages/PaymentSettings').then(m => ({ default: m.PaymentSettings })));
 const DeliveryIntegrationSettings = lazy(() => import('./pages/DeliveryIntegrationSettings').then(m => ({ default: m.DeliveryIntegrationSettings })));
 const MyAddOns = lazy(() => import('./pages/MyAddOns').then(m => ({ default: m.MyAddOns })));
+const LocationsManagement = lazy(() => import('./pages/LocationsManagement').then(m => ({ default: m.LocationsManagement })));
+const ReturnsManagement = lazy(() => import('./pages/ReturnsManagement').then(m => ({ default: m.ReturnsManagement })));
 
 /** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
  * connection, but real on a slow one, so it's a spinner, not a blank screen. */
@@ -310,6 +312,10 @@ function MainLayoutInner() {
             {/* Customer lookup is part of taking an order, so viewing stays open to
                 any signed-in user; the page itself gates creating/editing on `admin` edit. */}
             <Route path="/customers" element={<CustomerManagement />} />
+            {/* Finding a sale is open to the counter; recording the refund needs the void
+                permission, which the server checks. */}
+            <Route path="/returns" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace /> : <ReturnsManagement />} />
 
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />
@@ -336,6 +342,11 @@ function MainLayoutInner() {
 
             {/* Financial settings & tax configuration → `accounts` module */}
             <Route path="/settings" element={<RequireModule module="accounts"><SettingsManagement /></RequireModule>} />
+
+            {/* Locations, head office, legal entities and business policies → `admin` module */}
+            <Route path="/locations" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : <RequireModule module="admin"><LocationsManagement /></RequireModule>} />
 
             {/* Staff administration → `users` module */}
             <Route path="/users" element={<RequireModule module="users"><UserManagement /></RequireModule>} />

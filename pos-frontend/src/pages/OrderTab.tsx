@@ -31,7 +31,8 @@ export const OrderTab: React.FC = () => {
       if (!selectedTenant?.id) return;
       try {
         const cats = await posApi.getCategories(selectedTenant.id);
-        const prods = await posApi.getProducts({ tenantId: selectedTenant.id });
+        // With the branch, the list is what THIS branch sells at the prices it charges.
+        const prods = await posApi.getProducts({ tenantId: selectedTenant.id, branchId: selectedBranch?.id });
         if (cancelled) return;
         setCategories(cats);
         setProducts(prods);

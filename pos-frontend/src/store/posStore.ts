@@ -22,6 +22,7 @@ import type {
 
 import { offlineDb } from '../services/offlineDb';
 import { posApi } from '../services/api';
+import { getStoredTerminal, isActivated } from '../services/deviceLicense';
 
 export const AUTH_USER_STORAGE_KEY = 'cashly_pos_user';
 export const AUTH_TOKEN_STORAGE_KEY = 'cashly_pos_token';
@@ -128,6 +129,27 @@ function readStoredUser(): CurrentUser | null {
   const raw = readStoredJson<any>(AUTH_USER_STORAGE_KEY, null);
   if (!raw || !raw.id) return null;
   return { ...raw, role: normalizeRole(raw.role) ?? 'Cashier' } as CurrentUser;
+}
+
+/**
+ * The branch a session opens at: the one the user is signed in at, else the branch this till is
+ * paired to, else the first location that sells. The head office and warehouses come last — they
+ * have no till, so opening the POS there helps no one.
+ */
+function pickActiveBranch(branches: Branch[], sessionBranchId?: string | null): Branch | null {
+  const byId = (id?: string | null) => (id ? branches.find(b => b.id === id) : undefined);
+  const tillBranchId = (() => {
+    try {
+      return isActivated() ? getStoredTerminal()?.branchId ?? null : null;
+    } catch {
+      return null;
+    }
+  })();
+  return byId(sessionBranchId)
+    || byId(tillBranchId)
+    || branches.find(b => b.canSell !== false && !b.isHeadOffice)
+    || branches[0]
+    || null;
 }
 
 // Retry with exponential backoff
@@ -457,7 +479,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   setTenants: (tenants) => {
     const selected = tenants.length > 0 ? tenants[0] : null;
     const branches = selected?.branches || [];
-    const activeBranch = branches.find(b => !b.isHeadOffice) || branches[0] || null;
+    const activeBranch = pickActiveBranch(branches, get().currentUser?.branchId);
     const hasMultipleOrHQ = branches.some(b => b.isHeadOffice) || branches.length > 1;
     const mode = hasMultipleOrHQ ? 'MultiBranch' : 'Single';
     
@@ -477,7 +499,7 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   selectTenant: (tenant) => {
     const branches = tenant.branches || [];
-    const activeBranch = branches.find(b => !b.isHeadOffice) || branches[0] || null;
+    const activeBranch = pickActiveBranch(branches, get().currentUser?.branchId);
     set({
       selectedTenant: tenant,
       branches,

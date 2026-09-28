@@ -1646,6 +1646,25 @@ static async Task<string> GeneratePONumberAsync(AppDbContext db, Guid tenantId)
     return $"{series}-{seq:D4}";
 }
 
+// --- Helper: Generate unique return number ---
+static async Task<string> GenerateReturnNumberAsync(AppDbContext db, Guid tenantId)
+{
+    var series = $"RET-{DateTime.UtcNow:yyMMdd}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.OrderReturns.IgnoreQueryFilters()
+        .Where(r => r.TenantId == tenantId && r.ReturnNumber.StartsWith(series + "-"))
+        .Select(r => r.ReturnNumber)
+        .ToListAsync());
+    return $"{series}-{seq:D4}";
+}
+
+/// <summary>
+/// What should be in the drawer: the opening float, plus cash sales, plus cash put in, minus cash
+/// taken out (paid-outs and refunds). Closing used to count only the float and sales, so every
+/// paid-out showed up as a shortage at the end of the shift.
+/// </summary>
+static void RecalculateExpectedCash(CashShift shift) =>
+    shift.ExpectedCashPKR = shift.OpeningFloatPKR + shift.CashSalesPKR + shift.CashReceivedPKR - shift.CashPaidOutPKR;
+
 // --- Helper: Generate unique stock request number ---
 static async Task<string> GenerateStockRequestNumberAsync(AppDbContext db, Guid tenantId)
 {
@@ -1714,6 +1733,15 @@ static Task EnsureOrganizationSchemaAsync(AppDbContext db) => db.Database.Execut
             -- Read below; normally added by the main startup block, which may not have run.
             ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""RevokedAt"" timestamp with time zone;
             ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""DeactivatedAt"" timestamp with time zone;
+            -- Read below too. When it is missing, add it with the main block's own backfill, so a
+            -- chain is not mistaken for a standalone shop and stripped of its head office.
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'Tenants' AND column_name = 'DeploymentMode') THEN
+                ALTER TABLE ""Tenants"" ADD COLUMN ""DeploymentMode"" integer NOT NULL DEFAULT 1;
+                UPDATE ""Tenants"" t SET ""DeploymentMode"" = 2
+                WHERE EXISTS (SELECT 1 FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"" AND b.""IsHeadOffice"")
+                  AND (SELECT COUNT(*) FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"") > 1;
+            END IF;
 
             -- A chain's head office, not yet classified.
             UPDATE ""Branches"" b
@@ -1805,7 +1833,10 @@ static Task EnsureMasterDataSchemaAsync(AppDbContext db) => db.Database.ExecuteS
             FROM (
                 SELECT DISTINCT ON (i.""TenantId"", lower(btrim(i.""Name"")))
                        i.""TenantId"", lower(btrim(i.""Name"")) AS ""Key"", btrim(i.""Name"") AS ""Name"",
-                       i.""Category"", i.""Unit"", i.""CostPerUnitPKR"", i.""MinAlertLevel"", i.""SupplierName""
+                       COALESCE(NULLIF(btrim(i.""Category""), ''), 'General') AS ""Category"",
+                       COALESCE(NULLIF(btrim(i.""Unit""), ''), 'Piece') AS ""Unit"",
+                       COALESCE(i.""CostPerUnitPKR"", 0) AS ""CostPerUnitPKR"",
+                       COALESCE(i.""MinAlertLevel"", 0) AS ""MinAlertLevel"", i.""SupplierName""
                 FROM ""Ingredients"" i
                 WHERE i.""MasterIngredientId"" IS NULL
                   AND NOT EXISTS (SELECT 1 FROM ""IngredientMasters"" m
@@ -2059,6 +2090,18 @@ static async Task<(Branch? HeadOffice, bool AlreadyEnabled)> EnableHeadOfficeAsy
 
     tenant.DeploymentMode = DeploymentMode.HeadOffice;
     return (headOffice, false);
+}
+
+/// <summary>
+/// The location a payment belongs to: a branch user's own branch, or the one a head office user
+/// named — when it belongs to this business. Null (a business-level payment) otherwise.
+/// </summary>
+static async Task<Guid?> PaymentBranchAsync(AppDbContext db, HttpContext http, Guid tenantId, Guid? requestedBranchId)
+{
+    var pinned = http.GetBranchId();
+    if (pinned != null) return pinned;
+    if (requestedBranchId == null) return null;
+    return await db.Branches.AnyAsync(b => b.Id == requestedBranchId.Value && b.TenantId == tenantId) ? requestedBranchId : null;
 }
 
 /// <summary>A location's company and region must belong to the same business as the location.</summary>
@@ -2423,6 +2466,50 @@ static void ApplyReceiptToAverageCost(BranchStock stock, decimal quantityIn, dec
 /// <summary>What one unit of this location's stock cost: its own average, or the catalogue cost until it has one.</summary>
 static decimal UnitCostOf(BranchStock stock, Product? product) =>
     stock.AverageCostPKR > 0 ? stock.AverageCostPKR : product?.CostPricePKR ?? 0;
+
+/// <summary>
+/// A location's own stock row for an ingredient that a document (transfer, purchase) names by some
+/// location's row id: the row itself when it is this location's, otherwise this location's row for
+/// the same company-wide ingredient, and only then a match by name.
+/// </summary>
+static async Task<Ingredient?> FindBranchIngredientAsync(AppDbContext db, Guid tenantId, Guid branchId, Guid? ingredientId, string name)
+{
+    Guid? masterId = null;
+    if (ingredientId != null)
+    {
+        var referenced = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == ingredientId && i.TenantId == tenantId);
+        if (referenced?.BranchId == branchId) return referenced;
+        masterId = referenced?.MasterIngredientId;
+    }
+    if (masterId != null)
+    {
+        var sameIngredient = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == branchId && i.MasterIngredientId == masterId);
+        if (sameIngredient != null) return sameIngredient;
+    }
+    var key = name.Trim().ToLower();
+    return await db.Ingredients.FirstOrDefaultAsync(i => i.TenantId == tenantId && i.BranchId == branchId && i.Name.Trim().ToLower() == key);
+}
+
+/// <summary>
+/// A new stock row for an ingredient at a location, tied to the company-wide ingredient — the one
+/// the document's own row belongs to, or one found or created by name. The caller records any
+/// quantity through the ledger.
+/// </summary>
+static async Task<Ingredient> CreateBranchIngredientAsync(
+    AppDbContext db, Guid tenantId, Guid branchId, Guid? documentIngredientId, string name, string unit, decimal unitCostPKR, string category, string? supplierName)
+{
+    var masterId = documentIngredientId == null ? null : await db.Ingredients
+        .Where(i => i.Id == documentIngredientId && i.TenantId == tenantId).Select(i => i.MasterIngredientId).FirstOrDefaultAsync();
+    masterId ??= (await GetOrCreateIngredientMasterAsync(db, tenantId, name, category, unit, unitCostPKR, 10, supplierName)).Id;
+
+    var row = new Ingredient
+    {
+        TenantId = tenantId, BranchId = branchId, MasterIngredientId = masterId, Name = name.Trim(), Category = category,
+        Unit = unit, CostPerUnitPKR = unitCostPKR, CurrentStock = 0, MinAlertLevel = 10, SupplierName = supplierName
+    };
+    db.Ingredients.Add(row);
+    return row;
+}
 
 /// <summary>
 /// Maps each recipe ingredient to the selling branch's own stock row.
@@ -2827,7 +2914,10 @@ static decimal PickTaxRate(PaymentMethod method, decimal cashRate, decimal digit
 };
 
 // --- Helper: recompute an order's money from DB prices. NEVER trusts client totals. ---
-static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch branch, CreateOrderDto dto, Guid orderId, AppUser? actingUser)
+/// <param name="enforceAvailability">False when pricing a sale that already happened (offline
+/// sync): an item withdrawn from a branch after it was sold there must not make the sale vanish.</param>
+static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch branch, CreateOrderDto dto, Guid orderId, AppUser? actingUser,
+    bool enforceAvailability = true)
 {
     var result = new ServerPricedOrder();
 
@@ -2835,6 +2925,14 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
     var products = await db.Products
         .Where(p => productIds.Contains(p.Id) && p.TenantId == branch.TenantId)
         .ToDictionaryAsync(p => p.Id);
+
+    // What differs at this branch: items it does not sell, and — when the business lets branches
+    // price for themselves — its own prices.
+    var branchPrices = await db.BranchProductPrices
+        .Where(bp => bp.BranchId == branch.Id && productIds.Contains(bp.ProductId))
+        .ToDictionaryAsync(bp => bp.ProductId);
+    var branchPricing = branchPrices.Count > 0 && (await db.TenantSettings.Where(s => s.TenantId == branch.TenantId)
+        .Select(s => (bool?)s.BranchPricing).FirstOrDefaultAsync() ?? false);
 
     decimal subTotal = 0m;
     foreach (var item in dto.Items)
@@ -2850,8 +2948,15 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
             return result;
         }
 
+        branchPrices.TryGetValue(product.Id, out var branchPrice);
+        if (enforceAvailability && branchPrice is { IsAvailable: false })
+        {
+            result.Error = $"{product.Name} is not sold at {branch.Name}.";
+            return result;
+        }
+
         // Base unit price is ALWAYS sourced from the database, never from the client payload.
-        var unitPrice = product.SellingPricePKR;
+        var unitPrice = branchPricing && branchPrice?.SellingPricePKR is decimal ownPrice ? ownPrice : product.SellingPricePKR;
         var lineTotal = unitPrice * item.Quantity;
         subTotal += lineTotal;
 
@@ -3739,7 +3844,7 @@ api.MapPost("/sync/batch-orders", async (
             CapturedAt = dto.CapturedAt ?? DateTime.UtcNow
         };
 
-        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
+        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser, enforceAvailability: false);
         if (priced.Error != null)
         {
             syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = priced.Error });
@@ -3857,7 +3962,7 @@ api.MapPost("/sync/batch-orders", async (
             if (activeShift != null)
             {
                 activeShift.CashSalesPKR += order.TotalPKR;
-                activeShift.ExpectedCashPKR = activeShift.OpeningFloatPKR + activeShift.CashSalesPKR;
+                RecalculateExpectedCash(activeShift);
             }
         }
 
@@ -4303,6 +4408,54 @@ api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Pos.
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
 // ============================================================
+// BUSINESS POLICIES — who decides what, once there is more than one location
+// ============================================================
+
+api.MapGet("/settings/policies", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    if (settings == null) return Results.NotFound();
+    return Results.Ok(new
+    {
+        catalogControl = settings.CatalogControl.ToString(),
+        settings.BranchPricing,
+        purchasingControl = settings.PurchasingControl.ToString(),
+        settings.AllowNegativeStock
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPut("/settings/policies", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SetupPoliciesDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    // Policies govern every branch, so only someone not pinned to one branch may change them.
+    if (http.GetBranchId() != null)
+        return Results.Json(new { message = "Business policies are set by the owner or head office." }, statusCode: StatusCodes.Status403Forbidden);
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    if (settings == null) return Results.NotFound();
+
+    var before = $"catalog={settings.CatalogControl}; branchPricing={settings.BranchPricing}; purchasing={settings.PurchasingControl}; negativeStock={settings.AllowNegativeStock}";
+    if (dto.CatalogControl.HasValue) settings.CatalogControl = dto.CatalogControl.Value;
+    if (dto.BranchPricing.HasValue) settings.BranchPricing = dto.BranchPricing.Value;
+    if (dto.PurchasingControl.HasValue) settings.PurchasingControl = dto.PurchasingControl.Value;
+    if (dto.AllowNegativeStock.HasValue) settings.AllowNegativeStock = dto.AllowNegativeStock.Value;
+    var after = $"catalog={settings.CatalogControl}; branchPricing={settings.BranchPricing}; purchasing={settings.PurchasingControl}; negativeStock={settings.AllowNegativeStock}";
+
+    if (before != after)
+        await WriteAuditAsync(db, tenantId.Value, await accessor.GetCurrentUserAsync(http), "PoliciesChanged", "TenantSettings", settings.Id, before, after);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        catalogControl = settings.CatalogControl.ToString(),
+        settings.BranchPricing,
+        purchasingControl = settings.PurchasingControl.ToString(),
+        settings.AllowNegativeStock
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// ============================================================
 // LEGAL ENTITIES & REGIONS
 // ============================================================
 
@@ -4426,7 +4579,8 @@ api.MapPost("/catalog/categories", async (AppDbContext db, HttpContext http, [Mi
     db.Categories.Add(cat);
     await db.SaveChangesAsync();
     return Results.Ok(cat);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 api.MapPut("/catalog/categories/{id}", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] CreateCategoryDto dto) =>
 {
@@ -4440,7 +4594,8 @@ api.MapPut("/catalog/categories/{id}", async (AppDbContext db, HttpContext http,
     cat.SortOrder = dto.SortOrder;
     await db.SaveChangesAsync();
     return Results.Ok(cat);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 api.MapDelete("/catalog/categories/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
@@ -4451,13 +4606,17 @@ api.MapDelete("/catalog/categories/{id}", async (AppDbContext db, HttpContext ht
     db.Categories.Remove(cat);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Category deleted successfully" });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change the menu."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
-api.MapGet("/catalog/products", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? categoryId, string? search, string? barcode) =>
+// With branchId (the till asks this way), the list is what THAT branch sells at the prices it
+// charges: items withdrawn there are left out, and its own prices apply when the business lets
+// branches set them. Without it (the catalogue editor), it is the company-wide catalogue.
+api.MapGet("/catalog/products", async (AppDbContext db, HttpContext http, Guid? tenantId, Guid? categoryId, string? search, string? barcode, Guid? branchId) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
-    var query = db.Products.Include(p => p.Modifiers).Include(p => p.Category)
+    var query = db.Products.AsNoTracking().Include(p => p.Modifiers).Include(p => p.Category)
         .Where(p => p.IsActive && p.TenantId == scopedTenantId.Value).AsQueryable();
     if (categoryId.HasValue) query = query.Where(p => p.CategoryId == categoryId.Value);
     if (!string.IsNullOrWhiteSpace(barcode)) query = query.Where(p => p.Barcode == barcode.Trim());
@@ -4466,8 +4625,119 @@ api.MapGet("/catalog/products", async (AppDbContext db, HttpContext http, Guid? 
         var s = search.Trim().ToLower();
         query = query.Where(p => p.Name.ToLower().Contains(s) || (p.UrduName != null && p.UrduName.Contains(s)) || p.Barcode.Contains(s) || p.SKU.ToLower().Contains(s));
     }
-    return Results.Ok(await query.ToListAsync());
+    var products = await query.ToListAsync();
+    if (branchId == null || branchId == Guid.Empty) return Results.Ok(products);
+
+    var overrides = await db.BranchProductPrices.Where(bp => bp.BranchId == branchId.Value && bp.TenantId == scopedTenantId.Value)
+        .ToDictionaryAsync(bp => bp.ProductId);
+    if (overrides.Count == 0) return Results.Ok(products);
+
+    var branchPricing = await db.TenantSettings.Where(s => s.TenantId == scopedTenantId.Value)
+        .Select(s => (bool?)s.BranchPricing).FirstOrDefaultAsync() ?? false;
+    var forBranch = new List<Product>();
+    foreach (var product in products)
+    {
+        if (!overrides.TryGetValue(product.Id, out var own)) { forBranch.Add(product); continue; }
+        if (!own.IsAvailable) continue;
+        if (branchPricing && own.SellingPricePKR is decimal price) product.SellingPricePKR = price; // untracked copy, never saved
+        forBranch.Add(product);
+    }
+    return Results.Ok(forBranch);
 });
+
+// What is different about one product at each location: whether it is sold there, and its price
+// there when the business lets branches price for themselves.
+api.MapGet("/catalog/products/{id:guid}/branch-prices", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (product == null) return Results.NotFound();
+
+    var branchPricing = await db.TenantSettings.Where(s => s.TenantId == tenantId.Value)
+        .Select(s => (bool?)s.BranchPricing).FirstOrDefaultAsync() ?? false;
+    var locations = db.Branches.Where(b => b.TenantId == tenantId.Value && b.CanSell);
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null) locations = locations.Where(b => b.Id == userBranchId.Value);
+    var branches = await locations.OrderBy(b => b.Name).Select(b => new { b.Id, b.Name, b.Code }).ToListAsync();
+    var overrides = await db.BranchProductPrices.Where(bp => bp.ProductId == id).ToDictionaryAsync(bp => bp.BranchId);
+
+    return Results.Ok(new
+    {
+        productId = id,
+        companyPricePKR = product.SellingPricePKR,
+        branchPricing,
+        branches = branches.Select(b =>
+        {
+            overrides.TryGetValue(b.Id, out var own);
+            var effective = branchPricing && own?.SellingPricePKR is decimal price ? price : product.SellingPricePKR;
+            return new
+            {
+                branchId = b.Id, branchName = b.Name, branchCode = b.Code,
+                sellingPricePKR = own?.SellingPricePKR,
+                isAvailable = own?.IsAvailable ?? true,
+                effectivePricePKR = effective
+            };
+        })
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("menu", "view"));
+
+api.MapPut("/catalog/products/{id:guid}/branch-prices", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id, List<SetBranchPriceDto> rows) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (product == null) return Results.NotFound();
+
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    var branchPricing = settings?.BranchPricing ?? false;
+    var userBranchId = http.GetBranchId();
+
+    // Branch staff may only set their own branch, and only when branches price for themselves.
+    // Head office sets any branch; own prices still only apply while branch pricing is on.
+    if (userBranchId != null)
+    {
+        if (!branchPricing)
+            return Results.Json(new { message = "Your head office sets prices for every branch." }, statusCode: StatusCodes.Status403Forbidden);
+        if (rows.Any(r => r.BranchId != userBranchId.Value))
+            return Results.Json(new { message = "You can only change your own branch." }, statusCode: StatusCodes.Status403Forbidden);
+    }
+    if (!branchPricing && rows.Any(r => r.SellingPricePKR != null))
+        return Results.BadRequest(new { message = "Turn on branch pricing (Locations → Policies) before giving a branch its own price." });
+    if (rows.Any(r => r.SellingPricePKR is < 0))
+        return Results.BadRequest(new { message = "A price cannot be negative." });
+
+    var branchIds = rows.Select(r => r.BranchId).Distinct().ToList();
+    var valid = await db.Branches.Where(b => b.TenantId == tenantId.Value && branchIds.Contains(b.Id)).Select(b => b.Id).ToListAsync();
+    if (valid.Count != branchIds.Count) return Results.BadRequest(new { message = "One of those branches does not belong to this business." });
+
+    var existing = await db.BranchProductPrices.Where(bp => bp.ProductId == id && branchIds.Contains(bp.BranchId)).ToDictionaryAsync(bp => bp.BranchId);
+    foreach (var row in rows)
+    {
+        existing.TryGetValue(row.BranchId, out var own);
+        // Back to the company-wide product exactly: drop the row rather than keep a no-op one.
+        if (row.SellingPricePKR == null && row.IsAvailable)
+        {
+            if (own != null) db.BranchProductPrices.Remove(own);
+            continue;
+        }
+        if (own == null)
+        {
+            own = new BranchProductPrice { TenantId = tenantId.Value, BranchId = row.BranchId, ProductId = id };
+            db.BranchProductPrices.Add(own);
+        }
+        own.SellingPricePKR = row.SellingPricePKR;
+        own.IsAvailable = row.IsAvailable;
+        own.UpdatedAt = DateTime.UtcNow;
+    }
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, tenantId.Value, currentUser, "BranchPriceChanged", "Product", id, null,
+        string.Join("; ", rows.Select(r => $"{r.BranchId}: {(r.SellingPricePKR?.ToString("0.##") ?? "company price")}{(r.IsAvailable ? "" : ", not sold")}")));
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Branch prices saved." });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change prices."));
 
 api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
 {
@@ -4492,7 +4762,8 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
     await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "ProductCreated", "Product", product.Id, null, product.SellingPricePKR.ToString("0.##"));
     await db.SaveChangesAsync();
     return Results.Ok(product);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to add menu items or change prices."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to add menu items or change prices."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
 {
@@ -4522,7 +4793,8 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
 
     await db.SaveChangesAsync();
     return Results.Ok(product);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu prices."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu prices."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
 {
@@ -4535,7 +4807,8 @@ api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http
     db.Products.Remove(product);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Product deleted successfully" });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 // --- Dining Tables ---
 api.MapGet("/tables", async (AppDbContext db, HttpContext http, Guid branchId) =>
@@ -4720,26 +4993,32 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         if (activeShift != null)
         {
             activeShift.CashSalesPKR += order.TotalPKR;
-            activeShift.ExpectedCashPKR = activeShift.OpeningFloatPKR + activeShift.CashSalesPKR;
+            RecalculateExpectedCash(activeShift);
         }
     }
 
-    // A. Counted finished goods must be on hand. Only products this branch tracks are checked;
-    // an item with no stock row here is never refused.
-    var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
-    var stockDict = await db.BranchStocks.Where(s => s.BranchId == branch.Id && productIds.Contains(s.ProductId))
-        .ToDictionaryAsync(s => s.ProductId);
-    foreach (var line in order.Items.GroupBy(i => i.ProductId))
+    // A. Whether a counted item the system thinks is out of stock may still be sold. By default it
+    // may (TenantSettings.AllowNegativeStock): the item is at the counter, so the count is what is
+    // wrong. A business that wants the till to refuse turns that off.
+    var allowNegativeStock = await db.TenantSettings.Where(s => s.TenantId == branch.TenantId)
+        .Select(s => (bool?)s.AllowNegativeStock).FirstOrDefaultAsync() ?? true;
+    if (!allowNegativeStock)
     {
-        var requested = line.Sum(i => i.Quantity);
-        if (stockDict.TryGetValue(line.Key, out var stock) && stock.QuantityOnHand < requested)
-            return (Results.Conflict(new { message = $"Insufficient stock for {line.First().ProductName}. Available: {stock.QuantityOnHand}, Requested: {requested}" }), null, null);
+        var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
+        var stockDict = await db.BranchStocks.Where(s => s.BranchId == branch.Id && productIds.Contains(s.ProductId))
+            .ToDictionaryAsync(s => s.ProductId);
+        foreach (var line in order.Items.GroupBy(i => i.ProductId))
+        {
+            var requested = line.Sum(i => i.Quantity);
+            if (stockDict.TryGetValue(line.Key, out var stock) && stock.QuantityOnHand < requested)
+                return (Results.Conflict(new { message = $"Insufficient stock for {line.First().ProductName}. Available: {stock.QuantityOnHand}, Requested: {requested}" }), null, null);
+        }
     }
 
     // B. Take the stock out: finished goods, and the ingredients each recipe consumes at THIS
-    // branch. A recipe ingredient that has run short no longer refuses the sale: recipe quantities
-    // are an estimate, and blocking a burger over a sauce count stops real trade. The count goes
-    // below zero and the branch is alerted instead.
+    // branch. A recipe ingredient that has run short never refuses the sale: recipe quantities are
+    // an estimate, and blocking a burger over a sauce count stops real trade. Anything that goes
+    // below zero raises an alert for the branch.
     await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "System");
 
     db.Orders.Add(order);
@@ -4879,6 +5158,250 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.A
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Order voided — stock, customer balance, and accounting reversed", orderId = order.Id });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to void orders. Ask a manager to approve."));
+
+// ============================================================
+// RETURNS — part of a sale coming back (see Models/SalesEntities.cs)
+// ============================================================
+
+// What has come back from a sale so far, and what can still come back, line by line.
+api.MapGet("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+    if (order == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var returns = await db.OrderReturns.Include(r => r.Lines).Where(r => r.OrderId == id).OrderBy(r => r.CreatedAt).ToListAsync();
+    var returnedByItem = returns.SelectMany(r => r.Lines).GroupBy(l => l.OrderItemId).ToDictionary(g => g.Key, g => g.Sum(l => l.Quantity));
+
+    return Results.Ok(new
+    {
+        orderId = order.Id, order.OrderNumber, order.TotalPKR, order.RefundedPKR,
+        lines = order.Items.Select(i => new
+        {
+            orderItemId = i.Id, i.ProductId, i.ProductName, i.Quantity, i.UnitPricePKR,
+            returnedQuantity = returnedByItem.GetValueOrDefault(i.Id),
+            returnableQuantity = i.Quantity - returnedByItem.GetValueOrDefault(i.Id)
+        }),
+        returns = returns.Select(r => new
+        {
+            r.Id, r.ReturnNumber, refundMethod = r.RefundMethod.ToString(), r.SubTotalRefundedPKR, r.TaxRefundedPKR,
+            r.TotalRefundedPKR, r.Restocked, r.Reason, r.CreatedBy, r.CreatedAt,
+            lines = r.Lines.Select(l => new { l.OrderItemId, l.ProductName, l.Quantity, l.UnitPricePKR, l.TotalPKR })
+        })
+    });
+});
+
+// Take part (or all) of a paid sale back. The sale is never edited: the return is its own document
+// that refunds exactly what came back, at the price the customer paid, puts counted goods back on
+// the shelf, pays the money out of the drawer (or off the customer's tab), and books all of it.
+api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id, CreateReturnDto dto) =>
+{
+    var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+    if (order == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+    if (order.Status == OrderStatus.Cancelled)
+        return Results.BadRequest(new { message = "This sale was voided, so there is nothing left to return." });
+    if (!order.IsPaid)
+        return Results.BadRequest(new { message = "This sale has not been paid. Void it instead of returning it." });
+    if (dto.Lines == null || dto.Lines.Count == 0)
+        return Results.BadRequest(new { message = "Choose what the customer is bringing back." });
+
+    // What has already come back from each line, so the same unit can never be refunded twice.
+    var itemIds = order.Items.Select(i => i.Id).ToList();
+    var alreadyReturned = await db.OrderReturnLines.Where(l => itemIds.Contains(l.OrderItemId))
+        .GroupBy(l => l.OrderItemId)
+        .Select(g => new { OrderItemId = g.Key, Quantity = g.Sum(l => l.Quantity) })
+        .ToDictionaryAsync(x => x.OrderItemId, x => x.Quantity);
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var refundMethod = dto.RefundMethod ?? (order.PaymentMethod == PaymentMethod.Split ? PaymentMethod.Cash : order.PaymentMethod);
+    var ret = new OrderReturn
+    {
+        TenantId = order.TenantId,
+        BranchId = order.BranchId,
+        OrderId = order.Id,
+        ReturnNumber = await GenerateReturnNumberAsync(db, order.TenantId),
+        RefundMethod = refundMethod,
+        Restocked = dto.Restock ?? true,
+        Reason = NullIfBlank(dto.Reason),
+        CreatedBy = currentUser?.FullName ?? "System",
+        CreatedByUserId = currentUser?.Id
+    };
+
+    decimal gross = 0;
+    foreach (var requested in dto.Lines.GroupBy(l => l.OrderItemId))
+    {
+        var item = order.Items.FirstOrDefault(i => i.Id == requested.Key);
+        if (item == null) return Results.BadRequest(new { message = "One of those lines is not on this sale." });
+        var quantity = requested.Sum(l => l.Quantity);
+        var returnable = item.Quantity - alreadyReturned.GetValueOrDefault(item.Id);
+        if (quantity <= 0 || quantity > returnable)
+            return Results.BadRequest(new { message = $"{item.ProductName}: {returnable} can still be returned." });
+
+        var lineTotal = item.UnitPricePKR * quantity;
+        gross += lineTotal;
+        ret.Lines.Add(new OrderReturnLine
+        {
+            OrderItemId = item.Id, ProductId = item.ProductId, ProductName = item.ProductName,
+            Quantity = quantity, UnitPricePKR = item.UnitPricePKR, TotalPKR = lineTotal
+        });
+    }
+
+    // The sale's discount and tax apply to what comes back in the same proportion they applied to
+    // the whole sale — and across every return, no more than the customer paid comes back.
+    var discountShare = order.SubTotalPKR > 0 ? order.DiscountPKR / order.SubTotalPKR : 0m;
+    var net = Math.Round(gross * (1 - discountShare), 2);
+    var taxable = order.SubTotalPKR - order.DiscountPKR;
+    var tax = taxable > 0 ? Math.Round(net * order.TaxPKR / taxable, 2) : 0m;
+    var stillRefundable = Math.Max(0, order.TotalPKR - order.RefundedPKR);
+    if (net + tax > stillRefundable)
+    {
+        net = Math.Min(net, stillRefundable);
+        tax = stillRefundable - net;
+    }
+    ret.SubTotalRefundedPKR = net;
+    ret.TaxRefundedPKR = tax;
+    ret.TotalRefundedPKR = net + tax;
+    if (ret.TotalRefundedPKR <= 0)
+        return Results.BadRequest(new { message = "Everything paid on this sale has already been refunded." });
+
+    // Counted goods go back on the shelf at what they cost when sold. Made-to-order items (no
+    // stock row) and goods marked not resellable are not restocked.
+    decimal restockedCost = 0;
+    if (ret.Restocked)
+    {
+        var productIds = ret.Lines.Select(l => l.ProductId).Distinct().ToList();
+        var stock = await db.BranchStocks.Include(s => s.Product)
+            .Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
+            .ToDictionaryAsync(s => s.ProductId);
+        var soldAt = await db.StockLedgerEntries
+            .Where(e => e.ReferenceType == "Order" && e.ReferenceId == order.Id && e.ProductId != null
+                     && e.MovementType == StockMovementType.SaleConsumption)
+            .GroupBy(e => e.ProductId)
+            .Select(g => new { ProductId = g.Key, UnitCost = g.Max(e => e.UnitCostPKR) })
+            .ToListAsync();
+        foreach (var line in ret.Lines)
+        {
+            if (!stock.TryGetValue(line.ProductId, out var row)) continue;
+            var unitCost = soldAt.FirstOrDefault(s => s.ProductId == line.ProductId)?.UnitCost ?? UnitCostOf(row, row.Product);
+            RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleReturn, line.Quantity, unitCost,
+                "OrderReturn", ret.Id, ret.CreatedBy, $"Return {ret.ReturnNumber} of order {order.OrderNumber}");
+            restockedCost += line.Quantity * unitCost;
+        }
+    }
+
+    // The money: out of this shift's drawer, or off the customer's tab.
+    if (refundMethod == PaymentMethod.Cash)
+    {
+        var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == order.BranchId && !s.IsClosed);
+        if (shift != null)
+        {
+            db.CashEntries.Add(new CashEntry
+            {
+                CashShiftId = shift.Id, EntryType = CashEntryType.PaidOut, AmountPKR = ret.TotalRefundedPKR,
+                Description = $"Refund {ret.ReturnNumber} for order {order.OrderNumber}",
+                RecipientOrSource = order.CustomerName ?? "Customer", CreatedBy = ret.CreatedBy
+            });
+            shift.CashPaidOutPKR += ret.TotalRefundedPKR;
+            RecalculateExpectedCash(shift);
+        }
+    }
+    if (order.CustomerId != null)
+    {
+        var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId.Value);
+        if (customer != null)
+        {
+            customer.TotalSpentPKR = Math.Max(0, customer.TotalSpentPKR - ret.TotalRefundedPKR);
+            // Credited to their tab: they owe that much less (or are owed it).
+            if (refundMethod == PaymentMethod.CustomerKhata) customer.CurrentBalancePKR -= ret.TotalRefundedPKR;
+        }
+    }
+
+    order.RefundedPKR += ret.TotalRefundedPKR;
+    db.OrderReturns.Add(ret);
+    await WriteAuditAsync(db, order.TenantId, currentUser, "OrderReturned", "Order", order.Id,
+        null, $"{ret.ReturnNumber}: {ret.Lines.Sum(l => l.Quantity)} item(s), {ret.TotalRefundedPKR:0.##} refunded by {refundMethod}{(ret.Restocked ? ", restocked" : "")}");
+    await db.SaveChangesAsync();
+
+    // The books: revenue and tax come back out, the refund leaves the account it was paid from,
+    // and restocked goods move from cost of sales back into inventory.
+    if (await HasAccountingAsync(db, order.TenantId))
+    {
+        JournalEntry? entry = null;
+        try
+        {
+            var refundAccount = refundMethod switch
+            {
+                PaymentMethod.Cash => "1000",
+                PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
+                _ => "1100"
+            };
+            var lines = new List<(string, decimal, decimal)>
+            {
+                ("4000", ret.SubTotalRefundedPKR, 0),
+                ("2100", ret.TaxRefundedPKR, 0),
+                (refundAccount, 0, ret.TotalRefundedPKR)
+            };
+            var restocked = Math.Round(restockedCost, 2);
+            if (restocked > 0)
+            {
+                lines.Add(("1200", restocked, 0));
+                lines.Add(("5000", 0, restocked));
+            }
+            entry = await PostJournalEntryAsync(db, order.TenantId, order.BranchId, ret.CreatedAt,
+                $"Return {ret.ReturnNumber} — Order #{order.OrderNumber}", "OrderReturn", ret.Id, ret.CreatedBy, lines);
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            if (entry != null)
+            {
+                foreach (var line in entry.Lines) db.Entry(line).State = EntityState.Detached;
+                db.Entry(entry).State = EntityState.Detached;
+            }
+            Console.WriteLine($"[Accounting] Failed to post return {ret.ReturnNumber}: {ex.Message}");
+        }
+    }
+
+    return Results.Ok(new
+    {
+        ret.Id, ret.ReturnNumber, refundMethod = ret.RefundMethod.ToString(), ret.SubTotalRefundedPKR, ret.TaxRefundedPKR,
+        ret.TotalRefundedPKR, ret.Restocked, orderRefundedPKR = order.RefundedPKR,
+        lines = ret.Lines.Select(l => new { l.ProductName, l.Quantity, l.UnitPricePKR, l.TotalPKR })
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to refund sales. Ask a manager to approve."));
+
+// Returns at a branch over a period — for the day's reconciliation and reports.
+api.MapGet("/returns", async (AppDbContext db, HttpContext http, Guid branchId, DateTime? from, DateTime? to) =>
+{
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    if (scopedBranchId == null) return Results.Unauthorized();
+    var since = from ?? DateTime.UtcNow.Date.AddDays(-30);
+    var until = to ?? DateTime.UtcNow.AddDays(1);
+
+    var rows = await db.OrderReturns.Include(r => r.Lines)
+        .Where(r => r.BranchId == scopedBranchId.Value && r.CreatedAt >= since && r.CreatedAt < until)
+        .OrderByDescending(r => r.CreatedAt).Take(500).ToListAsync();
+    var orderIds = rows.Select(r => r.OrderId).Distinct().ToList();
+    var orderNumbers = await db.Orders.Where(o => orderIds.Contains(o.Id))
+        .ToDictionaryAsync(o => o.Id, o => o.OrderNumber);
+
+    return Results.Ok(new
+    {
+        totalRefundedPKR = rows.Sum(r => r.TotalRefundedPKR),
+        count = rows.Count,
+        returns = rows.Select(r => new
+        {
+            r.Id, r.ReturnNumber, r.OrderId, orderNumber = orderNumbers.GetValueOrDefault(r.OrderId, ""),
+            refundMethod = r.RefundMethod.ToString(), r.TotalRefundedPKR, r.Restocked, r.Reason, r.CreatedBy, r.CreatedAt,
+            items = r.Lines.Sum(l => l.Quantity)
+        })
+    });
+});
 
 // --- Kitchen Display ---
 api.MapGet("/kitchen/tickets", async (AppDbContext db, HttpContext http, Guid branchId, KitchenStation? station) =>
@@ -5513,7 +6036,7 @@ api.MapPost("/sync/offline-batch", async (
             CapturedAt = capturedAt
         };
 
-        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
+        var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser, enforceAvailability: false);
         if (priced.Error != null) continue;
         foreach (var line in priced.Items) order.Items.Add(line);
 
@@ -5874,7 +6397,7 @@ api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, HttpContext http,
     if (shift.IsClosed) return Results.BadRequest(new { message = "Shift already closed" });
 
     shift.ActualCashCountedPKR = dto.ActualCashCounted;
-    shift.ExpectedCashPKR = shift.OpeningFloatPKR + shift.CashSalesPKR;
+    RecalculateExpectedCash(shift);
     shift.VariancePKR = dto.ActualCashCounted - shift.ExpectedCashPKR;
     shift.ClosedAt = DateTime.UtcNow;
     shift.IsClosed = true;
@@ -5909,6 +6432,7 @@ api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, HttpContex
         shift.CashPaidOutPKR += dto.AmountPKR;
     else if (dto.EntryType == CashEntryType.Received)
         shift.CashReceivedPKR += dto.AmountPKR;
+    RecalculateExpectedCash(shift);
 
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Cash entry added", entry.Id });
@@ -5938,11 +6462,17 @@ api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db
     var entry = await db.CashEntries.FindAsync(entryId);
     if (entry == null) return Results.NotFound(new { error = "Entry not found" });
 
+    // A refund is a record of money handed to a customer, tied to a return document; it is not
+    // deleted from the drawer on its own.
+    if (entry.Description.StartsWith("Refund ", StringComparison.Ordinal))
+        return Results.BadRequest(new { error = "Refunds are part of a return and cannot be deleted here." });
+
     // Reverse the entry amount
     if (entry.EntryType == CashEntryType.PaidOut)
         shift.CashPaidOutPKR -= entry.AmountPKR;
     else if (entry.EntryType == CashEntryType.Received)
         shift.CashReceivedPKR -= entry.AmountPKR;
+    RecalculateExpectedCash(shift);
 
     db.CashEntries.Remove(entry);
     await db.SaveChangesAsync();
@@ -6280,19 +6810,96 @@ api.MapPost("/inventory/ingredients", async (AppDbContext db, HttpContext http, 
 {
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
     if (scopeError != null) return scopeError;
+    if (scopedTenantId == null || scopedBranchId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "An ingredient name is required." });
+
+    // Defined once for the business; this location gets its own stock row of it.
+    var master = await GetOrCreateIngredientMasterAsync(db, scopedTenantId.Value, dto.Name, dto.Category ?? "General",
+        dto.Unit ?? "Piece", dto.CostPerUnitPKR, dto.MinAlertLevel, dto.SupplierName);
+    if (await db.Ingredients.AnyAsync(i => i.BranchId == scopedBranchId.Value && i.MasterIngredientId == master.Id))
+        return Results.BadRequest(new { message = $"{master.Name} is already stocked at this location." });
 
     var ingredient = new Ingredient
     {
-        BranchId = scopedBranchId!.Value, TenantId = scopedTenantId!.Value, Name = dto.Name,
-        Category = dto.Category ?? "General", Unit = dto.Unit ?? "Piece",
-        CostPerUnitPKR = dto.CostPerUnitPKR, CurrentStock = dto.InitialStock,
+        BranchId = scopedBranchId.Value, TenantId = scopedTenantId.Value, MasterIngredientId = master.Id, Name = master.Name,
+        Category = dto.Category ?? master.Category, Unit = dto.Unit ?? master.Unit,
+        CostPerUnitPKR = dto.CostPerUnitPKR, CurrentStock = 0,
         MinAlertLevel = dto.MinAlertLevel, SupplierName = dto.SupplierName
     };
     db.Ingredients.Add(ingredient);
+    // The starting count goes through the ledger like every other movement.
+    if (dto.InitialStock != 0)
+        RecordStockLedgerEntry(db, ingredient, scopedTenantId.Value, scopedBranchId.Value, StockMovementType.OpeningBalance,
+            dto.InitialStock, dto.CostPerUnitPKR, "Opening", null, "System", "Opening stock");
     await db.SaveChangesAsync();
     return Results.Ok(ingredient);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to create ingredients."));
+
+// The company-wide ingredient list, with what each location holds of each — head office's view of
+// raw stock across the whole business.
+api.MapGet("/inventory/ingredient-master", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+
+    var masters = await db.IngredientMasters.Where(m => m.TenantId == tenantId.Value && m.IsActive)
+        .OrderBy(m => m.Category).ThenBy(m => m.Name).ToListAsync();
+    var rows = await db.Ingredients.Where(i => i.TenantId == tenantId.Value && i.MasterIngredientId != null)
+        .Select(i => new { i.MasterIngredientId, i.BranchId, i.CurrentStock, i.CostPerUnitPKR })
+        .ToListAsync();
+    var branchNames = await db.Branches.Where(b => b.TenantId == tenantId.Value).ToDictionaryAsync(b => b.Id, b => b.Name);
+
+    return Results.Ok(masters.Select(m =>
+    {
+        var stocked = rows.Where(r => r.MasterIngredientId == m.Id).ToList();
+        return new
+        {
+            m.Id, m.Name, m.Category, m.Unit, m.DefaultCostPKR, m.MinAlertLevel, m.SupplierName,
+            totalStock = stocked.Sum(r => r.CurrentStock),
+            totalValuePKR = Math.Round(stocked.Sum(r => r.CurrentStock * r.CostPerUnitPKR), 2),
+            locations = stocked.Select(r => new
+            {
+                branchId = r.BranchId,
+                branchName = branchNames.GetValueOrDefault(r.BranchId, "Unknown"),
+                currentStock = r.CurrentStock,
+                costPerUnitPKR = r.CostPerUnitPKR
+            })
+        };
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// Renaming or recategorising an ingredient is a company-wide change: every location's stock row of
+// it follows, so no branch is left with the old name.
+api.MapPut("/inventory/ingredient-master/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateIngredientMasterDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var master = await db.IngredientMasters.FirstOrDefaultAsync(m => m.Id == id && m.TenantId == tenantId.Value);
+    if (master == null) return Results.NotFound();
+
+    if (!string.IsNullOrWhiteSpace(dto.Name))
+    {
+        var name = dto.Name.Trim();
+        var key = name.ToLower();
+        if (await db.IngredientMasters.AnyAsync(m => m.TenantId == tenantId.Value && m.Id != id && m.Name.Trim().ToLower() == key))
+            return Results.BadRequest(new { message = $"There is already an ingredient called {name}." });
+        master.Name = name;
+    }
+    if (!string.IsNullOrWhiteSpace(dto.Category)) master.Category = dto.Category.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.Unit)) master.Unit = dto.Unit.Trim();
+    if (dto.MinAlertLevel.HasValue) master.MinAlertLevel = dto.MinAlertLevel.Value;
+
+    foreach (var row in await db.Ingredients.Where(i => i.MasterIngredientId == id).ToListAsync())
+    {
+        row.Name = master.Name;
+        row.Category = master.Category;
+        row.Unit = master.Unit;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(master);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to change ingredients."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 // --- Recipes ---
 api.MapGet("/recipes/{productId}", async (AppDbContext db, HttpContext http, Guid productId) =>
@@ -6335,7 +6942,8 @@ api.MapPost("/recipes/{productId}", async (AppDbContext db, HttpContext http, Gu
     if (product != null && calculatedCost > 0) product.CostPricePKR = Math.Round(calculatedCost, 2);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Recipe updated with {items.Count} ingredients. Cost: ₨{Math.Round(calculatedCost, 2)}", productId, calculatedCostPKR = Math.Round(calculatedCost, 2) });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit recipes."));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit recipes."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 // --- Users (with PIN hashing) ---
 api.MapGet("/users", async (AppDbContext db, HttpContext http, Guid tenantId, Guid? branchId) =>
@@ -6753,6 +7361,16 @@ api.MapPost("/transfers", async (AppDbContext db, HttpContext http, CreateTransf
     if (userBranchId != null && dto.SourceBranchId != userBranchId && dto.DestinationBranchId != userBranchId)
         return Results.Json(new { message = "You can only create transfers involving your own branch." }, statusCode: 403);
 
+    if (dto.SourceBranchId == dto.DestinationBranchId)
+        return Results.BadRequest(new { message = "Pick two different locations." });
+
+    // Stock can only move between locations that keep it; a pure office has none to send or receive.
+    var notStocking = await db.Branches
+        .Where(b => (b.Id == dto.SourceBranchId || b.Id == dto.DestinationBranchId) && !b.HoldsStock)
+        .Select(b => b.Name).FirstOrDefaultAsync();
+    if (notStocking != null)
+        return Results.BadRequest(new { message = $"{notStocking} does not keep stock, so stock cannot be transferred to or from it." });
+
     var transferNumber = await GenerateTransferNumberAsync(db, scopedTenantId.Value);
     var order = new StockTransferOrder
     {
@@ -6763,12 +7381,32 @@ api.MapPost("/transfers", async (AppDbContext db, HttpContext http, CreateTransf
     decimal totalEstCost = 0;
     foreach (var item in dto.Items)
     {
-        var ing = await db.Ingredients.FindAsync(item.IngredientId);
+        if (item.QuantityRequested <= 0) return Results.BadRequest(new { message = "Every line needs a quantity above zero." });
+
+        // A line moves a finished product (retail goods) or a raw ingredient.
+        if (item.ProductId is Guid productId)
+        {
+            var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.TenantId == scopedTenantId.Value);
+            if (product == null) return Results.BadRequest(new { message = "One of those products does not belong to this business." });
+            var sourceStock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == dto.SourceBranchId && s.ProductId == productId);
+            var productCost = sourceStock == null ? product.CostPricePKR : UnitCostOf(sourceStock, product);
+            totalEstCost += item.QuantityRequested * productCost;
+            order.Items.Add(new StockTransferItem
+            {
+                TransferOrderId = order.Id, ProductId = productId, IngredientName = product.Name, Unit = product.Unit,
+                QuantityRequested = item.QuantityRequested, UnitCostPKR = productCost
+            });
+            continue;
+        }
+
+        if (item.IngredientId is not Guid ingredientId)
+            return Results.BadRequest(new { message = "Every line needs a product or an ingredient." });
+        var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == ingredientId && i.TenantId == scopedTenantId.Value);
         var unitCost = ing?.CostPerUnitPKR ?? 0;
         totalEstCost += item.QuantityRequested * unitCost;
         order.Items.Add(new StockTransferItem
         {
-            TransferOrderId = order.Id, IngredientId = item.IngredientId, IngredientName = ing?.Name ?? item.IngredientName ?? "Unknown",
+            TransferOrderId = order.Id, IngredientId = ingredientId, IngredientName = ing?.Name ?? item.IngredientName ?? "Unknown",
             Unit = ing?.Unit ?? item.Unit ?? "Piece", QuantityRequested = item.QuantityRequested,
             QuantityDispatched = 0, QuantityReceived = 0, UnitCostPKR = unitCost
         });
@@ -6791,11 +7429,26 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
     var dispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
     foreach (var item in order.Items)
     {
-        var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-
         // Never let a movement push the source below zero — dispatch what's actually on hand, and
         // record THAT as dispatched. This used to record the full requested quantity whatever the
         // source held, so the destination received stock that never left anywhere.
+        if (item.ProductId is Guid productId)
+        {
+            var sourceStock = await db.BranchStocks.Include(s => s.Product)
+                .FirstOrDefaultAsync(s => s.BranchId == order.SourceBranchId && s.ProductId == productId);
+            var sent = sourceStock == null ? 0 : Math.Min(item.QuantityRequested, Math.Max(0, sourceStock.QuantityOnHand));
+            if (sourceStock != null && sent > 0)
+            {
+                // It travels at what it cost the sending location, and arrives at that cost.
+                item.UnitCostPKR = UnitCostOf(sourceStock, sourceStock.Product);
+                RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.TransferOut, -sent, item.UnitCostPKR,
+                    "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
+            }
+            item.QuantityDispatched = sent;
+            continue;
+        }
+
+        var sourceIng = await FindBranchIngredientAsync(db, order.TenantId, order.SourceBranchId, item.IngredientId, item.IngredientName);
         var sentQty = sourceIng == null ? 0 : Math.Min(item.QuantityRequested, Math.Max(0, sourceIng.CurrentStock));
         if (sourceIng != null && sentQty > 0)
             RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.TransferOut, -sentQty, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
@@ -6826,16 +7479,29 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
         // was sent created stock out of nothing at the destination.
         var qtyToReceive = item.QuantityDispatched;
         item.QuantityReceived = qtyToReceive;
-        var destIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
-        if (destIng == null)
+
+        if (item.ProductId is Guid productId)
         {
-            destIng = new Ingredient { TenantId = order.TenantId, BranchId = order.DestinationBranchId, Name = item.IngredientName, Category = "Commissary Transferred", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = 0, MinAlertLevel = 10, SupplierName = "Central Commissary" };
-            db.Ingredients.Add(destIng);
+            var destStock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == order.DestinationBranchId && s.ProductId == productId);
+            if (destStock == null)
+            {
+                destStock = new BranchStock { BranchId = order.DestinationBranchId, ProductId = productId, QuantityOnHand = 0, MinAlertLevel = 10 };
+                db.BranchStocks.Add(destStock);
+            }
+            if (qtyToReceive > 0)
+            {
+                ApplyReceiptToAverageCost(destStock, qtyToReceive, item.UnitCostPKR);
+                RecordProductStockMovement(db, destStock, order.TenantId, StockMovementType.TransferIn, qtyToReceive, item.UnitCostPKR,
+                    "StockTransfer", order.Id, receivedBy, $"Transfer {order.TransferNumber}");
+            }
+            continue;
         }
-        else if (item.UnitCostPKR > 0)
-        {
-            destIng.CostPerUnitPKR = item.UnitCostPKR;
-        }
+
+        // The destination's own row for the SAME company-wide ingredient — not a guess by name.
+        var destIng = await FindBranchIngredientAsync(db, order.TenantId, order.DestinationBranchId, item.IngredientId, item.IngredientName)
+            ?? await CreateBranchIngredientAsync(db, order.TenantId, order.DestinationBranchId, item.IngredientId, item.IngredientName,
+                item.Unit, item.UnitCostPKR, "Commissary Transferred", "Central Commissary");
+        if (item.UnitCostPKR > 0) destIng.CostPerUnitPKR = item.UnitCostPKR;
         if (qtyToReceive > 0)
             RecordStockLedgerEntry(db, destIng, order.TenantId, order.DestinationBranchId, StockMovementType.TransferIn, qtyToReceive, destIng.CostPerUnitPKR, "StockTransfer", order.Id, receivedBy, $"Transfer {order.TransferNumber}");
     }
@@ -6855,13 +7521,25 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
     var order = await db.StockTransferOrders.Include(t => t.Items)
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
+    // Once received, the stock is at the destination; cancelling then would erase a real movement.
+    if (order.Status is TransferStatus.Received or TransferStatus.Cancelled)
+        return Results.BadRequest(new { message = $"This transfer is already {order.Status.ToString().ToLowerInvariant()} and cannot be cancelled." });
     if (order.Status == TransferStatus.InTransit)
     {
-        foreach (var item in order.Items)
+        const string returnedNote = "cancelled in transit — stock returned to source";
+        foreach (var item in order.Items.Where(i => i.QuantityDispatched > 0))
         {
-            var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-            if (sourceIng != null && item.QuantityDispatched > 0)
-                RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.Adjustment, item.QuantityDispatched, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, "System", $"Transfer {order.TransferNumber} cancelled in transit — stock returned to source");
+            if (item.ProductId is Guid productId)
+            {
+                var sourceStock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == order.SourceBranchId && s.ProductId == productId);
+                if (sourceStock != null)
+                    RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.Adjustment, item.QuantityDispatched, item.UnitCostPKR,
+                        "StockTransfer", order.Id, "System", $"Transfer {order.TransferNumber} {returnedNote}");
+                continue;
+            }
+            var sourceIng = await FindBranchIngredientAsync(db, order.TenantId, order.SourceBranchId, item.IngredientId, item.IngredientName);
+            if (sourceIng != null)
+                RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.Adjustment, item.QuantityDispatched, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, "System", $"Transfer {order.TransferNumber} {returnedNote}");
         }
     }
     order.Status = TransferStatus.Cancelled;
@@ -6938,9 +7616,10 @@ api.MapPost("/suppliers/{id:guid}/payments", async (AppDbContext db, HttpContext
         return Results.BadRequest(new { message = $"Payment ({dto.AmountPKR}) exceeds what's owed to this supplier ({supplier.CurrentBalancePKR})." });
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
+    var payingBranchId = await PaymentBranchAsync(db, http, scopedTenantId.Value, dto.BranchId);
     var payment = new SupplierPayment
     {
-        TenantId = scopedTenantId.Value, SupplierId = id, AmountPKR = dto.AmountPKR,
+        TenantId = scopedTenantId.Value, BranchId = payingBranchId, SupplierId = id, AmountPKR = dto.AmountPKR,
         PaymentMethod = dto.PaymentMethod ?? "Bank Transfer", ReferenceNumber = dto.ReferenceNumber, Notes = dto.Notes,
         CreatedBy = currentUser?.FullName ?? "System"
     };
@@ -6952,7 +7631,8 @@ api.MapPost("/suppliers/{id:guid}/payments", async (AppDbContext db, HttpContext
         try
         {
             var payAccount = (dto.PaymentMethod ?? "").Contains("Cash", StringComparison.OrdinalIgnoreCase) ? "1000" : "1010";
-            await PostJournalEntryAsync(db, scopedTenantId.Value, null, payment.PaidAt,
+            // Tagged with the paying location, so that location's cash and books show the payment.
+            await PostJournalEntryAsync(db, scopedTenantId.Value, payingBranchId, payment.PaidAt,
                 $"Payment to supplier — {supplier.Name}", "SupplierPayment", payment.Id, payment.CreatedBy,
                 new List<(string, decimal, decimal)> { ("2000", dto.AmountPKR, 0), (payAccount, 0, dto.AmountPKR) });
         }
@@ -7034,6 +7714,19 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     // ResolveScopeAsync only yields no error when both scopes resolved; assert it so the .Value reads below are flow-proven (CS8629).
     if (scopedTenantId == null || scopedBranchId == null) return Results.Unauthorized();
 
+    var location = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value);
+    if (location == null) return Results.NotFound(new { message = "Location not found." });
+    if (!location.HoldsStock)
+        return Results.BadRequest(new { message = $"{location.Name} does not keep stock. Raise the order for a branch or warehouse." });
+
+    // Where head office buys for the business, a branch asks head office for stock rather than
+    // ordering from suppliers itself. Head office and warehouse staff still buy.
+    var purchasing = await db.TenantSettings.Where(s => s.TenantId == scopedTenantId.Value)
+        .Select(s => (PurchasingControl?)s.PurchasingControl).FirstOrDefaultAsync();
+    if (purchasing == PurchasingControl.HeadOfficeBuys && http.GetBranchId() != null && location.LocationType == LocationType.Branch)
+        return Results.Json(new { message = "Your head office buys for the branches. Raise a stock request to head office instead." },
+            statusCode: StatusCodes.Status403Forbidden);
+
     var poNumber = await GeneratePONumberAsync(db, scopedTenantId.Value);
     var supplierName = dto.SupplierName;
     Guid? supplierId = null;
@@ -7052,8 +7745,24 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     decimal totalCost = 0;
     foreach (var item in dto.Items)
     {
+        if (item.Quantity <= 0) return Results.BadRequest(new { message = "Every line needs a quantity above zero." });
         var lineTotal = item.Quantity * item.UnitCostPKR;
         totalCost += lineTotal;
+
+        // A line buys goods to resell (a product) or a raw ingredient.
+        if (item.ProductId is Guid productId)
+        {
+            var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.TenantId == scopedTenantId.Value);
+            if (product == null) return Results.BadRequest(new { message = "One of those products does not belong to this business." });
+            po.Items.Add(new PurchaseOrderItem
+            {
+                PurchaseOrderId = po.Id, ProductId = productId, IngredientName = product.Name,
+                Quantity = item.Quantity, Unit = item.Unit ?? product.Unit, UnitCostPKR = item.UnitCostPKR, TotalPKR = lineTotal
+            });
+            continue;
+        }
+        if (item.IngredientId == null && string.IsNullOrWhiteSpace(item.IngredientName))
+            return Results.BadRequest(new { message = "Every line needs a product or an ingredient." });
         po.Items.Add(new PurchaseOrderItem
         {
             PurchaseOrderId = po.Id, IngredientId = item.IngredientId, IngredientName = item.IngredientName,
@@ -7077,17 +7786,26 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     var receivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
     foreach (var item in po.Items)
     {
-        var ing = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == po.BranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-        if (ing == null)
+        // Goods bought to resell go onto this location's shelf, at this location's cost.
+        if (item.ProductId is Guid productId)
         {
-            ing = new Ingredient { TenantId = po.TenantId, BranchId = po.BranchId, Name = item.IngredientName, Category = "Direct Purchased", Unit = item.Unit, CostPerUnitPKR = item.UnitCostPKR, CurrentStock = 0, MinAlertLevel = 10, SupplierName = po.SupplierName };
-            db.Ingredients.Add(ing);
+            var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == po.BranchId && s.ProductId == productId);
+            if (stock == null)
+            {
+                stock = new BranchStock { BranchId = po.BranchId, ProductId = productId, QuantityOnHand = 0, MinAlertLevel = 10 };
+                db.BranchStocks.Add(stock);
+            }
+            ApplyReceiptToAverageCost(stock, item.Quantity, item.UnitCostPKR);
+            RecordProductStockMovement(db, stock, po.TenantId, StockMovementType.PurchaseReceipt, item.Quantity, item.UnitCostPKR,
+                "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
+            continue;
         }
-        else
-        {
-            if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
-            if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
-        }
+
+        var ing = await FindBranchIngredientAsync(db, po.TenantId, po.BranchId, item.IngredientId, item.IngredientName)
+            ?? await CreateBranchIngredientAsync(db, po.TenantId, po.BranchId, item.IngredientId, item.IngredientName,
+                item.Unit, item.UnitCostPKR, "Direct Purchased", po.SupplierName);
+        if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
+        if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
         RecordStockLedgerEntry(db, ing, po.TenantId, po.BranchId, StockMovementType.PurchaseReceipt, item.Quantity, item.UnitCostPKR, "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
     }
     po.Status = POStatus.Received;
@@ -9776,9 +10494,10 @@ api.MapPost("/customers/{id:guid}/payments", async (AppDbContext db, HttpContext
         return Results.BadRequest(new { message = $"Payment ({dto.AmountPKR}) exceeds what this customer owes ({customer.CurrentBalancePKR})." });
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
+    var receivingBranchId = await PaymentBranchAsync(db, http, scopedTenantId.Value, dto.BranchId);
     var payment = new CustomerPayment
     {
-        TenantId = scopedTenantId.Value, CustomerId = id, AmountPKR = dto.AmountPKR,
+        TenantId = scopedTenantId.Value, BranchId = receivingBranchId, CustomerId = id, AmountPKR = dto.AmountPKR,
         PaymentMethod = dto.PaymentMethod ?? "Cash", ReferenceNumber = dto.ReferenceNumber, Notes = dto.Notes,
         CreatedBy = currentUser?.FullName ?? "System"
     };
@@ -9790,7 +10509,8 @@ api.MapPost("/customers/{id:guid}/payments", async (AppDbContext db, HttpContext
         try
         {
             var receiveAccount = (dto.PaymentMethod ?? "").Contains("Cash", StringComparison.OrdinalIgnoreCase) ? "1000" : "1010";
-            await PostJournalEntryAsync(db, scopedTenantId.Value, null, payment.PaidAt,
+            // Tagged with the location that took the money, so its cash and books show it.
+            await PostJournalEntryAsync(db, scopedTenantId.Value, receivingBranchId, payment.PaidAt,
                 $"Payment received from customer — {customer.FullName}", "CustomerPayment", payment.Id, payment.CreatedBy,
                 new List<(string, decimal, decimal)> { (receiveAccount, dto.AmountPKR, 0), ("1100", 0, dto.AmountPKR) });
         }
@@ -11994,6 +12714,8 @@ public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRa
 public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs,
     LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null);
 public record SaveCompanyDto(string? LegalName, string? TradeName, string? TaxRegistrationNumber, string? SalesTaxRegistrationNumber, string? Address);
+/// <summary>SellingPricePKR null = the company price; IsAvailable false = not sold at that branch.</summary>
+public record SetBranchPriceDto(Guid BranchId, decimal? SellingPricePKR, bool IsAvailable = true);
 public record SaveRegionDto(string? Name, string? Code);
 // The trailing CRM/loyalty/gift-card/promo fields are optional and default to null — a walk-in
 // order posted by an older client that omits them behaves exactly as it did before.
@@ -12016,6 +12738,7 @@ public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string
 public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
 public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal QuantityReceived, decimal? NewCostPerUnitPKR, string? SupplierName);
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
+public record UpdateIngredientMasterDto(string? Name, string? Category, string? Unit, decimal? MinAlertLevel);
 public record RecipeItemInputDto(Guid IngredientId, decimal QuantityRequired, string? Unit);
 public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders);
 public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders,
@@ -12023,11 +12746,14 @@ public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, b
     Guid? DepartmentId = null, Guid? DesignationId = null);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
-public record CreateTransferItemDto(Guid IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit);
+/// <summary>A line names a raw ingredient (IngredientId) or a finished product (ProductId).</summary>
+public record CreateTransferItemDto(Guid? IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit, Guid? ProductId = null);
 public record DispatchTransferDto(string? DispatchedBy, string? VehicleOrDriver, string? Notes);
 public record ReceiveTransferDto(string? ReceivedBy, string? Notes);
 public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items, Guid? SupplierId = null);
-public record CreatePOItemDto(Guid IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR);
+/// <summary>A line buys a raw ingredient (IngredientId, or a new one by IngredientName) or goods to
+/// resell (ProductId).</summary>
+public record CreatePOItemDto(Guid? IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR, Guid? ProductId = null);
 public record ReceivePODto(string? ReceivedBy, string? Notes);
 public record CreateWarehouseDto(Guid? TenantId, Guid BranchId, string Name, string? Code);
 public record UpdateWarehouseDto(string? Name, string? Code, bool? IsActive);
@@ -12035,7 +12761,8 @@ public record IssueSubscriptionInvoiceDto(Guid TenantId, bool Annual, decimal? A
 public record MarkSubscriptionInvoicePaidDto(string? PaymentMethod);
 public record CreateSupplierDto(Guid? TenantId, string Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, decimal? OpeningBalancePKR);
 public record UpdateSupplierDto(string? Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, bool? IsActive);
-public record RecordSupplierPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes);
+/// <summary>BranchId: the location paying, for a head office user; a branch user's own branch is used regardless.</summary>
+public record RecordSupplierPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes, Guid? BranchId = null);
 public record IngredientStockAdjustmentDto(Guid? TenantId, Guid BranchId, Guid IngredientId, string MovementType, decimal QuantityChange, string? Reason);
 public record CreateTableDto(Guid BranchId, string TableNumber, string? Section, int Capacity);
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
@@ -12048,6 +12775,9 @@ public record SwitchBranchDto(Guid BranchId, string? RefreshToken);
 public record SetUserBranchAccessDto(List<Guid> BranchIds);
 public record RefreshTokenDto(string RefreshToken);
 public record VoidOrderDto(string? Reason);
+/// <summary>RefundMethod defaults to how the sale was paid; Restock defaults to true.</summary>
+public record CreateReturnDto(List<ReturnLineDto> Lines, PaymentMethod? RefundMethod = null, bool? Restock = null, string? Reason = null);
+public record ReturnLineDto(Guid OrderItemId, int Quantity);
 public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
 public record CloseCashShiftDto(decimal ActualCashCounted, string? Notes);
 public record SetupInitDto(
@@ -12184,7 +12914,8 @@ public record TenantSettingsDto(
 // --- CRM / loyalty / gift cards / promos ---
 public record CreateCustomerDto(string? FullName, string Phone, string? Email);
 public record UpdateCustomerDto(string? FullName, string? Phone, string? Email, int? LoyaltyPoints);
-public record RecordCustomerPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes);
+/// <summary>BranchId: the location taking the payment, for a head office user; a branch user's own branch is used regardless.</summary>
+public record RecordCustomerPaymentDto(decimal AmountPKR, string? PaymentMethod, string? ReferenceNumber, string? Notes, Guid? BranchId = null);
 public record LoyaltyConfigDto(bool? IsEnabled, decimal? PointsPerPKRSpent, decimal? PKRValuePerPoint, int? MinRedeemPoints);
 public record LoyaltyRedeemDto(Guid CustomerId, int PointsToRedeem);
 public record IssueGiftCardDto(decimal InitialBalancePKR, Guid? IssuedToCustomerId, DateTime? ExpiresAt);

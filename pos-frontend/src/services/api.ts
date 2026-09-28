@@ -84,7 +84,18 @@ import type {
   PlanOption,
   PlanChangePreview,
   TenantOverview,
-  DeviceHealthReport
+  DeviceHealthReport,
+  LocationType,
+  BusinessStructure,
+  Company,
+  Region,
+  MyBranch,
+  BusinessPolicies,
+  BranchPriceInfo,
+  IngredientMasterRow,
+  ReturnableOrder,
+  SetupCompanyPayload,
+  SetupHeadOfficePayload
 } from '../types';
 
 /**
@@ -264,13 +275,33 @@ export function registerBillingHandler(handler: (status: string, message: string
 
 export const posApi = {
   // Auth
-  login: async (username: string, pinCode: string) => {
-    const res = await api.post<LoginResponse>('/api/auth/login', { username, pinCode });
+  /**
+   * `branchId` is the branch this till is paired to. Staff who cover more than one branch are
+   * signed in THERE, so the sale lands at the till's branch; staff not set up for it are refused.
+   */
+  login: async (username: string, pinCode: string, branchId?: string | null) => {
+    const res = await api.post<LoginResponse>('/api/auth/login', { username, pinCode, branchId: branchId || undefined });
     if (res.data.token) {
       localStorage.setItem('cashly_pos_token', res.data.token);
       if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
       localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
     }
+    return res.data;
+  },
+  /** Move this session to another branch the user covers, without signing out. */
+  switchBranch: async (branchId: string) => {
+    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    const res = await api.post<LoginResponse>('/api/auth/switch-branch', { branchId, refreshToken });
+    if (res.data.token) {
+      localStorage.setItem('cashly_pos_token', res.data.token);
+      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+    }
+    return res.data;
+  },
+  /** The branches the signed-in user may work at. */
+  getMyBranches: async () => {
+    const res = await api.get<MyBranch[]>('/api/auth/my-branches');
     return res.data;
   },
   logout: () => {
@@ -317,8 +348,75 @@ export const posApi = {
     phone?: string;
     /** TaxJurisdiction regionCode, e.g. "PK-PB" */
     regionCode?: string | null;
+    locationType?: LocationType;
+    canSell?: boolean;
+    holdsStock?: boolean;
+    companyId?: string;
+    /** A region's id; the empty GUID removes the location from its region. */
+    regionId?: string;
   }) => {
     const res = await api.put<Branch>(`/api/branches/${id}`, data);
+    return res.data;
+  },
+  /** Add a selling branch or a warehouse (the head office is set up with enableHeadOffice). */
+  createBranch: async (data: {
+    name: string;
+    code?: string;
+    city?: string;
+    address?: string;
+    phone?: string;
+    stateCode?: string;
+    locationType?: Exclude<LocationType, 'HeadOffice'>;
+    canSell?: boolean;
+    holdsStock?: boolean;
+    companyId?: string;
+    regionId?: string;
+  }) => {
+    const res = await api.post('/api/branches', data);
+    return res.data;
+  },
+  /** Open a separate head office. The shop that has been trading carries on as a branch. */
+  enableHeadOffice: async (data?: SetupHeadOfficePayload) => {
+    const res = await api.post<{ message: string; alreadyEnabled?: boolean; headOfficeBranchId?: string }>(
+      '/api/organization/enable-hq', data ?? {});
+    return res.data;
+  },
+
+  // Organisation: legal entities, regions and business policies
+  getCompanies: async () => {
+    const res = await api.get<Company[]>('/api/companies');
+    return res.data;
+  },
+  createCompany: async (data: SetupCompanyPayload & { legalName: string }) => {
+    const res = await api.post<Company>('/api/companies', data);
+    return res.data;
+  },
+  updateCompany: async (id: string, data: SetupCompanyPayload) => {
+    const res = await api.put<Company>(`/api/companies/${id}`, data);
+    return res.data;
+  },
+  getRegions: async () => {
+    const res = await api.get<Region[]>('/api/regions');
+    return res.data;
+  },
+  createRegion: async (data: { name: string; code?: string }) => {
+    const res = await api.post<Region>('/api/regions', data);
+    return res.data;
+  },
+  updateRegion: async (id: string, data: { name?: string; code?: string }) => {
+    const res = await api.put<Region>(`/api/regions/${id}`, data);
+    return res.data;
+  },
+  deleteRegion: async (id: string) => {
+    const res = await api.delete<{ message: string }>(`/api/regions/${id}`);
+    return res.data;
+  },
+  getPolicies: async () => {
+    const res = await api.get<BusinessPolicies>('/api/settings/policies');
+    return res.data;
+  },
+  updatePolicies: async (data: Partial<BusinessPolicies>) => {
+    const res = await api.put<BusinessPolicies>('/api/settings/policies', data);
     return res.data;
   },
 
@@ -327,8 +425,18 @@ export const posApi = {
     const res = await api.get<Category[]>('/api/catalog/categories', { params: { tenantId } });
     return res.data;
   },
-  getProducts: async (params?: { tenantId?: string; categoryId?: string; search?: string; barcode?: string }) => {
+  /** With `branchId`, what that branch sells at the prices it charges; without, the company catalogue. */
+  getProducts: async (params?: { tenantId?: string; categoryId?: string; search?: string; barcode?: string; branchId?: string }) => {
     const res = await api.get<Product[]>('/api/catalog/products', { params });
+    return res.data;
+  },
+  getBranchPrices: async (productId: string) => {
+    const res = await api.get<BranchPriceInfo>(`/api/catalog/products/${productId}/branch-prices`);
+    return res.data;
+  },
+  /** A null price means "the company price"; isAvailable false withdraws the item at that branch. */
+  setBranchPrices: async (productId: string, rows: { branchId: string; sellingPricePKR: number | null; isAvailable: boolean }[]) => {
+    const res = await api.put(`/api/catalog/products/${productId}/branch-prices`, rows);
     return res.data;
   },
   createProduct: async (productData: any) => {
@@ -415,13 +523,55 @@ export const posApi = {
     return res.data;
   },
 
-  getOrders: async (branchId: string, status?: string) => {
-    const res = await api.get<Order[]>('/api/orders', { params: { branchId, status } });
+  getOrders: async (branchId: string, status?: string, limit?: number) => {
+    const res = await api.get<Order[]>('/api/orders', { params: { branchId, status, limit } });
     return res.data;
   },
 
   voidOrder: async (orderId: string, reason?: string) => {
     const res = await api.post(`/api/orders/${orderId}/void`, { reason });
+    return res.data;
+  },
+
+  // Returns — part of a paid sale coming back, as its own document
+  getOrderReturns: async (orderId: string) => {
+    const res = await api.get<ReturnableOrder>(`/api/orders/${orderId}/returns`);
+    return res.data;
+  },
+  createOrderReturn: async (orderId: string, data: {
+    lines: { orderItemId: string; quantity: number }[];
+    refundMethod?: PaymentMethod;
+    restock?: boolean;
+    reason?: string;
+  }) => {
+    const res = await api.post<{
+      id: string;
+      returnNumber: string;
+      refundMethod: string;
+      totalRefundedPKR: number;
+      restocked: boolean;
+      orderRefundedPKR: number;
+    }>(`/api/orders/${orderId}/returns`, data);
+    return res.data;
+  },
+  getReturns: async (branchId: string, from?: string, to?: string) => {
+    const res = await api.get<{
+      totalRefundedPKR: number;
+      count: number;
+      returns: {
+        id: string;
+        returnNumber: string;
+        orderId: string;
+        orderNumber: string;
+        refundMethod: string;
+        totalRefundedPKR: number;
+        restocked: boolean;
+        reason?: string | null;
+        createdBy: string;
+        createdAt: string;
+        items: number;
+      }[];
+    }>('/api/returns', { params: { branchId, from, to } });
     return res.data;
   },
 
@@ -777,6 +927,15 @@ export const posApi = {
     const res = await api.delete(`/api/users/${id}`);
     return res.data;
   },
+  /** The other branches a branch-based user may sign in at, besides their own. */
+  getUserBranchAccess: async (userId: string) => {
+    const res = await api.get<{ userId: string; homeBranchId: string | null; branchIds: string[] }>(`/api/users/${userId}/branch-access`);
+    return res.data;
+  },
+  setUserBranchAccess: async (userId: string, branchIds: string[]) => {
+    const res = await api.put<{ userId: string; homeBranchId: string | null; branchIds: string[] }>(`/api/users/${userId}/branch-access`, { branchIds });
+    return res.data;
+  },
 
   // Inter-Branch Stock Transfers
   getTransferOrders: async (tenantId?: string, branchId?: string) => {
@@ -789,7 +948,8 @@ export const posApi = {
     destinationBranchId: string;
     vehicleOrDriver?: string;
     notes?: string;
-    items: { ingredientId: string; ingredientName?: string; quantityRequested: number; unit?: string; }[];
+    /** Each line moves an ingredient (ingredientId) or a finished product (productId). */
+    items: { ingredientId?: string; productId?: string; ingredientName?: string; quantityRequested: number; unit?: string; }[];
   }) => {
     const res = await api.post<StockTransferOrder>('/api/transfers', data);
     return res.data;
@@ -818,7 +978,8 @@ export const posApi = {
     supplierName: string;
     supplierId?: string;
     notes?: string;
-    items: { ingredientId: string; ingredientName: string; quantity: number; unit?: string; unitCostPKR: number; }[];
+    /** Each line buys an ingredient (ingredientId) or goods to resell (productId). */
+    items: { ingredientId?: string; productId?: string; ingredientName: string; quantity: number; unit?: string; unitCostPKR: number; }[];
   }) => {
     const res = await api.post<PurchaseOrder>('/api/procurement/purchase-orders', data);
     return res.data;
@@ -945,8 +1106,18 @@ export const posApi = {
   },
 
   // Stock Ledger (real movement history behind Ingredient.currentStock)
-  getStockLedger: async (branchId?: string, ingredientId?: string, days?: number) => {
-    const res = await api.get<StockLedgerEntry[]>('/api/inventory/stock-ledger', { params: { branchId, ingredientId, days } });
+  getStockLedger: async (branchId?: string, ingredientId?: string, days?: number, productId?: string) => {
+    const res = await api.get<StockLedgerEntry[]>('/api/inventory/stock-ledger', { params: { branchId, ingredientId, days, productId } });
+    return res.data;
+  },
+  /** The company-wide ingredient list, with what each location holds of each. */
+  getIngredientMaster: async () => {
+    const res = await api.get<IngredientMasterRow[]>('/api/inventory/ingredient-master');
+    return res.data;
+  },
+  /** Rename or recategorise an ingredient everywhere at once. */
+  updateIngredientMaster: async (id: string, data: { name?: string; category?: string; unit?: string; minAlertLevel?: number }) => {
+    const res = await api.put(`/api/inventory/ingredient-master/${id}`, data);
     return res.data;
   },
   createStockAdjustment: async (data: {
@@ -979,7 +1150,8 @@ export const posApi = {
       tenantId: string;
       tenantName: string;
       deploymentMode: string;
-      branches: Array<{ id: string; name: string; code: string; city: string; isHeadOffice: boolean }>;
+      businessStructure?: BusinessStructure;
+      branches: Array<{ id: string; name: string; code: string; city: string; isHeadOffice: boolean; locationType?: LocationType; canSell?: boolean }>;
     }>('/api/setup/initialize', data);
     return res.data;
   },
@@ -1076,6 +1248,12 @@ export const posApi = {
     /** Outlets to create beneath the head office. Read only for MultiBranch, and validated
      *  server-side against the chosen plan's multi-branch flag and branch allowance. */
     branches?: { name: string; code?: string; city?: string; address?: string; phone?: string }[];
+    /** The three-way answer; wins over deploymentMode when sent. */
+    businessStructure?: BusinessStructure;
+    company?: SetupCompanyPayload;
+    headOffice?: SetupHeadOfficePayload;
+    policies?: Partial<BusinessPolicies>;
+    setUpAccounting?: boolean;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;

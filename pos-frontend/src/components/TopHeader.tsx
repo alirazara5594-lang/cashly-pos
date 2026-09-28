@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Wifi, 
   WifiOff, 
@@ -21,6 +21,14 @@ import {
 import { usePosStore } from '../store/posStore';
 import { AlertsBell } from './AlertsBell';
 import { useClickOutside } from '../hooks/useClickOutside';
+import { posApi, getApiErrorMessage } from '../services/api';
+import type { MyBranch } from '../types';
+
+/** "Head office" / "Warehouse" beside a location's name; nothing for an ordinary branch. */
+function locationTag(b: { locationType?: string; isHeadOffice?: boolean }): string {
+  const type = b.locationType ?? (b.isHeadOffice ? 'HeadOffice' : 'Branch');
+  return type === 'HeadOffice' ? 'Head office' : type === 'Warehouse' ? 'Warehouse' : '';
+}
 
 interface TopHeaderProps {
   onOpenCallOrder: () => void;
@@ -54,12 +62,49 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     theme,
     toggleTheme,
     terminalMode,
-    setTerminalMode
+    setTerminalMode,
+    cart
   } = usePosStore();
 
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Staff pinned to a branch switch on the server: the session moves to another branch they
+  // cover, so what they ring up lands there. Owners and head office staff already see every
+  // location and only change the view.
+  const isPinned = !!currentUser?.branchId;
+  const [pinnedBranches, setPinnedBranches] = useState<MyBranch[]>([]);
+  const myBranches = isPinned ? pinnedBranches : [];
+  const [switchError, setSwitchError] = useState('');
+  const [switching, setSwitching] = useState(false);
+
+  useEffect(() => {
+    if (!isPinned) return;
+    let cancelled = false;
+    posApi.getMyBranches()
+      .then(rows => { if (!cancelled) setPinnedBranches(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (!cancelled) setPinnedBranches([]); });
+    return () => { cancelled = true; };
+  }, [isPinned, currentUser?.id, currentUser?.branchId]);
+
+  const handleSwitchBranch = async (branchId: string) => {
+    if (branchId === currentUser?.branchId) {
+      setShowTenantDropdown(false);
+      return;
+    }
+    if (cart.length > 0 && !window.confirm('The sale in progress will be cleared. Switch branch anyway?')) return;
+    setSwitching(true);
+    setSwitchError('');
+    try {
+      await posApi.switchBranch(branchId);
+      // Start clean at the new branch: its prices, its stock, its tills and its reports.
+      window.location.reload();
+    } catch (err) {
+      setSwitchError(getApiErrorMessage(err, 'Could not switch branch.'));
+      setSwitching(false);
+    }
+  };
 
   // Click anywhere outside dismisses a dropdown. Each ref wraps trigger +
   // panel, so the trigger's own toggle keeps working (a plain outside-mousedown
@@ -83,7 +128,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     setIsSyncing(false);
   };
 
-  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
+  const isMultiBranchChain = isPinned
+    ? myBranches.length > 1
+    : (selectedTenant?.branches?.length || 0) > 1;
+  const branchTag = selectedBranch ? locationTag(selectedBranch) : '';
 
   return (
     <>
@@ -120,14 +168,49 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                   </span>
                 </div>
                 <div className="text-slate-500 text-[10px]">
-                  {selectedBranch?.isHeadOffice ? 'Head Office' : selectedBranch?.name || 'Main Hall'}
-                  {!isMultiBranchChain && ' (Single Location)'}
+                  {selectedBranch?.name || 'Main Hall'}
+                  {branchTag && ` · ${branchTag}`}
+                  {!isMultiBranchChain && !isPinned && ' (Single Location)'}
                 </div>
               </div>
               {isMultiBranchChain && <ChevronDown className="w-3 h-3 text-slate-500 ml-1" />}
             </button>
 
-            {showTenantDropdown && (
+            {showTenantDropdown && isPinned && (
+              <div className="absolute left-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 z-50 text-sm">
+                <div className="px-2 py-1 text-xs font-bold text-slate-500 uppercase tracking-wider">Work at another branch</div>
+                <div className="mt-1 space-y-1">
+                  {myBranches.map(b => {
+                    const isCurrent = b.id === currentUser?.branchId;
+                    const tag = locationTag(b);
+                    return (
+                      <button
+                        key={b.id}
+                        disabled={switching}
+                        onClick={() => handleSwitchBranch(b.id)}
+                        className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between disabled:opacity-50 ${
+                          isCurrent ? 'bg-teal-50 text-teal-700 font-bold' : 'text-slate-600 hover:bg-slate-50 cursor-pointer'
+                        }`}
+                      >
+                        <span>
+                          {b.name}
+                          {tag && <span className="ml-1 text-[10px] text-slate-400">({tag})</span>}
+                          {b.isHome && <span className="ml-1 text-[10px] text-teal-600">· your branch</span>}
+                        </span>
+                        <span className="text-[10px] opacity-75">{b.city}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {switchError && (
+                  <div className="mt-1 px-2 py-1.5 rounded bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-semibold">
+                    {switchError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {showTenantDropdown && !isPinned && (
               <div className="absolute left-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 z-50 text-sm">
                 <div className="px-2 py-1 text-xs font-bold text-slate-500 uppercase tracking-wider">Switch Business / Branch</div>
                 <div className="mt-1 space-y-1">
@@ -150,7 +233,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                               selectedBranch?.id === b.id ? 'bg-teal-50 text-teal-700 font-bold' : 'text-slate-600 hover:bg-slate-50'
                             }`}
                           >
-                            <span>{b.name} {b.isHeadOffice ? '(Head Office)' : ''}</span>
+                            <span>
+                              {b.name}
+                              {locationTag(b) && <span className="ml-1 text-[10px] text-slate-400">({locationTag(b)})</span>}
+                            </span>
                             <span className="text-[10px] opacity-75">{b.city}</span>
                           </button>
                         ))}

@@ -17,9 +17,32 @@ import {
   Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
-import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse } from '../types';
+import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse, Product, Branch } from '../types';
+
+/**
+ * A purchase or transfer line moves either an ingredient or a product bought to be sold as it is
+ * (a retail item). One picker lists both; the key says which: "i:<id>" or "p:<id>".
+ */
+interface StockLineItem {
+  ingredientId?: string;
+  productId?: string;
+  ingredientName: string;
+  unit: string;
+  unitCostPKR: number;
+}
+
+const lineKey = (line: { ingredientId?: string; productId?: string }) =>
+  line.productId ? `p:${line.productId}` : `i:${line.ingredientId ?? ''}`;
+
+/** Where stock can sit: every location except an office that keeps none. */
+const keepsStock = (b: Branch) => b.holdsStock !== false;
+
+const locationTag = (b: Branch) => {
+  const type = b.locationType ?? (b.isHeadOffice ? 'HeadOffice' : 'Branch');
+  return type === 'HeadOffice' ? '(Head office)' : type === 'Warehouse' ? '(Warehouse)' : '';
+};
 
 export const SupplyChainManagement: React.FC = () => {
   const { selectedTenant, selectedBranch } = usePosStore();
@@ -61,7 +84,8 @@ export const SupplyChainManagement: React.FC = () => {
   const [transferVehicle, setTransferVehicle] = useState('');
   const [transferNotes, setTransferNotes] = useState('');
   const [transferLines, setTransferLines] = useState<Array<{
-    ingredientId: string;
+    ingredientId?: string;
+    productId?: string;
     ingredientName: string;
     quantityRequested: number;
     unit: string;
@@ -79,7 +103,8 @@ export const SupplyChainManagement: React.FC = () => {
   const [poSupplierId, setPoSupplierId] = useState<string>('');
   const [poNotes, setPoNotes] = useState('');
   const [poLines, setPoLines] = useState<Array<{
-    ingredientId: string;
+    ingredientId?: string;
+    productId?: string;
     ingredientName: string;
     quantity: number;
     unit: string;
@@ -89,16 +114,54 @@ export const SupplyChainManagement: React.FC = () => {
   // Status message
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  // Goods bought to be sold as they are (retail items), alongside the ingredients.
+  const [products, setProducts] = useState<Product[]>([]);
+
+  const itemFromKey = (key: string): StockLineItem | null => {
+    if (key.startsWith('p:')) {
+      const p = products.find(x => x.id === key.slice(2));
+      return p ? { productId: p.id, ingredientName: p.name, unit: p.unit || 'Piece', unitCostPKR: p.costPricePKR || 0 } : null;
+    }
+    const i = ingredients.find(x => x.id === key.slice(2));
+    return i ? { ingredientId: i.id, ingredientName: i.name, unit: i.unit, unitCostPKR: i.costPerUnitPKR || 0 } : null;
+  };
+
+  /** The first thing in the picker, for a new line: an ingredient if there are any, else a product. */
+  const firstItem = (): StockLineItem | null =>
+    ingredients.length > 0 ? itemFromKey(`i:${ingredients[0].id}`)
+      : products.length > 0 ? itemFromKey(`p:${products[0].id}`)
+      : null;
+
+  const itemOptions = (
+    <>
+      {ingredients.length > 0 && (
+        <optgroup label="Ingredients">
+          {ingredients.map(i => (
+            <option key={i.id} value={`i:${i.id}`}>{i.name} ({i.unit})</option>
+          ))}
+        </optgroup>
+      )}
+      {products.length > 0 && (
+        <optgroup label="Products (sold as bought)">
+          {products.map(p => (
+            <option key={p.id} value={`p:${p.id}`}>{p.name} ({p.unit || 'Piece'})</option>
+          ))}
+        </optgroup>
+      )}
+    </>
+  );
+
   const fetchData = async () => {
     if (!selectedTenant?.id) return;
     try {
-      const [transfersData, poData, ingsData, suppliersData, ledgerData, warehousesData] = await Promise.all([
+      const [transfersData, poData, ingsData, suppliersData, ledgerData, warehousesData, productsData] = await Promise.all([
         posApi.getTransferOrders(selectedTenant.id),
         posApi.getPurchaseOrders(selectedTenant.id),
         selectedBranch?.id ? posApi.getRawIngredients(selectedBranch.id) : Promise.resolve([]),
         posApi.getSuppliers(selectedTenant.id).catch(() => []),
         selectedBranch?.id ? posApi.getStockLedger(selectedBranch.id).catch(() => []) : Promise.resolve([]),
-        selectedBranch?.id ? posApi.getWarehouses(selectedBranch.id).catch(() => []) : Promise.resolve([])
+        selectedBranch?.id ? posApi.getWarehouses(selectedBranch.id).catch(() => []) : Promise.resolve([]),
+        posApi.getProducts({ tenantId: selectedTenant.id }).catch(() => [] as Product[])
       ]);
       setTransfers(transfersData);
       setPurchaseOrders(poData);
@@ -106,6 +169,7 @@ export const SupplyChainManagement: React.FC = () => {
       setSuppliers(suppliersData);
       setStockLedger(ledgerData);
       setWarehouses(warehousesData);
+      setProducts(Array.isArray(productsData) ? productsData : []);
     } catch (err) {
       console.error('Failed to load supply chain data', err);
     }
@@ -151,27 +215,23 @@ export const SupplyChainManagement: React.FC = () => {
   }, [isMultiBranchChain]);
 
   const handleOpenNewTransfer = () => {
-    const comm = selectedTenant?.branches?.find(b => b.isHeadOffice) || selectedTenant?.branches?.[0];
-    const dest = (!selectedBranch?.isHeadOffice && selectedBranch) 
-      ? selectedBranch 
-      : (selectedTenant?.branches?.find(b => !b.isHeadOffice) || selectedTenant?.branches?.[1] || selectedTenant?.branches?.[0]);
+    // Stock comes from a warehouse first, then a head office that keeps stock, then any other
+    // location that does. An office that keeps no stock can neither send nor receive.
+    const locations = (selectedTenant?.branches || []).filter(keepsStock);
+    const comm = locations.find(b => b.locationType === 'Warehouse')
+      || locations.find(b => b.locationType === 'HeadOffice' || b.isHeadOffice)
+      || locations.find(b => b.id !== selectedBranch?.id)
+      || locations[0];
+    const dest = (selectedBranch && selectedBranch.id !== comm?.id && keepsStock(selectedBranch))
+      ? selectedBranch
+      : (locations.find(b => b.id !== comm?.id && b.canSell !== false) || locations.find(b => b.id !== comm?.id));
 
     setTransferSourceBranchId(comm?.id || '');
     setTransferDestBranchId(dest?.id || '');
     setTransferVehicle('Cold-Chain Refrigerated Van #04');
     setTransferNotes('Emergency/Daily stock replenishment requisition to HQ Commissary');
-    if (ingredients.length > 0) {
-      setTransferLines([
-        {
-          ingredientId: ingredients[0].id,
-          ingredientName: ingredients[0].name,
-          quantityRequested: 50,
-          unit: ingredients[0].unit
-        }
-      ]);
-    } else {
-      setTransferLines([]);
-    }
+    const first = firstItem();
+    setTransferLines(first ? [{ ...first, quantityRequested: 50 }] : []);
     setIsNewTransferOpen(true);
   };
 
@@ -182,21 +242,18 @@ export const SupplyChainManagement: React.FC = () => {
   }, [location.state?.openRequisition, ingredients.length]);
 
   const handleAddTransferLine = () => {
-    if (ingredients.length === 0) return;
-    setTransferLines([
-      ...transferLines,
-      {
-        ingredientId: ingredients[0].id,
-        ingredientName: ingredients[0].name,
-        quantityRequested: 20,
-        unit: ingredients[0].unit
-      }
-    ]);
+    const first = firstItem();
+    if (!first) return;
+    setTransferLines([...transferLines, { ...first, quantityRequested: 20 }]);
   };
 
   const handleCreateTransfer = async () => {
     if (!selectedTenant?.id || !transferSourceBranchId || !transferDestBranchId || transferLines.length === 0) {
       alert('Please select branches and at least one item');
+      return;
+    }
+    if (transferSourceBranchId === transferDestBranchId) {
+      alert('Stock has to move between two different locations.');
       return;
     }
     try {
@@ -206,7 +263,13 @@ export const SupplyChainManagement: React.FC = () => {
         destinationBranchId: transferDestBranchId,
         vehicleOrDriver: transferVehicle,
         notes: transferNotes,
-        items: transferLines
+        items: transferLines.map(l => ({
+          ingredientId: l.productId ? undefined : l.ingredientId,
+          productId: l.productId,
+          ingredientName: l.ingredientName,
+          quantityRequested: l.quantityRequested,
+          unit: l.unit
+        }))
       });
       setIsNewTransferOpen(false);
       setStatusMsg('Stock Transfer Requisition successfully submitted!');
@@ -214,7 +277,7 @@ export const SupplyChainManagement: React.FC = () => {
       fetchData();
     } catch (err) {
       console.error(err);
-      alert('Failed to submit transfer order');
+      alert(getApiErrorMessage(err, 'Failed to submit transfer order'));
     }
   };
 
@@ -258,34 +321,15 @@ export const SupplyChainManagement: React.FC = () => {
     setPoSupplierId(firstSupplier?.id || '');
     setPoSupplier(firstSupplier?.name || 'National Poultry Farms Ltd');
     setPoNotes('Fresh morning delivery batch');
-    if (ingredients.length > 0) {
-      setPoLines([
-        {
-          ingredientId: ingredients[0].id,
-          ingredientName: ingredients[0].name,
-          quantity: 100,
-          unit: ingredients[0].unit,
-          unitCostPKR: ingredients[0].costPerUnitPKR || 120
-        }
-      ]);
-    } else {
-      setPoLines([]);
-    }
+    const first = firstItem();
+    setPoLines(first ? [{ ...first, quantity: 100 }] : []);
     setIsNewPOOpen(true);
   };
 
   const handleAddPOLine = () => {
-    if (ingredients.length === 0) return;
-    setPoLines([
-      ...poLines,
-      {
-        ingredientId: ingredients[0].id,
-        ingredientName: ingredients[0].name,
-        quantity: 50,
-        unit: ingredients[0].unit,
-        unitCostPKR: ingredients[0].costPerUnitPKR || 100
-      }
-    ]);
+    const first = firstItem();
+    if (!first) return;
+    setPoLines([...poLines, { ...first, quantity: 50 }]);
   };
 
   const handleCreatePO = async () => {
@@ -300,7 +344,14 @@ export const SupplyChainManagement: React.FC = () => {
         supplierName: poSupplier,
         supplierId: poSupplierId || undefined,
         notes: poNotes,
-        items: poLines
+        items: poLines.map(l => ({
+          ingredientId: l.productId ? undefined : l.ingredientId,
+          productId: l.productId,
+          ingredientName: l.ingredientName,
+          quantity: l.quantity,
+          unit: l.unit,
+          unitCostPKR: l.unitCostPKR
+        }))
       });
       setIsNewPOOpen(false);
       setStatusMsg('Vendor Purchase Order issued successfully!');
@@ -308,7 +359,7 @@ export const SupplyChainManagement: React.FC = () => {
       fetchData();
     } catch (err) {
       console.error(err);
-      alert('Failed to create purchase order');
+      alert(getApiErrorMessage(err, 'Failed to create purchase order'));
     }
   };
 
@@ -1182,9 +1233,9 @@ export const SupplyChainManagement: React.FC = () => {
                   onChange={(e) => setTransferSourceBranchId(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 >
-                  {selectedTenant?.branches?.map(b => (
+                  {selectedTenant?.branches?.filter(keepsStock).map(b => (
                     <option key={b.id} value={b.id}>
-                      {b.name} {b.isHeadOffice ? '(Central Commissary)' : ''}
+                      {b.name} {locationTag(b)}
                     </option>
                   ))}
                 </select>
@@ -1197,9 +1248,9 @@ export const SupplyChainManagement: React.FC = () => {
                   onChange={(e) => setTransferDestBranchId(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 >
-                  {selectedTenant?.branches?.map(b => (
+                  {selectedTenant?.branches?.filter(keepsStock).map(b => (
                     <option key={b.id} value={b.id}>
-                      {b.name}
+                      {b.name} {locationTag(b)}
                     </option>
                   ))}
                 </select>
@@ -1219,7 +1270,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">Requisitioned Ingredients</label>
+                <label className="text-[11px] font-bold text-slate-500 uppercase">Items to Move (ingredients or products)</label>
                 <button
                   type="button"
                   onClick={handleAddTransferLine}
@@ -1233,24 +1284,23 @@ export const SupplyChainManagement: React.FC = () => {
                 {transferLines.map((line, idx) => (
                   <div key={idx} className="flex gap-2 items-center bg-slate-50 p-2 rounded-xl border border-slate-200">
                     <select
-                      value={line.ingredientId}
+                      value={lineKey(line)}
                       onChange={(e) => {
-                        const ing = ingredients.find(i => i.id === e.target.value);
-                        if (!ing) return;
+                        const item = itemFromKey(e.target.value);
+                        if (!item) return;
                         const updated = [...transferLines];
                         updated[idx] = {
                           ...updated[idx],
-                          ingredientId: ing.id,
-                          ingredientName: ing.name,
-                          unit: ing.unit
+                          ingredientId: item.ingredientId,
+                          productId: item.productId,
+                          ingredientName: item.ingredientName,
+                          unit: item.unit
                         };
                         setTransferLines(updated);
                       }}
                       className="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                     >
-                      {ingredients.map(i => (
-                        <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>
-                      ))}
+                      {itemOptions}
                     </select>
 
                     <input
@@ -1431,13 +1481,13 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">Ordered Raw Ingredients</label>
+                <label className="text-[11px] font-bold text-slate-500 uppercase">Items Ordered (ingredients or products)</label>
                 <button
                   type="button"
                   onClick={handleAddPOLine}
                   className="text-xs text-teal-600 hover:text-teal-700 font-bold flex items-center gap-1"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Add Ingredient
+                  <Plus className="w-3.5 h-3.5" /> Add Item
                 </button>
               </div>
 
@@ -1445,25 +1495,24 @@ export const SupplyChainManagement: React.FC = () => {
                 {poLines.map((line, idx) => (
                   <div key={idx} className="flex gap-2 items-center bg-slate-50 p-2 rounded-xl border border-slate-200">
                     <select
-                      value={line.ingredientId}
+                      value={lineKey(line)}
                       onChange={(e) => {
-                        const ing = ingredients.find(i => i.id === e.target.value);
-                        if (!ing) return;
+                        const item = itemFromKey(e.target.value);
+                        if (!item) return;
                         const updated = [...poLines];
                         updated[idx] = {
                           ...updated[idx],
-                          ingredientId: ing.id,
-                          ingredientName: ing.name,
-                          unit: ing.unit,
-                          unitCostPKR: ing.costPerUnitPKR || 100
+                          ingredientId: item.ingredientId,
+                          productId: item.productId,
+                          ingredientName: item.ingredientName,
+                          unit: item.unit,
+                          unitCostPKR: item.unitCostPKR || updated[idx].unitCostPKR
                         };
                         setPoLines(updated);
                       }}
                       className="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                     >
-                      {ingredients.map(i => (
-                        <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>
-                      ))}
+                      {itemOptions}
                     </select>
 
                     <input

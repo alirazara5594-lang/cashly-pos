@@ -22,13 +22,19 @@ import {
   Monitor,
   Tablet,
   Zap,
-  Mail
+  Mail,
+  Briefcase,
+  Landmark,
+  Scale
 } from 'lucide-react';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { usePosStore } from '../store/posStore';
 import { activate as activateDevice, getStoredTerminal } from '../services/deviceLicense';
-import type { BusinessType, DeploymentMode, BranchInitPayload } from '../types';
+import type { BusinessType, DeploymentMode, BranchInitPayload, BusinessStructure, CatalogControl, PurchasingControl } from '../types';
+
+const CHAIN_HQ_NAME = 'Head Office & Central Commissary';
+const SHOP_HQ_NAME = 'Head Office';
 
 /**
  * The setup wizard serves double duty:
@@ -54,11 +60,27 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Set on successful registration — renders the credentials screen instead of the wizard.
   const [signupSuccess, setSignupSuccess] = useState<{ restaurantName: string; username: string; pin: string } | null>(null);
 
-  // Step 1 choice: single shop, head office, or "this PC is a branch POS — connect to HQ".
-  const [choice, setChoice] = useState<'Single' | 'MultiBranch' | 'Connect'>('Single');
+  // Step 1 choice: one shop, one shop with a separate head office, a chain with a head office,
+  // or "this PC is a branch POS — connect to HQ".
+  const [choice, setChoice] = useState<'Single' | 'SingleWithHq' | 'MultiBranch' | 'Connect'>('Single');
+
+  // The business's shape as the server understands it. This device's deployment mode follows
+  // from it: anything with a head office has more than one location.
+  const [structure, setStructure] = useState<BusinessStructure>('SingleShop');
+  const deploymentMode: DeploymentMode = structure === 'SingleShop' ? 'Single' : 'MultiBranch';
+  const isChain = structure === 'ChainWithHeadOffice';
+  const hasHeadOffice = structure !== 'SingleShop';
+
+  const chooseStructure = (next: 'Single' | 'SingleWithHq' | 'MultiBranch') => {
+    setChoice(next);
+    const shape: BusinessStructure = next === 'Single' ? 'SingleShop' : next === 'SingleWithHq' ? 'SingleShopWithHeadOffice' : 'ChainWithHeadOffice';
+    setStructure(shape);
+    // A chain's office usually runs the central store; a single shop's office is usually just an office.
+    setHqHoldsStock(shape === 'ChainWithHeadOffice');
+    setHqName(prev => (prev === CHAIN_HQ_NAME || prev === SHOP_HQ_NAME) ? (shape === 'ChainWithHeadOffice' ? CHAIN_HQ_NAME : SHOP_HQ_NAME) : prev);
+  };
 
   // Form State
-  const [deploymentMode, setMode] = useState<DeploymentMode>('Single');
   const [restaurantName, setRestaurantName] = useState('My Restaurant');
   const [businessType, setBusinessType] = useState<BusinessType>('Restaurant');
   const [currency, setCurrency] = useState('PKR');
@@ -128,8 +150,23 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     setPhone(preset.phoneCode + '-');
   };
 
-  // Multi-Branch Settings
-  const [hqName, setHqName] = useState('Head Office & Central Commissary');
+  // Head office (both shapes that have one) and the chain's starting branches
+  const [hqName, setHqName] = useState(CHAIN_HQ_NAME);
+  const [hqCity, setHqCity] = useState('');
+  const [hqAddress, setHqAddress] = useState('');
+  const [hqHoldsStock, setHqHoldsStock] = useState(true);
+
+  // The legal entity: the registered name and tax numbers printed on receipts. All optional.
+  const [legalName, setLegalName] = useState('');
+  const [ntn, setNtn] = useState('');
+  const [strn, setStrn] = useState('');
+
+  // Who decides what once there is a head office, and whether the books start on day one.
+  const [catalogControl, setCatalogControl] = useState<CatalogControl>('HeadOfficeOnly');
+  const [branchPricing, setBranchPricing] = useState(false);
+  const [purchasingControl, setPurchasingControl] = useState<PurchasingControl>('HeadOfficeBuys');
+  const [allowNegativeStock, setAllowNegativeStock] = useState(true);
+  const [bookAccounts, setBookAccounts] = useState(true);
   const [branches, setBranches] = useState<BranchInitPayload[]>([
     { name: 'Downtown Outlet', code: 'BR-01', city: 'Islamabad', address: 'Sector F-7 Markaz', phone: '051-2651122', allowedCounters: 5, allowedOrderTabs: 15 },
     { name: 'Gulberg Outlet', code: 'BR-02', city: 'Lahore', address: 'Main Boulevard, Gulberg III', phone: '042-3578912', allowedCounters: 5, allowedOrderTabs: 15 }
@@ -237,11 +274,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const validateStep = (s: number): string | null => {
     if (s === 2) {
       if (!restaurantName.trim()) return 'Restaurant / brand name is required.';
-      if (deploymentMode === 'MultiBranch') {
+      if (isChain) {
         if (branches.some(b => !b.name.trim())) return 'Every branch needs a name — fill it in or remove the row.';
       } else if (!mainBranchName.trim()) {
         return 'Outlet branch name is required.';
       }
+      if (hasHeadOffice && !hqName.trim()) return 'Give the head office a name.';
     }
     if (s === 3) {
       if (!adminFullName.trim()) return 'Full name is required.';
@@ -275,6 +313,26 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     setLoading(true);
     setErrorMessage(null);
 
+    // The same answers go to either endpoint, so an on-prem install and a cloud signup with the
+    // same choices end up with the same structure.
+    const company = {
+      legalName: legalName.trim() || undefined,
+      tradeName: legalName.trim() && legalName.trim() !== restaurantName.trim() ? restaurantName.trim() : undefined,
+      taxRegistrationNumber: ntn.trim() || undefined,
+      salesTaxRegistrationNumber: strn.trim() || undefined
+    };
+    const headOffice = hasHeadOffice
+      ? {
+          name: hqName.trim() || undefined,
+          city: hqCity.trim() || undefined,
+          address: hqAddress.trim() || undefined,
+          holdsStock: hqHoldsStock
+        }
+      : undefined;
+    const policies = hasHeadOffice
+      ? { catalogControl, branchPricing, purchasingControl, allowNegativeStock }
+      : { allowNegativeStock };
+
     try {
       // ---- REGISTRATION: already-configured server → public signup (trial + package limits) ----
       if (signupMode) {
@@ -292,7 +350,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           businessType,
           packageKey: selectedPlan,
           deploymentMode: deploymentMode === 'MultiBranch' ? 'MultiBranch' : 'Standalone',
-          branches: deploymentMode === 'MultiBranch'
+          businessStructure: structure,
+          // A single shop still sends its one branch, so it gets the name typed for it.
+          branches: isChain
             ? branches
                 .filter(b => b.name.trim())
                 .map(b => ({
@@ -302,7 +362,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   address: b.address?.trim() || undefined,
                   phone: b.phone?.trim() || undefined
                 }))
-            : undefined
+            : [{
+                name: mainBranchName.trim(),
+                city: city.trim() || undefined,
+                address: address.trim() || undefined,
+                phone: phone.trim() || undefined
+              }],
+          company,
+          headOffice,
+          policies,
+          setUpAccounting: bookAccounts
         });
         // Deliberately no device-flag writes: this machine is already installed, and its
         // deployment mode belongs to it, not to the business just registered.
@@ -335,12 +404,17 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         mainBranchName,
         hqName,
         allowedCounters,
-        allowedOrderTabs: deploymentMode === 'Single' ? allowedOrderTabs : undefined,
+        allowedOrderTabs: isChain ? undefined : allowedOrderTabs,
         adminFullName,
         adminUsername,
         adminPin,
         seedStarterMenu,
-        branches: deploymentMode === 'MultiBranch' ? branches : undefined
+        branches: isChain ? branches : undefined,
+        businessStructure: structure,
+        company,
+        headOffice,
+        policies,
+        setUpAccounting: bookAccounts
       };
 
       await posApi.initializeSetup(payload);
@@ -365,7 +439,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
       // Navigate to destination. Unauthenticated, this lands on the login gate,
       // which is exactly where a freshly-installed system should start.
-      if (deploymentMode === 'MultiBranch') {
+      if (isChain) {
         navigate('/director');
       } else {
         navigate('/');
@@ -481,14 +555,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         {step === 1 && (
           <div className="space-y-5">
             <div className="text-center md:text-left space-y-1">
-              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your Restaurant Setup Mode</h2>
-              <p className="text-sm text-slate-500">A single shop runs POS + ERP together. A chain's Head Office runs the ERP while each restaurant runs POS — or pair this PC to an HQ that already exists.</p>
+              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">How is your business set up?</h2>
+              <p className="text-sm text-slate-500">A single shop runs the till and the back office together. With a head office, the office runs the back office for every location while the shops sell — or pair this PC to a head office that already exists.</p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {/* Single Restaurant Option */}
               <div
-                onClick={() => { setChoice('Single'); setMode('Single'); }}
+                onClick={() => chooseStructure('Single')}
                 className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
                   choice === 'Single'
                     ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
@@ -530,9 +604,50 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 </div>
               </div>
 
+              {/* One shop with a separate head office */}
+              <div
+                onClick={() => chooseStructure('SingleWithHq')}
+                className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
+                  choice === 'SingleWithHq'
+                    ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="relative w-11 h-11 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-600 shrink-0">
+                      <Briefcase className="w-5 h-5" />
+                      {choice === 'SingleWithHq' && (
+                        <span className="absolute -top-1.5 -right-1.5 drop-shadow">
+                          <CheckCircle2 className="w-4 h-4 fill-teal-500 text-white" />
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900">One Shop + Separate Head Office</h3>
+                  </div>
+                  <p className="text-sm text-slate-500">The shop sells. A separate office — another building, or a room with its own PC — runs accounts, buying and reports.</p>
+
+                  <ul className="space-y-2 text-sm text-slate-700 pt-3 border-t border-slate-200">
+                    <li className="flex items-center gap-2">
+                      <span className="text-teal-600 font-bold">✓</span> Tills at the shop, back office at the office
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-teal-600 font-bold">✓</span> Office staff never touch the till
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="text-teal-600 font-bold">✓</span> Add more branches later without starting over
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-4 pt-3 text-xs font-semibold text-teal-600">
+                  Head office is not counted as a location on your plan
+                </div>
+              </div>
+
               {/* Multi-Branch Chain Option */}
               <div
-                onClick={() => { setChoice('MultiBranch'); setMode('MultiBranch'); }}
+                onClick={() => chooseStructure('MultiBranch')}
                 className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-200 flex flex-col justify-between ${
                   choice === 'MultiBranch'
                     ? 'border-teal-500 bg-teal-50 shadow-lg shadow-teal-500/10 ring-1 ring-teal-500/40'
@@ -549,7 +664,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         </span>
                       )}
                     </div>
-                    <h3 className="text-lg font-bold text-slate-900">Head Office with Restaurants</h3>
+                    <h3 className="text-lg font-bold text-slate-900">Chain: Head Office + Branches</h3>
                   </div>
                   <p className="text-sm text-slate-500">Head Office runs the ERP only — accounting, supply &amp; staff. Each restaurant runs POS and connects back to HQ.</p>
 
@@ -777,7 +892,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               </div>
 
               {/* Mode-specific branch configuration */}
-              {deploymentMode === 'Single' ? (
+              {!isChain ? (
                 <div className="pt-3 border-t border-slate-200 space-y-3">
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                     <Store className="w-4 h-4 text-teal-600" /> Single Outlet Configuration
@@ -880,13 +995,22 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600">Central Head Office / Commissary Name</label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={hqName}
                       onChange={(e) => setHqName(e.target.value)}
                       placeholder="e.g. Royal Grill Head Office & Central Commissary"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                     />
+                    <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer pt-1">
+                      <input
+                        type="checkbox"
+                        checked={hqHoldsStock}
+                        onChange={(e) => setHqHoldsStock(e.target.checked)}
+                        className="w-4 h-4 accent-teal-500"
+                      />
+                      The head office keeps stock (a central store or kitchen that supplies the branches)
+                    </label>
                   </div>
 
                   <div className="space-y-1.5 pt-1 max-h-[26vh] overflow-y-auto pr-1">
@@ -992,6 +1116,158 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 </div>
               )}
+
+              {/* The separate office of a single shop */}
+              {structure === 'SingleShopWithHeadOffice' && (
+                <div className="pt-3 border-t border-slate-200 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                      <Briefcase className="w-4 h-4 text-teal-600" /> Head Office
+                    </h3>
+                    <p className="text-xs text-slate-500">A separate location with no till. Leave the address blank if it is in the same building as the shop.</p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Office Name</label>
+                      <input
+                        type="text"
+                        value={hqName}
+                        onChange={(e) => setHqName(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">City</label>
+                      <input
+                        type="text"
+                        value={hqCity}
+                        onChange={(e) => setHqCity(e.target.value)}
+                        placeholder={city || 'Same as the shop'}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Address</label>
+                      <input
+                        type="text"
+                        value={hqAddress}
+                        onChange={(e) => setHqAddress(e.target.value)}
+                        placeholder="Same as the shop"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={hqHoldsStock}
+                      onChange={(e) => setHqHoldsStock(e.target.checked)}
+                      className="w-4 h-4 accent-teal-500"
+                    />
+                    The office also keeps stock (a store room that supplies the shop)
+                  </label>
+                </div>
+              )}
+
+              {/* The legal entity */}
+              <div className="pt-3 border-t border-slate-200 space-y-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                    <Landmark className="w-4 h-4 text-teal-600" /> Company & Tax Numbers <span className="text-slate-400 font-normal">(optional)</span>
+                  </h3>
+                  <p className="text-xs text-slate-500">The registered name and numbers printed on receipts. You can add them later under Locations.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-600">Registered Legal Name</label>
+                    <input
+                      type="text"
+                      value={legalName}
+                      onChange={(e) => setLegalName(e.target.value)}
+                      placeholder={restaurantName || 'e.g. Royal Foods (Pvt) Ltd'}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-600">NTN</label>
+                    <input
+                      type="text"
+                      value={ntn}
+                      onChange={(e) => setNtn(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-600">Sales Tax Registration (STRN)</label>
+                    <input
+                      type="text"
+                      value={strn}
+                      onChange={(e) => setStrn(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Who decides what, and the books */}
+              <div className="pt-3 border-t border-slate-200 space-y-3">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <Scale className="w-4 h-4 text-teal-600" /> How You Run It
+                </h3>
+                {hasHeadOffice && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Who manages the item list and recipes?</label>
+                      <select
+                        value={catalogControl}
+                        onChange={(e) => setCatalogControl(e.target.value as CatalogControl)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      >
+                        <option value="HeadOfficeOnly">Head office only</option>
+                        <option value="BranchesMayEdit">Branch managers may edit it too</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-600">Who buys from suppliers?</label>
+                      <select
+                        value={purchasingControl}
+                        onChange={(e) => setPurchasingControl(e.target.value as PurchasingControl)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      >
+                        <option value="HeadOfficeBuys">Head office buys for every location</option>
+                        <option value="BranchesMayBuy">Each branch buys for itself</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer md:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={branchPricing}
+                        onChange={(e) => setBranchPricing(e.target.checked)}
+                        className="w-4 h-4 accent-teal-500"
+                      />
+                      Branches may charge their own prices (otherwise every branch charges the same price)
+                    </label>
+                  </div>
+                )}
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={allowNegativeStock}
+                    onChange={(e) => setAllowNegativeStock(e.target.checked)}
+                    className="w-4 h-4 accent-teal-500"
+                  />
+                  Keep selling when the system shows no stock left (an alert asks for a recount) — recommended until your first stock count
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bookAccounts}
+                    onChange={(e) => setBookAccounts(e.target.checked)}
+                    className="w-4 h-4 accent-teal-500"
+                  />
+                  Set up accounting now, so every sale, purchase and payment is booked from day one
+                </label>
+              </div>
             </div>
           </div>
         )}
@@ -1166,10 +1442,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
                   <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Deployment Architecture</span>
                   <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    {deploymentMode === 'Single' ? (
+                    {structure === 'SingleShop' ? (
                       <span className="text-teal-600 flex items-center gap-1"><Store className="w-4 h-4" /> Single Restaurant Outlet</span>
+                    ) : structure === 'SingleShopWithHeadOffice' ? (
+                      <span className="text-teal-600 flex items-center gap-1"><Briefcase className="w-4 h-4" /> One Shop + Separate Head Office</span>
                     ) : (
-                      <span className="text-teal-600 flex items-center gap-1"><Building2 className="w-4 h-4" /> Head Office with Restaurants</span>
+                      <span className="text-teal-600 flex items-center gap-1"><Building2 className="w-4 h-4" /> Chain: Head Office + Branches</span>
                     )}
                   </div>
                 </div>
@@ -1184,11 +1462,19 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
                   <span className="text-slate-500 uppercase tracking-wider font-semibold text-xs">Locations Configured</span>
                   <div className="text-slate-700">
-                    {deploymentMode === 'Single' ? (
+                    {structure === 'SingleShop' ? (
                       <span>1 Branch: {mainBranchName} ({city})</span>
+                    ) : structure === 'SingleShopWithHeadOffice' ? (
+                      <span>1 Shop: {mainBranchName} ({city}) + Head Office: {hqName}{hqHoldsStock ? ' (keeps stock)' : ''}</span>
                     ) : (
-                      <span>1 HQ ({hqName}) + {branches.length} Outlets ({branches.map(b => b.name).join(', ')})</span>
+                      <span>1 HQ ({hqName}{hqHoldsStock ? ', keeps stock' : ''}) + {branches.length} Outlets ({branches.map(b => b.name).join(', ')})</span>
                     )}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {legalName.trim() || restaurantName}
+                    {ntn.trim() && ` · NTN ${ntn.trim()}`}
+                    {strn.trim() && ` · STRN ${strn.trim()}`}
+                    {bookAccounts && ' · Accounting on from day one'}
                   </div>
                 </div>
 

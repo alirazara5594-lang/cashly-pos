@@ -37,7 +37,8 @@ import {
   Plug,
   Landmark,
   History,
-  Puzzle
+  Puzzle,
+  RotateCcw
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
@@ -168,6 +169,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Store,
           subItems: [
             { label: 'POS Terminal (Register)', path: '/', icon: Store },
+            { label: 'Returns & Refunds', path: '/returns', icon: RotateCcw },
             ...(isRetailBiz ? [] : [{ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat }]),
             ...(isRetailBiz ? [] : [{ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet }]),
             { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
@@ -384,6 +386,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
         label: 'Module Permissions',
         path: '/permissions',
         icon: Shield
+      });
+    }
+
+    // Locations belong to one business; the platform admin has none of its own.
+    if (can('admin') && !isPlatformSuperAdmin) {
+      adminItems.push({
+        id: 'locations',
+        label: 'Locations & Head Office',
+        path: '/locations',
+        icon: Landmark
       });
     }
 
