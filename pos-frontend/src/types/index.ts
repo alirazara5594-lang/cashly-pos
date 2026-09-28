@@ -441,6 +441,9 @@ export interface BranchStockItem {
   batchNumber?: string;
   expiryDate?: string;
   isLowStock: boolean;
+  /** False for a product this branch has never received or counted: it sells without a count
+   *  until Stock In or Adjust creates one. */
+  isTracked?: boolean;
 }
 
 export interface ZReportSummary {

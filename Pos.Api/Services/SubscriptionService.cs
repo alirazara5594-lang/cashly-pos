@@ -16,6 +16,12 @@ namespace Pos.Api.Services;
 // Nothing anywhere else compares a plan name. The rule is: ask for the CAPABILITY, never the
 // plan. `canUseFeature(org, "hq")` survives a pricing change; `if (tier == Professional)` does
 // not, and scatters the decision across files nobody remembers to update.
+//
+// It no longer resolves entitlements itself. It used to read plan rows directly, so it could not
+// see purchased add-ons or support grants while the entitlement engine (which the device and
+// package guards use) could: a customer who bought an extra branch was refused one here and
+// allowed it there. Every answer now comes from IEntitlementService, so the two cannot disagree.
+// What stays here is counting usage and keeping the subscription record.
 // ============================================================
 
 public sealed record FeatureCheck(
@@ -76,14 +82,27 @@ public interface ISubscriptionService
 
 public class SubscriptionService : ISubscriptionService
 {
+    private static readonly string[] LimitCodes =
+        { FeatureCodes.Locations, FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.Users };
+
     private readonly AppDbContext _db;
+    private readonly IEntitlementService _entitlements;
     private readonly ILogger<SubscriptionService> _log;
 
-    public SubscriptionService(AppDbContext db, ILogger<SubscriptionService> log)
+    public SubscriptionService(AppDbContext db, IEntitlementService entitlements, ILogger<SubscriptionService> log)
     {
         _db = db;
+        _entitlements = entitlements;
         _log = log;
     }
+
+    /// <summary>
+    /// Whether a login counts against the plan's user allowance. Only back-office logins do. The
+    /// people at the till, the pass and the tables are unlimited: charging per cashier makes a shop
+    /// share one PIN, and a shared PIN empties the audit log and the per-cashier reports.
+    /// </summary>
+    public static bool CountsAsBackOfficeUser(UserRole role) =>
+        role is not (UserRole.Cashier or UserRole.Waiter or UserRole.KitchenChef or UserRole.SuperAdmin);
 
     // ---------------------------------------------------------------- features
 
@@ -92,63 +111,76 @@ public class SubscriptionService : ISubscriptionService
 
     public async Task<FeatureCheck> CheckFeatureAsync(Guid tenantId, string featureCode)
     {
-        var (plan, feature) = await ResolveAsync(tenantId, featureCode);
-
-        if (plan == null)
-            // No subscription row yet. Fail OPEN rather than locking a paying customer out of
-            // their own data over a provisioning gap — the billing ladder is what enforces
-            // non-payment, not a missing row.
+        var ent = await TryGetEntitlementsAsync(tenantId);
+        if (ent == null)
+            // No such organisation. Fail OPEN rather than locking a paying customer out of their
+            // own data over a provisioning gap — the billing ladder is what enforces non-payment.
             return new FeatureCheck(featureCode, true, FeatureLevel.Full, null, null);
 
-        if (feature == null)
+        return BuildFeatureCheck(ent, featureCode, await PlanRowsAsync(ent.PlanKey));
+    }
+
+    public async Task<FeatureLevel> GetLevelAsync(Guid tenantId, string featureCode)
+        => (await CheckFeatureAsync(tenantId, featureCode)).Level;
+
+    private static FeatureCheck BuildFeatureCheck(EffectiveEntitlements ent, string featureCode, IReadOnlyList<PlanFeature> planRows)
+    {
+        if (FeatureCatalog.Find(featureCode)?.LimitType == FeatureLimitType.Count)
+        {
+            var limit = ent.LimitFor(featureCode);
+            var hasAny = limit is null or > 0;
+            return new FeatureCheck(featureCode, hasAny, hasAny ? FeatureLevel.Full : FeatureLevel.None, limit,
+                hasAny ? null : UpgradeMessage(featureCode, ent.PlanKey));
+        }
+
+        var on = ent.Capability(featureCode);
+        if (on == null)
             // A capability the plan has no opinion on. Anything not in the matrix is part of the
             // product, not an upsell, so an unknown code must not become an accidental paywall.
             return new FeatureCheck(featureCode, true, FeatureLevel.Full, null, null);
 
-        var allowed = feature.LimitType switch
-        {
-            FeatureLimitType.Boolean => feature.Enabled,
-            FeatureLimitType.Level => feature.Level != FeatureLevel.None,
-            FeatureLimitType.Count => feature.LimitValue is null or > 0,
-            _ => false
-        };
+        if (!on.Value)
+            return new FeatureCheck(featureCode, false, FeatureLevel.None, null, UpgradeMessage(featureCode, ent.PlanKey));
 
-        return new FeatureCheck(
-            featureCode,
-            allowed,
-            feature.Level,
-            feature.LimitValue,
-            allowed ? null : UpgradeMessage(featureCode, plan.Name));
+        // Depth is display only. A capability an add-on or support grant switched on, on a plan that
+        // does not include it, counts as Full.
+        var row = planRows.FirstOrDefault(r => string.Equals(r.FeatureCode, featureCode, StringComparison.OrdinalIgnoreCase));
+        var level = row is { LimitType: FeatureLimitType.Level, Level: not FeatureLevel.None } ? row.Level : FeatureLevel.Full;
+        return new FeatureCheck(featureCode, true, level, null, null);
     }
 
-    public async Task<FeatureLevel> GetLevelAsync(Guid tenantId, string featureCode)
+    private Task<List<PlanFeature>> PlanRowsAsync(string planKey)
     {
-        var (_, feature) = await ResolveAsync(tenantId, featureCode);
-        if (feature == null) return FeatureLevel.Full;
-        return feature.LimitType == FeatureLimitType.Level
-            ? feature.Level
-            : feature.Enabled ? FeatureLevel.Full : FeatureLevel.None;
+        var planCode = planKey.ToLowerInvariant();
+        return _db.PlanFeatures.AsNoTracking().IgnoreQueryFilters()
+            .Where(f => f.Plan != null && f.Plan.Code == planCode)
+            .ToListAsync();
     }
 
     // ---------------------------------------------------------------- limits
 
     public async Task<LimitCheck> CheckLimitAsync(Guid tenantId, string featureCode)
     {
-        var (plan, feature) = await ResolveAsync(tenantId, featureCode);
-        var inUse = await CountUsageAsync(tenantId, featureCode);
+        var ent = await TryGetEntitlementsAsync(tenantId);
+        return ent == null
+            ? new LimitCheck(featureCode, true, 0, null, null)
+            : await CheckLimitCoreAsync(ent, featureCode);
+    }
 
-        if (plan == null || feature == null)
-            return new LimitCheck(featureCode, true, inUse, null, null);
+    private async Task<LimitCheck> CheckLimitCoreAsync(EffectiveEntitlements ent, string featureCode)
+    {
+        var code = featureCode.ToLowerInvariant();
+        if (code is FeatureCodes.PosTerminals or FeatureCodes.Tablets)
+            return AggregateDeviceLimit(featureCode, ent.PlanKey, await DeviceUsageAsync(ent, DeviceTypeFor(code)));
 
-        if (feature.LimitValue == null)
-            return new LimitCheck(featureCode, true, inUse, null, null); // unlimited
+        var limit = ent.LimitFor(code);
+        var inUse = await CountUsageAsync(ent, code);
 
-        var limit = feature.LimitValue.Value;
-        if (inUse < limit) return new LimitCheck(featureCode, true, inUse, limit, null);
+        if (limit == null) return new LimitCheck(featureCode, true, inUse, null, null); // unlimited
+        if (inUse < limit.Value) return new LimitCheck(featureCode, true, inUse, limit, null);
 
-        var noun = FeatureCatalog.Find(featureCode)?.DisplayName ?? featureCode;
         return new LimitCheck(featureCode, false, inUse, limit,
-            $"Your {plan.Name} plan includes {limit} {noun.ToLowerInvariant()}. You are using {inUse}. " +
+            $"Your {ent.PlanKey} plan includes {limit} {Noun(code).ToLowerInvariant()}. You are using {inUse}. " +
             "Upgrade your plan to add more.");
     }
 
@@ -158,33 +190,95 @@ public class SubscriptionService : ISubscriptionService
     /// Counts LIVE configuration, not history: a retired terminal or an archived branch must not
     /// keep consuming an allowance, or a customer who tidied up would still be blocked.
     /// </summary>
-    private async Task<int> CountUsageAsync(Guid tenantId, string featureCode)
+    private async Task<int> CountUsageAsync(EffectiveEntitlements ent, string featureCode) => featureCode switch
     {
-        var now = DateTime.UtcNow;
-        var cutoff = now.AddHours(-Terminal.DeviceSlotCooldownHours);
+        FeatureCodes.Locations => await SellingBranches(ent).CountAsync(),
 
-        return featureCode switch
+        // Only back-office logins are metered; see CountsAsBackOfficeUser.
+        FeatureCodes.Users => await _db.Users.IgnoreQueryFilters()
+            .CountAsync(u => u.TenantId == ent.TenantId && u.IsActive
+                          && u.Role != UserRole.Cashier && u.Role != UserRole.Waiter
+                          && u.Role != UserRole.KitchenChef && u.Role != UserRole.SuperAdmin),
+
+        _ => 0
+    };
+
+    /// <summary>
+    /// The locations that sell. A head office that only runs the back office, and every warehouse,
+    /// cannot hold a till, so they are not locations the customer pays for.
+    /// </summary>
+    private IQueryable<Branch> SellingBranches(EffectiveEntitlements ent) =>
+        _db.Branches.IgnoreQueryFilters().Where(b => b.TenantId == ent.TenantId && b.CanSell);
+
+    private sealed record BranchDeviceUsage(Guid BranchId, string BranchName, int InUse, int? Limit);
+
+    private static TerminalType DeviceTypeFor(string code) =>
+        code == FeatureCodes.Tablets ? TerminalType.OrderTab : TerminalType.Counter;
+
+    /// <summary>
+    /// Devices of one class at each selling location, against that location's own allowance: the
+    /// plan's per-location figure plus any extra-device add-ons bought for that location. The same
+    /// rule IEntitlementService.CanAddDeviceAsync applies when a device is activated, read for every
+    /// location at once instead of one location at a time.
+    /// </summary>
+    private async Task<List<BranchDeviceUsage>> DeviceUsageAsync(EffectiveEntitlements ent, TerminalType type)
+    {
+        var branches = await SellingBranches(ent).Select(b => new { b.Id, b.Name }).ToListAsync();
+        var cutoff = DateTime.UtcNow.AddHours(-Terminal.DeviceSlotCooldownHours);
+
+        // Mirrors Terminal.OccupiesQuotaSlot: not revoked, and either live or retired within the cooldown.
+        var inUse = await _db.Terminals.IgnoreQueryFilters()
+            .Where(t => t.TenantId == ent.TenantId && t.TerminalType == type && t.RevokedAt == null
+                     && (t.DeactivatedAt == null || t.DeactivatedAt > cutoff))
+            .GroupBy(t => t.BranchId)
+            .Select(g => new { BranchId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.BranchId, x => x.Count);
+
+        var addOnKey = type == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
+        var extras = await _db.AddOnSubscriptions.IgnoreQueryFilters()
+            .Where(a => a.TenantId == ent.TenantId && a.AddOnKey == addOnKey && a.IsActive && a.BranchId != null)
+            .GroupBy(a => a.BranchId!.Value)
+            .Select(g => new { BranchId = g.Key, Quantity = g.Sum(a => a.Quantity) })
+            .ToDictionaryAsync(x => x.BranchId, x => x.Quantity);
+
+        var perLocation = ent.LimitFor(type == TerminalType.OrderTab ? FeatureCodes.Tablets : FeatureCodes.PosTerminals);
+        return branches.Select(b => new BranchDeviceUsage(
+                b.Id,
+                b.Name,
+                inUse.GetValueOrDefault(b.Id),
+                perLocation == null ? null : perLocation.Value + extras.GetValueOrDefault(b.Id)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The business-wide view of a per-location allowance, for the Subscription screen: devices in
+    /// use across every selling location against the sum of their allowances. Activation itself is
+    /// still checked per location, so "allowed" means some location has room.
+    /// </summary>
+    private static LimitCheck AggregateDeviceLimit(string code, string planKey, List<BranchDeviceUsage> usage)
+    {
+        var inUse = usage.Sum(u => u.InUse);
+        if (usage.Any(u => u.Limit == null)) return new LimitCheck(code, true, inUse, null, null); // unlimited
+
+        var limit = usage.Sum(u => u.Limit ?? 0);
+        var allowed = usage.Count == 0 || usage.Any(u => u.InUse < (u.Limit ?? 0));
+        return new LimitCheck(code, allowed, inUse, limit, allowed ? null :
+            $"Every location is using all the {Noun(code).ToLowerInvariant()} your {planKey} plan includes " +
+            $"({inUse} of {limit}). Add an extra device for a location, or upgrade your plan.");
+    }
+
+    private static string Noun(string code) => FeatureCatalog.Find(code)?.DisplayName ?? code;
+
+    private async Task<EffectiveEntitlements?> TryGetEntitlementsAsync(Guid tenantId)
+    {
+        try
         {
-            FeatureCodes.Locations => await _db.Branches.IgnoreQueryFilters()
-                .CountAsync(b => b.TenantId == tenantId),
-
-            FeatureCodes.PosTerminals => await _db.Terminals.IgnoreQueryFilters()
-                .CountAsync(t => t.TenantId == tenantId
-                              && t.TerminalType == TerminalType.Counter
-                              && t.RevokedAt == null
-                              && (t.DeactivatedAt == null || t.DeactivatedAt > cutoff)),
-
-            FeatureCodes.Tablets => await _db.Terminals.IgnoreQueryFilters()
-                .CountAsync(t => t.TenantId == tenantId
-                              && t.TerminalType == TerminalType.OrderTab
-                              && t.RevokedAt == null
-                              && (t.DeactivatedAt == null || t.DeactivatedAt > cutoff)),
-
-            FeatureCodes.Users => await _db.Users.IgnoreQueryFilters()
-                .CountAsync(u => u.TenantId == tenantId && u.IsActive),
-
-            _ => 0
-        };
+            return await _entitlements.GetAsync(tenantId);
+        }
+        catch (InvalidOperationException)
+        {
+            return null; // no such organisation
+        }
     }
 
     // ---------------------------------------------------------------- usage screen
@@ -193,16 +287,21 @@ public class SubscriptionService : ISubscriptionService
     {
         var sub = await GetSubscriptionAsync(tenantId);
         var plan = sub?.Plan;
+        var ent = await TryGetEntitlementsAsync(tenantId);
 
         var limits = new List<LimitCheck>();
-        foreach (var code in new[] { FeatureCodes.Locations, FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.Users })
-            limits.Add(await CheckLimitAsync(tenantId, code));
-
         var features = new Dictionary<string, FeatureCheck>(StringComparer.OrdinalIgnoreCase);
-        foreach (var def in FeatureCatalog.All)
+        if (ent != null)
         {
-            if (def.LimitType == FeatureLimitType.Count) continue; // already in limits
-            features[def.Code] = await CheckFeatureAsync(tenantId, def.Code);
+            foreach (var code in LimitCodes)
+                limits.Add(await CheckLimitCoreAsync(ent, code));
+
+            var planRows = await PlanRowsAsync(ent.PlanKey);
+            foreach (var def in FeatureCatalog.All)
+            {
+                if (def.LimitType == FeatureLimitType.Count) continue; // already in limits
+                features[def.Code] = BuildFeatureCheck(ent, def.Code, planRows);
+            }
         }
 
         return new SubscriptionUsage(
@@ -224,14 +323,25 @@ public class SubscriptionService : ISubscriptionService
         var sub = await GetSubscriptionAsync(tenantId);
         if (sub == null) return SubscriptionStatus.Active;
 
+        var ent = await TryGetEntitlementsAsync(tenantId);
+        if (ent == null) return sub.Status;
+
         var breaches = new List<string>();
-        foreach (var code in new[] { FeatureCodes.Locations, FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.Users })
+        foreach (var code in new[] { FeatureCodes.Locations, FeatureCodes.Users })
         {
-            var check = await CheckLimitAsync(tenantId, code);
+            var check = await CheckLimitCoreAsync(ent, code);
             if (check.Limit != null && check.InUse > check.Limit.Value)
+                breaches.Add($"{Noun(code)}: {check.InUse} in use, plan allows {check.Limit}");
+        }
+
+        // Device allowances are per location, so an overage is reported per location: "Gulberg: 3 POS
+        // terminals in use, plan allows 2" says what to retire; a business-wide total does not.
+        foreach (var code in new[] { FeatureCodes.PosTerminals, FeatureCodes.Tablets })
+        {
+            foreach (var branch in await DeviceUsageAsync(ent, DeviceTypeFor(code)))
             {
-                var noun = FeatureCatalog.Find(code)?.DisplayName ?? code;
-                breaches.Add($"{noun}: {check.InUse} in use, plan allows {check.Limit}");
+                if (branch.Limit != null && branch.InUse > branch.Limit.Value)
+                    breaches.Add($"{branch.BranchName}: {branch.InUse} {Noun(code).ToLowerInvariant()} in use, plan allows {branch.Limit}");
             }
         }
 
@@ -290,6 +400,9 @@ public class SubscriptionService : ISubscriptionService
 
         await _db.SaveChangesAsync();
 
+        // The limits checked below must be the NEW plan's, so the engine recomputes first.
+        await _entitlements.RecomputeAsync(tenantId);
+
         // A downgrade may leave them over limit. Nothing is deleted — they are flagged, warned,
         // and prevented from adding more until they fit.
         await ReconcileOverLimitAsync(tenantId);
@@ -302,21 +415,38 @@ public class SubscriptionService : ISubscriptionService
 
     private async Task<OrganizationSubscription?> GetSubscriptionAsync(Guid tenantId)
     {
+        var tenant = await _db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId);
+        if (tenant == null) return null;
+        var tierCode = tenant.Tier.ToString().ToLowerInvariant();
+
         var sub = await _db.OrganizationSubscriptions.IgnoreQueryFilters()
             .Include(s => s.Plan)
             .Where(s => s.TenantId == tenantId)
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync();
 
-        if (sub != null) return sub;
+        if (sub != null)
+        {
+            // The platform console moves a tenant between plans by writing Tenant.Tier, which is also
+            // what the entitlement engine reads. Follow it here, or the Subscription screen names one
+            // plan while the limits being enforced belong to another.
+            if (sub.Plan?.Code != tierCode)
+            {
+                var current = await _db.Plans.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.Code == tierCode);
+                if (current != null)
+                {
+                    sub.PlanId = current.Id;
+                    sub.Plan = current;
+                    sub.UpdatedAt = DateTime.UtcNow;
+                    await _db.SaveChangesAsync();
+                }
+            }
+            return sub;
+        }
 
         // Backfill on first read: tenants created before this system existed still carry a Tier,
         // which is enough to place them on the equivalent plan without anyone doing anything.
-        var tenant = await _db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId);
-        if (tenant == null) return null;
-
-        var plan = await _db.Plans.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(p => p.Code == tenant.Tier.ToString().ToLowerInvariant());
+        var plan = await _db.Plans.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.Code == tierCode);
         if (plan == null) return null;
 
         sub = new OrganizationSubscription
@@ -333,17 +463,6 @@ public class SubscriptionService : ISubscriptionService
         _db.OrganizationSubscriptions.Add(sub);
         await _db.SaveChangesAsync();
         return sub;
-    }
-
-    private async Task<(Plan? Plan, PlanFeature? Feature)> ResolveAsync(Guid tenantId, string featureCode)
-    {
-        var sub = await GetSubscriptionAsync(tenantId);
-        if (sub?.Plan == null) return (null, null);
-
-        var feature = await _db.PlanFeatures.AsNoTracking().IgnoreQueryFilters()
-            .FirstOrDefaultAsync(f => f.PlanId == sub.PlanId && f.FeatureCode == featureCode.ToLowerInvariant());
-
-        return (sub.Plan, feature);
     }
 
     private static string UpgradeMessage(string featureCode, string planName)

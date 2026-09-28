@@ -533,14 +533,23 @@ export const InventoryManagement: React.FC = () => {
                           {item.sellingPricePKR.toLocaleString()}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
-                          <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
-                            item.isLowStock
-                              ? 'bg-rose-50 text-rose-600 border border-rose-200'
-                              : 'bg-teal-50 text-teal-600 border border-teal-200'
-                          }`}>
-                            {item.quantityOnHand} {item.unit}
-                          </span>
-                          <div className="text-[10px] text-slate-500 mt-0.5">Min: {item.minAlertLevel}</div>
+                          {item.isTracked === false ? (
+                            // Never received or counted at this branch; Stock In or Adjust starts its count.
+                            <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-50 text-slate-500 border border-slate-200">
+                              Not counted
+                            </span>
+                          ) : (
+                            <>
+                              <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
+                                item.isLowStock
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                  : 'bg-teal-50 text-teal-600 border border-teal-200'
+                              }`}>
+                                {item.quantityOnHand} {item.unit}
+                              </span>
+                              <div className="text-[10px] text-slate-500 mt-0.5">Min: {item.minAlertLevel}</div>
+                            </>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-slate-600">
                           {item.batchNumber ? (
@@ -556,7 +565,11 @@ export const InventoryManagement: React.FC = () => {
                           )}
                         </td>
                         <td className="py-3 px-3 text-center">
-                          {item.isLowStock ? (
+                          {item.isTracked === false ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-50 border border-slate-200 text-slate-500 text-[10px] font-semibold">
+                              <span>Not tracked</span>
+                            </span>
+                          ) : item.isLowStock ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-600 text-[10px] font-bold">
                               <AlertTriangle className="w-3 h-3" />
                               <span>LOW STOCK</span>

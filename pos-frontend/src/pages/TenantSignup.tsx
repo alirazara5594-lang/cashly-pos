@@ -205,11 +205,11 @@ export const TenantSignup: React.FC = () => {
   const selectedPackage = packages.find(p => p.packageKey === form.packageKey);
 
   /**
-   * How many locations this business needs in total. Head office counts as one alongside the
-   * branches beneath it, which is how the server counts them too.
+   * How many selling locations this business needs. Head office runs the back office and has no
+   * till, so it is not counted — the same rule the server applies.
    */
   const namedBranches = form.branches.filter(b => b.name.trim());
-  const locationsNeeded = form.deploymentMode === 'MultiBranch' ? namedBranches.length + 1 : 1;
+  const locationsNeeded = form.deploymentMode === 'MultiBranch' ? namedBranches.length : 1;
 
   /** Does a given plan cover the structure chosen at step 1? */
   const planCovers = (pkg: PublicPackage) => pkg.maxBranches >= locationsNeeded;
@@ -252,8 +252,8 @@ export const TenantSignup: React.FC = () => {
     if (!form.packageKey) return setError('Choose a plan to continue'), false;
     if (selectedPackage && !planCovers(selectedPackage)) {
       return setError(
-        `${selectedPackage.displayName} covers ${selectedPackage.maxBranches} location(s); ` +
-        `you need ${locationsNeeded} (head office plus ${namedBranches.length} branch(es)). ` +
+        `${selectedPackage.displayName} covers ${selectedPackage.maxBranches} selling location(s); ` +
+        `you listed ${namedBranches.length} branch(es). Head office is not counted. ` +
         'Pick a larger plan, or go back and remove a branch.'
       ), false;
     }
@@ -564,8 +564,8 @@ export const TenantSignup: React.FC = () => {
                 "covers your setup / too small" labels below have something to refer to. */}
             {form.deploymentMode === 'MultiBranch' && (
               <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
-                Your setup needs <strong className="text-slate-900">{locationsNeeded} locations</strong>{' '}
-                — head office plus {namedBranches.length} branch{namedBranches.length === 1 ? '' : 'es'}.
+                Your setup needs <strong className="text-slate-900">{locationsNeeded} selling location{locationsNeeded === 1 ? '' : 's'}</strong>
+                {' '}— one per branch. Head office is included free.
               </div>
             )}
 
@@ -619,7 +619,7 @@ export const TenantSignup: React.FC = () => {
                           {' · '}
                           {pkg.maxOrderTabs} tablet{pkg.maxOrderTabs > 1 ? 's' : ''}
                           {' · '}
-                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} users
+                          {pkg.maxUsers >= 999 ? 'unlimited' : pkg.maxUsers} back-office users (cashiers unlimited)
                           {pkg.hasKitchenDisplay ? ' · Kitchen display' : ''}
                           {pkg.hasDeliveryCOD ? ' · Delivery/COD' : ''}
                           {pkg.hasInventoryManagement ? ' · Inventory' : ''}

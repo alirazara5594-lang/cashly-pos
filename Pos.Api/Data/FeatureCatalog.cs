@@ -68,10 +68,10 @@ public static class FeatureCatalog
     {
         new(FeatureCodes.Hq, "Head Office", "Run a central office with branches reporting into it.", FeatureLimitType.Boolean, "Structure"),
         new(FeatureCodes.MultiBranch, "Multi-Branch", "Operate more than one location.", FeatureLimitType.Boolean, "Structure"),
-        new(FeatureCodes.Locations, "Locations", "Total locations, including head office.", FeatureLimitType.Count, "Structure"),
-        new(FeatureCodes.PosTerminals, "POS Terminals", "Tills that can take payment.", FeatureLimitType.Count, "Structure"),
-        new(FeatureCodes.Tablets, "Tablets", "Order-taking tablets and mPOS devices.", FeatureLimitType.Count, "Structure"),
-        new(FeatureCodes.Users, "Users", "Staff logins.", FeatureLimitType.Count, "Structure"),
+        new(FeatureCodes.Locations, "Locations", "Locations that sell. A head office that only runs the back office is not counted.", FeatureLimitType.Count, "Structure"),
+        new(FeatureCodes.PosTerminals, "POS Terminals", "Tills that can take payment, per location.", FeatureLimitType.Count, "Structure"),
+        new(FeatureCodes.Tablets, "Tablets", "Order-taking tablets and mPOS devices, per location.", FeatureLimitType.Count, "Structure"),
+        new(FeatureCodes.Users, "Back-Office Users", "Owner, manager, accountant and storekeeper logins. Cashiers, waiters and kitchen staff are not counted.", FeatureLimitType.Count, "Structure"),
 
         new(FeatureCodes.Inventory, "Inventory", "Stock on hand, counts and adjustments.", FeatureLimitType.Level, "Operations"),
         new(FeatureCodes.Purchasing, "Purchasing", "Purchase orders and goods receipt.", FeatureLimitType.Level, "Operations"),
@@ -99,6 +99,38 @@ public static class FeatureCatalog
 
     public static FeatureDefinition? Find(string code) =>
         All.FirstOrDefault(f => string.Equals(f.Code, code, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The capabilities that ALSO exist as a switch on the package table, keyed by feature code.
+    ///
+    /// The Package Pricing screen edits those switches, and the older endpoint guards read them, so
+    /// for these nine the package switch is the answer and the feature code simply mirrors it. Two
+    /// independent answers to "does Standard include stock transfers" is how a customer ends up
+    /// with the screen unlocked and the API behind it refusing.
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> PackageFlagFor =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [FeatureCodes.Kds] = nameof(SaaSPackageConfig.HasKitchenDisplay),
+            [FeatureCodes.DeliveryCod] = nameof(SaaSPackageConfig.HasDeliveryCOD),
+            [FeatureCodes.Inventory] = nameof(SaaSPackageConfig.HasInventoryManagement),
+            [FeatureCodes.StockTransfers] = nameof(SaaSPackageConfig.HasStockTransfers),
+            [FeatureCodes.DirectorDashboard] = nameof(SaaSPackageConfig.HasDirectorDashboard),
+            [FeatureCodes.ConsolidatedReports] = nameof(SaaSPackageConfig.HasConsolidatedReports),
+            [FeatureCodes.WhatsApp] = nameof(SaaSPackageConfig.HasWhatsAppMessaging),
+            [FeatureCodes.AdvancedReports] = nameof(SaaSPackageConfig.HasAdvancedReports),
+            [FeatureCodes.MultiBranch] = nameof(SaaSPackageConfig.HasMultiBranch)
+        };
+
+    /// <summary>The package quota column behind each countable feature code.</summary>
+    public static readonly IReadOnlyDictionary<string, string> QuotaKeyFor =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [FeatureCodes.Locations] = nameof(SaaSPackageConfig.MaxBranches),
+            [FeatureCodes.PosTerminals] = nameof(SaaSPackageConfig.MaxCounters),
+            [FeatureCodes.Tablets] = nameof(SaaSPackageConfig.MaxOrderTabs),
+            [FeatureCodes.Users] = nameof(SaaSPackageConfig.MaxUsers)
+        };
 
     // ============================================================
     // THE MATRIX

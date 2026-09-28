@@ -163,6 +163,44 @@ public class TenantSettings
     /// Branch.RegionCode. When false, the flat per-tenant DefaultTaxRate/DigitalTaxRate apply.
     /// </summary>
     public bool UseProvincialTax { get; set; } = false;
+
+    // --- Business policies: who decides what, once there is more than one location ----------
+    // Chosen at setup from the business's shape and editable later. The code checks these, never
+    // the business type, so a chain that lets its branches buy their own bread just says so.
+
+    /// <summary>Whether branch staff may add or change items, or only head office / the owner.</summary>
+    public CatalogControl CatalogControl { get; set; } = CatalogControl.BranchesMayEdit;
+
+    /// <summary>Whether a branch may sell an item at its own price (an airport branch charging more).</summary>
+    public bool BranchPricing { get; set; } = false;
+
+    /// <summary>Whether branches buy from suppliers themselves, or ask head office for stock.</summary>
+    public PurchasingControl PurchasingControl { get; set; } = PurchasingControl.BranchesMayBuy;
+
+    /// <summary>
+    /// Whether the till sells a counted item the system thinks is out of stock. True by default:
+    /// the item is physically at the counter, so the count is what is wrong, and refusing the sale
+    /// loses real money over a data problem. The count goes below zero and the branch is alerted.
+    /// </summary>
+    public bool AllowNegativeStock { get; set; } = true;
+}
+
+/// <summary>Who may add or change items and their prices.</summary>
+public enum CatalogControl
+{
+    /// <summary>Only tenant-wide users (the owner, head office staff) edit the catalogue.</summary>
+    HeadOfficeOnly = 1,
+    /// <summary>Branch staff with menu permission may edit it too.</summary>
+    BranchesMayEdit = 2
+}
+
+/// <summary>Who buys from suppliers.</summary>
+public enum PurchasingControl
+{
+    /// <summary>Head office buys; branches raise stock requests to it.</summary>
+    HeadOfficeBuys = 1,
+    /// <summary>Branches may raise purchase orders with suppliers themselves.</summary>
+    BranchesMayBuy = 2
 }
 
 /// <summary>
@@ -207,8 +245,28 @@ public class Branch
     public string Address { get; set; } = string.Empty;
     public string City { get; set; } = "Islamabad";
     public string Phone { get; set; } = string.Empty;
+    /// <summary>
+    /// Mirror of LocationType == HeadOffice. Kept because a great deal of existing code and every
+    /// client reads it; set both through Program.cs ApplyLocationType, never one alone.
+    /// </summary>
     public bool IsHeadOffice { get; set; } = false;
     public string? RegionCode { get; set; } // e.g. PK-PB, PK-SD, PK-KP, PK-BA, PK-ICT — resolves provincial tax jurisdiction
+
+    /// <summary>What this location is — see Models/OrganizationEntities.cs.</summary>
+    public LocationType LocationType { get; set; } = LocationType.Branch;
+
+    /// <summary>May this location ring up sales and hold a till? False for a head office that only
+    /// runs the back office, and always for a warehouse. Only selling locations count against the plan.</summary>
+    public bool CanSell { get; set; } = true;
+
+    /// <summary>Does this location keep stock — receive it, count it, transfer it? A pure office does not.</summary>
+    public bool HoldsStock { get; set; } = true;
+
+    /// <summary>The legal entity this location trades under.</summary>
+    public Guid? CompanyId { get; set; }
+
+    /// <summary>Optional grouping for chains (a <see cref="Region"/>). Not the tax region: that is RegionCode.</summary>
+    public Guid? RegionId { get; set; }
 
     // ------------------------------------------------------------------
     // DEPRECATED device quotas.
@@ -353,11 +411,17 @@ public class ProductModifier
     public decimal? IngredientQty { get; set; }
 }
 
+/// <summary>
+/// One location's stock of a raw ingredient. The ingredient itself is defined company-wide
+/// (<see cref="IngredientMaster"/>); this row is what this location holds and what it cost here.
+/// </summary>
 public class Ingredient
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid BranchId { get; set; }
+    /// <summary>The company-wide ingredient this row is stock of.</summary>
+    public Guid? MasterIngredientId { get; set; }
     public string Name { get; set; } = string.Empty; // e.g. "Burger Buns", "Chicken Patty", "Cheese Slice"
     public string Category { get; set; } = "General"; // Buns, Meat/Patty, Dairy, Sauces, Produce, Packaging
     public string Unit { get; set; } = "Piece"; // Piece, Gram, Kg, Litre, Slice, Can
@@ -391,6 +455,14 @@ public class BranchStock
     public decimal MinAlertLevel { get; set; } = 10;
     public string? BatchNumber { get; set; }
     public DateTime? ExpiryDate { get; set; }
+
+    /// <summary>
+    /// What this location's stock cost on average, updated on every receipt. Zero until the first
+    /// costed receipt, when the product's catalogue cost stands in. Kept per location because two
+    /// branches buying the same item at different prices each have their own cost.
+    /// </summary>
+    public decimal AverageCostPKR { get; set; }
+
     [Timestamp]
     public byte[]? RowVersion { get; set; }
 }
@@ -487,6 +559,10 @@ public class Order
     public decimal PriceVariancePKR { get; set; } = 0;
 
     public bool HasPriceVariance { get; set; } = false;
+
+    /// <summary>Everything refunded against this sale so far (see OrderReturn). The sale itself is
+    /// never edited; this is the running total of what came back.</summary>
+    public decimal RefundedPKR { get; set; } = 0;
 
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
     public ICollection<KitchenTicket> KitchenTickets { get; set; } = new List<KitchenTicket>();
@@ -780,13 +856,16 @@ public class StockTransferOrder
     public ICollection<StockTransferItem> Items { get; set; } = new List<StockTransferItem>();
 }
 
+/// <remarks>A line moves EITHER an ingredient (IngredientId) OR a finished product (ProductId).
+/// IngredientName is the line's item name whichever it is.</remarks>
 public class StockTransferItem
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TransferOrderId { get; set; }
     public StockTransferOrder? TransferOrder { get; set; }
-    public Guid IngredientId { get; set; }
+    public Guid? IngredientId { get; set; }
     public Ingredient? Ingredient { get; set; }
+    public Guid? ProductId { get; set; }
     public string IngredientName { get; set; } = string.Empty;
     public string Unit { get; set; } = "Piece";
     public decimal QuantityRequested { get; set; }
@@ -844,13 +923,16 @@ public class PurchaseOrder
     public ICollection<PurchaseOrderItem> Items { get; set; } = new List<PurchaseOrderItem>();
 }
 
+/// <remarks>A line buys EITHER an ingredient (IngredientId) OR a finished product for resale
+/// (ProductId). IngredientName is the line's item name whichever it is.</remarks>
 public class PurchaseOrderItem
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid PurchaseOrderId { get; set; }
     public PurchaseOrder? PurchaseOrder { get; set; }
-    public Guid IngredientId { get; set; }
+    public Guid? IngredientId { get; set; }
     public Ingredient? Ingredient { get; set; }
+    public Guid? ProductId { get; set; }
     public string IngredientName { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
     public string Unit { get; set; } = "Piece";
@@ -925,16 +1007,22 @@ public enum StockMovementType
     Adjustment = 5,
     Waste = 6,
     OpeningBalance = 7,
-    StockCount = 8
+    StockCount = 8,
+    /// <summary>Goods a customer brought back, put back on the shelf.</summary>
+    SaleReturn = 9
 }
 
+/// <remarks>One row is EITHER an ingredient movement (IngredientId) OR a finished-product
+/// movement (ProductId) — every change to a stock count, of either kind, is recorded here.</remarks>
 public class StockLedgerEntry
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid BranchId { get; set; }
-    public Guid IngredientId { get; set; }
+    public Guid? IngredientId { get; set; }
     public Ingredient? Ingredient { get; set; }
+    public Guid? ProductId { get; set; }
+    public Product? Product { get; set; }
     public StockMovementType MovementType { get; set; }
     /// <summary>Signed — positive for stock in, negative for stock out.</summary>
     public decimal QuantityChange { get; set; }
@@ -1362,6 +1450,8 @@ public class SupplierPayment
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>The location that paid, so its cash and books show the payment.</summary>
+    public Guid? BranchId { get; set; }
     public Guid SupplierId { get; set; }
     public Supplier? Supplier { get; set; }
     public decimal AmountPKR { get; set; }
@@ -1381,6 +1471,8 @@ public class CustomerPayment
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>The location that took the payment, so its cash and books show it.</summary>
+    public Guid? BranchId { get; set; }
     public Guid CustomerId { get; set; }
     public Customer? Customer { get; set; }
     public decimal AmountPKR { get; set; }
@@ -1511,4 +1603,8 @@ public class RefreshToken
     public Guid? ReplacedByTokenId { get; set; }
     public string? CreatedByIp { get; set; }
     public bool IsSuperAdminToken { get; set; } = false;
+
+    /// <summary>The branch this session is signed in at, when that is not the user's home branch
+    /// (see UserBranchAccess). Kept so a refresh does not quietly move the session back home.</summary>
+    public Guid? SessionBranchId { get; set; }
 }

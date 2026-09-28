@@ -40,6 +40,13 @@ public sealed record EffectiveEntitlements
 
     public required IReadOnlyDictionary<string, bool> Features { get; init; }
 
+    /// <summary>
+    /// Plan-matrix capabilities by feature code ("hq", "stock_transfers", "accounting" ...), with
+    /// add-ons and support overrides already applied. The nine codes that also exist as package
+    /// switches mirror <see cref="Features"/> exactly — see FeatureCatalog.PackageFlagFor.
+    /// </summary>
+    public required IReadOnlyDictionary<string, bool> Capabilities { get; init; }
+
     /// <summary>Vertical pack keys this tenant runs, primary first.</summary>
     public required IReadOnlyList<string> PackKeys { get; init; }
     public required string PrimaryPackKey { get; init; }
@@ -47,7 +54,31 @@ public sealed record EffectiveEntitlements
     /// <summary>Standalone shop, or head office with branches under it.</summary>
     public required DeploymentMode DeploymentMode { get; init; }
 
-    public bool Has(string flagName) => Features.TryGetValue(flagName, out var on) && on;
+    /// <summary>True when a package flag ("HasStockTransfers") or a feature code ("stock_transfers") is on.</summary>
+    public bool Has(string flagName) =>
+        (Features.TryGetValue(flagName, out var on) || Capabilities.TryGetValue(flagName, out on)) && on;
+
+    /// <summary>A capability by feature code, or null when the plan matrix has no opinion on it.</summary>
+    public bool? Capability(string featureCode) =>
+        Capabilities.TryGetValue(featureCode, out var on) ? on : null;
+
+    /// <summary>
+    /// The effective ceiling for a countable feature code, or null for unlimited. Device ceilings
+    /// (pos_terminals, tablets) are PER LOCATION: each shop gets its own tills, which is how
+    /// <see cref="IEntitlementService.CanAddDeviceAsync"/> has always enforced them.
+    /// </summary>
+    public int? LimitFor(string featureCode)
+    {
+        int? raw = featureCode.ToLowerInvariant() switch
+        {
+            FeatureCodes.Locations => MaxBranches,
+            FeatureCodes.PosTerminals => MaxCounters,
+            FeatureCodes.Tablets => MaxOrderTabs,
+            FeatureCodes.Users => MaxUsers,
+            _ => null
+        };
+        return raw >= FeatureCatalog.UnlimitedCount ? null : raw;
+    }
 
     /// <summary>
     /// Which app surface this session should see.
@@ -60,28 +91,21 @@ public sealed record EffectiveEntitlements
     /// this PC is the office and that one is the counter?". It knows because somebody said so
     /// when they activated it, not because of the address.
     ///
-    /// With no device (a plain browser login) it falls back to the org shape: head office of a
-    /// chain administers, a branch sells, a standalone shop does both.
+    /// With no device (a plain browser login) it falls back to the location: one that does not
+    /// sell (a head office that only runs the back office, a warehouse) gets the ERP; a branch of a
+    /// chain sells; a standalone shop does both.
     /// </summary>
-    public AppSurface SurfaceFor(bool isHeadOfficeBranch, TerminalType? deviceType = null)
+    public AppSurface SurfaceFor(bool locationSells, TerminalType? deviceType = null)
     {
         if (deviceType == TerminalType.BackOffice) return AppSurface.Erp;
         if (deviceType is TerminalType.Counter or TerminalType.OrderTab or TerminalType.KitchenDisplay)
             return AppSurface.Pos;
 
+        if (!locationSells) return AppSurface.Erp;   // head office or warehouse: back office only
         return DeploymentMode != DeploymentMode.HeadOffice
-            ? AppSurface.Hybrid            // standalone: one app that both sells and administers
-            : isHeadOfficeBranch
-                ? AppSurface.Erp           // chain head office: administers, never sells
-                : AppSurface.Pos;          // chain branch: sells, plus its own back office
+            ? AppSurface.Hybrid                       // standalone: one app that both sells and administers
+            : AppSurface.Pos;                         // chain branch: sells, plus its own back office
     }
-
-    /// <summary>
-    /// True when this tenant's head office is a pure back office. Used to refuse activating a
-    /// till at head office — a location that does not sell has no business holding a counter
-    /// licence, and charging for one would be charging for nothing.
-    /// </summary>
-    public bool HeadOfficeIsErpOnly => DeploymentMode == DeploymentMode.HeadOffice;
 
     // --- What the tenant's lifecycle state permits ---------------------------
     // One place decides what each status actually blocks, so the API, the UI and the device
@@ -182,12 +206,21 @@ public class EntitlementService : IEntitlementService
         // A trial that ran out since the snapshot was computed.
         var tenant = await _db.Tenants.AsNoTracking().IgnoreQueryFilters()
             .Where(t => t.Id == tenantId)
-            .Select(t => new { t.IsTrialActive, t.TrialEndsAt, t.Status })
+            .Select(t => new { t.IsTrialActive, t.TrialEndsAt, t.Status, t.Tier })
             .FirstOrDefaultAsync();
-        if (tenant != null && tenant.IsTrialActive && tenant.TrialEndsAt <= now && snapshot.Status == TenantStatus.Trial)
+        if (tenant == null) return false;
+        if (tenant.IsTrialActive && tenant.TrialEndsAt <= now && snapshot.Status == TenantStatus.Trial)
             return true;
+        if (tenant.Status != snapshot.Status) return true;
 
-        return tenant != null && tenant.Status != snapshot.Status;
+        // The plan moved without a recompute (the platform console writes Tenant.Tier directly), the
+        // snapshot predates feature codes being cached beside the package switches, or the package
+        // row was edited on the Package Pricing screen after this snapshot was taken.
+        var planKey = tenant.Tier.ToString();
+        if (snapshot.PlanKey != planKey) return true;
+        if (!snapshot.FeaturesJson.Contains($"\"{FeatureCodes.Hq}\"", StringComparison.Ordinal)) return true;
+        return await _db.SaaSPackageConfigs.AsNoTracking()
+            .AnyAsync(p => p.PackageKey == planKey && p.UpdatedAt > snapshot.ComputedAt);
     }
 
     public async Task<EffectiveEntitlements> RecomputeAsync(Guid tenantId)
@@ -198,6 +231,9 @@ public class EntitlementService : IEntitlementService
             ?? throw new InvalidOperationException($"Tenant {tenantId} not found.");
 
         // --- 1. Plan defaults ------------------------------------------------
+        // Quotas and the nine package switches come from the plan's package row: the price list the
+        // Package Pricing screen edits. Every other capability (hq, accounting depth, api ...) comes
+        // from the plan's feature rows. Both land in this one result, which every guard reads.
         var plan = await _db.SaaSPackageConfigs.AsNoTracking()
             .FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
 
@@ -210,6 +246,17 @@ public class EntitlementService : IEntitlementService
             name => name,
             name => plan != null && ReadPlanFlag(plan, name),
             StringComparer.OrdinalIgnoreCase);
+
+        var capabilities = await LoadPlanCapabilitiesAsync(tenant.Tier);
+
+        // An add-on or override may name a package flag ("HasStockTransfers") or a feature code
+        // ("stock_transfers"). Whichever it uses, both names move together.
+        void SetSwitch(string key, bool on)
+        {
+            if (features.ContainsKey(key)) features[key] = on;
+            else if (FeatureCatalog.PackageFlagFor.TryGetValue(key, out var flag)) features[flag] = on;
+            else if (capabilities.ContainsKey(key)) capabilities[key] = on;
+        }
 
         // --- 2. Purchased add-ons -------------------------------------------
         var addOns = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
@@ -233,7 +280,7 @@ public class EntitlementService : IEntitlementService
                     maxBranches += addOn.Quantity;
                     break;
                 default:
-                    if (features.ContainsKey(addOn.AddOnKey)) features[addOn.AddOnKey] = true;
+                    SetSwitch(addOn.AddOnKey, true);
                     break;
             }
         }
@@ -245,10 +292,12 @@ public class EntitlementService : IEntitlementService
 
         foreach (var ov in overrides.Where(o => o.IsInForce(now)))
         {
-            if (QuotaKeys.Contains(ov.Key))
+            // A quota may be named by its package column ("MaxBranches") or its feature code ("locations").
+            var quotaKey = FeatureCatalog.QuotaKeyFor.TryGetValue(ov.Key, out var column) ? column : ov.Key;
+            if (QuotaKeys.Contains(quotaKey))
             {
                 if (!int.TryParse(ov.Value, out var delta)) continue;
-                switch (ov.Key.ToLowerInvariant())
+                switch (quotaKey.ToLowerInvariant())
                 {
                     case "maxbranches": maxBranches += delta; break;
                     case "maxcounters": maxCounters += delta; break;
@@ -256,11 +305,15 @@ public class EntitlementService : IEntitlementService
                     case "maxusers": maxUsers += delta; break;
                 }
             }
-            else if (features.ContainsKey(ov.Key))
+            else
             {
-                features[ov.Key] = bool.TryParse(ov.Value, out var on) && on;
+                SetSwitch(ov.Key, bool.TryParse(ov.Value, out var on) && on);
             }
         }
+
+        // The mirrored nine follow their package switch, whichever name the grant used.
+        foreach (var (code, flag) in FeatureCatalog.PackageFlagFor)
+            capabilities[code] = features.TryGetValue(flag, out var on) && on;
 
         // A quota can never go below zero however the deltas stack up.
         maxBranches = Math.Max(0, maxBranches);
@@ -295,7 +348,10 @@ public class EntitlementService : IEntitlementService
         snapshot.MaxCounters = maxCounters;
         snapshot.MaxOrderTabs = maxOrderTabs;
         snapshot.MaxUsers = maxUsers;
-        snapshot.FeaturesJson = JsonSerializer.Serialize(features);
+        // Package flags and feature codes share one JSON column; the two name sets never overlap
+        // ("HasX" versus snake_case), and Materialize splits them back apart.
+        snapshot.FeaturesJson = JsonSerializer.Serialize(
+            features.Concat(capabilities).ToDictionary(kv => kv.Key, kv => kv.Value));
         snapshot.Status = status;
         snapshot.ComputedAt = now;
 
@@ -340,6 +396,27 @@ public class EntitlementService : IEntitlementService
         _ => false
     };
 
+    /// <summary>
+    /// The plan's on/off answer for each capability in its feature rows. Countable rows are skipped:
+    /// quotas come from the package row. A plan whose rows are missing falls back to the catalogue's
+    /// own matrix rather than to "nothing", which would quietly lock a paying customer out.
+    /// </summary>
+    private async Task<Dictionary<string, bool>> LoadPlanCapabilitiesAsync(SubscriptionTier tier)
+    {
+        var planCode = tier.ToString().ToLowerInvariant();
+        var rows = await _db.PlanFeatures.AsNoTracking().IgnoreQueryFilters()
+            .Where(f => f.Plan != null && f.Plan.Code == planCode)
+            .ToListAsync();
+        if (rows.Count == 0) rows = FeatureCatalog.BuildFeatureRows(Guid.Empty, planCode);
+
+        var capabilities = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows.Where(r => r.LimitType != FeatureLimitType.Count))
+            capabilities[row.FeatureCode] = row.LimitType == FeatureLimitType.Level
+                ? row.Level != FeatureLevel.None
+                : row.Enabled;
+        return capabilities;
+    }
+
     private async Task<(List<string> Keys, string Primary)> GetPackKeysAsync(Guid tenantId, BusinessType? legacyFallback = null)
     {
         var rows = await _db.TenantVerticalPacks.AsNoTracking().IgnoreQueryFilters()
@@ -363,8 +440,12 @@ public class EntitlementService : IEntitlementService
         Guid tenantId, TenantEntitlementSnapshot snapshot, (List<string> Keys, string Primary) packs,
         DeploymentMode deploymentMode)
     {
-        var features = JsonSerializer.Deserialize<Dictionary<string, bool>>(snapshot.FeaturesJson)
-                       ?? new Dictionary<string, bool>();
+        var stored = JsonSerializer.Deserialize<Dictionary<string, bool>>(snapshot.FeaturesJson)
+                     ?? new Dictionary<string, bool>();
+
+        // Features keeps exactly the package flags it always carried: devices and the platform
+        // console list it wholesale. Everything else is a feature code.
+        var flagNames = new HashSet<string>(FeatureFlagNames, StringComparer.OrdinalIgnoreCase);
 
         return new EffectiveEntitlements
         {
@@ -376,7 +457,10 @@ public class EntitlementService : IEntitlementService
             MaxCounters = snapshot.MaxCounters,
             MaxOrderTabs = snapshot.MaxOrderTabs,
             MaxUsers = snapshot.MaxUsers,
-            Features = new Dictionary<string, bool>(features, StringComparer.OrdinalIgnoreCase),
+            Features = stored.Where(kv => flagNames.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
+            Capabilities = stored.Where(kv => !flagNames.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase),
             PackKeys = packs.Keys,
             PrimaryPackKey = packs.Primary,
             DeploymentMode = deploymentMode

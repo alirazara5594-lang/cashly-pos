@@ -1127,8 +1127,11 @@ using (var scope = app.Services.CreateScope())
             -- actually have outlets beneath head office, so a chain set up before this column
             -- existed lands on the right surface without anyone re-registering.
             ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""DeploymentMode"" integer NOT NULL DEFAULT 1;
+            -- Only a business that actually has a head office location is a chain. Counting rows
+            -- alone would turn a single shop into one the moment it added a store room.
             UPDATE ""Tenants"" t SET ""DeploymentMode"" = 2
             WHERE t.""DeploymentMode"" = 1
+              AND EXISTS (SELECT 1 FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"" AND b.""IsHeadOffice"")
               AND (SELECT COUNT(*) FROM ""Branches"" b WHERE b.""TenantId"" = t.""Id"") > 1;
 
             -- (Removed) Three UPDATEs here used to force HasMultiBranch=true and raise Starter and
@@ -1442,6 +1445,31 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// Schema the current code depends on. Its own block, outside the one above, so it still runs when
+// that block stops early (a failed migration, a seeder error): every sale needs a number, and every
+// location needs to know whether it sells. Each step is idempotent and isolated from the others.
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    foreach (var (name, step) in new (string, Func<AppDbContext, Task>)[]
+    {
+        ("Document numbering", EnsureDocumentNumberingSchemaAsync),
+        ("Organisation structure", EnsureOrganizationSchemaAsync),
+        ("Master data and stock ledger", EnsureMasterDataSchemaAsync),
+        ("Returns, product purchasing and transfers", EnsureModulesSchemaAsync)
+    })
+    {
+        try
+        {
+            await step(db);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Schema Note] {name}: {ex.Message}");
+        }
+    }
+}
+
 // Seed TenantSettings for existing tenants
 using (var scope = app.Services.CreateScope())
 {
@@ -1457,96 +1485,590 @@ using (var scope = app.Services.CreateScope())
 }
 });
 
-// --- Helper: Generate unique order number ---
-static async Task<string> GenerateOrderNumberAsync(AppDbContext db, string prefix = "ORD")
-{
-    var today = DateTime.UtcNow;
-    var dateStr = today.ToString("yyMMdd");
-    var lastOrder = await db.Orders
-        .Where(o => o.OrderNumber.StartsWith($"{prefix}-{dateStr}"))
-        .OrderByDescending(o => o.OrderNumber)
-        .Select(o => o.OrderNumber)
-        .FirstOrDefaultAsync();
+// ============================================================
+// DOCUMENT NUMBERING
+//
+// Every business numbers its own documents, and two tills asking at the same moment must never be
+// handed the same number. The old helpers read the highest existing number and added one, which
+// failed both ways: two requests — or two orders in one offline sync batch, which are only saved
+// at the end — read the same "highest" and collided, and because each business saw only its own
+// rows while the unique index spanned the whole platform, the second business to sell on any
+// given day collided with the first one's numbers.
+//
+// A counter row per business per series, bumped atomically in the database, fixes both. Number
+// formats are unchanged, so receipts and reports read exactly as before.
+// ============================================================
 
-    int seq = 1;
-    if (lastOrder != null)
+/// <summary>Creates the counter table and moves document-number uniqueness to per business.
+/// Idempotent; run at startup, and again on demand if a sale beats startup to it.</summary>
+static Task EnsureDocumentNumberingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""DocumentSequences"" (
+        ""TenantId"" uuid NOT NULL,
+        ""SequenceKey"" text NOT NULL,
+        ""LastValue"" bigint NOT NULL,
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        CONSTRAINT ""PK_DocumentSequences"" PRIMARY KEY (""TenantId"", ""SequenceKey"")
+    );
+    DO $$
+    BEGIN
+        -- The new per-business index goes in before the platform-wide one comes out, so there is
+        -- never a moment with no uniqueness at all. Existing rows are already unique platform-wide,
+        -- so they are certainly unique per business.
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'Orders') THEN
+            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_Orders_TenantId_OrderNumber') THEN
+                CREATE UNIQUE INDEX ""IX_Orders_TenantId_OrderNumber"" ON ""Orders"" (""TenantId"", ""OrderNumber"");
+            END IF;
+            DROP INDEX IF EXISTS ""IX_Orders_OrderNumber"";
+        END IF;
+
+        -- PO and transfer numbers already had a (TenantId, number) index, but a non-unique one.
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'PurchaseOrders') THEN
+            IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PurchaseOrders_TenantId_PONumber'
+                       AND indexdef NOT LIKE 'CREATE UNIQUE INDEX%') THEN
+                DROP INDEX ""IX_PurchaseOrders_TenantId_PONumber"";
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_PurchaseOrders_TenantId_PONumber') THEN
+                CREATE UNIQUE INDEX ""IX_PurchaseOrders_TenantId_PONumber"" ON ""PurchaseOrders"" (""TenantId"", ""PONumber"");
+            END IF;
+            DROP INDEX IF EXISTS ""IX_PurchaseOrders_PONumber"";
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'StockTransferOrders') THEN
+            IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StockTransferOrders_TenantId_TransferNumber'
+                       AND indexdef NOT LIKE 'CREATE UNIQUE INDEX%') THEN
+                DROP INDEX ""IX_StockTransferOrders_TenantId_TransferNumber"";
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'IX_StockTransferOrders_TenantId_TransferNumber') THEN
+                CREATE UNIQUE INDEX ""IX_StockTransferOrders_TenantId_TransferNumber"" ON ""StockTransferOrders"" (""TenantId"", ""TransferNumber"");
+            END IF;
+            DROP INDEX IF EXISTS ""IX_StockTransferOrders_TransferNumber"";
+        END IF;
+    END $$;
+");
+
+/// <summary>
+/// The next value in one numbering series for one business. The first call for a series seeds it
+/// from the numbers already on file, so an existing business carries on from where it was.
+/// </summary>
+static async Task<long> NextDocumentSequenceAsync(
+    AppDbContext db, Guid tenantId, string sequenceKey, Func<Task<List<string>>> existingNumbers)
+{
+    List<long> bumped;
+    try
     {
-        var parts = lastOrder.Split('-');
-        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
-        {
-            seq = lastSeq + 1;
-        }
+        bumped = await BumpDocumentSequenceAsync(db, tenantId, sequenceKey);
     }
-    return $"{prefix}-{dateStr}-{seq:D4}";
+    catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P01" && db.Database.CurrentTransaction == null)
+    {
+        // The counter table is created at startup, but startup schema work runs in the background
+        // and a sale can arrive first on a brand-new database.
+        await EnsureDocumentNumberingSchemaAsync(db);
+        bumped = await BumpDocumentSequenceAsync(db, tenantId, sequenceKey);
+    }
+    if (bumped.Count > 0) return bumped[0];
+
+    // First number in this series. If two requests race to create it, the loser's insert turns
+    // into an increment, so they still come away with different numbers.
+    var seed = HighestNumberSuffix(await existingNumbers()) + 1;
+    var inserted = await db.Database.SqlQuery<long>($@"
+        INSERT INTO ""DocumentSequences"" (""TenantId"", ""SequenceKey"", ""LastValue"", ""UpdatedAt"")
+        VALUES ({tenantId}, {sequenceKey}, {seed}, now())
+        ON CONFLICT (""TenantId"", ""SequenceKey"")
+        DO UPDATE SET ""LastValue"" = ""DocumentSequences"".""LastValue"" + 1, ""UpdatedAt"" = now()
+        RETURNING ""LastValue"" AS ""Value""").ToListAsync();
+    return inserted[0];
+}
+
+static Task<List<long>> BumpDocumentSequenceAsync(AppDbContext db, Guid tenantId, string sequenceKey) =>
+    db.Database.SqlQuery<long>($@"
+        UPDATE ""DocumentSequences"" SET ""LastValue"" = ""LastValue"" + 1, ""UpdatedAt"" = now()
+        WHERE ""TenantId"" = {tenantId} AND ""SequenceKey"" = {sequenceKey}
+        RETURNING ""LastValue"" AS ""Value""").ToListAsync();
+
+/// <summary>The largest trailing number among existing document numbers: "ORD-260928-0042" gives 42.</summary>
+static long HighestNumberSuffix(IEnumerable<string> numbers)
+{
+    long highest = 0;
+    foreach (var number in numbers)
+    {
+        var dash = number.LastIndexOf('-');
+        if (dash >= 0 && long.TryParse(number[(dash + 1)..], out var value) && value > highest)
+            highest = value;
+    }
+    return highest;
+}
+
+// --- Helper: Generate unique order number ---
+static async Task<string> GenerateOrderNumberAsync(AppDbContext db, Guid tenantId, string prefix = "ORD")
+{
+    var series = $"{prefix}-{DateTime.UtcNow:yyMMdd}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.Orders.IgnoreQueryFilters()
+        .Where(o => o.TenantId == tenantId && o.OrderNumber.StartsWith(series + "-"))
+        .Select(o => o.OrderNumber)
+        .ToListAsync());
+    return $"{series}-{seq:D4}";
 }
 
 // --- Helper: Generate unique transfer number ---
-static async Task<string> GenerateTransferNumberAsync(AppDbContext db)
+// The series is keyed by month and day without the year, as the number is. The counter carries on
+// across years, so next year's TR-0928 numbers continue past this year's instead of repeating them.
+static async Task<string> GenerateTransferNumberAsync(AppDbContext db, Guid tenantId)
 {
-    var today = DateTime.UtcNow;
-    var dateStr = today.ToString("MMdd");
-    var last = await db.StockTransferOrders
-        .Where(t => t.TransferNumber.StartsWith($"TR-{dateStr}"))
-        .OrderByDescending(t => t.TransferNumber)
+    var series = $"TR-{DateTime.UtcNow:MMdd}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.StockTransferOrders.IgnoreQueryFilters()
+        .Where(t => t.TenantId == tenantId && t.TransferNumber.StartsWith(series + "-"))
         .Select(t => t.TransferNumber)
-        .FirstOrDefaultAsync();
-
-    int seq = 1;
-    if (last != null)
-    {
-        var parts = last.Split('-');
-        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
-        {
-            seq = lastSeq + 1;
-        }
-    }
-    return $"TR-{dateStr}-{seq:D4}";
+        .ToListAsync());
+    return $"{series}-{seq:D4}";
 }
 
 // --- Helper: Generate unique expense number ---
-// Scoped per tenant, unlike the PO/transfer numbers above: expenses are the one document a
-// tenant reads out to their own accountant, so EXP-0924-0001 meaning "my first expense this
-// month" matters more than it being unique across the whole platform.
+// Expenses are the document a tenant reads out to their own accountant, so EXP-0924-0001
+// meaning "my first expense that day" is the point of the format.
 static async Task<string> GenerateExpenseNumberAsync(AppDbContext db, Guid tenantId)
 {
-    var dateStr = DateTime.UtcNow.ToString("MMdd");
-    var prefix = $"EXP-{dateStr}";
-    var last = await db.Expenses
-        .Where(e => e.TenantId == tenantId && e.ExpenseNumber.StartsWith(prefix))
-        .OrderByDescending(e => e.ExpenseNumber)
+    var series = $"EXP-{DateTime.UtcNow:MMdd}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.Expenses.IgnoreQueryFilters()
+        .Where(e => e.TenantId == tenantId && e.ExpenseNumber.StartsWith(series + "-"))
         .Select(e => e.ExpenseNumber)
-        .FirstOrDefaultAsync();
-
-    int seq = 1;
-    if (last != null)
-    {
-        var parts = last.Split('-');
-        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq)) seq = lastSeq + 1;
-    }
-    return $"{prefix}-{seq:D4}";
+        .ToListAsync());
+    return $"{series}-{seq:D4}";
 }
 
 // --- Helper: Generate unique PO number ---
-static async Task<string> GeneratePONumberAsync(AppDbContext db)
+static async Task<string> GeneratePONumberAsync(AppDbContext db, Guid tenantId)
 {
-    var today = DateTime.UtcNow;
-    var dateStr = today.ToString("MMdd");
-    var last = await db.PurchaseOrders
-        .Where(p => p.PONumber.StartsWith($"PO-{dateStr}"))
-        .OrderByDescending(p => p.PONumber)
+    var series = $"PO-{DateTime.UtcNow:MMdd}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.PurchaseOrders.IgnoreQueryFilters()
+        .Where(p => p.TenantId == tenantId && p.PONumber.StartsWith(series + "-"))
         .Select(p => p.PONumber)
-        .FirstOrDefaultAsync();
+        .ToListAsync());
+    return $"{series}-{seq:D4}";
+}
 
-    int seq = 1;
-    if (last != null)
+// --- Helper: Generate unique stock request number ---
+static async Task<string> GenerateStockRequestNumberAsync(AppDbContext db, Guid tenantId)
+{
+    var seq = await NextDocumentSequenceAsync(db, tenantId, "SR", () => db.StockRequests.IgnoreQueryFilters()
+        .Where(sr => sr.TenantId == tenantId && sr.RequestNumber.StartsWith("SR-"))
+        .Select(sr => sr.RequestNumber)
+        .ToListAsync());
+    return $"SR-{seq:0000}";
+}
+
+// ============================================================
+// ORGANISATION STRUCTURE — location types, legal entities, regions, multi-branch access.
+// See Models/OrganizationEntities.cs for what each piece means.
+// ============================================================
+
+/// <summary>
+/// Creates the organisation tables and columns, and classifies existing locations once. Idempotent.
+///
+/// A chain's head office becomes a HeadOffice location that does not sell — unless it has tills or
+/// recent sales, in which case it keeps selling (a head office with a showroom): a location that
+/// has been trading must never lose the ability to trade because of a migration. A standalone
+/// shop that the old signup had flagged "head office" becomes the ordinary selling branch it
+/// always was. Every business gets a default legal entity, and its locations are placed in it.
+/// </summary>
+static Task EnsureOrganizationSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""Companies"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""LegalName"" text NOT NULL,
+        ""TradeName"" text,
+        ""TaxRegistrationNumber"" text,
+        ""SalesTaxRegistrationNumber"" text,
+        ""Address"" text,
+        ""IsDefault"" boolean NOT NULL DEFAULT false,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_Companies_TenantId"" ON ""Companies"" (""TenantId"");
+
+    CREATE TABLE IF NOT EXISTS ""Regions"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""Name"" text NOT NULL,
+        ""Code"" text,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Regions_TenantId_Name"" ON ""Regions"" (""TenantId"", ""Name"");
+
+    CREATE TABLE IF NOT EXISTS ""UserBranchAccess"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""UserId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_UserBranchAccess_UserId_BranchId"" ON ""UserBranchAccess"" (""UserId"", ""BranchId"");
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'Branches') THEN
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""LocationType"" integer NOT NULL DEFAULT 1;
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""CanSell"" boolean NOT NULL DEFAULT true;
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""HoldsStock"" boolean NOT NULL DEFAULT true;
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""CompanyId"" uuid;
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""RegionId"" uuid;
+
+            -- Read below; normally added by the main startup block, which may not have run.
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""RevokedAt"" timestamp with time zone;
+            ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""DeactivatedAt"" timestamp with time zone;
+
+            -- A chain's head office, not yet classified.
+            UPDATE ""Branches"" b
+            SET ""LocationType"" = 2,
+                ""CanSell"" = EXISTS (
+                        SELECT 1 FROM ""Terminals"" tm
+                        WHERE tm.""BranchId"" = b.""Id"" AND tm.""TerminalType"" IN (1, 2)
+                          AND tm.""RevokedAt"" IS NULL AND tm.""DeactivatedAt"" IS NULL)
+                    OR EXISTS (
+                        SELECT 1 FROM ""Orders"" o
+                        WHERE o.""BranchId"" = b.""Id"" AND o.""CreatedAt"" > now() - interval '90 days')
+            FROM ""Tenants"" t
+            WHERE b.""TenantId"" = t.""Id"" AND t.""DeploymentMode"" = 2
+              AND b.""IsHeadOffice"" AND b.""LocationType"" = 1;
+
+            -- A standalone shop is a shop.
+            UPDATE ""Branches"" b SET ""IsHeadOffice"" = false
+            FROM ""Tenants"" t
+            WHERE b.""TenantId"" = t.""Id"" AND t.""DeploymentMode"" = 1 AND b.""IsHeadOffice"";
+
+            -- Every business trades under at least one legal entity.
+            INSERT INTO ""Companies"" (""Id"", ""TenantId"", ""LegalName"", ""IsDefault"", ""CreatedAt"")
+            SELECT md5(random()::text || clock_timestamp()::text || t.""Id""::text)::uuid, t.""Id"", t.""Name"", true, now()
+            FROM ""Tenants"" t
+            WHERE NOT EXISTS (SELECT 1 FROM ""Companies"" c WHERE c.""TenantId"" = t.""Id"");
+
+            UPDATE ""Branches"" b SET ""CompanyId"" = c.""Id""
+            FROM ""Companies"" c
+            WHERE b.""CompanyId"" IS NULL AND c.""TenantId"" = b.""TenantId"" AND c.""IsDefault"";
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'RefreshTokens') THEN
+            ALTER TABLE ""RefreshTokens"" ADD COLUMN IF NOT EXISTS ""SessionBranchId"" uuid;
+        END IF;
+
+        -- Business policies. The defaults are exactly how the app behaved before they existed,
+        -- except AllowNegativeStock (see TenantSettings for why the till no longer refuses).
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'TenantSettings') THEN
+            ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""CatalogControl"" integer NOT NULL DEFAULT 2;
+            ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""BranchPricing"" boolean NOT NULL DEFAULT false;
+            ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""PurchasingControl"" integer NOT NULL DEFAULT 2;
+            ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""AllowNegativeStock"" boolean NOT NULL DEFAULT true;
+        END IF;
+    END $$;
+");
+
+/// <summary>
+/// Company-wide ingredients, per-location prices, one stock ledger for ingredients AND finished
+/// products, per-location average cost, and the location on customer and supplier payments.
+/// Idempotent. Links every existing ingredient row to one company-wide ingredient per distinct
+/// name, so what used to be matched by name is matched by identity from here on.
+/// </summary>
+static Task EnsureMasterDataSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""IngredientMasters"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""Name"" text NOT NULL,
+        ""Category"" text NOT NULL DEFAULT 'General',
+        ""Unit"" text NOT NULL DEFAULT 'Piece',
+        ""DefaultCostPKR"" numeric(18,2) NOT NULL DEFAULT 0,
+        ""MinAlertLevel"" numeric(18,2) NOT NULL DEFAULT 0,
+        ""SupplierName"" text,
+        ""IsActive"" boolean NOT NULL DEFAULT true,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_IngredientMasters_TenantId"" ON ""IngredientMasters"" (""TenantId"");
+    CREATE UNIQUE INDEX IF NOT EXISTS ""UX_IngredientMasters_Tenant_Name"" ON ""IngredientMasters"" (""TenantId"", lower(btrim(""Name"")));
+
+    CREATE TABLE IF NOT EXISTS ""BranchProductPrices"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""ProductId"" uuid NOT NULL,
+        ""SellingPricePKR"" numeric(18,2),
+        ""IsAvailable"" boolean NOT NULL DEFAULT true,
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_BranchProductPrices_BranchId_ProductId"" ON ""BranchProductPrices"" (""BranchId"", ""ProductId"");
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'Ingredients') THEN
+            ALTER TABLE ""Ingredients"" ADD COLUMN IF NOT EXISTS ""MasterIngredientId"" uuid;
+            CREATE INDEX IF NOT EXISTS ""IX_Ingredients_MasterIngredientId"" ON ""Ingredients"" (""MasterIngredientId"");
+
+            INSERT INTO ""IngredientMasters"" (""Id"", ""TenantId"", ""Name"", ""Category"", ""Unit"", ""DefaultCostPKR"", ""MinAlertLevel"", ""SupplierName"", ""IsActive"", ""CreatedAt"")
+            SELECT md5(random()::text || clock_timestamp()::text || g.""TenantId""::text || g.""Key"")::uuid,
+                   g.""TenantId"", g.""Name"", g.""Category"", g.""Unit"", g.""CostPerUnitPKR"", g.""MinAlertLevel"", g.""SupplierName"", true, now()
+            FROM (
+                SELECT DISTINCT ON (i.""TenantId"", lower(btrim(i.""Name"")))
+                       i.""TenantId"", lower(btrim(i.""Name"")) AS ""Key"", btrim(i.""Name"") AS ""Name"",
+                       i.""Category"", i.""Unit"", i.""CostPerUnitPKR"", i.""MinAlertLevel"", i.""SupplierName""
+                FROM ""Ingredients"" i
+                WHERE i.""MasterIngredientId"" IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM ""IngredientMasters"" m
+                                  WHERE m.""TenantId"" = i.""TenantId"" AND lower(btrim(m.""Name"")) = lower(btrim(i.""Name"")))
+                ORDER BY i.""TenantId"", lower(btrim(i.""Name"")), i.""Id""
+            ) g;
+
+            UPDATE ""Ingredients"" i SET ""MasterIngredientId"" = m.""Id""
+            FROM ""IngredientMasters"" m
+            WHERE i.""MasterIngredientId"" IS NULL
+              AND m.""TenantId"" = i.""TenantId"" AND lower(btrim(m.""Name"")) = lower(btrim(i.""Name""));
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'StockLedgerEntries') THEN
+            ALTER TABLE ""StockLedgerEntries"" ALTER COLUMN ""IngredientId"" DROP NOT NULL;
+            ALTER TABLE ""StockLedgerEntries"" ADD COLUMN IF NOT EXISTS ""ProductId"" uuid;
+            CREATE INDEX IF NOT EXISTS ""IX_StockLedgerEntries_BranchId_ProductId_CreatedAt""
+                ON ""StockLedgerEntries"" (""BranchId"", ""ProductId"", ""CreatedAt"");
+        END IF;
+
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'BranchStocks') THEN
+            ALTER TABLE ""BranchStocks"" ADD COLUMN IF NOT EXISTS ""AverageCostPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'SupplierPayments') THEN
+            ALTER TABLE ""SupplierPayments"" ADD COLUMN IF NOT EXISTS ""BranchId"" uuid;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'CustomerPayments') THEN
+            ALTER TABLE ""CustomerPayments"" ADD COLUMN IF NOT EXISTS ""BranchId"" uuid;
+        END IF;
+    END $$;
+");
+
+/// <summary>
+/// Returns, and purchase-order and transfer lines that carry finished products as well as
+/// ingredients. Idempotent.
+/// </summary>
+static Task EnsureModulesSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""OrderReturns"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""OrderId"" uuid NOT NULL,
+        ""ReturnNumber"" text NOT NULL,
+        ""RefundMethod"" integer NOT NULL,
+        ""SubTotalRefundedPKR"" numeric(18,2) NOT NULL,
+        ""TaxRefundedPKR"" numeric(18,2) NOT NULL,
+        ""TotalRefundedPKR"" numeric(18,2) NOT NULL,
+        ""Restocked"" boolean NOT NULL,
+        ""Reason"" text,
+        ""CreatedBy"" text NOT NULL,
+        ""CreatedByUserId"" uuid,
+        ""CreatedAt"" timestamp with time zone NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_OrderReturns_TenantId_ReturnNumber"" ON ""OrderReturns"" (""TenantId"", ""ReturnNumber"");
+    CREATE INDEX IF NOT EXISTS ""IX_OrderReturns_OrderId"" ON ""OrderReturns"" (""OrderId"");
+    CREATE INDEX IF NOT EXISTS ""IX_OrderReturns_BranchId_CreatedAt"" ON ""OrderReturns"" (""BranchId"", ""CreatedAt"");
+
+    CREATE TABLE IF NOT EXISTS ""OrderReturnLines"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""OrderReturnId"" uuid NOT NULL REFERENCES ""OrderReturns"" (""Id"") ON DELETE CASCADE,
+        ""OrderItemId"" uuid NOT NULL,
+        ""ProductId"" uuid NOT NULL,
+        ""ProductName"" text NOT NULL,
+        ""Quantity"" integer NOT NULL,
+        ""UnitPricePKR"" numeric(18,2) NOT NULL,
+        ""TotalPKR"" numeric(18,2) NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_OrderReturnLines_OrderReturnId"" ON ""OrderReturnLines"" (""OrderReturnId"");
+    CREATE INDEX IF NOT EXISTS ""IX_OrderReturnLines_OrderItemId"" ON ""OrderReturnLines"" (""OrderItemId"");
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'Orders') THEN
+            ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""RefundedPKR"" numeric(18,2) NOT NULL DEFAULT 0;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'PurchaseOrderItems') THEN
+            ALTER TABLE ""PurchaseOrderItems"" ALTER COLUMN ""IngredientId"" DROP NOT NULL;
+            ALTER TABLE ""PurchaseOrderItems"" ADD COLUMN IF NOT EXISTS ""ProductId"" uuid;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'StockTransferItems') THEN
+            ALTER TABLE ""StockTransferItems"" ALTER COLUMN ""IngredientId"" DROP NOT NULL;
+            ALTER TABLE ""StockTransferItems"" ADD COLUMN IF NOT EXISTS ""ProductId"" uuid;
+        END IF;
+    END $$;
+");
+
+/// <summary>
+/// The one way to set what a location is. Keeps the legacy IsHeadOffice flag in step with the
+/// type, and applies the type's defaults: a branch sells and holds stock, a head office does
+/// neither unless told to, and a warehouse holds stock but never sells.
+/// </summary>
+static void ApplyLocationType(Branch branch, LocationType type, bool? canSell = null, bool? holdsStock = null)
+{
+    branch.LocationType = type;
+    branch.IsHeadOffice = type == LocationType.HeadOffice;
+    branch.CanSell = type != LocationType.Warehouse && (canSell ?? type == LocationType.Branch);
+    branch.HoldsStock = holdsStock ?? type != LocationType.HeadOffice;
+}
+
+/// <summary>The legal entity a location belongs to when none is named, created on first need.</summary>
+static async Task<Company> GetOrCreateDefaultCompanyAsync(AppDbContext db, Guid tenantId, string fallbackLegalName)
+{
+    var company = await db.Companies.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.IsDefault);
+    company ??= db.Companies.Local.FirstOrDefault(c => c.TenantId == tenantId && c.IsDefault);
+    if (company != null) return company;
+
+    company = new Company { TenantId = tenantId, LegalName = fallbackLegalName, IsDefault = true };
+    db.Companies.Add(company);
+    return company;
+}
+
+static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+/// <summary>
+/// Creates a new business's legal entity and starting locations, and sets its shape. Cloud signup,
+/// on-prem installation and platform provisioning all come through here, so the same answers always
+/// produce the same structure. The caller saves.
+///
+///   SingleShop               → one branch that sells and runs its own back office
+///   SingleShopWithHeadOffice → a head office (no till) + one branch
+///   ChainWithHeadOffice      → a head office (no till) + every branch listed
+/// </summary>
+static (Company Company, Branch? HeadOffice, List<Branch> Branches) CreateInitialStructure(
+    AppDbContext db, Tenant tenant, string structure, SetupCompanyDto? companyDto, SetupHeadOfficeDto? headOfficeDto,
+    IReadOnlyList<SetupLocationSpec> branchSpecs, string? defaultTaxRegionCode)
+{
+    var company = new Company
     {
-        var parts = last.Split('-');
-        if (parts.Length >= 3 && int.TryParse(parts[2], out var lastSeq))
-        {
-            seq = lastSeq + 1;
-        }
+        TenantId = tenant.Id,
+        LegalName = NullIfBlank(companyDto?.LegalName) ?? tenant.Name,
+        TradeName = NullIfBlank(companyDto?.TradeName),
+        TaxRegistrationNumber = NullIfBlank(companyDto?.TaxRegistrationNumber),
+        SalesTaxRegistrationNumber = NullIfBlank(companyDto?.SalesTaxRegistrationNumber),
+        Address = NullIfBlank(companyDto?.Address) ?? NullIfBlank(tenant.Address),
+        IsDefault = true
+    };
+    db.Companies.Add(company);
+
+    // Codes are generated rather than trusted, so two locations cannot collide on one.
+    var usedCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    string UniqueCode(string? requested, string fallback)
+    {
+        var code = (NullIfBlank(requested) ?? fallback).ToUpperInvariant();
+        var candidate = code;
+        for (var n = 2; !usedCodes.Add(candidate); n++) candidate = $"{code}-{n}";
+        return candidate;
     }
-    return $"PO-{dateStr}-{seq:D4}";
+
+    Branch? headOffice = null;
+    if (structure != BusinessStructures.SingleShop)
+    {
+        headOffice = new Branch
+        {
+            TenantId = tenant.Id,
+            CompanyId = company.Id,
+            Name = NullIfBlank(headOfficeDto?.Name) ?? $"{tenant.Name} — Head Office",
+            Code = UniqueCode("HQ", "HQ"),
+            City = NullIfBlank(headOfficeDto?.City) ?? tenant.City ?? "",
+            Address = NullIfBlank(headOfficeDto?.Address) ?? tenant.Address ?? "",
+            Phone = NullIfBlank(headOfficeDto?.Phone) ?? tenant.ContactPhone,
+            RegionCode = defaultTaxRegionCode
+        };
+        // A separate office: no till. Whether it also keeps stock (a central store or commissary)
+        // is the owner's answer; a chain usually does, a single shop's office usually does not.
+        ApplyLocationType(headOffice, LocationType.HeadOffice, canSell: false,
+            holdsStock: headOfficeDto?.HoldsStock ?? structure == BusinessStructures.ChainWithHeadOffice);
+        db.Branches.Add(headOffice);
+    }
+
+    // The single-shop shapes have exactly one branch, however many were listed.
+    var specs = (structure == BusinessStructures.ChainWithHeadOffice ? branchSpecs : branchSpecs.Take(1))
+        .Where(s => !string.IsNullOrWhiteSpace(s.Name)).ToList();
+    if (specs.Count == 0)
+        specs.Add(new SetupLocationSpec($"{tenant.Name} — Main Branch", null, null, null, null, null));
+
+    var branches = new List<Branch>();
+    for (var i = 0; i < specs.Count; i++)
+    {
+        var spec = specs[i];
+        var branch = new Branch
+        {
+            TenantId = tenant.Id,
+            CompanyId = company.Id,
+            Name = spec.Name.Trim(),
+            Code = UniqueCode(spec.Code, structure == BusinessStructures.SingleShop ? "MAIN" : $"BR-{i + 1:D2}"),
+            City = NullIfBlank(spec.City) ?? tenant.City ?? "",
+            Address = NullIfBlank(spec.Address) ?? tenant.Address ?? "",
+            Phone = NullIfBlank(spec.Phone) ?? tenant.ContactPhone,
+            RegionCode = NullIfBlank(spec.TaxRegionCode) ?? defaultTaxRegionCode
+        };
+        ApplyLocationType(branch, LocationType.Branch);
+        db.Branches.Add(branch);
+        branches.Add(branch);
+    }
+
+    tenant.DeploymentMode = structure == BusinessStructures.SingleShop ? DeploymentMode.Standalone : DeploymentMode.HeadOffice;
+    return (company, headOffice, branches);
+}
+
+/// <summary>
+/// Sets a new business's policies from its shape, then applies whatever the owner chose instead.
+/// A single shop decides everything in the shop; a business with a head office runs the catalogue
+/// and the buying from there unless the owner says otherwise.
+/// </summary>
+static void ApplyInitialPolicies(TenantSettings settings, string structure, SetupPoliciesDto? chosen)
+{
+    var hasHeadOffice = structure != BusinessStructures.SingleShop;
+    settings.CatalogControl = chosen?.CatalogControl ?? (hasHeadOffice ? CatalogControl.HeadOfficeOnly : CatalogControl.BranchesMayEdit);
+    settings.BranchPricing = chosen?.BranchPricing ?? false;
+    settings.PurchasingControl = chosen?.PurchasingControl ?? (hasHeadOffice ? PurchasingControl.HeadOfficeBuys : PurchasingControl.BranchesMayBuy);
+    settings.AllowNegativeStock = chosen?.AllowNegativeStock ?? true;
+}
+
+/// <summary>
+/// Gives a business a separate head office. The shop that has been trading stays exactly what it
+/// was — a selling branch with its tills — and a NEW location is created for the office.
+///
+/// This used to turn the existing shop INTO the head office, which made the place that sells
+/// unable to add a till, and filed its sales history under the office.
+/// </summary>
+static async Task<(Branch? HeadOffice, bool AlreadyEnabled)> EnableHeadOfficeAsync(
+    AppDbContext db, Tenant tenant, EnableHeadOfficeDto? dto)
+{
+    var locations = await db.Branches.IgnoreQueryFilters().Where(b => b.TenantId == tenant.Id).ToListAsync();
+    var existing = locations.FirstOrDefault(b => b.LocationType == LocationType.HeadOffice);
+    if (tenant.DeploymentMode == DeploymentMode.HeadOffice && existing != null)
+        return (existing, true);
+
+    // Anything still flagged head office from the old single-shop signup is the shop.
+    foreach (var shop in locations.Where(b => b.IsHeadOffice && b.LocationType != LocationType.HeadOffice))
+        ApplyLocationType(shop, LocationType.Branch, canSell: true, holdsStock: shop.HoldsStock);
+
+    var company = await GetOrCreateDefaultCompanyAsync(db, tenant.Id, tenant.Name);
+    var code = "HQ";
+    for (var n = 2; locations.Any(b => string.Equals(b.Code, code, StringComparison.OrdinalIgnoreCase)); n++) code = $"HQ-{n}";
+
+    var headOffice = new Branch
+    {
+        TenantId = tenant.Id,
+        CompanyId = company.Id,
+        Name = NullIfBlank(dto?.Name) ?? $"{tenant.Name} — Head Office",
+        Code = code,
+        City = NullIfBlank(dto?.City) ?? tenant.City ?? "",
+        Address = NullIfBlank(dto?.Address) ?? tenant.Address ?? "",
+        Phone = NullIfBlank(dto?.Phone) ?? tenant.ContactPhone,
+        RegionCode = locations.FirstOrDefault()?.RegionCode
+    };
+    ApplyLocationType(headOffice, LocationType.HeadOffice, canSell: false, holdsStock: dto?.HoldsStock ?? false);
+    db.Branches.Add(headOffice);
+
+    tenant.DeploymentMode = DeploymentMode.HeadOffice;
+    return (headOffice, false);
+}
+
+/// <summary>A location's company and region must belong to the same business as the location.</summary>
+static async Task<IResult?> CheckCompanyAndRegionAsync(AppDbContext db, Guid tenantId, Guid? companyId, Guid? regionId)
+{
+    if (companyId.HasValue && !await db.Companies.IgnoreQueryFilters().AnyAsync(c => c.Id == companyId.Value && c.TenantId == tenantId))
+        return Results.BadRequest(new { message = "That company does not belong to this business." });
+    if (regionId.HasValue && !await db.Regions.IgnoreQueryFilters().AnyAsync(r => r.Id == regionId.Value && r.TenantId == tenantId))
+        return Results.BadRequest(new { message = "That region does not belong to this business." });
+    return null;
 }
 
 // ============================================================
@@ -1593,8 +2115,13 @@ static async Task<PlanChangeImpact> AssessPlanChangeAsync(
 
     var blockers = new List<string>();
 
-    var branchCount = await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == tenant.Id);
-    var userCount = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == tenant.Id && u.IsActive);
+    // Counted exactly as the entitlement engine counts them, so a preview never disagrees with what
+    // is then enforced: a head office that cannot sell is not a paid location, and only
+    // back-office logins are metered.
+    var sellingBranches = db.Branches.IgnoreQueryFilters().Where(b => b.TenantId == tenant.Id && b.CanSell);
+    var branchCount = await sellingBranches.CountAsync();
+    var userCount = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == tenant.Id && u.IsActive
+        && u.Role != UserRole.Cashier && u.Role != UserRole.Waiter && u.Role != UserRole.KitchenChef && u.Role != UserRole.SuperAdmin);
 
     var targetBranches = target?.MaxBranches ?? 1;
     var targetCounters = target?.MaxCounters ?? 1;
@@ -1602,13 +2129,12 @@ static async Task<PlanChangeImpact> AssessPlanChangeAsync(
     var targetUsers = target?.MaxUsers ?? 2;
 
     if (branchCount > targetBranches)
-        blockers.Add($"{branchCount} branches in use, new plan allows {targetBranches}.");
+        blockers.Add($"{branchCount} selling locations in use, new plan allows {targetBranches}.");
     if (userCount > targetUsers)
-        blockers.Add($"{userCount} active staff logins, new plan allows {targetUsers}.");
+        blockers.Add($"{userCount} active back-office logins, new plan allows {targetUsers}.");
 
     // Device limits are per branch, so an overage has to be reported per branch to be actionable.
-    var branches = await db.Branches.IgnoreQueryFilters()
-        .Where(b => b.TenantId == tenant.Id).Select(b => new { b.Id, b.Name }).ToListAsync();
+    var branches = await sellingBranches.Select(b => new { b.Id, b.Name }).ToListAsync();
 
     foreach (var branch in branches)
     {
@@ -1696,16 +2222,18 @@ static async Task<(Guid? TenantId, Guid? BranchId, IResult? Error)> ResolveScope
 /// impersonate a session). Caller must SaveChangesAsync after this stages the new row.
 /// </summary>
 static (string accessToken, string refreshToken, RefreshToken refreshTokenEntity) IssueTokenPair(
-    AppDbContext db, IConfiguration config, AppUser user, bool isSuperAdmin, string? clientIp)
+    AppDbContext db, IConfiguration config, AppUser user, bool isSuperAdmin, string? clientIp, Guid? sessionBranchId = null)
 {
     var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
     var key = Encoding.UTF8.GetBytes(config["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!");
 
+    // A session is pinned to ONE branch: the user's home branch, or another branch they cover
+    // (UserBranchAccess) when they signed in there. The caller has already checked that access.
     var claims = new Dictionary<string, object>
     {
         { "userId", user.Id.ToString() },
         { "tenantId", (isSuperAdmin ? Guid.Empty : user.TenantId).ToString() },
-        { "branchId", isSuperAdmin ? "" : (user.BranchId?.ToString() ?? "") },
+        { "branchId", isSuperAdmin ? "" : ((sessionBranchId ?? user.BranchId)?.ToString() ?? "") },
         { "role", user.Role.ToString() }
     };
     if (!isSuperAdmin)
@@ -1748,11 +2276,35 @@ static (string accessToken, string refreshToken, RefreshToken refreshTokenEntity
         TokenHash = refreshTokenHash,
         ExpiresAt = DateTime.UtcNow.AddDays(14),
         CreatedByIp = clientIp,
-        IsSuperAdminToken = isSuperAdmin
+        IsSuperAdminToken = isSuperAdmin,
+        SessionBranchId = isSuperAdmin ? null : sessionBranchId
     };
     db.RefreshTokens.Add(refreshTokenEntity);
 
     return (accessToken, rawRefreshToken, refreshTokenEntity);
+}
+
+/// <summary>
+/// Whether a branch-based user may work at a branch: their home branch, or one they have been
+/// given (UserBranchAccess). Tenant-wide users (owners, head office staff) are never pinned, so
+/// the question does not arise for them.
+/// </summary>
+static async Task<bool> CanWorkAtBranchAsync(AppDbContext db, AppUser user, Guid branchId)
+{
+    if (user.BranchId == branchId) return true;
+    if (!await db.Branches.IgnoreQueryFilters().AnyAsync(b => b.Id == branchId && b.TenantId == user.TenantId)) return false;
+    return await db.UserBranchAccess.IgnoreQueryFilters().AnyAsync(a => a.UserId == user.Id && a.BranchId == branchId);
+}
+
+/// <summary>The branch a new session should be pinned to, or an error when the user may not work there.</summary>
+static async Task<(Guid? SessionBranchId, IResult? Error)> ResolveSessionBranchAsync(AppDbContext db, AppUser user, Guid? requestedBranchId)
+{
+    // Tenant-wide users stay unpinned, and a request for the home branch is simply the default.
+    if (user.BranchId == null || requestedBranchId == null || requestedBranchId == user.BranchId) return (null, null);
+    if (!await CanWorkAtBranchAsync(db, user, requestedBranchId.Value))
+        return (null, Results.Json(new { message = "You are not set up to work at this branch. Ask a manager to add it to your account." },
+            statusCode: StatusCodes.Status403Forbidden));
+    return (requestedBranchId, null);
 }
 
 static async Task WriteAuditAsync(AppDbContext db, Guid tenantId, AppUser? user, string action, string entityType, Guid? entityId, string? oldValue, string? newValue)
@@ -1803,6 +2355,202 @@ static StockLedgerEntry RecordStockLedgerEntry(
 }
 
 // ============================================================
+// STOCK: company-wide ingredients, the product ledger, per-location cost
+// ============================================================
+
+/// <summary>
+/// The company-wide ingredient with this name, created on first use. The name match (trimmed,
+/// case-insensitive) is the same rule the unique index enforces.
+/// </summary>
+static async Task<IngredientMaster> GetOrCreateIngredientMasterAsync(
+    AppDbContext db, Guid tenantId, string name, string category, string unit, decimal costPKR, decimal minAlertLevel, string? supplierName)
+{
+    var key = name.Trim().ToLower();
+    var master = db.IngredientMasters.Local.FirstOrDefault(m => m.TenantId == tenantId && m.Name.Trim().ToLower() == key)
+        ?? await db.IngredientMasters.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(m => m.TenantId == tenantId && m.Name.Trim().ToLower() == key);
+    if (master != null) return master;
+
+    master = new IngredientMaster
+    {
+        TenantId = tenantId, Name = name.Trim(), Category = category, Unit = unit,
+        DefaultCostPKR = costPKR, MinAlertLevel = minAlertLevel, SupplierName = supplierName
+    };
+    db.IngredientMasters.Add(master);
+    return master;
+}
+
+/// <summary>
+/// Records one finished-product stock movement and keeps BranchStock.QuantityOnHand in step with
+/// it, exactly as RecordStockLedgerEntry does for ingredients. Every change to a product count goes
+/// through here, so the count can always be explained line by line. The caller saves.
+/// </summary>
+static StockLedgerEntry RecordProductStockMovement(
+    AppDbContext db, BranchStock stock, Guid tenantId, StockMovementType movementType, decimal quantityChange,
+    decimal unitCostPKR, string? referenceType, Guid? referenceId, string createdBy, string? notes = null)
+{
+    stock.QuantityOnHand += quantityChange;
+    var entry = new StockLedgerEntry
+    {
+        TenantId = tenantId,
+        BranchId = stock.BranchId,
+        ProductId = stock.ProductId,
+        MovementType = movementType,
+        QuantityChange = quantityChange,
+        UnitCostPKR = unitCostPKR,
+        BalanceAfter = stock.QuantityOnHand,
+        ReferenceType = referenceType,
+        ReferenceId = referenceId,
+        Notes = notes,
+        CreatedBy = createdBy
+    };
+    db.StockLedgerEntries.Add(entry);
+    return entry;
+}
+
+/// <summary>
+/// Folds a receipt into this location's average cost. Stock that was at or below zero carries no
+/// meaningful cost, so the receipt's cost simply becomes the average.
+/// </summary>
+static void ApplyReceiptToAverageCost(BranchStock stock, decimal quantityIn, decimal unitCostPKR)
+{
+    if (quantityIn <= 0 || unitCostPKR <= 0) return;
+    stock.AverageCostPKR = stock.QuantityOnHand <= 0 || stock.AverageCostPKR <= 0
+        ? unitCostPKR
+        : Math.Round((stock.QuantityOnHand * stock.AverageCostPKR + quantityIn * unitCostPKR) / (stock.QuantityOnHand + quantityIn), 2);
+}
+
+/// <summary>What one unit of this location's stock cost: its own average, or the catalogue cost until it has one.</summary>
+static decimal UnitCostOf(BranchStock stock, Product? product) =>
+    stock.AverageCostPKR > 0 ? stock.AverageCostPKR : product?.CostPricePKR ?? 0;
+
+/// <summary>
+/// Maps each recipe ingredient to the selling branch's own stock row.
+///
+/// Ingredients are stocked per branch, and a recipe points at ONE branch's row — whichever branch it
+/// was built against. Looking a recipe's ingredients up by id alone found nothing at every other
+/// branch, so their sales silently consumed no stock. Here the branch's row is found by id, then by
+/// the company-wide ingredient it is stock of, then by name, and — when asked — created with zero
+/// stock, so the consumption is recorded against the branch instead of being dropped.
+/// </summary>
+static async Task<Dictionary<Guid, Ingredient>> ResolveBranchIngredientsAsync(
+    AppDbContext db, Guid tenantId, Guid branchId, IReadOnlyCollection<Ingredient> recipeIngredients, bool createMissing)
+{
+    var resolved = new Dictionary<Guid, Ingredient>();
+    if (recipeIngredients.Count == 0) return resolved;
+
+    var ids = recipeIngredients.Select(i => i.Id).Distinct().ToList();
+    var masterIds = recipeIngredients.Where(i => i.MasterIngredientId != null).Select(i => i.MasterIngredientId).Distinct().ToList();
+    var names = recipeIngredients.Select(i => i.Name.Trim().ToLower()).Distinct().ToList();
+    await db.Ingredients
+        .Where(i => i.TenantId == tenantId && i.BranchId == branchId
+                 && (ids.Contains(i.Id) || masterIds.Contains(i.MasterIngredientId) || names.Contains(i.Name.Trim().ToLower())))
+        .LoadAsync();
+
+    // Read back through the change tracker rather than the query result, so a row created earlier in
+    // this same request (a previous order in one offline sync batch) is found instead of duplicated.
+    var branchRows = db.Ingredients.Local.Where(i => i.TenantId == tenantId && i.BranchId == branchId).ToList();
+
+    foreach (var source in recipeIngredients)
+    {
+        var match = branchRows.FirstOrDefault(i => i.Id == source.Id)
+            ?? (source.MasterIngredientId == null ? null : branchRows.FirstOrDefault(i => i.MasterIngredientId == source.MasterIngredientId))
+            ?? branchRows.FirstOrDefault(i => string.Equals(i.Name.Trim(), source.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        if (match == null && createMissing)
+        {
+            var masterId = source.MasterIngredientId ?? (await GetOrCreateIngredientMasterAsync(db, tenantId, source.Name,
+                source.Category, source.Unit, source.CostPerUnitPKR, source.MinAlertLevel, source.SupplierName)).Id;
+            match = new Ingredient
+            {
+                TenantId = tenantId, BranchId = branchId, MasterIngredientId = masterId, Name = source.Name.Trim(),
+                Category = source.Category, Unit = source.Unit, CostPerUnitPKR = source.CostPerUnitPKR, CurrentStock = 0,
+                MinAlertLevel = source.MinAlertLevel, SupplierName = source.SupplierName
+            };
+            db.Ingredients.Add(match);
+            branchRows.Add(match);
+            db.SmartAlerts.Add(new SmartAlert
+            {
+                TenantId = tenantId,
+                BranchId = branchId,
+                AlertType = "ingredient_added_by_recipe",
+                Severity = "warning",
+                Title = $"{match.Name} added to this branch's stock",
+                Message = $"A recipe sold here uses {match.Name}, which this branch had no stock record for. "
+                        + "It was added with zero stock so the sale could be recorded. Receive or count it to keep food cost accurate."
+            });
+        }
+
+        if (match != null) resolved[source.Id] = match;
+    }
+    return resolved;
+}
+
+/// <summary>
+/// Takes one sale's stock out of the selling branch: the finished goods the branch tracks, and the
+/// raw ingredients the recipes consume. Never refuses — by the time this runs the sale has either
+/// passed the till's own check or already happened offline — so a shortfall drives the count below
+/// zero and raises an alert. That is the truthful record: the goods did leave.
+/// </summary>
+static async Task ConsumeStockForSaleAsync(AppDbContext db, Order order, string actor)
+{
+    var lines = order.Items.Where(i => i.Quantity > 0).ToList();
+    if (lines.Count == 0) return;
+    var productIds = lines.Select(l => l.ProductId).Distinct().ToList();
+
+    // Finished goods — only those this branch actually counts. A product with no stock row here
+    // (a made-to-order dish, most menu items) is not tracked and has nothing to take out. Each
+    // movement goes through the ledger at this location's cost, which is what the sale's cost of
+    // goods is later posted from.
+    var stock = await db.BranchStocks.Include(s => s.Product)
+        .Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
+        .ToDictionaryAsync(s => s.ProductId);
+    foreach (var line in lines)
+    {
+        if (!stock.TryGetValue(line.ProductId, out var row)) continue;
+        var before = row.QuantityOnHand;
+        RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleConsumption, -line.Quantity,
+            UnitCostOf(row, row.Product), "Order", order.Id, actor, $"Order {order.OrderNumber}");
+        if (before >= 0 && row.QuantityOnHand < 0)
+            AddNegativeStockAlert(db, order.TenantId, order.BranchId, line.ProductName, row.QuantityOnHand, "");
+    }
+
+    // Raw ingredients consumed through recipes, drawn from THIS branch's rows.
+    var recipes = await db.ProductRecipeItems.Include(r => r.Ingredient)
+        .Where(r => productIds.Contains(r.ProductId)).ToListAsync();
+    if (recipes.Count == 0) return;
+
+    var sources = recipes.Where(r => r.Ingredient != null).Select(r => r.Ingredient!).DistinctBy(i => i.Id).ToList();
+    var ingredients = await ResolveBranchIngredientsAsync(db, order.TenantId, order.BranchId, sources, createMissing: true);
+
+    foreach (var line in lines)
+    {
+        foreach (var recipe in recipes.Where(r => r.ProductId == line.ProductId))
+        {
+            if (!ingredients.TryGetValue(recipe.IngredientId, out var ingredient)) continue;
+            var before = ingredient.CurrentStock;
+            RecordStockLedgerEntry(db, ingredient, order.TenantId, order.BranchId, StockMovementType.SaleConsumption,
+                -(recipe.QuantityRequired * line.Quantity), ingredient.CostPerUnitPKR, "Order", order.Id, actor, $"Order {order.OrderNumber}");
+            if (before >= 0 && ingredient.CurrentStock < 0)
+                AddNegativeStockAlert(db, order.TenantId, order.BranchId, ingredient.Name, ingredient.CurrentStock, ingredient.Unit);
+        }
+    }
+}
+
+/// <summary>Raised once, when a count first drops below zero — not on every sale after that.</summary>
+static void AddNegativeStockAlert(AppDbContext db, Guid tenantId, Guid branchId, string itemName, decimal quantity, string unit) =>
+    db.SmartAlerts.Add(new SmartAlert
+    {
+        TenantId = tenantId,
+        BranchId = branchId,
+        AlertType = "negative_stock",
+        Severity = "warning",
+        Title = $"{itemName} is below zero",
+        Message = $"Sales used more {itemName} than this branch had on record ({quantity:0.##}{(string.IsNullOrEmpty(unit) ? "" : " " + unit)}). "
+                + "The sales went through. Receive the stock or do a count to correct it."
+    });
+
+// ============================================================
 // Accounting helpers
 // ============================================================
 
@@ -1838,10 +2586,15 @@ static async Task EnsureChartOfAccountsSeededAsync(AppDbContext db, Guid tenantI
     await db.SaveChangesAsync();
 }
 
+// "Count the entries and add one" handed two sales posting at the same moment the same number;
+// the unique index then rejected one of them, and its entry was dropped with only a console line.
 static async Task<string> GenerateJournalEntryNumberAsync(AppDbContext db, Guid tenantId)
 {
-    var count = await db.JournalEntries.CountAsync(j => j.TenantId == tenantId);
-    return $"JE-{count + 1:00000}";
+    var seq = await NextDocumentSequenceAsync(db, tenantId, "JE", () => db.JournalEntries.IgnoreQueryFilters()
+        .Where(j => j.TenantId == tenantId && j.EntryNumber.StartsWith("JE-"))
+        .Select(j => j.EntryNumber)
+        .ToListAsync());
+    return $"JE-{seq:00000}";
 }
 
 /// <summary>
@@ -1893,6 +2646,77 @@ static async Task<JournalEntry> PostJournalEntryAsync(
     return entry;
 }
 
+/// <summary>
+/// Posts a paid sale to the general ledger, exactly once.
+///
+/// Only the online checkout used to do this, so a sale reached the books only if it was paid at
+/// the moment it was rung up while the till was online. Offline sales, cash-on-delivery orders and
+/// orders paid later through a payment gateway never did. Every place an order becomes paid now
+/// calls this; it checks for an existing entry first, so calling it twice is harmless.
+///
+/// Opt-in per tenant (skipped entirely if no Chart of Accounts is seeded) and never allowed to fail
+/// the sale itself. Call it after the order is saved: it saves only its own journal entry.
+/// </summary>
+static async Task PostSaleJournalIfNeededAsync(AppDbContext db, Order order)
+{
+    if (!order.IsPaid || order.Status == OrderStatus.Cancelled || order.TotalPKR <= 0) return;
+    if (!await HasAccountingAsync(db, order.TenantId)) return;
+
+    // The original sale entry, not a reversal of it: a voided sale keeps its reversed original.
+    var alreadyPosted = await db.JournalEntries.AnyAsync(j => j.TenantId == order.TenantId
+        && j.ReferenceType == "Order" && j.ReferenceId == order.Id && j.ReversalOfEntryId == null);
+    if (alreadyPosted) return;
+
+    JournalEntry? entry = null;
+    try
+    {
+        var settlementAccount = order.PaymentMethod switch
+        {
+            PaymentMethod.Cash => "1000",
+            PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
+            _ => "1100" // Split / CustomerKhata — approximated as receivable since it isn't fully cash-settled
+        };
+        var netSales = order.SubTotalPKR - order.DiscountPKR;
+        var lines = new List<(string, decimal, decimal)>
+        {
+            (settlementAccount, order.TotalPKR, 0),
+            ("4000", 0, netSales),
+            ("2100", 0, order.TaxPKR)
+        };
+
+        // The cost of what left the shelves for this sale, exactly as the stock ledger recorded it:
+        // counted products at this location's cost, recipe ingredients at theirs. Purchases put that
+        // cost INTO Inventory (1200); until now nothing took it out again, so the books showed every
+        // sale as pure profit.
+        var costOfSale = Math.Round(await db.StockLedgerEntries
+            .Where(e => e.TenantId == order.TenantId && e.ReferenceType == "Order" && e.ReferenceId == order.Id
+                     && e.MovementType == StockMovementType.SaleConsumption)
+            .SumAsync(e => (decimal?)(-e.QuantityChange * e.UnitCostPKR)) ?? 0m, 2);
+        if (costOfSale > 0)
+        {
+            lines.Add(("5000", costOfSale, 0));
+            lines.Add(("1200", 0, costOfSale));
+        }
+
+        // Dated when the sale happened: an offline sale belongs to the day the customer paid, not
+        // the day the terminal got its connection back.
+        entry = await PostJournalEntryAsync(db, order.TenantId, order.BranchId, order.CapturedAt ?? order.CreatedAt,
+            $"Sale — Order #{order.OrderNumber}", "Order", order.Id, order.CashierName ?? "System", lines);
+        await db.SaveChangesAsync();
+    }
+    catch (Exception ex)
+    {
+        // Accounting can lag or fail; the sale never can. Unstage the half-posted entry so the
+        // caller's next save does not trip over it.
+        if (entry != null)
+        {
+            foreach (var line in entry.Lines) db.Entry(line).State = EntityState.Detached;
+            db.Entry(entry).State = EntityState.Detached;
+        }
+        Console.WriteLine($"[Accounting] Failed to post journal entry for order {order.OrderNumber}: {ex.Message}");
+    }
+}
+
 // --- Helper: compose the canned WhatsApp copy for a given event type ---
 static string BuildWhatsAppMessage(string messageType, string orderNumber, string? itemSummary, decimal totalPKR, string? deliveryAddress, string? paymentMethod, string? customMessage) => messageType switch
 {
@@ -1920,11 +2744,25 @@ static async Task<(bool Skipped, bool Sent, string? Reason, Guid? LogId)> SendWh
     if (autoSendGate != null && !autoSendGate(config))
         return (true, false, "Auto-send is turned off for this message type.", null);
 
+    // Whether WhatsApp is on comes from the entitlement engine, so a WhatsApp add-on or a support
+    // grant counts; reading the package switch alone refused tenants who had bought the add-on.
+    Pos.Api.Services.EffectiveEntitlements entitlements;
+    try
+    {
+        entitlements = await new Pos.Api.Services.EntitlementService(db).GetAsync(tenantId);
+    }
+    catch (InvalidOperationException)
+    {
+        return (true, false, "This business no longer exists.", null);
+    }
+    if (!entitlements.Has(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
+        return (true, false, "WhatsApp messaging is not included in this package.", null);
+
+    // The monthly allowance belongs to the package's own WhatsApp; an add-on buyer on a package
+    // without it is not held to that package's allowance of zero.
     var actualTier = await db.Tenants.Where(t => t.Id == tenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
     var packageConfig = actualTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == actualTier.Value.ToString());
-    if (packageConfig != null && !packageConfig.HasWhatsAppMessaging)
-        return (true, false, "WhatsApp messaging is not included in this package.", null);
-    if (packageConfig != null && packageConfig.WhatsAppMessagesPerMonth != -1)
+    if (packageConfig != null && packageConfig.HasWhatsAppMessaging && packageConfig.WhatsAppMessagesPerMonth != -1)
     {
         var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
         var countThisMonth = await db.NotificationLogs.CountAsync(n =>
@@ -2385,11 +3223,17 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
         return Results.Unauthorized();
     }
 
+    // Signing in at another branch this user covers (an area manager, a cashier covering a
+    // second shop) pins the session there instead of their home branch.
+    var (sessionBranchId, branchError) = await ResolveSessionBranchAsync(db, user, dto.BranchId);
+    if (branchError != null) return branchError;
+
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
-    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null, $"IP {clientIp}");
+    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null,
+        sessionBranchId == null ? $"IP {clientIp}" : $"IP {clientIp}, at branch {sessionBranchId}");
 
-    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp);
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, sessionBranchId);
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -2403,7 +3247,8 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
             username = user.Username,
             role = user.Role.ToString(),
             tenantId = user.TenantId,
-            branchId = user.BranchId,
+            branchId = sessionBranchId ?? user.BranchId,
+            homeBranchId = user.BranchId,
             permissions = new
             {
                 user.CanViewFinancialReports,
@@ -2429,9 +3274,16 @@ authApi.MapPost("/refresh", async (AppDbContext db, HttpContext http, RefreshTok
     var user = await db.Users.FirstOrDefaultAsync(u => u.Id == existing.UserId && u.IsActive);
     if (user == null) return Results.Unauthorized();
 
+    // Stay at the branch the session was signed in at, if the user still covers it; access taken
+    // away since then sends the session back home rather than keeping it open where it no longer belongs.
+    Guid? sessionBranchId = null;
+    if (!existing.IsSuperAdminToken && existing.SessionBranchId.HasValue
+        && await CanWorkAtBranchAsync(db, user, existing.SessionBranchId.Value))
+        sessionBranchId = existing.SessionBranchId;
+
     // Rotate: the presented token is single-use. Revoking it here means a copy that gets replayed
     // after the legitimate client already refreshed is rejected, not silently accepted.
-    var (accessToken, newRefreshToken, newTokenEntity) = IssueTokenPair(db, builder.Configuration, user, existing.IsSuperAdminToken, clientIp);
+    var (accessToken, newRefreshToken, newTokenEntity) = IssueTokenPair(db, builder.Configuration, user, existing.IsSuperAdminToken, clientIp, sessionBranchId);
     existing.RevokedAt = DateTime.UtcNow;
     existing.ReplacedByTokenId = newTokenEntity.Id;
     await db.SaveChangesAsync();
@@ -2445,10 +3297,80 @@ authApi.MapPost("/refresh", async (AppDbContext db, HttpContext http, RefreshTok
             : new
             {
                 id = user.Id, fullName = user.FullName, username = user.Username, role = user.Role.ToString(),
-                tenantId = user.TenantId, branchId = user.BranchId
+                tenantId = user.TenantId, branchId = sessionBranchId ?? user.BranchId, homeBranchId = user.BranchId
             } as object
     });
 });
+
+// Move the current session to another branch this user covers, without signing out. Issues a
+// fresh token pair pinned there; the old refresh token, when sent, is retired.
+authApi.MapPost("/switch-branch", async (AppDbContext db, HttpContext http, SwitchBranchDto dto) =>
+{
+    var userId = http.GetUserId();
+    if (userId == null) return Results.Unauthorized();
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId.Value && u.IsActive);
+    if (user == null) return Results.Unauthorized();
+    if (user.BranchId == null)
+        return Results.BadRequest(new { message = "Your account already covers every location; choose one from the branch list instead." });
+
+    var (sessionBranchId, branchError) = await ResolveSessionBranchAsync(db, user, dto.BranchId);
+    if (branchError != null) return branchError;
+
+    if (!string.IsNullOrWhiteSpace(dto.RefreshToken))
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.RefreshToken)));
+        var old = await db.RefreshTokens.FirstOrDefaultAsync(r => r.TokenHash == hash && r.UserId == user.Id && r.RevokedAt == null);
+        if (old != null) old.RevokedAt = DateTime.UtcNow;
+    }
+
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, sessionBranchId);
+    await WriteAuditAsync(db, user.TenantId, user, "BranchSwitched", "AppUser", user.Id, null, $"Now at branch {dto.BranchId}");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        token = accessToken,
+        refreshToken,
+        user = new
+        {
+            id = user.Id, fullName = user.FullName, username = user.Username, role = user.Role.ToString(),
+            tenantId = user.TenantId, branchId = sessionBranchId ?? user.BranchId, homeBranchId = user.BranchId
+        }
+    });
+}).RequireAuthorization();
+
+// The branches the signed-in user may work at, for the branch switcher. Everyone sees their own
+// set: an owner every location, a branch-based user their home branch plus any they cover.
+// Mapped outside the auth group: that group's rate limiter is shared by every login on the
+// platform, and this is read on every app start.
+app.MapGet("/api/auth/my-branches", async (AppDbContext db, HttpContext http) =>
+{
+    var userId = http.GetUserId();
+    if (userId == null) return Results.Unauthorized();
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId.Value && u.IsActive);
+    if (user == null) return Results.Unauthorized();
+
+    var query = db.Branches.IgnoreQueryFilters().Where(b => b.TenantId == user.TenantId);
+    if (user.BranchId != null)
+    {
+        var covered = await db.UserBranchAccess.IgnoreQueryFilters()
+            .Where(a => a.UserId == user.Id).Select(a => a.BranchId).ToListAsync();
+        covered.Add(user.BranchId.Value);
+        query = query.Where(b => covered.Contains(b.Id));
+    }
+
+    var current = http.GetBranchId();
+    var rows = await query.OrderBy(b => b.Name)
+        .Select(b => new { b.Id, b.Name, b.Code, b.City, locationType = b.LocationType.ToString(), b.CanSell, b.IsHeadOffice })
+        .ToListAsync();
+    return Results.Ok(rows.Select(b => new
+    {
+        b.Id, b.Name, b.Code, b.City, b.locationType, b.CanSell, b.IsHeadOffice,
+        isHome = b.Id == user.BranchId,
+        isCurrent = b.Id == current
+    }));
+}).RequireAuthorization();
 
 authApi.MapPost("/logout", async (AppDbContext db, RefreshTokenDto dto) =>
 {
@@ -2560,6 +3482,14 @@ api.MapGet("/setup/status", async (AppDbContext db) =>
 
 api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 {
+    // Bootstrap only. This creates the FIRST business on a fresh install, with no login and a paid
+    // year. Once any business exists, new ones register through /auth/signup (trial, plan limits,
+    // slug checks), which is what the installation wizard already switches to on a configured
+    // server. Left open, anyone could mint a free paid account on a live server.
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync())
+        return Results.Json(new { message = "This server is already set up. Sign in, or register a new business through signup." },
+            statusCode: StatusCodes.Status409Conflict);
+
     var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
     slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
 
@@ -2567,6 +3497,8 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     // reject with a message the wizard can show instead of a raw database error.
     if (await db.Tenants.AnyAsync(t => t.Slug == slug))
         return Results.BadRequest(new { message = "A restaurant with a similar name already exists. Try a different name." });
+
+    var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
 
     var tenant = new Tenant
     {
@@ -2579,10 +3511,8 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         City = dto.City,
         Address = dto.Address,
         BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
-        Tier = dto.DeploymentMode == "MultiBranch" ? SubscriptionTier.Professional : SubscriptionTier.Standard,
-        // A multi-branch install IS a head office: setting it here (not only in the startup
-        // backfill) makes the ERP-only surface at HQ apply from the very first session.
-        DeploymentMode = dto.DeploymentMode == "MultiBranch" ? DeploymentMode.HeadOffice : DeploymentMode.Standalone,
+        Tier = structure == BusinessStructures.ChainWithHeadOffice ? SubscriptionTier.Professional : SubscriptionTier.Standard,
+        // The shape itself (DeploymentMode) is set by CreateInitialStructure below.
         IsActive = true,
         IsTrialActive = false,
         SubscriptionPaidUntil = DateTime.UtcNow.AddYears(1),
@@ -2593,12 +3523,13 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString() && p.IsActive);
     if (package != null)
     {
-        if (dto.DeploymentMode == "MultiBranch" && !package.HasMultiBranch)
+        if (structure != BusinessStructures.SingleShop && !package.HasMultiBranch)
             return Results.BadRequest(new { message = $"The {package.DisplayName} package does not include multi-branch deployment. Please upgrade." });
 
-        // HQ counts as a branch in MultiBranch mode; Single mode provisions exactly one.
-        var requestedBranchCount = dto.DeploymentMode == "MultiBranch"
-            ? 1 + Math.Max(1, dto.Branches?.Count ?? 1)
+        // Head office runs the back office and does not sell, so the plan does not count it.
+        // The single-shop shapes provision exactly one selling location.
+        var requestedBranchCount = structure == BusinessStructures.ChainWithHeadOffice
+            ? Math.Max(1, dto.Branches?.Count ?? 1)
             : 1;
         if (requestedBranchCount > package.MaxBranches)
             return Results.BadRequest(new { message = $"The {package.DisplayName} package allows a maximum of {package.MaxBranches} branch(es); {requestedBranchCount} were requested. Please upgrade or reduce the branch list." });
@@ -2606,81 +3537,20 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 
     db.Tenants.Add(tenant);
 
-    var createdBranches = new List<Branch>();
-
-    if (dto.DeploymentMode == "MultiBranch")
-    {
-        // 1. Central Commissary / Head Office
-        var hqBranch = new Branch
+    // The legal entity and the starting locations, built by the same helper cloud signup uses, so
+    // an on-prem install and a cloud account set up with the same answers look the same.
+    var branchSpecs = structure == BusinessStructures.ChainWithHeadOffice
+        ? (dto.Branches ?? new List<BranchInitDto>())
+            .Select(b => new SetupLocationSpec(b.Name, b.Code, b.City ?? dto.City, b.Address ?? dto.Address, b.Phone ?? dto.Phone, null))
+            .ToList()
+        : new List<SetupLocationSpec>
         {
-            Id = Guid.NewGuid(),
-            TenantId = tenant.Id,
-            Name = string.IsNullOrWhiteSpace(dto.HqName) ? $"{dto.RestaurantName} Head Office & Commissary" : dto.HqName.Trim(),
-            Code = "HQ-01",
-            Address = dto.Address ?? "Central Commissary / HQ",
-            City = dto.City ?? "Islamabad",
-            Phone = dto.Phone ?? "",
-            IsHeadOffice = true,
+            new(NullIfBlank(dto.MainBranchName) ?? $"{dto.RestaurantName} — Main Branch", null, dto.City, dto.Address, dto.Phone, null)
         };
-        db.Branches.Add(hqBranch);
-        createdBranches.Add(hqBranch);
-
-        // 2. Outlet branches
-        if (dto.Branches != null && dto.Branches.Count > 0)
-        {
-            int idx = 1;
-            foreach (var bDto in dto.Branches)
-            {
-                var branch = new Branch
-                {
-                    Id = Guid.NewGuid(),
-                    TenantId = tenant.Id,
-                    Name = bDto.Name.Trim(),
-                    Code = !string.IsNullOrWhiteSpace(bDto.Code) ? bDto.Code.Trim().ToUpper() : $"BR-0{idx}",
-                    Address = bDto.Address ?? dto.Address ?? "",
-                    City = bDto.City ?? dto.City ?? "Islamabad",
-                    Phone = bDto.Phone ?? dto.Phone ?? "",
-                    IsHeadOffice = false,
-                };
-                db.Branches.Add(branch);
-                createdBranches.Add(branch);
-                idx++;
-            }
-        }
-        else
-        {
-            var outlet1 = new Branch
-            {
-                Id = Guid.NewGuid(),
-                TenantId = tenant.Id,
-                Name = $"{dto.RestaurantName} - Main Outlet",
-                Code = "BR-01",
-                Address = dto.Address ?? "Commercial Sector",
-                City = dto.City ?? "Islamabad",
-                Phone = dto.Phone ?? "",
-                IsHeadOffice = false,
-            };
-            db.Branches.Add(outlet1);
-            createdBranches.Add(outlet1);
-        }
-    }
-    else
-    {
-        // Single Restaurant Mode
-        var singleBranch = new Branch
-        {
-            Id = Guid.NewGuid(),
-            TenantId = tenant.Id,
-            Name = string.IsNullOrWhiteSpace(dto.MainBranchName) ? $"{dto.RestaurantName} - Main Dining" : dto.MainBranchName.Trim(),
-            Code = "MAIN-01",
-            Address = dto.Address ?? "Main Location",
-            City = dto.City ?? "Islamabad",
-            Phone = dto.Phone ?? "",
-            IsHeadOffice = false,
-        };
-        db.Branches.Add(singleBranch);
-        createdBranches.Add(singleBranch);
-    }
+    var headOfficeDto = dto.HeadOffice ?? (NullIfBlank(dto.HqName) == null ? null
+        : new SetupHeadOfficeDto(dto.HqName, dto.City, dto.Address, dto.Phone, null));
+    var (_, headOffice, sellingBranches) = CreateInitialStructure(db, tenant, structure, dto.Company, headOfficeDto, branchSpecs, null);
+    var createdBranches = headOffice == null ? sellingBranches : sellingBranches.Prepend(headOffice).ToList();
 
     // Create Admin User
     var adminPin = string.IsNullOrWhiteSpace(dto.AdminPin) ? "1234" : dto.AdminPin.Trim();
@@ -2724,7 +3594,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 
         db.Products.AddRange(p1, p2, p3, p4, p5);
 
-        foreach (var branch in createdBranches.Where(b => !b.IsHeadOffice))
+        foreach (var branch in createdBranches.Where(b => b.CanSell))
         {
             for (int i = 1; i <= 8; i++)
             {
@@ -2758,11 +3628,14 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         ReceiptFooter = "Thank you for your visit!",
         AllowedPaymentMethods = dto.AllowedPaymentMethods ?? "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
     };
+    ApplyInitialPolicies(tenantSettings, structure, dto.Policies);
     db.TenantSettings.Add(tenantSettings);
 
     try
     {
         await db.SaveChangesAsync();
+        if (dto.SetUpAccounting)
+            await EnsureChartOfAccountsSeededAsync(db, tenant.Id);
     }
     catch (Exception ex)
     {
@@ -2773,13 +3646,15 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     return Results.Ok(new
     {
         success = true,
-        message = $"Successfully configured {tenant.Name} in {dto.DeploymentMode} mode.",
+        message = $"Successfully set up {tenant.Name}.",
         tenantId = tenant.Id,
         tenantName = tenant.Name,
-        deploymentMode = dto.DeploymentMode,
-        branches = createdBranches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice })
+        businessStructure = structure,
+        deploymentMode = structure == BusinessStructures.SingleShop ? "Single" : "MultiBranch",
+        branches = createdBranches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice, locationType = b.LocationType.ToString(), b.CanSell })
     });
-}).AllowAnonymous(); // bootstrap: creates the very first tenant + owner account
+}).AllowAnonymous() // bootstrap: creates the very first tenant + owner account
+  .RequireRateLimiting("auth");
 
 // --- Offline Batch Sync ---
 // An offline sale ALREADY HAPPENED. The customer was shown a price and handed over money at it.
@@ -2805,6 +3680,7 @@ api.MapPost("/sync/batch-orders", async (
     var actingUser = await accessor.GetCurrentUserAsync(http);
     var syncedResults = new List<object>();
     var pricedByOrder = new Dictionary<Guid, ServerPricedOrder>();
+    var createdOrders = new List<Order>();
 
     foreach (var dto in ordersList)
     {
@@ -2835,7 +3711,7 @@ api.MapPost("/sync/batch-orders", async (
             }
         }
 
-        var orderNumber = await GenerateOrderNumberAsync(db);
+        var orderNumber = await GenerateOrderNumberAsync(db, branch.TenantId);
         var order = new Order
         {
             TenantId = branch.TenantId,
@@ -2985,14 +3861,19 @@ api.MapPost("/sync/batch-orders", async (
             }
         }
 
+        // The goods left the shop while it was offline; take them off the books now. This path
+        // used to skip stock entirely, so every offline sale left the counts overstated.
+        await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "Offline sync");
+
         db.Orders.Add(order);
+        createdOrders.Add(order);
         syncedResults.Add(new { orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced", totalPKR = order.TotalPKR });
     }
 
     await db.SaveChangesAsync();
 
     // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
-    foreach (var order in db.ChangeTracker.Entries<Order>().Select(e => e.Entity).ToList())
+    foreach (var order in createdOrders)
     {
         if (pricedByOrder.TryGetValue(order.Id, out var orderPricing))
             await ApplyPostSaleCustomerUpdatesAsync(db, order, orderPricing);
@@ -3005,6 +3886,11 @@ api.MapPost("/sync/batch-orders", async (
         }
     }
     await db.SaveChangesAsync();
+
+    // Offline sales reach the books too. They used to skip this step, so a branch that lost its
+    // connection for a day was missing a day of revenue from its ledger.
+    foreach (var order in createdOrders)
+        await PostSaleJournalIfNeededAsync(db, order);
 
     return Results.Ok(new { count = syncedResults.Count, orders = syncedResults });
 });
@@ -3048,55 +3934,36 @@ api.MapPost("/devices/pairing-codes", async (
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.BadRequest(new { message = "Branch not found." });
 
-    // A chain's head office runs the ERP and does not sell, so there is nothing for a till or a
-    // waiter tablet to do there. Refusing here keeps the customer from paying for a device slot
-    // that could never ring up a sale.
+    // A location that does not sell — a head office that only runs the back office, or a
+    // warehouse — has nothing for a till or a waiter tablet to do. Refusing here keeps the customer
+    // from paying for a device slot that could never ring up a sale.
     //
     // Back-office workstations and kitchen screens stay allowed everywhere: head office is
     // precisely where back-office machines belong, and a central commissary legitimately has
     // prep screens even though it has no customers.
-    var ent = await entitlements.GetAsync(scopedTenantId!.Value);
     var isNonSellingDevice = dto.TerminalType is TerminalType.KitchenDisplay or TerminalType.BackOffice;
-    if (ent.HeadOfficeIsErpOnly && branch.IsHeadOffice && !isNonSellingDevice)
+    if (!branch.CanSell && !isNonSellingDevice)
         return Results.BadRequest(new
         {
-            message = "Head office runs the back office and does not take sales, so it cannot have a "
-                    + "till or a waiter tablet. Generate this code for one of your branches instead.",
+            message = $"{branch.Name} does not sell ({(branch.LocationType == LocationType.Warehouse ? "it is a warehouse" : "it runs the back office")}), "
+                    + "so it cannot have a till or a waiter tablet. Generate this code for a selling branch instead.",
             headOfficeIsErpOnly = true
         });
 
-    // Two ceilings, both real. The per-branch one stops a single shop over-filling its floor;
-    // the org-wide one is what the plan actually sells. Checked here rather than as an endpoint
-    // filter because only the handler knows which DEVICE CLASS was asked for — a filter would
-    // have applied the counter limit to tablets and kitchen screens too.
-    var orgLimitCode = dto.TerminalType switch
-    {
-        TerminalType.Counter => Pos.Api.Data.FeatureCodes.PosTerminals,
-        TerminalType.OrderTab => Pos.Api.Data.FeatureCodes.Tablets,
-        _ => null // kitchen screens and back-office PCs do not sell, so they are not metered
-    };
-    if (orgLimitCode != null)
-    {
-        var subs = http.RequestServices.GetRequiredService<Pos.Api.Services.ISubscriptionService>();
-        var orgLimit = await subs.CheckLimitAsync(scopedTenantId!.Value, orgLimitCode);
-        if (!orgLimit.Allowed)
-            return Results.Json(new
-            {
-                message = orgLimit.Reason,
-                featureCode = orgLimitCode,
-                inUse = orgLimit.InUse,
-                limit = orgLimit.Limit,
-                upgradeRequired = true
-            }, statusCode: StatusCodes.Status402PaymentRequired);
-    }
-
+    // One ceiling: the plan's allowance PER LOCATION, plus extra-device add-ons bought for this
+    // location. There used to be a second, business-wide cap on top, and the two disagreed:
+    // Starter allowed three locations but one till in total, so two of its locations could never
+    // sell, and an extra-till add-on could not help because the business-wide cap ignored add-ons.
+    // Kitchen screens and back-office PCs do not sell, so they are not metered at all.
     var (allowed, inUse, limit) = await entitlements.CanAddDeviceAsync(scopedTenantId!.Value, branch.Id, dto.TerminalType);
     if (!allowed)
         return Results.BadRequest(new
         {
-            message = $"All {limit} {dto.TerminalType} device slots at this branch are in use ({inUse}/{limit}). Retire a device or add capacity.",
+            message = $"All {limit} {dto.TerminalType} device slots at this branch are in use ({inUse}/{limit}). "
+                    + "Retire a device, buy an extra device for this branch, or upgrade your plan.",
             inUse,
             limit,
+            upgradeRequired = true,
             addOnKey = dto.TerminalType == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER"
         });
 
@@ -3265,7 +4132,8 @@ api.MapPost("/devices/activate", async (
         // Which application this machine just became. The device decides its own surface from
         // the class it was activated as, so a back-office PC in the same building as the till
         // still boots into the ERP.
-        appSurface = ent.SurfaceFor(branch.IsHeadOffice, terminal.TerminalType).ToString(),
+        appSurface = ent.SurfaceFor(branch.CanSell, terminal.TerminalType).ToString(),
+        locationType = branch.LocationType.ToString(),
         packs = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey
     });
@@ -3333,7 +4201,14 @@ api.MapPost("/branches", async (
     if (await db.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == tenantId.Value && b.Code == code))
         return Results.BadRequest(new { message = $"A location with code {code} already exists." });
 
-    var settings = await db.TenantSettings.IgnoreQueryFilters().FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    // A branch sells; a warehouse holds stock and never sells. A business has one head office,
+    // created through /organization/enable-hq so the shop that has been trading is never converted.
+    var type = dto.LocationType ?? LocationType.Branch;
+    if (type == LocationType.HeadOffice)
+        return Results.BadRequest(new { message = "A business has one head office. Set it up from Locations → Head office." });
+
+    var companyError = await CheckCompanyAndRegionAsync(db, tenantId.Value, dto.CompanyId, dto.RegionId);
+    if (companyError != null) return companyError;
 
     var branch = new Branch
     {
@@ -3343,17 +4218,25 @@ api.MapPost("/branches", async (
         City = string.IsNullOrWhiteSpace(dto.City) ? (tenant.City ?? "") : dto.City.Trim(),
         Address = dto.Address?.Trim() ?? "",
         Phone = dto.Phone?.Trim() ?? "",
-        IsHeadOffice = false,
-        // Inherits the organisation's tax region unless it names its own — most chains operate
-        // in one jurisdiction, and the ones that do not can change it per branch afterwards.
-        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode)
-            ? (settings?.CountryCode == "PK" ? null : null)
-            : dto.StateCode.Trim().ToUpperInvariant()
+        // The tax jurisdiction, when the location names one; otherwise set per location later.
+        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant(),
+        CompanyId = dto.CompanyId ?? (await GetOrCreateDefaultCompanyAsync(db, tenantId.Value, tenant.Name)).Id,
+        RegionId = dto.RegionId
     };
+    ApplyLocationType(branch, type, dto.CanSell, dto.HoldsStock);
+
+    // Only locations that sell count against the plan; a warehouse is free.
+    if (branch.CanSell)
+    {
+        var room = await subs.CheckLimitAsync(tenantId.Value, Pos.Api.Data.FeatureCodes.Locations);
+        if (!room.Allowed)
+            return Results.Json(new { message = room.Reason, featureCode = Pos.Api.Data.FeatureCodes.Locations, inUse = room.InUse, limit = room.Limit, upgradeRequired = true },
+                statusCode: StatusCodes.Status402PaymentRequired);
+    }
     db.Branches.Add(branch);
 
     if (actingUser != null)
-        await WriteAuditAsync(db, tenantId.Value, actingUser, "BranchCreated", "Branch", branch.Id, null, $"{branch.Name} ({branch.Code})");
+        await WriteAuditAsync(db, tenantId.Value, actingUser, "BranchCreated", "Branch", branch.Id, null, $"{branch.Name} ({branch.Code}, {branch.LocationType})");
     await db.SaveChangesAsync();
 
     await entitlements.RecomputeAsync(tenantId.Value);
@@ -3362,28 +4245,168 @@ api.MapPost("/branches", async (
     return Results.Ok(new
     {
         branch.Id, branch.Name, branch.Code, branch.City, branch.IsHeadOffice,
+        locationType = branch.LocationType.ToString(), branch.CanSell, branch.HoldsStock, branch.CompanyId, branch.RegionId,
         locations = new { inUse = locations.InUse, limit = locations.Limit, remaining = locations.Remaining, isNearLimit = locations.IsNearLimit }
     });
 })
-.AddEndpointFilter(Pos.Api.Middlewares.RequireFeature.For(Pos.Api.Data.FeatureCodes.MultiBranch))
-.AddEndpointFilter(Pos.Api.Middlewares.RequireLimit.For(Pos.Api.Data.FeatureCodes.Locations));
+.AddEndpointFilter(Pos.Api.Middlewares.RequireFeature.For(Pos.Api.Data.FeatureCodes.MultiBranch));
 
-// Update a branch (incl. RegionCode, which selects the provincial tax jurisdiction).
-api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchDto dto) =>
+// Update a location: its details, RegionCode (the provincial tax jurisdiction), its legal entity
+// and region, and whether it sells or holds stock.
+api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionService subs,
+    Pos.Api.Services.IEntitlementService entitlements, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateBranchDto dto) =>
 {
     var tenantId = ResolveTenantScope(http, null);
     if (tenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id && (http.IsSuperAdmin() || b.TenantId == tenantId!.Value));
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
 
+    var regionId = dto.RegionId == Guid.Empty ? null : dto.RegionId;
+    var companyError = await CheckCompanyAndRegionAsync(db, branch.TenantId, dto.CompanyId, regionId);
+    if (companyError != null) return companyError;
+
+    // Work out what the location will be, check the change is allowed, and only then apply it.
+    var newType = dto.LocationType ?? branch.LocationType;
+    if (newType != branch.LocationType && (newType == LocationType.HeadOffice || branch.LocationType == LocationType.HeadOffice))
+        return Results.BadRequest(new { message = "The head office is set up from Locations → Head office, not by changing a location's type." });
+    var willSell = newType != LocationType.Warehouse && (dto.CanSell ?? (newType == branch.LocationType ? branch.CanSell : newType == LocationType.Branch));
+    if (newType == LocationType.Warehouse && dto.CanSell == true)
+        return Results.BadRequest(new { message = "A warehouse holds stock but never sells. Make it a branch to put a till there." });
+
+    if (branch.CanSell && !willSell)
+    {
+        var activeTills = await db.Terminals.CountAsync(t => t.BranchId == branch.Id && t.RevokedAt == null && t.DeactivatedAt == null
+            && (t.TerminalType == TerminalType.Counter || t.TerminalType == TerminalType.OrderTab));
+        if (activeTills > 0)
+            return Results.BadRequest(new { message = $"{branch.Name} still has {activeTills} till(s) or tablet(s). Retire them before it stops selling." });
+    }
+    if (!branch.CanSell && willSell)
+    {
+        var room = await subs.CheckLimitAsync(branch.TenantId, Pos.Api.Data.FeatureCodes.Locations);
+        if (!room.Allowed)
+            return Results.Json(new { message = room.Reason, featureCode = Pos.Api.Data.FeatureCodes.Locations, upgradeRequired = true },
+                statusCode: StatusCodes.Status402PaymentRequired);
+    }
+
     if (!string.IsNullOrWhiteSpace(dto.Name)) branch.Name = dto.Name.Trim();
     if (dto.Address != null) branch.Address = dto.Address;
     if (!string.IsNullOrWhiteSpace(dto.City)) branch.City = dto.City.Trim();
     if (dto.Phone != null) branch.Phone = dto.Phone;
     if (dto.RegionCode != null) branch.RegionCode = string.IsNullOrWhiteSpace(dto.RegionCode) ? null : dto.RegionCode.Trim().ToUpperInvariant();
+    if (dto.CompanyId.HasValue) branch.CompanyId = dto.CompanyId.Value;
+    if (dto.RegionId.HasValue) branch.RegionId = regionId;
+    ApplyLocationType(branch, newType, willSell, dto.HoldsStock ?? branch.HoldsStock);
 
     await db.SaveChangesAsync();
+    await entitlements.RecomputeAsync(branch.TenantId);
     return Results.Ok(branch);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// ============================================================
+// LEGAL ENTITIES & REGIONS
+// ============================================================
+
+api.MapGet("/companies", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
+    if (tenant == null) return Results.NotFound();
+
+    // Every business trades under at least one; make sure the default exists before listing.
+    var hadDefault = await db.Companies.AnyAsync(c => c.TenantId == tenantId.Value && c.IsDefault);
+    if (!hadDefault)
+    {
+        await GetOrCreateDefaultCompanyAsync(db, tenantId.Value, tenant.Name);
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(await db.Companies.Where(c => c.TenantId == tenantId.Value)
+        .OrderByDescending(c => c.IsDefault).ThenBy(c => c.LegalName).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPost("/companies", async (AppDbContext db, HttpContext http, SaveCompanyDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.LegalName)) return Results.BadRequest(new { message = "A legal name is required." });
+
+    var company = new Company
+    {
+        TenantId = tenantId.Value,
+        LegalName = dto.LegalName.Trim(),
+        TradeName = NullIfBlank(dto.TradeName),
+        TaxRegistrationNumber = NullIfBlank(dto.TaxRegistrationNumber),
+        SalesTaxRegistrationNumber = NullIfBlank(dto.SalesTaxRegistrationNumber),
+        Address = NullIfBlank(dto.Address),
+        IsDefault = !await db.Companies.AnyAsync(c => c.TenantId == tenantId.Value)
+    };
+    db.Companies.Add(company);
+    await db.SaveChangesAsync();
+    return Results.Ok(company);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapPut("/companies/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, SaveCompanyDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var company = await db.Companies.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId.Value);
+    if (company == null) return Results.NotFound();
+
+    if (!string.IsNullOrWhiteSpace(dto.LegalName)) company.LegalName = dto.LegalName.Trim();
+    if (dto.TradeName != null) company.TradeName = NullIfBlank(dto.TradeName);
+    if (dto.TaxRegistrationNumber != null) company.TaxRegistrationNumber = NullIfBlank(dto.TaxRegistrationNumber);
+    if (dto.SalesTaxRegistrationNumber != null) company.SalesTaxRegistrationNumber = NullIfBlank(dto.SalesTaxRegistrationNumber);
+    if (dto.Address != null) company.Address = NullIfBlank(dto.Address);
+    await db.SaveChangesAsync();
+    return Results.Ok(company);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapGet("/regions", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    return Results.Ok(await db.Regions.Where(r => r.TenantId == tenantId.Value).OrderBy(r => r.Name).ToListAsync());
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
+api.MapPost("/regions", async (AppDbContext db, HttpContext http, SaveRegionDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { message = "A region name is required." });
+    var name = dto.Name.Trim();
+    if (await db.Regions.AnyAsync(r => r.TenantId == tenantId.Value && r.Name == name))
+        return Results.BadRequest(new { message = $"There is already a region called {name}." });
+
+    var region = new Region { TenantId = tenantId.Value, Name = name, Code = NullIfBlank(dto.Code)?.ToUpperInvariant() };
+    db.Regions.Add(region);
+    await db.SaveChangesAsync();
+    return Results.Ok(region);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+api.MapPut("/regions/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, SaveRegionDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var region = await db.Regions.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId.Value);
+    if (region == null) return Results.NotFound();
+    if (!string.IsNullOrWhiteSpace(dto.Name)) region.Name = dto.Name.Trim();
+    if (dto.Code != null) region.Code = NullIfBlank(dto.Code)?.ToUpperInvariant();
+    await db.SaveChangesAsync();
+    return Results.Ok(region);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
+
+// Removing a region leaves its locations in place, just ungrouped.
+api.MapDelete("/regions/{id:guid}", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var region = await db.Regions.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId.Value);
+    if (region == null) return Results.NotFound();
+    foreach (var branch in await db.Branches.Where(b => b.TenantId == tenantId.Value && b.RegionId == id).ToListAsync())
+        branch.RegionId = null;
+    db.Regions.Remove(region);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = $"{region.Name} removed. Its locations are no longer grouped." });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
 // --- Catalog ---
@@ -3623,7 +4646,11 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     if (dto.Items == null || dto.Items.Count == 0)
         return (Results.BadRequest(new { message = "An order must contain at least one item." }), null, null);
 
-    var orderNumber = await GenerateOrderNumberAsync(db);
+    // A head office that only runs the back office, or a warehouse, does not sell.
+    if (!branch.CanSell)
+        return (Results.BadRequest(new { message = $"{branch.Name} does not sell. Ring this sale up at a selling branch." }), null, null);
+
+    var orderNumber = await GenerateOrderNumberAsync(db, branch.TenantId);
     var order = new Order
     {
         TenantId = branch.TenantId, BranchId = branch.Id, OrderNumber = orderNumber,
@@ -3697,48 +4724,23 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         }
     }
 
-    // Batch load stock data to avoid N+1
-    var productIds = dto.Items.Select(i => i.ProductId).Distinct().ToList();
+    // A. Counted finished goods must be on hand. Only products this branch tracks are checked;
+    // an item with no stock row here is never refused.
+    var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
     var stockDict = await db.BranchStocks.Where(s => s.BranchId == branch.Id && productIds.Contains(s.ProductId))
         .ToDictionaryAsync(s => s.ProductId);
-    var recipeDict = await db.ProductRecipeItems.Include(r => r.Ingredient)
-        .Where(r => productIds.Contains(r.ProductId))
-        .GroupBy(r => r.ProductId)
-        .ToDictionaryAsync(g => g.Key, g => g.ToList());
-    var ingredientIds = recipeDict.Values.SelectMany(r => r).Select(r => r.IngredientId).Distinct().ToList();
-    var ingredientDict = await db.Ingredients.Where(i => i.BranchId == branch.Id && ingredientIds.Contains(i.Id))
-        .ToDictionaryAsync(i => i.Id);
-
-    foreach (var item in dto.Items)
+    foreach (var line in order.Items.GroupBy(i => i.ProductId))
     {
-        // A. Finished product stock - validate instead of silently zeroing
-        if (stockDict.TryGetValue(item.ProductId, out var stock))
-        {
-            if (stock.QuantityOnHand < item.Quantity)
-            {
-                return (Results.Conflict(new { message = $"Insufficient stock for {item.ProductName}. Available: {stock.QuantityOnHand}, Requested: {item.Quantity}" }), null, null);
-            }
-            stock.QuantityOnHand -= item.Quantity;
-        }
-
-        // B. Recipe raw ingredients
-        if (recipeDict.TryGetValue(item.ProductId, out var recipeItems))
-        {
-            foreach (var recipe in recipeItems)
-            {
-                if (ingredientDict.TryGetValue(recipe.IngredientId, out var ingredient))
-                {
-                    var totalIngredientQty = recipe.QuantityRequired * item.Quantity;
-                    if (ingredient.CurrentStock < totalIngredientQty)
-                    {
-                        return (Results.Conflict(new { message = $"Insufficient ingredient {ingredient.Name}. Available: {ingredient.CurrentStock}, Need: {totalIngredientQty}" }), null, null);
-                    }
-                    RecordStockLedgerEntry(db, ingredient, branch.TenantId, branch.Id, StockMovementType.SaleConsumption,
-                        -totalIngredientQty, ingredient.CostPerUnitPKR, "Order", order.Id, order.CashierName ?? "System", $"Order {order.OrderNumber}");
-                }
-            }
-        }
+        var requested = line.Sum(i => i.Quantity);
+        if (stockDict.TryGetValue(line.Key, out var stock) && stock.QuantityOnHand < requested)
+            return (Results.Conflict(new { message = $"Insufficient stock for {line.First().ProductName}. Available: {stock.QuantityOnHand}, Requested: {requested}" }), null, null);
     }
+
+    // B. Take the stock out: finished goods, and the ingredients each recipe consumes at THIS
+    // branch. A recipe ingredient that has run short no longer refuses the sale: recipe quantities
+    // are an estimate, and blocking a burger over a sauce count stops real trade. The count goes
+    // below zero and the branch is alerted instead.
+    await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "System");
 
     db.Orders.Add(order);
     await db.SaveChangesAsync();
@@ -3772,34 +4774,8 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         }
     }
 
-    // Auto-post to the general ledger — opt-in per tenant (skipped entirely if no Chart of
-    // Accounts is seeded) and never allowed to fail the sale itself.
-    if (order.IsPaid && await HasAccountingAsync(db, order.TenantId))
-    {
-        try
-        {
-            var settlementAccount = order.PaymentMethod switch
-            {
-                PaymentMethod.Cash => "1000",
-                PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
-                _ => "1100" // Split / CustomerKhata — approximated as receivable since it isn't fully cash-settled
-            };
-            var netSales = order.SubTotalPKR - order.DiscountPKR;
-            await PostJournalEntryAsync(db, order.TenantId, order.BranchId, order.CreatedAt,
-                $"Sale — Order #{order.OrderNumber}", "Order", order.Id, order.CashierName ?? "System",
-                new List<(string, decimal, decimal)>
-                {
-                    (settlementAccount, order.TotalPKR, 0),
-                    ("4000", 0, netSales),
-                    ("2100", 0, order.TaxPKR)
-                });
-            await db.SaveChangesAsync();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Accounting] Failed to post journal entry for order {order.OrderNumber}: {ex.Message}");
-        }
-    }
+    // Auto-post to the general ledger — opt-in per tenant and never allowed to fail the sale.
+    await PostSaleJournalIfNeededAsync(db, order);
 
     return (null, order, priced);
 }
@@ -3830,26 +4806,29 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.A
     order.Status = OrderStatus.Cancelled;
     order.CancelledAt = DateTime.UtcNow;
 
-    // Restore finished-product (retail) stock.
+    // Restore finished-product (retail) stock, through the ledger like every other movement.
     var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
-    var stockDict = await db.BranchStocks.Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
+    var stockDict = await db.BranchStocks.Include(s => s.Product)
+        .Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
         .ToDictionaryAsync(s => s.ProductId);
     foreach (var item in order.Items)
     {
         if (stockDict.TryGetValue(item.ProductId, out var stock))
-            stock.QuantityOnHand += item.Quantity;
+            RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity,
+                UnitCostOf(stock, stock.Product), "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
     }
 
     // Restore recipe-based raw ingredients that were consumed, through the ledger (not a raw
-    // mutation) so the audit trail shows the reversal, not just an unexplained stock jump.
-    var recipeDict = await db.ProductRecipeItems.Where(r => productIds.Contains(r.ProductId))
-        .GroupBy(r => r.ProductId).ToDictionaryAsync(g => g.Key, g => g.ToList());
-    var ingredientIds = recipeDict.Values.SelectMany(r => r).Select(r => r.IngredientId).Distinct().ToList();
-    var ingredientDict = await db.Ingredients.Where(i => i.BranchId == order.BranchId && ingredientIds.Contains(i.Id)).ToDictionaryAsync(i => i.Id);
+    // mutation) so the audit trail shows the reversal, not just an unexplained stock jump. Resolved
+    // to this branch's own rows exactly as the sale consumed them.
+    var recipes = await db.ProductRecipeItems.Include(r => r.Ingredient)
+        .Where(r => productIds.Contains(r.ProductId)).ToListAsync();
+    var ingredientDict = await ResolveBranchIngredientsAsync(db, order.TenantId, order.BranchId,
+        recipes.Where(r => r.Ingredient != null).Select(r => r.Ingredient!).DistinctBy(i => i.Id).ToList(),
+        createMissing: false);
     foreach (var item in order.Items)
     {
-        if (!recipeDict.TryGetValue(item.ProductId, out var recipeItems)) continue;
-        foreach (var recipe in recipeItems)
+        foreach (var recipe in recipes.Where(r => r.ProductId == item.ProductId))
         {
             if (!ingredientDict.TryGetValue(recipe.IngredientId, out var ingredient)) continue;
             var totalQty = recipe.QuantityRequired * item.Quantity;
@@ -3984,6 +4963,9 @@ api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http
     order.IsPaid = true;
     if (order.AssignedRider != null) order.AssignedRider.IsAvailable = true;
     await db.SaveChangesAsync();
+
+    // Cash on delivery is paid HERE, not at checkout, so this is where the sale reaches the books.
+    await PostSaleJournalIfNeededAsync(db, order);
 
     var deliveredMsg = BuildWhatsAppMessage("order_delivered", order.OrderNumber, null, order.TotalPKR, order.DeliveryAddress, null, null);
     await SendWhatsAppMessageAsync(db, waResolver, order.TenantId, order.Id, order.CustomerPhone, "order_delivered", deliveredMsg,
@@ -4418,8 +5400,8 @@ api.MapPost("/terminals/heartbeat", async (
     // A device may only keep operating if it is still inside its branch's current allowance.
     // Sort by activation date so that after a downgrade the OLDEST devices keep working and the
     // most recently added ones fall out — predictable, and it matches what an owner expects.
-    var isHeadOfficeBranch = await db.Branches.IgnoreQueryFilters()
-        .Where(b => b.Id == terminal.BranchId).Select(b => b.IsHeadOffice).FirstOrDefaultAsync();
+    var locationSells = await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.Id == terminal.BranchId).Select(b => b.CanSell).FirstOrDefaultAsync();
 
     // Only selling devices consume a metered slot, so only they can be squeezed out by a
     // downgrade. A back-office PC or a kitchen screen is never the thing that stops working.
@@ -4480,7 +5462,7 @@ api.MapPost("/terminals/heartbeat", async (
         terminal.TerminalType,
         // Re-asserted on every renewal so a device that was re-purposed, or a tenant that moved
         // from standalone to head-office, lands on the right app without a reinstall.
-        appSurface = ent.SurfaceFor(isHeadOfficeBranch, terminal.TerminalType).ToString(),
+        appSurface = ent.SurfaceFor(locationSells, terminal.TerminalType).ToString(),
         packs = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey,
         features = ent.Features
@@ -4498,6 +5480,7 @@ api.MapPost("/sync/offline-batch", async (
     var actingUser = await accessor.GetCurrentUserAsync(http);
     int syncedCount = 0;
     int alreadySynced = 0;
+    var createdOrders = new List<Order>();
     foreach (var dto in offlineOrders)
     {
         var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
@@ -4518,7 +5501,7 @@ api.MapPost("/sync/offline-batch", async (
         var order = new Order
         {
             TenantId = branch.TenantId, BranchId = branch.Id,
-            OrderNumber = await GenerateOrderNumberAsync(db, "OFFLINE"),
+            OrderNumber = await GenerateOrderNumberAsync(db, branch.TenantId, "OFFLINE"),
             OrderType = dto.OrderType, Status = OrderStatus.Completed,
             TableNumber = dto.TableNumber, CustomerName = dto.CustomerName, CustomerPhone = dto.CustomerPhone,
             DeliveryAddress = dto.DeliveryAddress, PaymentMethod = dto.PaymentMethod,
@@ -4569,16 +5552,19 @@ api.MapPost("/sync/offline-batch", async (
             });
         }
 
-        foreach (var item in dto.Items)
-        {
-            var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == branch.Id && s.ProductId == item.ProductId);
-            if (stock != null) stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand - item.Quantity);
-        }
+        // Same stock rule as the other sync path. The old clamp at zero hid an oversell: selling 5
+        // of 2 left 0, and the next delivery of 10 then showed 10 on the shelf instead of 7.
+        await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "Offline sync");
 
         db.Orders.Add(order);
+        createdOrders.Add(order);
         syncedCount++;
     }
     await db.SaveChangesAsync();
+
+    foreach (var order in createdOrders)
+        await PostSaleJournalIfNeededAsync(db, order);
+
     // alreadySynced is reported separately so a client can distinguish "nothing to do" from
     // "nothing happened", and stop retrying either way.
     return Results.Ok(new
@@ -5082,56 +6068,98 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
     var stocks = await db.BranchStocks.Include(s => s.Product).ThenInclude(p => p!.Category)
         .Where(s => s.BranchId == branchId).OrderBy(s => s.Product!.Name).ToListAsync();
 
-    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId);
-    if (branch != null)
-    {
-        var existingProductIds = stocks.Select(s => s.ProductId).ToHashSet();
-        var missingProducts = await db.Products.Where(p => p.TenantId == branch.TenantId && !existingProductIds.Contains(p.Id)).ToListAsync();
-        if (missingProducts.Any())
-        {
-            foreach (var p in missingProducts)
-                db.BranchStocks.Add(new BranchStock { BranchId = branchId, ProductId = p.Id, QuantityOnHand = 50, MinAlertLevel = 10 });
-            await db.SaveChangesAsync();
-            stocks = await db.BranchStocks.Include(s => s.Product).ThenInclude(p => p!.Category)
-                .Where(s => s.BranchId == branchId).OrderBy(s => s.Product!.Name).ToListAsync();
-        }
-    }
+    // Products this branch has never received or counted are listed as untracked, with nothing on
+    // hand. This read used to CREATE a stock row of 50 for each of them, so just opening the screen
+    // invented stock — and once those phantom 50 sold, the till began refusing the item.
+    var tenantId = await db.Branches.Where(b => b.Id == branchId).Select(b => b.TenantId).FirstOrDefaultAsync();
+    var trackedProductIds = stocks.Select(s => s.ProductId).ToList();
+    var untracked = await db.Products.Include(p => p.Category)
+        .Where(p => p.TenantId == tenantId && p.IsActive && !trackedProductIds.Contains(p.Id))
+        .OrderBy(p => p.Name).ToListAsync();
 
-    return Results.Ok(stocks.Select(s => new
+    var rows = new List<object>();
+    rows.AddRange(stocks.Select(s => (object)new
     {
-        id = s.Id, branchId = s.BranchId, productId = s.ProductId,
+        id = s.Id.ToString(), branchId = s.BranchId, productId = s.ProductId,
         productName = s.Product?.Name ?? "Item", sku = s.Product?.SKU ?? "",
         barcode = s.Product?.Barcode ?? "", categoryName = s.Product?.Category?.Name ?? "General",
-        unit = s.Product?.Unit ?? "Piece", costPricePKR = s.Product?.CostPricePKR ?? 0,
+        // Valued at what THIS location paid, once it has received anything at a cost.
+        unit = s.Product?.Unit ?? "Piece", costPricePKR = UnitCostOf(s, s.Product),
         sellingPricePKR = s.Product?.SellingPricePKR ?? 0, quantityOnHand = s.QuantityOnHand,
         minAlertLevel = s.MinAlertLevel, batchNumber = s.BatchNumber,
-        expiryDate = s.ExpiryDate?.ToString("yyyy-MM-dd"), isLowStock = s.QuantityOnHand <= s.MinAlertLevel
+        expiryDate = s.ExpiryDate?.ToString("yyyy-MM-dd"), isLowStock = s.QuantityOnHand <= s.MinAlertLevel,
+        isTracked = true
     }));
+    // Receiving or adjusting an untracked product creates its stock row; until then it is sold
+    // without a count, exactly as before.
+    rows.AddRange(untracked.Select(p => (object)new
+    {
+        id = $"untracked-{p.Id}", branchId, productId = p.Id,
+        productName = p.Name, sku = p.SKU, barcode = p.Barcode, categoryName = p.Category?.Name ?? "General",
+        unit = p.Unit, costPricePKR = p.CostPricePKR, sellingPricePKR = p.SellingPricePKR, quantityOnHand = 0m,
+        minAlertLevel = 0m, batchNumber = (string?)null, expiryDate = (string?)null, isLowStock = false,
+        isTracked = false
+    }));
+    return Results.Ok(rows);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
-api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
+api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
 {
-    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
     if (scopeError != null) return scopeError;
-    var branchId = scopedBranchId!.Value;
+    if (scopedTenantId == null || scopedBranchId == null) return Results.Unauthorized();
+    if (dto.Quantity <= 0) return Results.BadRequest(new { message = "Quantity must be more than zero." });
 
-    var stock = await db.BranchStocks.Include(s => s.Product).FirstOrDefaultAsync(s => s.BranchId == branchId && s.ProductId == dto.ProductId);
+    var location = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value);
+    if (location is { HoldsStock: false })
+        return Results.BadRequest(new { message = $"{location.Name} does not keep stock. Receive it at a branch or warehouse." });
+
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == dto.ProductId && p.TenantId == scopedTenantId.Value);
+    if (product == null) return Results.NotFound(new { message = "Product not found." });
+
+    var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == scopedBranchId.Value && s.ProductId == dto.ProductId);
     if (stock == null)
     {
-        stock = new BranchStock { BranchId = branchId, ProductId = dto.ProductId, QuantityOnHand = dto.Quantity, MinAlertLevel = 10, BatchNumber = dto.BatchNumber, ExpiryDate = dto.ExpiryDate };
+        stock = new BranchStock { BranchId = scopedBranchId.Value, ProductId = dto.ProductId, QuantityOnHand = 0, MinAlertLevel = 10 };
         db.BranchStocks.Add(stock);
     }
-    else
-    {
-        stock.QuantityOnHand += dto.Quantity;
-        if (!string.IsNullOrEmpty(dto.BatchNumber)) stock.BatchNumber = dto.BatchNumber;
-        if (dto.ExpiryDate.HasValue) stock.ExpiryDate = dto.ExpiryDate.Value;
-    }
-    if (dto.CostPricePKR.HasValue && dto.CostPricePKR.Value > 0 && stock.Product != null)
-        stock.Product.CostPricePKR = dto.CostPricePKR.Value;
+    if (!string.IsNullOrEmpty(dto.BatchNumber)) stock.BatchNumber = dto.BatchNumber;
+    if (dto.ExpiryDate.HasValue) stock.ExpiryDate = dto.ExpiryDate.Value;
+
+    // The receipt's cost goes into THIS location's average cost. It used to overwrite the product's
+    // company-wide cost, so one branch buying at a new price rewrote every branch's margins.
+    var unitCost = dto.CostPricePKR is > 0 ? dto.CostPricePKR.Value : UnitCostOf(stock, product);
+    ApplyReceiptToAverageCost(stock, dto.Quantity, unitCost);
+    if (product.CostPricePKR <= 0 && unitCost > 0) product.CostPricePKR = unitCost; // a first cost for a product that had none
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var movement = RecordProductStockMovement(db, stock, scopedTenantId.Value, StockMovementType.PurchaseReceipt, dto.Quantity, unitCost,
+        "StockIn", null, currentUser?.FullName ?? "System",
+        string.IsNullOrWhiteSpace(dto.SupplierName) ? "Stock received" : $"Stock received from {dto.SupplierName}");
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = $"Received {dto.Quantity} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand });
+
+    // Receiving without a purchase order is paid on the spot, the same rule a supplier-less PO
+    // follows: the goods go into Inventory, the cash comes out of the till. Without this, the cost
+    // of goods posted when they sell would draw down an Inventory balance they never entered.
+    var receiptValue = Math.Round(dto.Quantity * unitCost, 2);
+    if (receiptValue > 0 && await HasAccountingAsync(db, scopedTenantId.Value))
+    {
+        try
+        {
+            await PostJournalEntryAsync(db, scopedTenantId.Value, scopedBranchId.Value, DateTime.UtcNow,
+                $"Stock received — {product.Name} x{dto.Quantity:0.##}", "StockIn", movement.Id, currentUser?.FullName ?? "System",
+                new List<(string, decimal, decimal)> { ("1200", receiptValue, 0), ("1000", 0, receiptValue) });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Accounting] Failed to post stock receipt for {product.Name}: {ex.Message}");
+        }
+    }
+
+    return Results.Ok(new { message = $"Received {dto.Quantity} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand, averageCostPKR = stock.AverageCostPKR });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock."));
 
@@ -5140,12 +6168,24 @@ api.MapPost("/inventory/adjust", async (AppDbContext db, HttpContext http, Pos.A
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
     if (scopeError != null) return scopeError;
 
-    var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == scopedBranchId!.Value && s.ProductId == dto.ProductId);
-    if (stock == null) return Results.NotFound();
+    var stock = await db.BranchStocks.Include(s => s.Product)
+        .FirstOrDefaultAsync(s => s.BranchId == scopedBranchId!.Value && s.ProductId == dto.ProductId);
+    if (stock == null)
+    {
+        // An untracked product (see GET /inventory): adjusting it is how its count starts, from zero.
+        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == dto.ProductId && p.TenantId == scopedTenantId!.Value);
+        if (product == null) return Results.NotFound();
+        stock = new BranchStock { BranchId = scopedBranchId!.Value, ProductId = dto.ProductId, QuantityOnHand = 0, MinAlertLevel = 10, Product = product };
+        db.BranchStocks.Add(stock);
+    }
     var oldQty = stock.QuantityOnHand;
-    stock.QuantityOnHand = Math.Max(0, stock.QuantityOnHand + dto.AdjustmentQty);
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
+    // A manual adjustment never takes a count below zero; the ledger records the change actually made.
+    var change = Math.Max(0, oldQty + dto.AdjustmentQty) - oldQty;
+    if (change != 0)
+        RecordProductStockMovement(db, stock, scopedTenantId!.Value, StockMovementType.Adjustment, change,
+            UnitCostOf(stock, stock.Product), "Adjustment", null, currentUser?.FullName ?? "System", dto.Reason);
     await WriteAuditAsync(db, scopedTenantId!.Value, currentUser, "StockAdjusted", "BranchStock", stock.Id,
         oldValue: oldQty.ToString("0.##"), newValue: $"{stock.QuantityOnHand:0.##} ({dto.Reason})");
 
@@ -5207,31 +6247,10 @@ api.MapGet("/inventory/ingredients", async (AppDbContext db, HttpContext http, G
     if (scopeError != null) return scopeError;
     branchId = scopedBranchId!.Value;
 
+    // A branch with no ingredients gets an empty list. This read used to seed eleven burger-shop
+    // ingredients with made-up stock into ANY empty branch — a pharmacy, a new head office — and
+    // that invented stock then flowed into valuations and food cost.
     var ingredients = await db.Ingredients.Where(i => i.BranchId == branchId).OrderBy(i => i.Category).ThenBy(i => i.Name).ToListAsync();
-    if (!ingredients.Any())
-    {
-        var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId);
-        if (branch != null)
-        {
-            var seedIngredients = new List<Ingredient>
-            {
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Burger Buns (Brioche)", Category = "Buns & Bakery", Unit = "Piece", CostPerUnitPKR = 35, CurrentStock = 450, MinAlertLevel = 50, SupplierName = "Dawn Bread" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Crispy Chicken Patty (120g)", Category = "Meat & Patties", Unit = "Piece", CostPerUnitPKR = 145, CurrentStock = 320, MinAlertLevel = 40, SupplierName = "K&Ns / Menu" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Beef Smashed Patty (100g)", Category = "Meat & Patties", Unit = "Piece", CostPerUnitPKR = 190, CurrentStock = 180, MinAlertLevel = 30, SupplierName = "Local Gourmet Meat" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Cheddar Cheese Slices", Category = "Dairy & Cheese", Unit = "Slice", CostPerUnitPKR = 40, CurrentStock = 500, MinAlertLevel = 60, SupplierName = "Happy Cow" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Mozzarella Shredded Cheese", Category = "Dairy & Cheese", Unit = "Kg", CostPerUnitPKR = 1650, CurrentStock = 45, MinAlertLevel = 10, SupplierName = "Anchor / Adams" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Garlic Mayo Sauce", Category = "Sauces & Condiments", Unit = "Litre", CostPerUnitPKR = 550, CurrentStock = 30, MinAlertLevel = 5, SupplierName = "Young's / Shangrila" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Signature Chipotle Sauce", Category = "Sauces & Condiments", Unit = "Litre", CostPerUnitPKR = 680, CurrentStock = 22, MinAlertLevel = 5, SupplierName = "Kitchen In-House Batch" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Fresh Iceberg & Onions", Category = "Produce & Veggies", Unit = "Kg", CostPerUnitPKR = 180, CurrentStock = 60, MinAlertLevel = 15, SupplierName = "Sabzi Mandi" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Frozen Skin-On French Fries", Category = "Sides & Appetizers", Unit = "Kg", CostPerUnitPKR = 420, CurrentStock = 200, MinAlertLevel = 30, SupplierName = "McCain / OPTP Vendor" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Cola Beverage Can (250ml)", Category = "Beverages", Unit = "Can", CostPerUnitPKR = 75, CurrentStock = 600, MinAlertLevel = 100, SupplierName = "Coca-Cola / Pepsi Bottling" },
-                new() { BranchId = branchId, TenantId = branch.TenantId, Name = "Branded Burger Box & Wrapper", Category = "Packaging", Unit = "Piece", CostPerUnitPKR = 18, CurrentStock = 850, MinAlertLevel = 150, SupplierName = "Custom Print Packaging" },
-            };
-            db.Ingredients.AddRange(seedIngredients);
-            await db.SaveChangesAsync();
-            ingredients = seedIngredients;
-        }
-    }
     return Results.Ok(ingredients.Select(i => new
     {
         id = i.Id, branchId = i.BranchId, name = i.Name, category = i.Category, unit = i.Unit,
@@ -5353,7 +6372,7 @@ api.MapGet("/users", async (AppDbContext db, HttpContext http, Guid tenantId, Gu
     }));
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "view"));
 
-api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
+api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionService subs, [Microsoft.AspNetCore.Mvc.FromBody] CreateUserDto dto) =>
 {
     var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
@@ -5365,18 +6384,15 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     if (await db.Users.AnyAsync(u => u.TenantId == scopedTenantId.Value && u.Username == dto.Username.ToLower().Trim()))
         return Results.BadRequest(new { message = "That username is already taken in this restaurant." });
 
-    // Enforce the package's user quota.
-    var tier = await db.Tenants.Where(t => t.Id == scopedTenantId.Value).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
-    var pkg = tier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tier.Value.ToString());
-    if (pkg != null)
+    // Enforce the plan's user quota — back-office logins only. Cashiers, waiters and kitchen staff
+    // are unlimited: charging per till login just makes a shop share one PIN, which empties the
+    // audit log. The old check counted every login, active or not, against the package figure,
+    // and could not see support grants.
+    if (Pos.Api.Services.SubscriptionService.CountsAsBackOfficeUser(dto.Role))
     {
-        var userCount = await db.Users.CountAsync(u => u.TenantId == scopedTenantId.Value);
-        var extraUserSlots = await db.AddOnSubscriptions
-            .Where(a => a.TenantId == scopedTenantId.Value && a.AddOnKey == "EXTRA_USER" && a.IsActive)
-            .SumAsync(a => (int?)a.Quantity) ?? 0;
-        var userLimit = pkg.MaxUsers + extraUserSlots;
-        if (userCount >= userLimit)
-            return Results.BadRequest(new { message = $"Your {pkg.DisplayName} package allows a maximum of {userLimit} users{(extraUserSlots > 0 ? $" (including {extraUserSlots} extra from add-ons)" : "")}. Please upgrade or buy the Extra Staff Account add-on." });
+        var users = await subs.CheckLimitAsync(scopedTenantId.Value, Pos.Api.Data.FeatureCodes.Users);
+        if (!users.Allowed)
+            return Results.BadRequest(new { message = $"{users.Reason} Cashiers, waiters and kitchen staff do not count towards this limit, or you can buy the Extra Staff Account add-on." });
     }
 
     // Some of the older permission gates are per-user booleans rather than module rows, so a role
@@ -5401,7 +6417,7 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     return Results.Ok(new { user.Id, user.Username, user.Role });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
-api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
+api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionService subs, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateUserDto dto) =>
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
@@ -5411,6 +6427,18 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
 
     if (dto.Role == UserRole.SuperAdmin && !http.IsSuperAdmin())
         return Results.Json(new { message = "You cannot promote anyone to platform SuperAdmin." }, statusCode: 403);
+
+    // Promoting a cashier to manager, or reactivating a manager, adds a back-office login — the
+    // one kind the plan meters. Checked before anything on the user changes.
+    var countedBefore = user.IsActive && Pos.Api.Services.SubscriptionService.CountsAsBackOfficeUser(user.Role);
+    var countedAfter = (dto.IsActive ?? user.IsActive)
+        && Pos.Api.Services.SubscriptionService.CountsAsBackOfficeUser(dto.Role ?? user.Role);
+    if (!countedBefore && countedAfter)
+    {
+        var users = await subs.CheckLimitAsync(user.TenantId, Pos.Api.Data.FeatureCodes.Users);
+        if (!users.Allowed)
+            return Results.BadRequest(new { message = $"{users.Reason} Cashiers, waiters and kitchen staff do not count towards this limit, or you can buy the Extra Staff Account add-on." });
+    }
 
     var before = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
 
@@ -5451,6 +6479,45 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
         joiningDate = user.JoiningDate, isPayrollEligible = user.IsPayrollEligible, departmentId = user.DepartmentId, designationId = user.DesignationId,
         permissions = new { user.CanViewFinancialReports, user.CanManageInventory, user.CanManageMenuAndTax, user.CanGiveDiscounts, user.CanVoidOrders }
     });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
+
+// The other branches a branch-based user may sign in at (see UserBranchAccess). Owners and
+// head office staff cover every location already and have nothing to set here.
+api.MapGet("/users/{id:guid}/branch-access", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id && u.TenantId == tenantId.Value);
+    if (user == null) return Results.NotFound();
+
+    var branchIds = await db.UserBranchAccess.Where(a => a.UserId == id).Select(a => a.BranchId).ToListAsync();
+    return Results.Ok(new { userId = id, homeBranchId = user.BranchId, branchIds });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "view"));
+
+api.MapPut("/users/{id:guid}/branch-access", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id, SetUserBranchAccessDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == id && u.TenantId == tenantId.Value);
+    if (user == null) return Results.NotFound();
+    if (user.BranchId == null)
+        return Results.BadRequest(new { message = $"{user.FullName} already covers every location." });
+
+    var wanted = (dto.BranchIds ?? new List<Guid>()).Where(b => b != user.BranchId).Distinct().ToList();
+    var valid = await db.Branches.Where(b => b.TenantId == tenantId.Value && wanted.Contains(b.Id)).Select(b => b.Id).ToListAsync();
+    if (valid.Count != wanted.Count) return Results.BadRequest(new { message = "One of those branches does not belong to this business." });
+
+    var existing = await db.UserBranchAccess.Where(a => a.UserId == id).ToListAsync();
+    db.UserBranchAccess.RemoveRange(existing.Where(a => !valid.Contains(a.BranchId)));
+    foreach (var branchId in valid.Where(b => existing.All(a => a.BranchId != b)))
+        db.UserBranchAccess.Add(new UserBranchAccess { TenantId = tenantId.Value, UserId = id, BranchId = branchId });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, tenantId.Value, currentUser, "BranchAccessChanged", "AppUser", id,
+        string.Join(",", existing.Select(a => a.BranchId)), string.Join(",", valid));
+    await db.SaveChangesAsync();
+    return Results.Ok(new { userId = id, homeBranchId = user.BranchId, branchIds = valid });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "edit"));
 
 api.MapDelete("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
@@ -5686,7 +6753,7 @@ api.MapPost("/transfers", async (AppDbContext db, HttpContext http, CreateTransf
     if (userBranchId != null && dto.SourceBranchId != userBranchId && dto.DestinationBranchId != userBranchId)
         return Results.Json(new { message = "You can only create transfers involving your own branch." }, statusCode: 403);
 
-    var transferNumber = await GenerateTransferNumberAsync(db);
+    var transferNumber = await GenerateTransferNumberAsync(db, scopedTenantId.Value);
     var order = new StockTransferOrder
     {
         TenantId = scopedTenantId.Value, TransferNumber = transferNumber, SourceBranchId = dto.SourceBranchId,
@@ -5725,14 +6792,14 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
     foreach (var item in order.Items)
     {
         var sourceIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.SourceBranchId && (i.Id == item.IngredientId || i.Name == item.IngredientName));
-        if (sourceIng != null)
-        {
-            // Never let a movement push the source below zero — dispatch what's actually on hand.
-            var actualQty = Math.Min(item.QuantityRequested, sourceIng.CurrentStock);
-            if (actualQty > 0)
-                RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.TransferOut, -actualQty, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
-        }
-        item.QuantityDispatched = item.QuantityRequested;
+
+        // Never let a movement push the source below zero — dispatch what's actually on hand, and
+        // record THAT as dispatched. This used to record the full requested quantity whatever the
+        // source held, so the destination received stock that never left anywhere.
+        var sentQty = sourceIng == null ? 0 : Math.Min(item.QuantityRequested, Math.Max(0, sourceIng.CurrentStock));
+        if (sourceIng != null && sentQty > 0)
+            RecordStockLedgerEntry(db, sourceIng, order.TenantId, order.SourceBranchId, StockMovementType.TransferOut, -sentQty, sourceIng.CostPerUnitPKR, "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
+        item.QuantityDispatched = sentQty;
     }
     order.Status = TransferStatus.InTransit;
     order.DispatchedAt = DateTime.UtcNow;
@@ -5755,7 +6822,9 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
     var receivedBy = dto.ReceivedBy ?? "Branch Manager";
     foreach (var item in order.Items)
     {
-        var qtyToReceive = item.QuantityDispatched > 0 ? item.QuantityDispatched : item.QuantityRequested;
+        // Only what was dispatched can arrive. Falling back to the requested quantity when nothing
+        // was sent created stock out of nothing at the destination.
+        var qtyToReceive = item.QuantityDispatched;
         item.QuantityReceived = qtyToReceive;
         var destIng = await db.Ingredients.FirstOrDefaultAsync(i => i.BranchId == order.DestinationBranchId && i.Name.ToLower() == item.IngredientName.ToLower());
         if (destIng == null)
@@ -5897,21 +6966,27 @@ api.MapPost("/suppliers/{id:guid}/payments", async (AppDbContext db, HttpContext
     return Results.Ok(new { payment, supplier.CurrentBalancePKR });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to record supplier payments."));
 
-// --- Stock Ledger (the real movement history behind Ingredient.CurrentStock) ---
-api.MapGet("/inventory/stock-ledger", async (AppDbContext db, HttpContext http, Guid? branchId, Guid? ingredientId, int? days) =>
+// --- Stock Ledger (the movement history behind every ingredient AND product count) ---
+api.MapGet("/inventory/stock-ledger", async (AppDbContext db, HttpContext http, Guid? branchId, Guid? ingredientId, Guid? productId, int? days) =>
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null) return Results.Unauthorized();
     var effectiveBranchId = http.GetBranchId() ?? branchId;
     var since = DateTime.UtcNow.AddDays(-(days ?? 30));
-    var query = db.StockLedgerEntries.Include(e => e.Ingredient)
+    var query = db.StockLedgerEntries.Include(e => e.Ingredient).Include(e => e.Product)
         .Where(e => e.TenantId == scopedTenantId.Value && e.CreatedAt >= since).AsQueryable();
     if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty) query = query.Where(e => e.BranchId == effectiveBranchId.Value);
     if (ingredientId.HasValue) query = query.Where(e => e.IngredientId == ingredientId.Value);
+    if (productId.HasValue) query = query.Where(e => e.ProductId == productId.Value);
     var rows = await query.OrderByDescending(e => e.CreatedAt).Take(500).ToListAsync();
     return Results.Ok(rows.Select(e => new
     {
-        e.Id, e.BranchId, e.IngredientId, ingredientName = e.Ingredient?.Name ?? "Unknown", movementType = e.MovementType.ToString(),
+        e.Id, e.BranchId, e.IngredientId, e.ProductId,
+        itemType = e.ProductId != null ? "Product" : "Ingredient",
+        // ingredientName kept for older screens; itemName is the name of whichever item moved.
+        ingredientName = e.Ingredient?.Name ?? e.Product?.Name ?? "Unknown",
+        itemName = e.Ingredient?.Name ?? e.Product?.Name ?? "Unknown",
+        movementType = e.MovementType.ToString(),
         e.QuantityChange, e.UnitCostPKR, e.BalanceAfter, e.ReferenceType, e.ReferenceId, e.Notes, e.CreatedAt, e.CreatedBy
     }));
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
@@ -5956,8 +7031,10 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
 {
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, dto.TenantId, dto.BranchId);
     if (scopeError != null) return scopeError;
+    // ResolveScopeAsync only yields no error when both scopes resolved; assert it so the .Value reads below are flow-proven (CS8629).
+    if (scopedTenantId == null || scopedBranchId == null) return Results.Unauthorized();
 
-    var poNumber = await GeneratePONumberAsync(db);
+    var poNumber = await GeneratePONumberAsync(db, scopedTenantId.Value);
     var supplierName = dto.SupplierName;
     Guid? supplierId = null;
     if (dto.SupplierId.HasValue)
@@ -5969,7 +7046,7 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     }
     var po = new PurchaseOrder
     {
-        TenantId = scopedTenantId!.Value, BranchId = scopedBranchId!.Value, PONumber = poNumber,
+        TenantId = scopedTenantId.Value, BranchId = scopedBranchId.Value, PONumber = poNumber,
         SupplierName = supplierName, SupplierId = supplierId, Status = POStatus.Ordered, CreatedAt = DateTime.UtcNow, Notes = dto.Notes
     };
     decimal totalCost = 0;
@@ -6100,13 +7177,13 @@ api.MapPost("/stock-requests", async (AppDbContext db, HttpContext http, Pos.Api
     if (branch == null) return Results.BadRequest(new { error = "Branch not found" });
     var currentUser = await accessor.GetCurrentUserAsync(http);
 
-    var seq = await db.StockRequests.CountAsync(sr => sr.TenantId == branch.TenantId) + 1;
+    var requestNumber = await GenerateStockRequestNumberAsync(db, branch.TenantId);
     var request = new StockRequest
     {
         Id = Guid.NewGuid(),
         TenantId = branch.TenantId,
         BranchId = branch.Id,
-        RequestNumber = $"SR-{seq:0000}",
+        RequestNumber = requestNumber,
         RequestType = dto.RequestType,
         VendorName = dto.VendorName,
         Notes = dto.Notes,
@@ -6211,33 +7288,25 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
     // which meant a chain had to sign up as a single shop and then rebuild its own structure
     // afterwards. DeploymentMode was already on the DTO but nothing read it.
     // ------------------------------------------------------------------
-    var isMultiBranch = string.Equals(dto.DeploymentMode, "MultiBranch", StringComparison.OrdinalIgnoreCase);
+    // One of three shapes: a single shop, a single shop with a separate head office, or a chain
+    // with a head office. Running a head office is a SHAPE, not a paid feature — every plan can do
+    // it. What the plan decides is how many selling locations fit.
+    var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
     var requestedBranches = (dto.Branches ?? new List<SignupBranchDto>())
         .Where(b => !string.IsNullOrWhiteSpace(b.Name))
         .ToList();
 
-    if (isMultiBranch)
-    {
-        // Running a head office is a SHAPE, not a paid feature — every plan can do it. What the
-        // plan decides is how many locations fit underneath. Gating the shape itself would mean
-        // a small two-shop chain could not use the product as the chain it actually is.
-        //
-        // Head office counts against the allowance alongside the outlets beneath it.
-        var totalBranches = requestedBranches.Count + 1;
-        var maxBranches = chosenPackage?.MaxBranches ?? 1;
-        if (totalBranches > maxBranches)
-            return Results.BadRequest(new
-            {
-                error = $"The {chosenPackage?.DisplayName ?? "selected"} plan covers {maxBranches} location(s) "
-                      + $"in total, including head office. You listed {requestedBranches.Count} branch(es), "
-                      + $"which needs {totalBranches}. Remove one, or choose a larger plan."
-            });
-    }
-    else
-    {
-        // A standalone shop has no outlets under it, whatever was posted.
-        requestedBranches.Clear();
-    }
+    // Only locations that sell count. A head office runs the back office and holds no till, so
+    // charging a location for it would be charging for nothing.
+    var sellingLocations = structure == BusinessStructures.ChainWithHeadOffice ? Math.Max(1, requestedBranches.Count) : 1;
+    var maxSellingLocations = chosenPackage?.MaxBranches ?? 1;
+    if (sellingLocations > maxSellingLocations)
+        return Results.BadRequest(new
+        {
+            error = $"The {chosenPackage?.DisplayName ?? "selected"} plan covers {maxSellingLocations} selling location(s); "
+                  + $"head office is not counted. You listed {requestedBranches.Count} branch(es). "
+                  + "Remove one, or choose a larger plan."
+        });
 
     using var transaction = await db.Database.BeginTransactionAsync();
 
@@ -6256,63 +7325,25 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             State = matchedState?.Name ?? dto.StateName?.Trim(),
             BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
             Tier = tier,
-            // Decides what the app IS for this customer: one hybrid shop, or an ERP head office
-            // with selling branches beneath it.
-            DeploymentMode = isMultiBranch ? DeploymentMode.HeadOffice : DeploymentMode.Standalone,
             IsActive = true,
             IsTrialActive = true,
             TrialEndsAt = DateTime.UtcNow.AddDays(30)
         };
         db.Tenants.Add(tenant);
 
-        // 2. The primary location. For a standalone business this IS the shop; for a chain it is
-        // the head office that the outlets below report into. Either way it carries IsHeadOffice,
-        // because every tenant needs exactly one place that owns the central catalogue.
-        //
-        // Pakistan's provincial tax jurisdiction (PK-PB, PK-SD, ...) is looked up by RegionCode
-        // elsewhere in this file — wiring it here means the province picked at signup applies
-        // from the first sale.
-        var branch = new Branch
-        {
-            TenantId = tenant.Id,
-            Name = isMultiBranch
-                ? $"{dto.RestaurantName.Trim()} — Head Office"
-                : $"{dto.RestaurantName.Trim()} — Main Branch",
-            Code = isMultiBranch ? "HQ" : "MAIN",
-            Address = dto.Address ?? "",
-            City = dto.City ?? "",
-            Phone = dto.Phone,
-            IsHeadOffice = true,
-            RegionCode = countryProfile.Iso2 == "PK" ? matchedState?.Code : null,
-        };
-        db.Branches.Add(branch);
-
-        // 2b. Outlets under the head office. Codes are generated rather than trusted from the
-        // client so two branches cannot collide on one, and each inherits the tenant's province
-        // unless it names its own — a chain usually operates in one tax jurisdiction, and the
-        // ones that do not can change it per branch afterwards.
-        var createdOutlets = new List<Branch>();
-        for (var i = 0; i < requestedBranches.Count; i++)
-        {
-            var b = requestedBranches[i];
-            var outletState = countryProfile.States?.FirstOrDefault(s => s.Code == b.StateCode);
-            createdOutlets.Add(new Branch
-            {
-                TenantId = tenant.Id,
-                Name = b.Name.Trim(),
-                Code = string.IsNullOrWhiteSpace(b.Code)
-                    ? $"BR-{(i + 1):D2}"
-                    : b.Code.Trim().ToUpperInvariant(),
-                Address = b.Address?.Trim() ?? "",
-                City = string.IsNullOrWhiteSpace(b.City) ? (dto.City ?? "") : b.City.Trim(),
-                Phone = b.Phone?.Trim() ?? "",
-                IsHeadOffice = false,
-                RegionCode = countryProfile.Iso2 == "PK"
-                    ? (outletState?.Code ?? matchedState?.Code)
-                    : null
-            });
-        }
-        db.Branches.AddRange(createdOutlets);
+        // 2. The legal entity and the starting locations — built by the same helper on-prem setup
+        // uses, so the same answers always give the same structure, and the helper sets the shape
+        // (DeploymentMode). Pakistan's provincial tax jurisdiction is looked up by RegionCode
+        // elsewhere in this file; wiring it here means the province picked at signup applies from
+        // the first sale, and each branch may name its own.
+        var taxRegion = countryProfile.Iso2 == "PK" ? matchedState?.Code : null;
+        var branchSpecs = requestedBranches
+            .Select(b => new SetupLocationSpec(b.Name, b.Code, b.City, b.Address, b.Phone,
+                countryProfile.Iso2 == "PK" ? countryProfile.States?.FirstOrDefault(s => s.Code == b.StateCode)?.Code : null))
+            .ToList();
+        if (branchSpecs.Count == 0)
+            branchSpecs.Add(new SetupLocationSpec($"{dto.RestaurantName.Trim()} — Main Branch", null, dto.City, dto.Address, dto.Phone, null));
+        var (_, headOffice, createdBranches) = CreateInitialStructure(db, tenant, structure, dto.Company, dto.HeadOffice, branchSpecs, taxRegion);
 
         // 3. Create admin user
         var adminUser = new AppUser
@@ -6365,6 +7396,7 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
                 ? "Cash,Card,JazzCash,EasyPaisa,Raast,CustomerKhata"
                 : "Cash,Card,CustomerKhata"
         };
+        ApplyInitialPolicies(tenantSettings, structure, dto.Policies);
         db.TenantSettings.Add(tenantSettings);
 
         // Assign the vertical pack chosen at signup. This is what decides the POS layout, which
@@ -6380,6 +7412,12 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         });
 
         await db.SaveChangesAsync();
+
+        // The books, from day one, when the owner asked for them — so every sale is posted rather
+        // than accounting starting part-way through the year.
+        if (dto.SetUpAccounting)
+            await EnsureChartOfAccountsSeededAsync(db, tenant.Id);
+
         await transaction.CommitAsync();
 
         // Build the entitlement snapshot now, so the very first request from this tenant reads
@@ -6392,10 +7430,11 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         {
             message = "Business created successfully!",
             verticalPack = packKey,
-            deploymentMode = isMultiBranch ? "MultiBranch" : "Standalone",
+            businessStructure = structure,
+            deploymentMode = structure == BusinessStructures.SingleShop ? "Standalone" : "MultiBranch",
             // What was actually provisioned, so the client can confirm it rather than assume.
-            branches = new[] { new { id = branch.Id, name = branch.Name, code = branch.Code, isHeadOffice = true } }
-                .Concat(createdOutlets.Select(o => new { id = o.Id, name = o.Name, code = o.Code, isHeadOffice = false }))
+            branches = (headOffice == null ? createdBranches : createdBranches.Prepend(headOffice))
+                .Select(b => new { id = b.Id, name = b.Name, code = b.Code, isHeadOffice = b.IsHeadOffice, locationType = b.LocationType.ToString(), canSell = b.CanSell })
                 .ToList(),
             entitlements = new
             {
@@ -6899,7 +7938,9 @@ app.MapGet("/api/admin/tenants/{id:guid}/overview", async (
         usage = new
         {
             branches = branches.Count,
-            activeUsers = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == id && u.IsActive),
+            // Shown against MaxUsers, so it counts what MaxUsers limits: back-office logins only.
+            activeUsers = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == id && u.IsActive
+                && u.Role != UserRole.Cashier && u.Role != UserRole.Waiter && u.Role != UserRole.KitchenChef && u.Role != UserRole.SuperAdmin),
             counters = terminals.Count(t => t.TerminalType == TerminalType.Counter && t.OccupiesQuotaSlot(now)),
             tablets = terminals.Count(t => t.TerminalType == TerminalType.OrderTab && t.OccupiesQuotaSlot(now)),
             products = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == id)
@@ -7152,17 +8193,12 @@ app.MapPost("/api/admin/tenants/provision", async (
         };
         db.Tenants.Add(tenant);
 
-        var branch = new Branch
-        {
-            TenantId = tenant.Id,
-            Name = $"{dto.BusinessName.Trim()} — Main",
-            Code = "MAIN",
-            City = dto.City ?? "",
-            Address = dto.Address ?? "",
-            Phone = dto.ContactPhone ?? "",
-            IsHeadOffice = true
-        };
-        db.Branches.Add(branch);
+        // One selling location to start; a head office can be added later from Locations, which
+        // creates it as a separate office rather than converting this shop.
+        var (_, _, provisioned) = CreateInitialStructure(db, tenant, BusinessStructures.SingleShop, null, null,
+            new List<SetupLocationSpec> { new($"{dto.BusinessName.Trim()} — Main", "MAIN", dto.City, dto.Address, dto.ContactPhone, null) },
+            null);
+        var branch = provisioned[0];
 
         db.TenantVerticalPacks.Add(new TenantVerticalPack { TenantId = tenant.Id, PackKey = packKey, IsPrimary = true });
 
@@ -7224,15 +8260,13 @@ app.MapPost("/api/admin/tenants/{id:guid}/enable-hq", async (
     HttpContext http,
     Pos.Api.Services.ISubscriptionService subs,
     Pos.Api.Services.IEntitlementService entitlements,
-    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    EnableHeadOfficeDto? dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
-
-    if (tenant.DeploymentMode == DeploymentMode.HeadOffice)
-        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true });
 
     // HQ is a Standard-and-up capability — Starter tenants get a 402 the console turns into
     // an upgrade offer, exactly like the owner-facing endpoint does.
@@ -7245,17 +8279,9 @@ app.MapPost("/api/admin/tenants/{id:guid}/enable-hq", async (
             upgradeRequired = true
         }, statusCode: StatusCodes.Status402PaymentRequired);
 
-    tenant.DeploymentMode = DeploymentMode.HeadOffice;
-
-    var primary = await db.Branches.IgnoreQueryFilters()
-        .Where(b => b.TenantId == id)
-        .OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code)
-        .FirstOrDefaultAsync();
-    if (primary != null)
-    {
-        primary.IsHeadOffice = true;
-        if (primary.Code == "MAIN") primary.Code = "HQ";
-    }
+    var (headOffice, alreadyEnabled) = await EnableHeadOfficeAsync(db, tenant, dto);
+    if (alreadyEnabled)
+        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true, headOfficeBranchId = headOffice?.Id });
 
     var actingUser = await accessor.GetCurrentUserAsync(http);
     if (actingUser != null)
@@ -7267,8 +8293,8 @@ app.MapPost("/api/admin/tenants/{id:guid}/enable-hq", async (
 
     return Results.Ok(new
     {
-        message = "Head office enabled. You can now add branches beneath it.",
-        headOfficeBranchId = primary?.Id,
+        message = "Head office created as a separate office. The existing shop keeps selling as a branch.",
+        headOfficeBranchId = headOffice?.Id,
         deploymentMode = "HeadOffice",
         snapshotVersion = updated.Version,
         locations = new { inUse = locations.InUse, limit = locations.Limit, isUnlimited = locations.IsUnlimited }
@@ -7324,9 +8350,10 @@ app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
         City = string.IsNullOrWhiteSpace(dto.City) ? (tenant.City ?? "") : dto.City.Trim(),
         Address = dto.Address?.Trim() ?? "",
         Phone = dto.Phone?.Trim() ?? "",
-        IsHeadOffice = false,
-        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant()
+        RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant(),
+        CompanyId = (await GetOrCreateDefaultCompanyAsync(db, id, tenant.Name)).Id
     };
+    ApplyLocationType(branch, LocationType.Branch);
     db.Branches.Add(branch);
 
     var actingUser = await accessor.GetCurrentUserAsync(http);
@@ -7817,14 +8844,17 @@ app.MapGet("/api/tenant/my-package", async (
     var primaryPack = Pos.Api.Data.VerticalPacks.Find(ent.PrimaryPackKey);
 
     // Which surface this particular user should see. A tenant-wide owner (no pinned branch) at a
-    // head-office chain administers the whole group, so they get the ERP; branch-pinned staff get
-    // the POS for their branch. A standalone shop gets the hybrid app either way.
+    // head-office chain administers the whole group, so they get the ERP; a standalone shop's owner
+    // gets the hybrid app. Branch-pinned staff get whatever their location does: a selling branch
+    // gets the POS, a head office or a warehouse the back office.
     var userBranchId = http.GetBranchId();
-    var atHeadOffice = userBranchId == null
-        ? true // not pinned: head office / owner view
-        : await db.Branches.IgnoreQueryFilters()
-            .Where(b => b.Id == userBranchId.Value).Select(b => b.IsHeadOffice).FirstOrDefaultAsync();
-    var surface = ent.SurfaceFor(atHeadOffice);
+    var location = userBranchId == null ? null : await db.Branches.IgnoreQueryFilters()
+        .Where(b => b.Id == userBranchId.Value)
+        .Select(b => new { b.LocationType, b.CanSell })
+        .FirstOrDefaultAsync();
+    var atHeadOffice = location == null || location.LocationType == LocationType.HeadOffice;
+    var locationSells = location?.CanSell ?? ent.DeploymentMode != DeploymentMode.HeadOffice;
+    var surface = ent.SurfaceFor(locationSells);
 
     // camelCase feature keys are kept alongside the resolved set because the existing frontend
     // guards read them by that name. Same values, two spellings, one source.
@@ -7871,6 +8901,9 @@ app.MapGet("/api/tenant/my-package", async (
         // "Hybrid" = a standalone shop that does both.
         appSurface = surface.ToString(),
         isHeadOffice = atHeadOffice,
+        // The signed-in location itself: "Branch", "HeadOffice" or "Warehouse", and whether it sells.
+        locationType = location?.LocationType.ToString(),
+        locationSells,
         showPos = surface != AppSurface.Erp,
 
         verticalPacks = ent.PackKeys,
@@ -9109,6 +10142,10 @@ api.MapPost("/payments/webhook/{provider}", async (
         "PaymentTransaction", txn.Id, null,
         $"{gateway.ProviderName} {txn.AmountPKR:0.##} PKR ref={txn.ProviderTransactionId}");
     await db.SaveChangesAsync();
+
+    // An order paid through the gateway after it was rung up reaches the books here.
+    if (order != null && confirmation.Success)
+        await PostSaleJournalIfNeededAsync(db, order);
 
     return Results.Ok(new { received = true, status = txn.Status.ToString() });
 }).AllowAnonymous(); // payment gateways cannot present a JWT; authenticity is the signature check
@@ -10872,7 +11909,8 @@ app.MapPost("/api/organization/enable-hq", async (
     AppDbContext db,
     Pos.Api.Services.ISubscriptionService subs,
     Pos.Api.Services.IEntitlementService entitlements,
-    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    EnableHeadOfficeDto? dto) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
@@ -10893,22 +11931,10 @@ app.MapPost("/api/organization/enable-hq", async (
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
     if (tenant == null) return Results.NotFound();
 
-    if (tenant.DeploymentMode == DeploymentMode.HeadOffice)
-        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true });
-
-    tenant.DeploymentMode = DeploymentMode.HeadOffice;
-
-    // The existing primary location becomes head office. Renaming it here would overwrite a name
-    // the owner chose, so only the code is normalised.
-    var primary = await db.Branches.IgnoreQueryFilters()
-        .Where(b => b.TenantId == tenantId.Value)
-        .OrderByDescending(b => b.IsHeadOffice).ThenBy(b => b.Code)
-        .FirstOrDefaultAsync();
-    if (primary != null)
-    {
-        primary.IsHeadOffice = true;
-        if (primary.Code == "MAIN") primary.Code = "HQ";
-    }
+    // A NEW location for the office; the shop that has been trading stays a selling branch.
+    var (headOffice, alreadyEnabled) = await EnableHeadOfficeAsync(db, tenant, dto);
+    if (alreadyEnabled)
+        return Results.Ok(new { message = "Head office is already enabled.", alreadyEnabled = true, headOfficeBranchId = headOffice?.Id });
 
     if (actingUser != null)
         await WriteAuditAsync(db, tenantId.Value, actingUser, "HeadOfficeEnabled", "Tenant", tenantId.Value,
@@ -10921,8 +11947,8 @@ app.MapPost("/api/organization/enable-hq", async (
 
     return Results.Ok(new
     {
-        message = "Head office enabled. You can now add branches beneath it.",
-        headOfficeBranchId = primary?.Id,
+        message = "Head office created as a separate office. The existing shop keeps selling as a branch.",
+        headOfficeBranchId = headOffice?.Id,
         deploymentMode = "HeadOffice",
         snapshotVersion = updated.Version,
         locations = new { inUse = locations.InUse, limit = locations.Limit, isUnlimited = locations.IsUnlimited }
@@ -10964,7 +11990,11 @@ public class ServerPricedOrder
 // DTOs
 public record VerifyPinDto(string Username, string PinCode, string? RequiredPermission);
 public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRate, decimal? DigitalTaxRate, bool? IsActive);
-public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs);
+/// <summary>RegionCode is the tax jurisdiction; RegionId the grouping (Guid.Empty clears it).</summary>
+public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs,
+    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null);
+public record SaveCompanyDto(string? LegalName, string? TradeName, string? TaxRegistrationNumber, string? SalesTaxRegistrationNumber, string? Address);
+public record SaveRegionDto(string? Name, string? Code);
 // The trailing CRM/loyalty/gift-card/promo fields are optional and default to null — a walk-in
 // order posted by an older client that omits them behaves exactly as it did before.
 /// <summary>
@@ -11011,7 +12041,11 @@ public record CreateTableDto(Guid BranchId, string TableNumber, string? Section,
 public record UpdateTableDto(string? TableNumber, string? Section, int? Capacity, bool? IsOccupied);
 /// <summary>TenantSlug disambiguates a username that exists at more than one business. Optional,
 /// because the overwhelmingly common case is a name that is unique platform-wide.</summary>
-public record LoginDto(string Username, string PinCode, string? TenantSlug = null);
+/// <summary>BranchId: sign in at this branch rather than the home branch (e.g. the branch a till is
+/// paired to). Only honoured for branch-based users who cover it.</summary>
+public record LoginDto(string Username, string PinCode, string? TenantSlug = null, Guid? BranchId = null);
+public record SwitchBranchDto(Guid BranchId, string? RefreshToken);
+public record SetUserBranchAccessDto(List<Guid> BranchIds);
 public record RefreshTokenDto(string RefreshToken);
 public record VoidOrderDto(string? Reason);
 public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
@@ -11041,7 +12075,13 @@ public record SetupInitDto(
     string? AdminPin,
     bool SeedStarterMenu,
     string? AllowedPaymentMethods,
-    List<BranchInitDto>? Branches
+    List<BranchInitDto>? Branches,
+    // The shape of the business and what the owner decided about it; see BusinessStructures.
+    string? BusinessStructure = null,
+    SetupCompanyDto? Company = null,
+    SetupHeadOfficeDto? HeadOffice = null,
+    SetupPoliciesDto? Policies = null,
+    bool SetUpAccounting = false
 );
 public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
 public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
@@ -11062,7 +12102,41 @@ public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, str
 /// it). Branches is only read for MultiBranch, and is validated against the chosen plan's
 /// HasMultiBranch flag and MaxBranches allowance before anything is created.
 /// </summary>
-public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null);
+public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null,
+    string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false);
+
+/// <summary>
+/// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only
+/// DeploymentMode ("Standalone"/"Single" or "MultiBranch"); that still maps onto these.
+/// </summary>
+public static class BusinessStructures
+{
+    public const string SingleShop = "SingleShop";
+    public const string SingleShopWithHeadOffice = "SingleShopWithHeadOffice";
+    public const string ChainWithHeadOffice = "ChainWithHeadOffice";
+
+    public static string Resolve(string? structure, string? deploymentMode)
+    {
+        if (string.Equals(structure, SingleShopWithHeadOffice, StringComparison.OrdinalIgnoreCase)) return SingleShopWithHeadOffice;
+        if (string.Equals(structure, ChainWithHeadOffice, StringComparison.OrdinalIgnoreCase)) return ChainWithHeadOffice;
+        if (string.Equals(structure, SingleShop, StringComparison.OrdinalIgnoreCase)) return SingleShop;
+        return string.Equals(deploymentMode, "MultiBranch", StringComparison.OrdinalIgnoreCase) ? ChainWithHeadOffice : SingleShop;
+    }
+}
+
+/// <summary>The legal entity's details, as given at setup. Every field is optional.</summary>
+public record SetupCompanyDto(string? LegalName, string? TradeName, string? TaxRegistrationNumber, string? SalesTaxRegistrationNumber, string? Address);
+
+/// <summary>The separate head office, as given at setup or when enabling one later.</summary>
+public record SetupHeadOfficeDto(string? Name, string? City, string? Address, string? Phone, bool? HoldsStock);
+
+/// <summary>Policies chosen at setup; anything left null takes the default for the business's shape.</summary>
+public record SetupPoliciesDto(CatalogControl? CatalogControl, bool? BranchPricing, PurchasingControl? PurchasingControl, bool? AllowNegativeStock);
+
+/// <summary>One location as described at setup, whichever wizard described it.</summary>
+public record SetupLocationSpec(string Name, string? Code, string? City, string? Address, string? Phone, string? TaxRegionCode);
+
+public record EnableHeadOfficeDto(string? Name, string? City, string? Address, string? Phone, bool? HoldsStock);
 
 /// <summary>One outlet listed at signup. Only Name is required; the rest fall back to the
 /// tenant's own city/province so a chain in one city does not have to retype it per branch.</summary>
@@ -11174,4 +12248,6 @@ public record CreateSyncLogDto(Guid? BranchId, Guid? DeviceId, string? HostIdent
 public record SyncReceiveDto(string? BusinessId, Guid TenantId, string? EntityType, string? BatchId,
     List<Dictionary<string, System.Text.Json.JsonElement>>? Records);
 public record ChangePlanDto(string PlanCode, string? Reason);
-public record CreateBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode);
+/// <summary>LocationType is Branch (default) or Warehouse; a head office is created through enable-hq.</summary>
+public record CreateBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode,
+    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null);

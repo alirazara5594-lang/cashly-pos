@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)"
     ]
   }
 }

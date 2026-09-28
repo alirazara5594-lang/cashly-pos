@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Guardrails: these two were fixed at root and must never silently return.
+         NU1903 = the Microsoft.OpenApi advisory class (bumping back to a vulnerable version fails the build).
+         CS8629 = unguarded .Value reads on scope resolution (reintroducing them fails the build). -->
+    <WarningsAsErrors>$(WarningsAsErrors);NU1903;CS8629</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,7 +20,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.OpenApi" Version="2.0.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 

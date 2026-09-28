@@ -44,10 +44,10 @@ const STATUS_LADDER = [
 ];
 
 const OVERRIDE_KEYS = [
-  { value: 'MaxCounters', label: 'Extra counters', numeric: true },
-  { value: 'MaxOrderTabs', label: 'Extra tablets', numeric: true },
+  { value: 'MaxCounters', label: 'Extra counters (per branch)', numeric: true },
+  { value: 'MaxOrderTabs', label: 'Extra tablets (per branch)', numeric: true },
   { value: 'MaxBranches', label: 'Extra branches', numeric: true },
-  { value: 'MaxUsers', label: 'Extra staff logins', numeric: true },
+  { value: 'MaxUsers', label: 'Extra back-office logins', numeric: true },
   { value: 'HasKitchenDisplay', label: 'Kitchen Display', numeric: false },
   { value: 'HasInventoryManagement', label: 'Inventory', numeric: false },
   { value: 'HasStockTransfers', label: 'Stock Transfers', numeric: false },
@@ -559,7 +559,7 @@ const OverviewTab: React.FC<{
       <Section icon={<Server className="w-3.5 h-3.5" />} title="Usage vs entitlement">
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Branches" value={`${usage.branches} / ${entitlements.maxBranches}`} />
-          <Stat label="Staff logins" value={`${usage.activeUsers} / ${entitlements.maxUsers}`} />
+          <Stat label="Back-office logins" value={`${usage.activeUsers} / ${entitlements.maxUsers}`} />
           <Stat label="Counters" value={`${usage.counters} / ${entitlements.maxCounters} per branch`} />
           <Stat label="Tablets" value={`${usage.tablets} / ${entitlements.maxOrderTabs} per branch`} />
         </div>
@@ -1030,7 +1030,7 @@ const EntitlementsTab: React.FC<{
       <Section icon={<KeyRound className="w-3.5 h-3.5" />} title="Effective plan">
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Branches" value={`max ${entitlements.maxBranches}`} />
-          <Stat label="Staff logins" value={`max ${entitlements.maxUsers}`} />
+          <Stat label="Back-office logins" value={`max ${entitlements.maxUsers}`} />
           <Stat label="Counters" value={`max ${entitlements.maxCounters} / branch`} />
           <Stat label="Tablets" value={`max ${entitlements.maxOrderTabs} / branch`} />
         </div>

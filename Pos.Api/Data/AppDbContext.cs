@@ -27,6 +27,11 @@ public class AppDbContext : DbContext
 
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<Branch> Branches => Set<Branch>();
+
+    // --- Organisation structure (Models/OrganizationEntities.cs) ---
+    public DbSet<Company> Companies => Set<Company>();
+    public DbSet<Region> Regions => Set<Region>();
+    public DbSet<UserBranchAccess> UserBranchAccess => Set<UserBranchAccess>();
     public DbSet<Terminal> Terminals => Set<Terminal>();
     public DbSet<AddOnSubscription> AddOnSubscriptions => Set<AddOnSubscription>();
     public DbSet<Category> Categories => Set<Category>();
@@ -34,6 +39,10 @@ public class AppDbContext : DbContext
     public DbSet<ProductModifier> ProductModifiers => Set<ProductModifier>();
     public DbSet<BranchStock> BranchStocks => Set<BranchStock>();
     public DbSet<Ingredient> Ingredients => Set<Ingredient>();
+    public DbSet<IngredientMaster> IngredientMasters => Set<IngredientMaster>();
+    public DbSet<BranchProductPrice> BranchProductPrices => Set<BranchProductPrice>();
+    public DbSet<OrderReturn> OrderReturns => Set<OrderReturn>();
+    public DbSet<OrderReturnLine> OrderReturnLines => Set<OrderReturnLine>();
     public DbSet<ProductRecipeItem> ProductRecipeItems => Set<ProductRecipeItem>();
     public DbSet<DiningTable> DiningTables => Set<DiningTable>();
     public DbSet<Order> Orders => Set<Order>();
@@ -133,15 +142,23 @@ public class AppDbContext : DbContext
             .HasIndex(u => new { u.TenantId, u.Username })
             .IsUnique();
 
+        modelBuilder.Entity<Company>()
+            .HasIndex(c => c.TenantId);
+
+        modelBuilder.Entity<Region>()
+            .HasIndex(r => new { r.TenantId, r.Name })
+            .IsUnique();
+
+        modelBuilder.Entity<UserBranchAccess>()
+            .HasIndex(a => new { a.UserId, a.BranchId })
+            .IsUnique();
+
         // Performance indexes
         modelBuilder.Entity<Order>()
             .HasIndex(o => new { o.BranchId, o.CreatedAt });
 
         modelBuilder.Entity<Order>()
             .HasIndex(o => o.Status);
-
-        modelBuilder.Entity<Order>()
-            .HasIndex(o => o.OrderNumber);
 
         modelBuilder.Entity<OrderItem>()
             .HasIndex(oi => oi.ProductId);
@@ -205,17 +222,20 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<AuditLog>()
             .HasIndex(al => new { al.TenantId, al.CreatedAt });
 
-        // Unique constraints for document numbers (prevent duplicates from race conditions)
+        // Document numbers are unique PER BUSINESS. Every business has its own ORD-260928-0001; an
+        // index spanning the whole platform made the second business to sell on any given day
+        // collide with the first one's numbers. The startup schema step (Program.cs,
+        // EnsureDocumentNumberingSchemaAsync) moves existing databases onto these indexes.
         modelBuilder.Entity<Order>()
-            .HasIndex(o => o.OrderNumber)
+            .HasIndex(o => new { o.TenantId, o.OrderNumber })
             .IsUnique();
 
         modelBuilder.Entity<StockTransferOrder>()
-            .HasIndex(st => st.TransferNumber)
+            .HasIndex(st => new { st.TenantId, st.TransferNumber })
             .IsUnique();
 
         modelBuilder.Entity<PurchaseOrder>()
-            .HasIndex(po => po.PONumber)
+            .HasIndex(po => new { po.TenantId, po.PONumber })
             .IsUnique();
 
         // Foreign key relationships with delete behavior
@@ -333,10 +353,12 @@ public class AppDbContext : DbContext
             .HasForeignKey(sti => sti.TransferOrderId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        // A transfer or purchase line carries an ingredient OR a finished product, so neither key is required.
         modelBuilder.Entity<StockTransferItem>()
             .HasOne(sti => sti.Ingredient)
             .WithMany()
             .HasForeignKey(sti => sti.IngredientId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<PurchaseOrder>()
@@ -355,7 +377,28 @@ public class AppDbContext : DbContext
             .HasOne(poi => poi.Ingredient)
             .WithMany()
             .HasForeignKey(poi => poi.IngredientId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // --- Returns ---
+        modelBuilder.Entity<OrderReturnLine>()
+            .HasOne(l => l.OrderReturn)
+            .WithMany(r => r.Lines)
+            .HasForeignKey(l => l.OrderReturnId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<OrderReturn>()
+            .HasIndex(r => new { r.TenantId, r.ReturnNumber })
+            .IsUnique();
+
+        modelBuilder.Entity<OrderReturn>()
+            .HasIndex(r => r.OrderId);
+
+        modelBuilder.Entity<OrderReturn>()
+            .HasIndex(r => new { r.BranchId, r.CreatedAt });
+
+        modelBuilder.Entity<OrderReturnLine>()
+            .HasIndex(l => l.OrderItemId);
 
         // --- Suppliers & stock ledger ---
 
@@ -378,7 +421,29 @@ public class AppDbContext : DbContext
             .HasOne(sl => sl.Ingredient)
             .WithMany()
             .HasForeignKey(sl => sl.IngredientId)
+            .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
+
+        // Finished-product movements share the ledger with ingredient movements.
+        modelBuilder.Entity<StockLedgerEntry>()
+            .HasOne(sl => sl.Product)
+            .WithMany()
+            .HasForeignKey(sl => sl.ProductId)
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<StockLedgerEntry>()
+            .HasIndex(sl => new { sl.BranchId, sl.ProductId, sl.CreatedAt });
+
+        modelBuilder.Entity<IngredientMaster>()
+            .HasIndex(m => m.TenantId);
+
+        modelBuilder.Entity<Ingredient>()
+            .HasIndex(i => i.MasterIngredientId);
+
+        modelBuilder.Entity<BranchProductPrice>()
+            .HasIndex(p => new { p.BranchId, p.ProductId })
+            .IsUnique();
 
         // --- Payroll ---
 

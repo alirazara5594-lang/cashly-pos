@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cashly POS – Initial Setup</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div class="wizard-container">
+        <h1>Initial Setup Wizard</h1>
+        <form id="setupForm" novalidate>
+            <div class="column" id="col1">
+                <h2>1️⃣ Business Profile</h2>
+                <label>
+                    Company Name*
+                    <input type="text" name="companyName" required />
+                </label>
+                <label>
+                    Tax / Registration No.*
+                    <input type="text" name="taxId" required pattern="[A-Za-z0-9-]{3,}" />
+                </label>
+                <label>
+                    Primary Address*
+                    <textarea name="address" rows="2" required></textarea>
+                </label>
+                <label>
+                    Currency*
+                    <select name="currency" required>
+                        <option value="">Select…</option>
+                        <option value="USD">USD – US Dollar</option>
+                        <option value="EUR">EUR – Euro</option>
+                        <option value="GBP">GBP – British Pound</option>
+                        <option value="INR">INR – Indian Rupee</option>
+                    </select>
+                </label>
+                <label>
+                    Language*
+                    <select name="language" required>
+                        <option value="">Select…</option>
+                        <option value="en">English</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="ar">Arabic</option>
+                    </select>
+                </label>
+                <button type="button" class="next" data-target="col2">Next</button>
+            </div>
+
+            <div class="column" id="col2" hidden>
+                <h2>2️⃣ Branch / HQ Topology</h2>
+                <fieldset>
+                    <legend>Branch Model *</legend>
+                    <label><input type="radio" name="branchModel" value="single_no_hq" required /> Single branch – No HQ</label>
+                    <label><input type="radio" name="branchModel" value="single_with_hq" /> Single branch – With HQ</label>
+                    <label><input type="radio" name="branchModel" value="multi" /> Multi‑branch – HQ + Stores</label>
+                </fieldset>
+                <div id="hqDetails" hidden>
+                    <h3>HQ Details</h3>
+                    <label>
+                        HQ Name*
+                        <input type="text" name="hqName" />
+                    </label>
+                    <label>
+                        HQ Code*
+                        <input type="text" name="hqCode" pattern="[A-Z0-9]{3,}" />
+                    </label>
+                </div>
+                <div id="storeDetails" hidden>
+                    <h3>Initial Stores</h3>
+                    <label>
+                        Number of stores*
+                        <input type="number" name="storeCount" min="1" max="99" />
+                    </label>
+                    <div id="storeInputs"></div>
+                </div>
+                <button type="button" class="prev" data-target="col1">Back</button>
+                <button type="button" class="next" data-target="col3">Next</button>
+            </div>
+
+            <div class="column" id="col3" hidden>
+                <h2>3️⃣ Product Tier & Licencing</h2>
+                <label>
+                    Tier*
+                    <select name="tier" required>
+                        <option value="">Select…</option>
+                        <option value="starter">Starter</option>
+                        <option value="standard">Standard</option>
+                        <option value="professional">Professional</option>
+                    </select>
+                </label>
+                <label>
+                    License Key*
+                    <input type="text" name="licenseKey" required pattern="[A-Z0-9]{4}(-[A-Z0-9]{4}){3}" placeholder="XXXX-XXXX-XXXX-XXXX" />
+                </label>
+                <fieldset>
+                    <legend>Optional Add‑ons</legend>
+                    <label><input type="checkbox" name="addons" value="loyalty" /> Loyalty / Rewards</label>
+                    <label><input type="checkbox" name="addons" value="ecommerce" /> E‑commerce Integration</label>
+                    <label><input type="checkbox" name="addons" value="analytics" /> Advanced Analytics</label>
+                    <label><input type="checkbox" name="addons" value="api" /> API / SDK Access</label>
+                </fieldset>
+                <button type="button" class="prev" data-target="col2">Back</button>
+                <button type="submit" class="finish">Finish Setup</button>
+            </div>
+        </form>
+    </div>
+    <script>
+        // Simple client‑side navigation & validation
+        const form = document.getElementById('setupForm');
+        const cols = {
+            col1: document.getElementById('col1'),
+            col2: document.getElementById('col2'),
+            col3: document.getElementById('col3')
+        };
+        document.querySelectorAll('.next').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.dataset.target;
+                if (form.checkValidity()) {
+                    // hide current, show target
+                    btn.closest('.column').hidden = true;
+                    cols[target].hidden = false;
+                } else {
+                    form.reportValidity();
+                }
+            });
+        });
+        document.querySelectorAll('.prev').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.dataset.target;
+                btn.closest('.column').hidden = true;
+                cols[target].hidden = false;
+            });
+        });
+        // Show/hide conditional sections in column 2
+        const branchRadios = document.getElementsByName('branchModel');
+        branchRadios.forEach(r => {
+            r.addEventListener('change', () => {
+                const hq = document.getElementById('hqDetails');
+                const stores = document.getElementById('storeDetails');
+                if (r.value === 'single_with_hq') {
+                    hq.hidden = false; stores.hidden = true; clearStoreInputs();
+                } else if (r.value === 'multi') {
+                    hq.hidden = false; stores.hidden = false;
+                } else { // single_no_hq
+                    hq.hidden = true; stores.hidden = true; clearStoreInputs();
+                }
+            });
+        });
+        // Dynamically create store input rows when count changes
+        const storeCountInput = document.querySelector('input[name="storeCount"]');
+        storeCountInput?.addEventListener('input', () => {
+            const count = parseInt(storeCountInput.value) || 0;
+            const container = document.getElementById('storeInputs');
+            container.innerHTML = '';
+            for (let i = 1; i <= count; i++) {
+                const div = document.createElement('div');
+                div.className = 'store-row';
+                div.innerHTML = `
+                    <h4>Store ${i}</h4>
+                    <label>Name* <input type="text" name="storeName${i}" required /></label>
+                    <label>Code* <input type="text" name="storeCode${i}" pattern="[A-Z0-9]{3,}" required /></label>
+                `;
+                container.appendChild(div);
+            }
+        });
+        function clearStoreInputs() {
+            document.getElementById('storeInputs').innerHTML = '';
+            if (storeCountInput) storeCountInput.value = '';
+        }
+        form.addEventListener('submit', e => {
+            e.preventDefault();
+            if (!form.checkValidity()) { form.reportValidity(); return; }
+            // Gather data – in a real product you'd POST to the backend
+            const data = new FormData(form);
+            console.log('Setup data ready to send:', Object.fromEntries(data.entries()));
+            alert('Setup completed! Check console for data payload.');
+        });
+    </script>
+</body>
+</html>
