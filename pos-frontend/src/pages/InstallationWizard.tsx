@@ -20,8 +20,8 @@ import {
   Mail, 
   Server, 
   Network, 
-  Copy, 
-  Check 
+  Copy,
+  Check
 } from 'lucide-react';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
@@ -526,10 +526,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <span className="text-xs text-slate-500">Username</span>
               <span className="text-sm text-slate-900 font-mono font-bold">{signupSuccess.username}</span>
             </div>
+            {/* The PIN is never shown back — the owner typed it a moment ago. */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs text-slate-500">Master PIN</span>
-              <span className="text-sm text-slate-900 font-mono font-bold">{signupSuccess.pin}</span>
+              <span className="text-sm text-slate-400 font-mono font-bold tracking-widest">••••</span>
             </div>
+            <p className="text-[11px] text-slate-400">
+              Sign in with the PIN you chose during setup. Change it after signing in if you kept the default.
+            </p>
           </div>
 
           {/* If Head Office ERP was installed: show Connection Credentials Box for POS Terminals */}

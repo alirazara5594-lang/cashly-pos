@@ -403,8 +403,9 @@ export const UserManagement: React.FC = () => {
                       {getRoleBadge(u.role)}
                     </td>
                     <td className="py-3.5 px-3 text-center">
-                      <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200 font-mono text-teal-600 font-bold text-xs">
-                        {u.pinCode}
+                      {/* PINs are never shown to anyone; the server only keeps a hash of them. */}
+                      <span className="px-2 py-0.5 rounded bg-slate-50 border border-slate-200 font-mono text-slate-400 font-bold text-xs tracking-widest">
+                        ••••
                       </span>
                     </td>
                     <td className="py-3.5 px-3 text-slate-700">
