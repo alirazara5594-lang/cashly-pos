@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { MapPin, Percent, AlertTriangle, Save, Landmark } from 'lucide-react';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { FiscalInvoicingSection } from '../components/FiscalInvoicingSection';
 import type { TaxJurisdiction, ModuleKey } from '../types';
 
 const TAX_DISCLAIMER =
@@ -434,6 +435,9 @@ export const TaxConfiguration: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Reporting sales to the tax authority, per shop */}
+        <FiscalInvoicingSection canEdit={can('accounts', 'edit')} />
       </div>
     </div>
   );

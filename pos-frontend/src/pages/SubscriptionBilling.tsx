@@ -1,7 +1,40 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Receipt, Plus, RefreshCw, CheckCircle2, Ban, X, Save } from 'lucide-react';
+import { Receipt, Plus, RefreshCw, CheckCircle2, Ban, X, Save, ChevronDown, ChevronRight } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import type { SubscriptionInvoice } from '../types';
+import type { BillingLine, SubscriptionInvoice } from '../types';
+
+interface Quote {
+  annual: boolean;
+  lines: BillingLine[];
+  totalPKR: number;
+}
+
+/** The billed lines stored on an invoice; older invoices have none. */
+const invoiceLines = (inv: SubscriptionInvoice): Pick<BillingLine, 'description' | 'quantity' | 'amountPKR'>[] => {
+  if (!inv.linesJson) return [];
+  try {
+    const parsed: unknown = JSON.parse(inv.linesJson);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const LineTable: React.FC<{ lines: Pick<BillingLine, 'description' | 'quantity' | 'amountPKR'>[] }> = ({ lines }) => (
+  <table className="w-full text-[11px]">
+    <tbody>
+      {lines.map((line, idx) => (
+        <tr key={idx} className="border-b border-slate-100 last:border-0">
+          <td className="py-1 pr-2 text-slate-700">
+            {line.description}
+            {line.quantity > 1 && <span className="text-slate-400"> × {line.quantity}</span>}
+          </td>
+          <td className="py-1 text-right font-mono text-slate-900">{Math.round(line.amountPKR).toLocaleString()}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+);
 
 interface TenantOption {
   id: string;
@@ -27,6 +60,25 @@ export const SubscriptionBilling: React.FC = () => {
   const [annual, setAnnual] = useState(false);
   const [customAmount, setCustomAmount] = useState('');
   const [issuing, setIssuing] = useState(false);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // What the invoice will charge, line by line, so the amount is never a surprise.
+  const loadQuote = (isAnnual: boolean) => {
+    if (!selectedTenantId) return;
+    setQuoteError(null);
+    posApi.getBillingQuote(selectedTenantId, isAnnual)
+      .then(q => setQuote({ annual: q.annual, lines: q.lines, totalPKR: q.totalPKR }))
+      .catch(err => setQuoteError(getApiErrorMessage(err, 'Could not work out the charges')));
+  };
+  const openIssue = () => {
+    setQuote(null);
+    setIsIssueOpen(true);
+    loadQuote(annual);
+  };
+  // A quote for the other billing period is still in flight when the box is ticked quickly.
+  const shownQuote = quote && quote.annual === annual ? quote : null;
 
   const loadTenants = useCallback(async () => {
     try {
@@ -118,7 +170,7 @@ export const SubscriptionBilling: React.FC = () => {
           </button>
         </div>
         <button
-          onClick={() => setIsIssueOpen(true)}
+          onClick={openIssue}
           disabled={!selectedTenantId}
           className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
         >
@@ -158,9 +210,24 @@ export const SubscriptionBilling: React.FC = () => {
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-400">Loading invoices…</td></tr>
               ) : invoices.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-400">No invoices yet.</td></tr>
-              ) : invoices.map(inv => (
-                <tr key={inv.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-2.5 text-xs font-mono font-bold text-slate-900">{inv.invoiceNumber}</td>
+              ) : invoices.map(inv => {
+                const lines = invoiceLines(inv);
+                const expanded = expandedId === inv.id;
+                return (
+                <React.Fragment key={inv.id}>
+                <tr className="hover:bg-slate-50">
+                  <td className="px-4 py-2.5 text-xs font-mono font-bold text-slate-900">
+                    {lines.length > 0 ? (
+                      <button
+                        onClick={() => setExpandedId(expanded ? null : inv.id)}
+                        className="inline-flex items-center gap-1 hover:text-teal-700"
+                        title="Show what this invoice charges"
+                      >
+                        {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                        {inv.invoiceNumber}
+                      </button>
+                    ) : inv.invoiceNumber}
+                  </td>
                   {!selectedTenantId && <td className="px-4 py-2.5 text-xs text-slate-700">{tenantName(inv.tenantId)}</td>}
                   <td className="px-4 py-2.5 text-[11px] text-slate-500">{inv.tier}</td>
                   <td className="px-4 py-2.5 text-[11px] text-slate-500">
@@ -186,7 +253,16 @@ export const SubscriptionBilling: React.FC = () => {
                     )}
                   </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr className="bg-slate-50/60">
+                    <td colSpan={7} className="px-4 py-2">
+                      <div className="max-w-lg"><LineTable lines={lines} /></div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -194,19 +270,42 @@ export const SubscriptionBilling: React.FC = () => {
 
       {isIssueOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-black text-slate-900 flex items-center gap-2"><Receipt className="w-4 h-4 text-teal-600" /> Issue Invoice — {tenantName(selectedTenantId)}</h2>
               <button onClick={() => setIsIssueOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
-              <input type="checkbox" checked={annual} onChange={(e) => setAnnual(e.target.checked)} className="w-4 h-4 accent-teal-500" />
+              <input
+                type="checkbox"
+                checked={annual}
+                onChange={(e) => { setAnnual(e.target.checked); loadQuote(e.target.checked); }}
+                className="w-4 h-4 accent-teal-500"
+              />
               <span>Annual billing (default: monthly)</span>
             </label>
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">This invoice charges</div>
+              {quoteError ? (
+                <p className="text-[11px] text-rose-600">{quoteError}</p>
+              ) : !shownQuote ? (
+                <p className="text-[11px] text-slate-400">Working out the charges…</p>
+              ) : shownQuote.lines.length === 0 ? (
+                <p className="text-[11px] text-slate-400">Nothing billable on this account.</p>
+              ) : (
+                <>
+                  <LineTable lines={shownQuote.lines} />
+                  <div className="flex justify-between items-baseline pt-1.5 border-t border-slate-200">
+                    <span className="text-xs font-bold text-slate-700">Total {annual ? 'per year' : 'per month'}</span>
+                    <span className="text-sm font-black text-teal-700">PKR {Math.round(shownQuote.totalPKR).toLocaleString()}</span>
+                  </div>
+                </>
+              )}
+            </div>
             <div>
               <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount override (optional)</label>
               <input type="number" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)}
-                placeholder="Leave blank to use the package price"
+                placeholder="Leave blank to charge the total above"
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
             <button

@@ -7,7 +7,7 @@ import {
 import { posApi, getApiErrorMessage } from '../services/api';
 import type {
   TenantOverview, PlanChangePreview, PlanOption,
-  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage
+  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine
 } from '../types';
 
 /**
@@ -57,6 +57,16 @@ const OVERRIDE_KEYS = [
   { value: 'HasMultiBranch', label: 'Multi-Branch', numeric: false },
   { value: 'HasDeliveryCOD', label: 'Delivery & COD', numeric: false }
 ];
+
+// Mirrors the grant endpoint: a device add-on raises one shop's allowance so it must name the shop;
+// a per-shop service may name one shop or none (every shop).
+const MUST_NAME_SHOP = new Set(['EXTRA_COUNTER', 'EXTRA_TABLET', 'EXTRA_KDS']);
+const MAY_NAME_SHOP = new Set([
+  ...MUST_NAME_SHOP,
+  'fiscal_invoicing', 'online_payments', 'online_ordering', 'integrations', 'api', 'HasKitchenDisplay'
+]);
+// Add-ons whose quantity means something — extra devices, extra logins, message bundles.
+const HAS_QUANTITY = new Set([...MUST_NAME_SHOP, 'EXTRA_USER', 'WHATSAPP_1000']);
 
 const featureLabel = (key: string) =>
   key.replace(/^Has/, '').replace(/([A-Z])/g, ' $1').trim() || key;
@@ -389,9 +399,8 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
               grantKey={grantKey}
               setGrantKey={(k) => {
                 setGrantKey(k);
-                const item = catalog.find(c => c.key === k);
                 setGrantQty('1');
-                if (item && !['EXTRA_COUNTER', 'EXTRA_TABLET'].includes(k)) setGrantBranchId('');
+                if (!MAY_NAME_SHOP.has(k)) setGrantBranchId('');
               }}
               grantQty={grantQty}
               setGrantQty={setGrantQty}
@@ -400,8 +409,8 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
               onGrant={() => run(async () => {
                 await posApi.grantTenantAddOn(tenantId, {
                   addOnKey: grantKey,
-                  quantity: Number(grantQty) || 1,
-                  branchId: ['EXTRA_COUNTER', 'EXTRA_TABLET'].includes(grantKey) ? grantBranchId : undefined
+                  quantity: HAS_QUANTITY.has(grantKey) ? Number(grantQty) || 1 : 1,
+                  branchId: MAY_NAME_SHOP.has(grantKey) && grantBranchId ? grantBranchId : undefined
                 });
                 await loadAddOns();
               }, 'Add-on granted. It is live from the next device heartbeat.')}
@@ -634,6 +643,48 @@ const OverviewTab: React.FC<{
   );
 };
 
+/** What the next monthly invoice will charge — the Head Office ERP, each shop's version, each add-on. */
+const ChargesPreview: React.FC<{ tenantId: string }> = ({ tenantId }) => {
+  const [quote, setQuote] = useState<{ tenantId: string; lines: BillingLine[]; totalPKR: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getBillingQuote(tenantId, false)
+      .then(q => { if (!cancelled) setQuote({ tenantId, lines: q.lines, totalPKR: q.totalPKR }); })
+      .catch(err => { if (!cancelled) setError(getApiErrorMessage(err, 'Could not work out the charges')); });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
+  const shown = quote && quote.tenantId === tenantId ? quote : null;
+  return (
+    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+      <div className="text-[10px] font-bold uppercase text-slate-500">Next monthly invoice</div>
+      {error ? (
+        <p className="text-[11px] text-rose-600">{error}</p>
+      ) : !shown ? (
+        <p className="text-[11px] text-slate-400">Working out the charges…</p>
+      ) : (
+        <>
+          {shown.lines.map((line, idx) => (
+            <div key={idx} className="flex justify-between gap-2 text-[11px]">
+              <span className="text-slate-700 min-w-0">
+                {line.description}
+                {line.quantity > 1 && <span className="text-slate-400"> × {line.quantity}</span>}
+              </span>
+              <span className="font-mono text-slate-900 shrink-0">{Math.round(line.amountPKR).toLocaleString()}</span>
+            </div>
+          ))}
+          <div className="flex justify-between pt-1.5 border-t border-slate-200 text-xs font-black text-slate-900">
+            <span>Total</span>
+            <span>{pkr(shown.totalPKR)}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 const PlanTab: React.FC<{
   data: TenantOverview;
   plans: PlanOption[];
@@ -803,6 +854,7 @@ const PlanTab: React.FC<{
 
       {/* Invoices */}
       <Section icon={<Receipt className="w-3.5 h-3.5" />} title="Billing">
+        <ChargesPreview tenantId={tenant.id} />
         <div className="grid grid-cols-2 gap-2">
           <button
             disabled={busy}
@@ -900,15 +952,16 @@ const AddOnsTab: React.FC<{
   grantBranchId, setGrantBranchId, onGrant, onRevoke }) => {
   const catalogName = (key: string) => catalog.find(c => c.key === key)?.displayName ?? key;
   const branchName = (id?: string | null) => data.branches.find(b => b.id === id)?.name ?? '—';
-  const branchScoped = grantKey === 'EXTRA_COUNTER' || grantKey === 'EXTRA_TABLET';
-  // Device add-ons are per-branch rows, so an active one at one branch still leaves the
+  const branchScoped = MAY_NAME_SHOP.has(grantKey);
+  const showQty = HAS_QUANTITY.has(grantKey);
+  // Per-shop add-ons are one row per shop, so an active one at one shop still leaves the
   // others grantable; tenant-wide add-ons can only be on the account once.
   const grantable = catalog.filter(c => {
-    if (['EXTRA_COUNTER', 'EXTRA_TABLET'].includes(c.key)) return true;
+    if (MAY_NAME_SHOP.has(c.key)) return true;
     return !activeSubs.some(s => s.addOnKey === c.key);
   });
   const selected = catalog.find(c => c.key === grantKey);
-  const needsBranch = branchScoped && !grantBranchId;
+  const needsBranch = MUST_NAME_SHOP.has(grantKey) && !grantBranchId;
   const grantReady = !!grantKey && !needsBranch;
 
   if (loading) {
@@ -960,28 +1013,35 @@ const AddOnsTab: React.FC<{
               <option key={c.key} value={c.key}>{c.displayName} — {pkr(c.monthlyPricePKR)}/mo</option>
             ))}
           </select>
-          {branchScoped ? (
+          {branchScoped && (
             <select
               value={grantBranchId}
               onChange={(e) => setGrantBranchId(e.target.value)}
               className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
             >
-              <option value="">Pick a branch…</option>
+              <option value="">{MUST_NAME_SHOP.has(grantKey) ? 'Pick a branch…' : 'Every shop'}</option>
               {data.branches.map(b => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
             </select>
-          ) : (
+          )}
+          {showQty && (
             <input
               type="number"
               min={1}
               value={grantQty}
               onChange={(e) => setGrantQty(e.target.value)}
-              placeholder="Qty"
+              placeholder={grantKey === 'WHATSAPP_1000' ? 'Bundles of 1,000' : 'Qty'}
+              title={grantKey === 'WHATSAPP_1000' ? 'Each bundle adds 1,000 messages a month' : 'How many'}
               className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
             />
           )}
         </div>
+        {branchScoped && !MUST_NAME_SHOP.has(grantKey) && (
+          <p className="text-[10px] text-slate-500 leading-snug">
+            Pick one shop to sell it to that shop only, or leave "Every shop" to cover the whole business.
+          </p>
+        )}
         {selected && (
           <p className="text-[10px] text-slate-500 leading-snug">{selected.description}</p>
         )}

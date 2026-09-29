@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { Printer, X, CheckCircle } from 'lucide-react';
 import type { Order } from '../types';
 
@@ -20,6 +21,19 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   branchPhone = '051-111-222-333'
 
 }) => {
+  // A sale reported to the tax authority prints the authority's invoice number and its QR code.
+  const fiscalPayload = order?.fiscalQrPayload ?? order?.fiscalInvoiceNumber ?? null;
+  const [fiscalQr, setFiscalQr] = useState<{ payload: string; image: string } | null>(null);
+  useEffect(() => {
+    if (!fiscalPayload) return;
+    let cancelled = false;
+    QRCode.toDataURL(fiscalPayload, { width: 160, margin: 0 })
+      .then(image => { if (!cancelled) setFiscalQr({ payload: fiscalPayload, image }); })
+      .catch(() => { /* the number is still printed as text */ });
+    return () => { cancelled = true; };
+  }, [fiscalPayload]);
+  const fiscalQrImage = fiscalQr && fiscalQr.payload === fiscalPayload ? fiscalQr.image : null;
+
   if (!isOpen || !order) return null;
 
   const handlePrint = () => {
@@ -145,11 +159,20 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
           </div>
 
 
-          {/* Fiscal Barcode & Footer */}
+          {/* Fiscal invoice (when the shop reports to the tax authority) & Footer */}
           <div className="pt-3 text-center space-y-1">
-            <div className="inline-block px-3 py-1 bg-gray-100 border border-gray-300 rounded text-[9px] tracking-widest font-mono">
-              POS-{order.orderNumber.replace(/[^0-9]/g, '')}
-            </div>
+            {order.fiscalInvoiceNumber ? (
+              <div className="space-y-1">
+                <div className="text-[9px] uppercase text-gray-600">Fiscal Invoice No.</div>
+                <div className="text-[10px] font-bold tracking-wider break-all">{order.fiscalInvoiceNumber}</div>
+                {fiscalQrImage && <img src={fiscalQrImage} alt="Fiscal invoice QR code" className="w-24 h-24 mx-auto" />}
+                <div className="text-[8px] text-gray-500">Verify this invoice with the tax authority's app.</div>
+              </div>
+            ) : (
+              <div className="inline-block px-3 py-1 bg-gray-100 border border-gray-300 rounded text-[9px] tracking-widest font-mono">
+                POS-{order.orderNumber.replace(/[^0-9]/g, '')}
+              </div>
+            )}
             <div className="text-[9px] text-gray-600 mt-1">Thank you for your visit!</div>
             <div className="text-[8px] text-gray-400">Powered by Cashly POS • www.cashlypos.com</div>
           </div>

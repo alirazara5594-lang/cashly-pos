@@ -1436,6 +1436,8 @@ export interface SubscriptionInvoice {
   paidAt?: string;
   paymentMethod?: string;
   notes?: string;
+  /** JSON array of the billed lines (ERP, each shop's version, add-ons) — absent on older invoices. */
+  linesJson?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1786,7 +1788,12 @@ export interface PlanOption {
   hasWhatsAppMessaging: boolean;
   hasAdvancedReports: boolean;
   hasMultiBranch: boolean;
-  whatsappMessagesPerMonth: number;
+  whatsAppMessagesPerMonth: number;
+  /** Kitchen screens per shop (999 = unlimited). */
+  maxKitchenDisplays?: number;
+  /** What one branch of a head-office business pays for this version. */
+  branchMonthlyPricePKR?: number;
+  branchYearlyPricePKR?: number;
 }
 
 /** `GET /api/admin/tenants/{id}/plan-change-preview` — dry-run of a tier move. */

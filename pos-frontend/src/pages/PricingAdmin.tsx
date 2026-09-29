@@ -17,7 +17,7 @@ import {
   ShieldCheck
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import type { PlanOption } from '../types';
+import type { PlanOption, PlatformPrice } from '../types';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
@@ -30,10 +30,15 @@ interface PackageData {
   maxBranches: number;
   maxCounters: number;
   maxTabs: number;
+  maxKitchenDisplays: number;
   maxUsers: number;
+  branchMonthlyPricePKR: number;
+  branchYearlyPricePKR: number;
   whatsappMessagesPerMonth: number;
   features: string[];
 }
+
+const HEAD_OFFICE_ERP = 'HEAD_OFFICE_ERP';
 
 /**
  * Every feature this screen can switch on maps to a real Has* column on the package row —
@@ -68,6 +73,7 @@ export const PricingAdmin: React.FC = () => {
   const isUnlocked = canEditPricing || !!override;
 
   const [packages, setPackages] = useState<PackageData[]>([]);
+  const [erpPrice, setErpPrice] = useState<PlatformPrice | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -75,7 +81,10 @@ export const PricingAdmin: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     try {
-      const data = await posApi.getPackages();
+      const [data, prices] = await Promise.all([
+        posApi.getPackages(),
+        posApi.getPlatformPrices().catch(() => [] as PlatformPrice[])
+      ]);
       // The API returns the raw package row; the screen works with friendly names and the
       // Has* columns expressed as a feature list so the toggles show what is actually on.
       setPackages(Array.isArray(data) ? data.map((p) => ({
@@ -87,35 +96,18 @@ export const PricingAdmin: React.FC = () => {
         maxBranches: p.maxBranches ?? 1,
         maxCounters: p.maxCounters ?? 1,
         maxTabs: p.maxOrderTabs ?? 1,
+        maxKitchenDisplays: p.maxKitchenDisplays ?? 0,
         maxUsers: p.maxUsers ?? 1,
-        whatsappMessagesPerMonth: p.whatsappMessagesPerMonth ?? 0,
+        branchMonthlyPricePKR: p.branchMonthlyPricePKR ?? 0,
+        branchYearlyPricePKR: p.branchYearlyPricePKR ?? 0,
+        whatsappMessagesPerMonth: p.whatsAppMessagesPerMonth ?? 0,
         features: PACKAGE_FEATURES.filter(f => p[f.flag] === true).map(f => f.key),
       })) : []);
+      setErpPrice((Array.isArray(prices) ? prices : []).find(p => p.key === HEAD_OFFICE_ERP) ?? null);
     } catch (err) {
-      console.error('Failed to load packages:', err);
-      setPackages([
-        {
-          id: '1', name: 'Starter', slug: 'starter',
-          monthlyPricePKR: 4999, yearlyPricePKR: 47990,
-          maxBranches: 1, maxCounters: 2, maxTabs: 3, maxUsers: 5,
-          whatsappMessagesPerMonth: 100,
-          features: ['kitchen_display', 'delivery_cod', 'inventory', 'multi_branch'],
-        },
-        {
-          id: '2', name: 'Standard', slug: 'standard',
-          monthlyPricePKR: 12999, yearlyPricePKR: 124990,
-          maxBranches: 3, maxCounters: 5, maxTabs: 10, maxUsers: 15,
-          whatsappMessagesPerMonth: 500,
-          features: ['kitchen_display', 'delivery_cod', 'inventory', 'stock_transfers', 'director_dashboard', 'whatsapp_notifications', 'advanced_reports', 'multi_branch'],
-        },
-        {
-          id: '3', name: 'Professional', slug: 'professional',
-          monthlyPricePKR: 29999, yearlyPricePKR: 287990,
-          maxBranches: -1, maxCounters: -1, maxTabs: -1, maxUsers: -1,
-          whatsappMessagesPerMonth: -1,
-          features: PACKAGE_FEATURES.map(f => f.key),
-        },
-      ]);
+      // No made-up packages here: saving them would write demo numbers over the real ones.
+      setPackages([]);
+      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load packages') });
     } finally {
       setLoading(false);
     }
@@ -155,11 +147,21 @@ export const PricingAdmin: React.FC = () => {
           maxBranches: pkg.maxBranches,
           maxCounters: pkg.maxCounters,
           maxOrderTabs: pkg.maxTabs,
+          maxKitchenDisplays: pkg.maxKitchenDisplays,
           maxUsers: pkg.maxUsers,
-          whatsappMessagesPerMonth: pkg.whatsappMessagesPerMonth
+          branchMonthlyPricePKR: pkg.branchMonthlyPricePKR,
+          branchYearlyPricePKR: pkg.branchYearlyPricePKR,
+          whatsAppMessagesPerMonth: pkg.whatsappMessagesPerMonth
         };
         for (const f of PACKAGE_FEATURES) payload[f.flag] = pkg.features.includes(f.key);
         await posApi.updatePackage(pkg.id, payload);
+      }
+      if (erpPrice) {
+        await posApi.updatePlatformPrice(erpPrice.key, {
+          monthlyPricePKR: erpPrice.monthlyPricePKR,
+          yearlyPricePKR: erpPrice.yearlyPricePKR,
+          includedWhatsAppMessages: erpPrice.includedWhatsAppMessages
+        });
       }
       setMessage({
         type: 'success',
@@ -261,6 +263,56 @@ export const PricingAdmin: React.FC = () => {
         </div>
       )}
 
+      {/* The Head Office ERP is billed once per business, on top of each shop's POS version. */}
+      {erpPrice && (
+        <fieldset
+          disabled={!isUnlocked}
+          className="p-5 rounded-2xl bg-white border border-teal-200 space-y-3 min-w-0 m-0 disabled:opacity-90"
+        >
+          <div className="flex items-center gap-2">
+            <Building2 className="w-5 h-5 text-teal-500" />
+            <h2 className="text-base font-black text-slate-900">{erpPrice.displayName || 'Head Office ERP'}</h2>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Charged once to every POS + ERP business, whatever versions its shops run. Each shop then pays its version's branch price below.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Monthly Price (PKR)</label>
+              <input
+                type="number"
+                min={0}
+                value={erpPrice.monthlyPricePKR}
+                onChange={(e) => setErpPrice({ ...erpPrice, monthlyPricePKR: Number(e.target.value) })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Yearly Price (PKR)</label>
+              <input
+                type="number"
+                min={0}
+                value={erpPrice.yearlyPricePKR}
+                onChange={(e) => setErpPrice({ ...erpPrice, yearlyPricePKR: Number(e.target.value) })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+              />
+            </div>
+            <div>
+              <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase mb-1">
+                <MessageSquare className="w-3 h-3" /> WhatsApp Messages / Month
+              </label>
+              <input
+                type="number"
+                min={-1}
+                value={erpPrice.includedWhatsAppMessages}
+                onChange={(e) => setErpPrice({ ...erpPrice, includedWhatsAppMessages: Number(e.target.value) })}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+              />
+            </div>
+          </div>
+        </fieldset>
+      )}
+
       {/* fieldset disables every input at once while the page is permission-locked */}
       <fieldset
         disabled={!isUnlocked}
@@ -301,6 +353,31 @@ export const PricingAdmin: React.FC = () => {
               />
             </div>
 
+            {/* What one shop of a head-office business pays for this version */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Branch / Month (PKR)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={pkg.branchMonthlyPricePKR}
+                  onChange={(e) => updatePackage(pkg.id, 'branchMonthlyPricePKR', Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Branch / Year (PKR)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={pkg.branchYearlyPricePKR}
+                  onChange={(e) => updatePackage(pkg.id, 'branchYearlyPricePKR', Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                />
+              </div>
+              <p className="col-span-2 text-[10px] text-slate-400 -mt-1">Charged per shop when a POS + ERP business runs this version.</p>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase mb-1">
@@ -332,6 +409,18 @@ export const PricingAdmin: React.FC = () => {
                   type="number"
                   value={pkg.maxTabs}
                   onChange={(e) => updatePackage(pkg.id, 'maxTabs', Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                />
+              </div>
+              <div>
+                <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase mb-1" title="Per shop; 999 = unlimited, 0 = sold as an add-on">
+                  <Monitor className="w-3 h-3" /> Kitchen Screens
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={pkg.maxKitchenDisplays}
+                  onChange={(e) => updatePackage(pkg.id, 'maxKitchenDisplays', Number(e.target.value))}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                 />
               </div>

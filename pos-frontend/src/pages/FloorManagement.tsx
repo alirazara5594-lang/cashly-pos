@@ -11,14 +11,58 @@ import {
   X, 
   Armchair,
   Check,
-  RefreshCw
+  RefreshCw,
+  QrCode,
+  ShoppingBag
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { QrCodeModal } from '../components/QrCodeModal';
 import type { DiningTable } from '../types';
+
+/** The address a guest's phone opens for an ordering token. */
+const orderUrl = (token: string) => `${window.location.origin}/order/${token}`;
 
 export const FloorManagement: React.FC = () => {
   const { selectedBranch } = usePosStore();
+
+  // QR & online ordering: whether this shop has the add-on, and the code on screen.
+  const [ordering, setOrdering] = useState<{ hasAddOn: boolean; pickupToken: string | null } | null>(null);
+  const [qr, setQr] = useState<{ title: string; subtitle: string; token: string; tableId?: string } | null>(null);
+
+  useEffect(() => {
+    if (!selectedBranch?.id) return;
+    let cancelled = false;
+    posApi.getOnlineOrdering(selectedBranch.id)
+      .then(data => { if (!cancelled) setOrdering({ hasAddOn: data.hasAddOn, pickupToken: data.pickupToken }); })
+      .catch(() => { if (!cancelled) setOrdering(null); });
+    return () => { cancelled = true; };
+  }, [selectedBranch?.id]);
+
+  const addOnWarning = ordering && !ordering.hasAddOn
+    ? 'QR & online ordering is an add-on for this shop. Guests will see "not available" until it is added to your account.'
+    : undefined;
+
+  const showTableQr = async (table: DiningTable, regenerate = false) => {
+    try {
+      const res = await posApi.createTableQr(table.id, regenerate);
+      setQr({ title: `Table ${res.tableNumber}`, subtitle: `${selectedBranch?.name ?? ''} · Scan to order`, token: res.qrToken, tableId: table.id });
+      setTables(prev => prev.map(t => (t.id === table.id ? { ...t, qrToken: res.qrToken } : t)));
+    } catch (err) {
+      alert(getApiErrorMessage(err, 'Could not make the QR code.'));
+    }
+  };
+
+  const showPickupLink = async (regenerate = false) => {
+    if (!selectedBranch?.id) return;
+    try {
+      const res = await posApi.createPickupLink(selectedBranch.id, regenerate);
+      setOrdering(prev => (prev ? { ...prev, pickupToken: res.pickupToken } : prev));
+      setQr({ title: `${selectedBranch.name}: order for pickup`, subtitle: 'Share this link or print the code for the counter or window', token: res.pickupToken });
+    } catch (err) {
+      alert(getApiErrorMessage(err, 'Could not make the pickup link.'));
+    }
+  };
 
   const [tables, setTables] = useState<DiningTable[]>([]);
   const [selectedFloor, setSelectedFloor] = useState<string>('all');
@@ -168,6 +212,14 @@ export const FloorManagement: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <button
+            onClick={() => showPickupLink()}
+            className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold text-xs"
+            title="A link and QR code guests use to order for pickup"
+          >
+            <ShoppingBag className="w-4 h-4 text-teal-600" />
+            <span>Pickup ordering link</span>
+          </button>
+          <button
             onClick={fetchTables}
             className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-slate-900"
             title="Refresh tables"
@@ -259,6 +311,13 @@ export const FloorManagement: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => showTableQr(t)}
+                    className="p-1 text-slate-400 hover:text-teal-600 rounded hover:bg-slate-100"
+                    title="QR code guests scan to order at this table"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                  </button>
                   <button
                     onClick={() => setEditingTable({ ...t })}
                     className="p-1 text-slate-400 hover:text-slate-900 rounded hover:bg-slate-100"
@@ -484,6 +543,21 @@ export const FloorManagement: React.FC = () => {
             </button>
           </form>
         </div>
+      )}
+
+      {qr && (
+        <QrCodeModal
+          title={qr.title}
+          subtitle={qr.subtitle}
+          url={orderUrl(qr.token)}
+          warning={addOnWarning}
+          onClose={() => setQr(null)}
+          onRegenerate={() => {
+            const table = qr.tableId ? tables.find(t => t.id === qr.tableId) : undefined;
+            if (table) showTableQr(table, true);
+            else showPickupLink(true);
+          }}
+        />
       )}
     </div>
   );

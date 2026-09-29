@@ -38,11 +38,12 @@ import {
   Landmark,
   History,
   Puzzle,
-  RotateCcw
+  RotateCcw,
+  ClipboardList
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
-import type { ModuleKey, PermissionAction } from '../types';
+import type { EffectivePackageFeatures, ModuleKey, PermissionAction } from '../types';
 
 interface SidebarProps {
   isCollapsed: boolean;
@@ -85,8 +86,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
     terminalMode,
     currentUser,
     modulePermissions,
-    packageInfo
+    packageInfo,
+    packageFeatures
   } = usePosStore();
+
+  // What the business's POS version and add-ons include. A module it has not bought is hidden
+  // rather than shown and refused (the Add-ons page lists what can be added). Unknown = included,
+  // so nothing disappears while the package is still loading or on an older server.
+  const has = React.useCallback(
+    (flag: keyof EffectivePackageFeatures) => packageFeatures?.[flag] !== false,
+    [packageFeatures]
+  );
 
   const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
   const isHeadOffice = selectedBranch?.isHeadOffice ?? false;
@@ -155,7 +165,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Tablet,
           subItems: [
             { label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet },
-            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+            ...(has('hasDeliveryCOD') ? [{ label: 'Delivery & COD Board', path: '/delivery', icon: Bike }] : [])
           ]
         }]
       });
@@ -169,10 +179,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Store,
           subItems: [
             { label: 'POS Terminal (Register)', path: '/', icon: Store },
+            // Tabs and QR orders are taken now and paid later; the cashier collects them here.
+            { label: 'Open Orders (Unpaid)', path: '/open-orders', icon: ClipboardList },
             { label: 'Returns & Refunds', path: '/returns', icon: RotateCcw },
-            ...(isRetailBiz ? [] : [{ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat }]),
+            ...(isRetailBiz || !has('hasKitchenDisplay') ? [] : [{ label: 'Kitchen Display (KDS)', path: '/kitchen', icon: ChefHat }]),
             ...(isRetailBiz ? [] : [{ label: 'Tablet Waiter App', path: '/order-tab', icon: Tablet }]),
-            { label: 'Delivery & COD Board', path: '/delivery', icon: Bike }
+            ...(has('hasDeliveryCOD') ? [{ label: 'Delivery & COD Board', path: '/delivery', icon: Bike }] : [])
           ]
         }]
       });
@@ -180,7 +192,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     // ── Inventory & stock → `inventory` module
     const inventoryItems: NavItem[] = [];
-    if (can('inventory')) {
+    if (can('inventory') && has('hasInventoryManagement')) {
       inventoryItems.push({
         id: 'inventory',
         label: 'Stock Management',
@@ -208,17 +220,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     // ── Commissary transfers & vendor procurement → `supplychain` module
-    if (can('supplychain')) {
+    const supplySubItems: SubMenuItem[] = [
+      ...(has('hasStockTransfers') ? [{ label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft }] : []),
+      ...(has('purchasing') ? [{ label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }] : [])
+    ];
+    if (can('supplychain') && supplySubItems.length > 0) {
       inventoryItems.push({
         id: 'supplyChain',
         label: 'Supply Chain',
         path: '/transfers',
         icon: Truck,
         badge: isHeadOffice ? 'Commissary' : undefined,
-        subItems: [
-          { label: 'Commissary Transfers', path: '/transfers', state: { tab: 'transfers' }, icon: ArrowRightLeft },
-          { label: 'Vendor Procurement (PO)', path: '/transfers', state: { tab: 'procurement' }, icon: ShoppingBag }
-        ]
+        subItems: supplySubItems
       });
     }
 
@@ -233,7 +246,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // since the same people who read financial reports run the books).
     if (can('reports') || can('accounts')) {
       const reportingItems: NavItem[] = [];
-      if (can('accounts')) {
+      if (can('accounts') && has('accounting')) {
         reportingItems.push({
           id: 'accounting',
           label: 'Accounting',
@@ -260,12 +273,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               ...(isMultiBranchChain ? [{ label: 'Multi-Branch Consolidation', path: '/reports', state: { tab: 'multibranch' }, icon: Building2 }] : [])
             ]
           },
-          {
+          ...(has('hasDirectorDashboard') ? [{
             id: 'director',
             label: 'Executive Dashboard',
             path: '/director',
             icon: BarChart3
-          },
+          }] : []),
           {
             id: 'analytics',
             label: 'Smart Analytics',
@@ -280,7 +293,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }
         );
       }
-      sections.push({ title: 'Reporting & Analytics', items: reportingItems });
+      if (reportingItems.length > 0) sections.push({ title: 'Reporting & Analytics', items: reportingItems });
     }
 
     // ── CRM, loyalty & promotions. Customer lookup is part of taking an order, so
@@ -293,7 +306,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         icon: Users
       }
     ];
-    if (can('admin')) {
+    if (can('admin') && has('loyalty')) {
       crmItems.push({
         id: 'loyalty',
         label: 'Loyalty & Gift Cards',
@@ -307,10 +320,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         icon: Percent
       });
     }
-    sections.push({ title: 'Customers & Loyalty', items: crmItems });
+    sections.push({ title: has('loyalty') ? 'Customers & Loyalty' : 'Customers', items: crmItems });
 
     // ── Staff scheduling & time clock → `labor` module
-    if (can('labor')) {
+    if (can('labor') && has('labor')) {
       sections.push({
         title: 'Staff & Labor',
         items: [{
@@ -421,7 +434,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return sections;
-  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, isPlatformSuperAdmin, isRetailBiz, isErpOnly]);
+  }, [isHeadOffice, isMultiBranchChain, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly]);
 
   return (
     <>
