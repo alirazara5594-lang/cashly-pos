@@ -97,11 +97,18 @@ export const SettingsManagement: React.FC = () => {
     refreshOfflineCount,
     syncPendingOrders,
     currentUser,
-    modulePermissions
+    modulePermissions,
+    branches,
+    selectedTenant
   } = usePosStore();
 
   const can = (moduleKey: ModuleKey, action: 'view' | 'edit' = 'view') =>
     hasModuleAccess(currentUser?.role, modulePermissions, moduleKey, action);
+
+  // Which location a new device is being paired to. Chosen here rather than by switching the
+  // whole app to that branch: a new shop's till is set up from head office. Staff signed in at
+  // one branch can only pair devices to that branch.
+  const pairableBranches = currentUser?.branchId ? branches.filter(b => b.id === currentUser.branchId) : branches;
 
   /** Department profiles this user is actually allowed to switch into. */
   const availableDepartments = DEPARTMENT_PROFILES.filter(d => can(d.module));
@@ -115,6 +122,19 @@ export const SettingsManagement: React.FC = () => {
       setActiveTab(tab);
     }
   }, [location.state]);
+
+  // The branch to connect a device to: what the user picked on this visit, else the branch they
+  // arrived for (Locations → "Connect a till"), else the branch being viewed. A pick is tied to
+  // the visit it was made on, so arriving for another branch later starts from that branch.
+  const [pairingPick, setPairingPick] = useState<{ visit: string; branchId: string } | null>(null);
+  const arrivedForBranchId = (location.state as { branchId?: string } | null)?.branchId;
+  const pickedBranchId = pairingPick?.visit === location.key ? pairingPick.branchId : undefined;
+  const pairingBranch = pairableBranches.find(b => b.id === pickedBranchId)
+    ?? pairableBranches.find(b => b.id === arrivedForBranchId)
+    ?? pairableBranches.find(b => b.id === selectedBranch?.id)
+    ?? null;
+  const pairingBranchKey = pairingBranch?.id ?? '';
+  const setPairingBranchId = (branchId: string) => setPairingPick({ visit: location.key, branchId });
 
   // Device activation state
   const [pairingBranches, setPairingBranches] = useState<PendingPairingCode[]>([]);
@@ -154,17 +174,30 @@ export const SettingsManagement: React.FC = () => {
     }
   }, [allowedDepartmentId, departmentIsAllowed, setActiveDepartment]);
 
-  // Outstanding pairing codes for THIS branch. The old version called an endpoint that listed
-  // every branch of every tenant on the platform, with its pairing token — that endpoint is gone.
+  // Outstanding pairing codes for the branch being paired. The old version called an endpoint that
+  // listed every branch of every tenant on the platform, with its pairing token — that endpoint is gone.
   const loadPairingInfo = async () => {
-    if (!selectedBranch?.id) return;
+    if (!pairingBranchKey) return;
     try {
-      const data = await posApi.listPairingCodes(selectedBranch.id);
+      const data = await posApi.listPairingCodes(pairingBranchKey);
       setPairingBranches(data as any);
     } catch (err) {
       console.warn('Failed to load pairing codes:', err);
     }
   };
+
+  // Device slots and outstanding codes follow the branch picked for pairing.
+  useEffect(() => {
+    if (!pairingBranchKey) return;
+    let cancelled = false;
+    posApi.listPairingCodes(pairingBranchKey)
+      .then(data => { if (!cancelled) setPairingBranches(data as any); })
+      .catch(err => console.warn('Failed to load pairing codes:', err));
+    posApi.getDeviceCapacity(pairingBranchKey)
+      .then(data => { if (!cancelled) setDeviceCapacity(data); })
+      .catch(() => { /* informational — the server still enforces the real limit on mint */ });
+    return () => { cancelled = true; };
+  }, [pairingBranchKey]);
 
   const loadDbStats = async () => {
     try {
@@ -184,20 +217,22 @@ export const SettingsManagement: React.FC = () => {
     } catch (err) {
       console.warn('Failed to load terminals:', err);
     }
-    if (selectedBranch?.id) {
-      try {
-        setDeviceCapacity(await posApi.getDeviceCapacity(selectedBranch.id));
-      } catch {
-        // Capacity is informational — the server still enforces the real limit on mint.
-      }
+  };
+
+  const loadPairingCapacity = async () => {
+    if (!pairingBranchKey) return;
+    try {
+      setDeviceCapacity(await posApi.getDeviceCapacity(pairingBranchKey));
+    } catch {
+      // Capacity is informational — the server still enforces the real limit on mint.
     }
   };
 
   const handleGeneratePairingCode = async () => {
-    if (!selectedBranch?.id) return;
+    if (!pairingBranchKey) return;
     try {
       const res = await posApi.createPairingCode({
-        branchId: selectedBranch.id,
+        branchId: pairingBranchKey,
         terminalType: newDeviceType,
         terminalName: newDeviceName.trim() || undefined
       });
@@ -205,6 +240,7 @@ export const SettingsManagement: React.FC = () => {
       setNewDeviceName('');
       setTabMessage(null);
       loadPairingInfo();
+      loadPairingCapacity();
       loadTerminals();
     } catch (err: any) {
       setIssuedCode(null);
@@ -369,7 +405,7 @@ export const SettingsManagement: React.FC = () => {
             }`}
           >
             <Building2 className="w-4 h-4" />
-            HQ Branch Provisioning & Tokens
+            Branch Connections
           </button>
 
           <button
@@ -558,11 +594,12 @@ export const SettingsManagement: React.FC = () => {
               <div className="space-y-1">
                 <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-teal-600" />
-                  Device Activation
+                  Branch Connections: connect a till, tablet or office PC
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Generate a one-time code, then enter it on the till or tablet itself. The code
-                  expires in 15 minutes, works once, and binds that device to this branch.
+                  Pick the location, generate a one-time code, then enter it on the till or tablet
+                  itself (Install POS → Connect to ERP). The code expires in 15 minutes, works once,
+                  and binds that device to the location you picked.
                 </p>
               </div>
 
@@ -595,6 +632,51 @@ export const SettingsManagement: React.FC = () => {
               {/* Generate */}
               <div className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
                 <div className="text-xs font-bold text-slate-700">Generate a pairing code</div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <label className="text-[11px] font-semibold text-slate-500 whitespace-nowrap">For location</label>
+                  <select
+                    value={pairingBranchKey}
+                    onChange={(e) => { setPairingBranchId(e.target.value); setIssuedCode(null); }}
+                    disabled={pairableBranches.length <= 1}
+                    className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-teal-500 disabled:opacity-70"
+                  >
+                    {pairableBranches.map(b => {
+                      const type = b.locationType ?? (b.isHeadOffice ? 'HeadOffice' : 'Branch');
+                      const tag = type === 'HeadOffice' ? ' — Head office' : type === 'Warehouse' ? ' — Warehouse' : '';
+                      return (
+                        <option key={b.id} value={b.id}>
+                          {b.name}{tag}{b.canSell === false ? ' (office PCs only, no till)' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                {/* The picked branch's POS version decides which devices it may connect. */}
+                {pairingBranch && pairingBranch.canSell !== false && (() => {
+                  const cap = (type: string) => deviceCapacity.find(c => c.terminalType === type);
+                  const tills = cap('Counter');
+                  const tablets = cap('OrderTab');
+                  const kitchen = cap('KitchenDisplay');
+                  const show = (c?: DeviceCapacity) => (c ? `${c.inUse} of ${c.limit === null ? 'unlimited' : c.limit}` : '…');
+                  return (
+                    <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-white border border-sky-200 text-[11px] text-slate-600">
+                      <span>
+                        <strong className="text-slate-900">{pairingBranch.name}</strong> runs the{' '}
+                        <strong className="text-sky-700">{pairingBranch.posEdition ?? selectedTenant?.tier ?? 'Standard'}</strong> POS version:
+                        tills {show(tills)} · tablets {show(tablets)} · kitchen screens {kitchen && kitchen.limit === 0 ? 'not included' : 'included'}
+                      </span>
+                      {!currentUser?.branchId && (
+                        <button
+                          type="button"
+                          onClick={() => navigate('/locations')}
+                          className="text-sky-700 hover:text-sky-900 font-semibold underline cursor-pointer"
+                        >
+                          Change POS version
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="flex flex-col sm:flex-row gap-2">
                   <select
                     value={newDeviceType}
@@ -670,7 +752,7 @@ export const SettingsManagement: React.FC = () => {
                 {pairingBranches.length === 0 ? (
                   <div className="p-6 text-center rounded-xl bg-slate-50 border border-slate-200 space-y-1">
                     <ShieldCheck className="w-7 h-7 text-slate-400 mx-auto" />
-                    <p className="text-xs text-slate-500">No codes outstanding for this branch.</p>
+                    <p className="text-xs text-slate-500">No codes outstanding for {pairingBranch?.name ?? 'this branch'}.</p>
                   </div>
                 ) : (
                   <div className="space-y-2">

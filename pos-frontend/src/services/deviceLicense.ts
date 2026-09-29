@@ -32,6 +32,10 @@ export interface DeviceStatus {
    * installed it, not from anything it has to look up.
    */
   appSurface?: 'Erp' | 'Pos' | 'Hybrid';
+  /** Set on activation: the branch this device joined and the POS version head office gave it. */
+  branchName?: string;
+  posEdition?: string | null;
+  posAllowance?: { counters: number | null; tablets: number | null; kitchenDisplay: boolean } | null;
 }
 
 /** What this installed machine is, for screens that need it before a heartbeat completes. */
@@ -128,7 +132,10 @@ export async function activate(pairingCode: string): Promise<DeviceStatus> {
     graceEndsAt: res.graceEndsAt,
     terminalName: res.terminalName,
     terminalType: res.terminalType,
-    appSurface: res.appSurface
+    appSurface: res.appSurface,
+    branchName: res.branchName,
+    posEdition: res.posEdition ?? null,
+    posAllowance: res.posAllowance ?? null
   };
   safeSet(LAST_STATE_KEY, JSON.stringify(status));
   return status;

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Building2,
   Store,
@@ -11,7 +12,8 @@ import {
   Landmark,
   Scale,
   Trash2,
-  Check
+  Check,
+  Monitor
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { posApi, getApiErrorMessage } from '../services/api';
@@ -20,9 +22,22 @@ import type {
   BusinessPolicies,
   Company,
   LocationType,
+  PublicPackage,
   Region,
+  SubscriptionTier,
   TaxJurisdiction
 } from '../types';
+
+const POS_EDITIONS: SubscriptionTier[] = ['Starter', 'Standard', 'Professional'];
+
+/** "3 tills, 10 tablets, kitchen screens" for a POS version, from the server's own price list. */
+function editionSummary(edition: SubscriptionTier, packages: PublicPackage[]): string {
+  const pkg = packages.find(p => p.packageKey.toLowerCase() === edition.toLowerCase());
+  if (!pkg) return '';
+  const count = (n: number) => (n >= 999 ? 'unlimited' : String(n));
+  return `${count(pkg.maxCounters)} till${pkg.maxCounters === 1 ? '' : 's'}, ${count(pkg.maxOrderTabs)} tablets`
+    + (pkg.hasKitchenDisplay ? ', kitchen screens' : '');
+}
 
 /** Sent as a region id to take a location out of its region. */
 const NO_REGION = '00000000-0000-0000-0000-000000000000';
@@ -42,6 +57,9 @@ interface LocationForm {
   holdsStock: boolean;
   companyId: string;
   regionId: string;
+  /** The branch's POS version, and what it was when the form opened (only a change is sent). */
+  posEdition: SubscriptionTier;
+  originalPosEdition?: SubscriptionTier;
 }
 
 interface CompanyForm {
@@ -79,7 +97,8 @@ const fetchPageData = () => Promise.allSettled([
   posApi.getCompanies(),
   posApi.getRegions(),
   posApi.getPolicies(),
-  posApi.getTaxJurisdictions()
+  posApi.getTaxJurisdictions(),
+  posApi.getPublicPackages()
 ]);
 type PageData = Awaited<ReturnType<typeof fetchPageData>>;
 
@@ -93,11 +112,21 @@ const secondaryButton =
  * and who decides what once there is more than one location.
  */
 export const LocationsManagement: React.FC = () => {
-  const { currentUser, modulePermissions, setTenants, selectBranch, loadMyPackageFeatures } = usePosStore();
+  const navigate = useNavigate();
+  const { currentUser, modulePermissions, setTenants, selectBranch, loadMyPackageFeatures, selectedTenant } = usePosStore();
+  /** A branch without a version of its own runs on the business's plan. */
+  const planEdition: SubscriptionTier = selectedTenant?.tier ?? 'Standard';
+  const editionOf = (b: Branch): SubscriptionTier => b.posEdition ?? planEdition;
+
+  /** A branch's till is connected by pairing: open the device screen with this branch picked. */
+  const connectTill = (branchId: string) =>
+    navigate('/settings', { state: { tab: 'provisioning', branchId } });
   const isOwner = ['OwnerAdmin', 'SuperAdmin'].includes(normalizeRole(currentUser?.role) ?? '');
   const canEdit = hasModuleAccess(currentUser?.role, modulePermissions, 'admin', 'edit');
   // Policies govern every branch, so staff signed in at one branch may read them but not change them.
   const canSetPolicies = canEdit && !currentUser?.branchId;
+  // A branch's POS version is what the business pays for: head office sets it, never the branch.
+  const canSetEdition = canEdit && !currentUser?.branchId;
 
   const [tab, setTab] = useState<Tab>('locations');
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -105,6 +134,7 @@ export const LocationsManagement: React.FC = () => {
   const [regions, setRegions] = useState<Region[]>([]);
   const [policies, setPolicies] = useState<BusinessPolicies | null>(null);
   const [jurisdictions, setJurisdictions] = useState<TaxJurisdiction[]>([]);
+  const [packages, setPackages] = useState<PublicPackage[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -115,7 +145,8 @@ export const LocationsManagement: React.FC = () => {
   const [regionForm, setRegionForm] = useState<RegionForm | null>(null);
 
   // The page starts in the loading state; later reloads (after a save) refresh in place.
-  const apply = useCallback(([b, c, r, p, j]: PageData) => {
+  const apply = useCallback(([b, c, r, p, j, k]: PageData) => {
+    if (k.status === 'fulfilled') setPackages(Array.isArray(k.value) ? k.value : []);
     if (b.status === 'fulfilled') setBranches(Array.isArray(b.value) ? b.value : []);
     else setMessage({ type: 'error', text: getApiErrorMessage(b.reason, 'Could not load your locations.') });
     if (c.status === 'fulfilled') setCompanies(Array.isArray(c.value) ? c.value : []);
@@ -193,7 +224,8 @@ export const LocationsManagement: React.FC = () => {
       canSell: type === 'Branch',
       holdsStock: true,
       companyId: defaultCompanyId,
-      regionId: ''
+      regionId: '',
+      posEdition: 'Standard'
     });
   };
 
@@ -210,7 +242,9 @@ export const LocationsManagement: React.FC = () => {
       canSell: b.canSell !== false,
       holdsStock: b.holdsStock !== false,
       companyId: b.companyId ?? defaultCompanyId,
-      regionId: b.regionId ?? ''
+      regionId: b.regionId ?? '',
+      posEdition: editionOf(b),
+      originalPosEdition: editionOf(b)
     });
   };
 
@@ -237,9 +271,13 @@ export const LocationsManagement: React.FC = () => {
           canSell: sells,
           holdsStock: keepsStock,
           companyId: f.companyId || undefined,
-          regionId: f.regionId || NO_REGION
+          regionId: f.regionId || NO_REGION,
+          // Only a real change is sent: the version is billing, and only head office may change it.
+          posEdition: sells && f.posEdition !== f.originalPosEdition ? f.posEdition : undefined
         });
-        flash('success', `${f.name.trim()} saved.`);
+        flash('success', sells && f.posEdition !== f.originalPosEdition
+          ? `${f.name.trim()} saved. Its POS version is now ${f.posEdition}.`
+          : `${f.name.trim()} saved.`);
       } else {
         await posApi.createBranch({
           name: f.name.trim(),
@@ -252,9 +290,12 @@ export const LocationsManagement: React.FC = () => {
           canSell: sells,
           holdsStock: keepsStock,
           companyId: f.companyId || undefined,
-          regionId: f.regionId || undefined
+          regionId: f.regionId || undefined,
+          posEdition: sells ? f.posEdition : undefined
         });
-        flash('success', `${f.name.trim()} added.`);
+        flash('success', f.type === 'Warehouse'
+          ? `${f.name.trim()} added.`
+          : `${f.name.trim()} added. Next, connect its till: press "Connect a till" on its row.`);
       }
       setLocationForm(null);
       await load();
@@ -504,7 +545,7 @@ export const LocationsManagement: React.FC = () => {
                         All locations
                       </h2>
                       <p className="text-xs text-slate-500">
-                        Branches sell and count against your plan. Warehouses keep stock and never sell, so they are free.
+                        Each branch has its own POS version (its tills, tablets and kitchen screens). Warehouses keep stock and never sell, so they need none.
                       </p>
                     </div>
                     {isOwner && (
@@ -610,6 +651,44 @@ export const LocationsManagement: React.FC = () => {
                           </select>
                         </div>
                       </div>
+                      {/* The branch's POS version: its tills, tablets and kitchen screens. Only
+                          locations with a till have one; head office sets it. */}
+                      {locationForm.type !== 'Warehouse' && locationForm.canSell && (
+                        <div className="space-y-1.5">
+                          <label className={labelClass}>POS version</label>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            {POS_EDITIONS.map(edition => {
+                              const active = locationForm.posEdition === edition;
+                              return (
+                                <button
+                                  key={edition}
+                                  type="button"
+                                  disabled={!canSetEdition}
+                                  onClick={() => setLocationForm({ ...locationForm, posEdition: edition })}
+                                  className={`text-left p-2.5 rounded-xl border-2 transition ${
+                                    active ? 'border-teal-500 bg-teal-50' : 'border-slate-200 bg-white hover:border-slate-300'
+                                  } ${canSetEdition ? 'cursor-pointer' : 'cursor-default opacity-80'}`}
+                                >
+                                  <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                    {active && <Check className="w-3.5 h-3.5 text-teal-600" />}
+                                    {edition}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500">{editionSummary(edition, packages)}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {!canSetEdition && (
+                            <p className="text-[11px] text-slate-400">Head office sets each branch's POS version.</p>
+                          )}
+                          {locationForm.id && locationForm.originalPosEdition && locationForm.posEdition !== locationForm.originalPosEdition && (
+                            <p className="text-[11px] text-amber-700">
+                              Moving from {locationForm.originalPosEdition} to {locationForm.posEdition}. If the branch has more tills or
+                              tablets than the new version allows, the newest ones stop selling until some are retired.
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-4">
                         <label className={`flex items-center gap-2 text-xs ${locationForm.type === 'Warehouse' ? 'text-slate-400' : 'text-slate-700 cursor-pointer'}`}>
                           <input
@@ -650,6 +729,7 @@ export const LocationsManagement: React.FC = () => {
                           <th className="py-2 pr-3">Type</th>
                           <th className="py-2 pr-3">City</th>
                           <th className="py-2 pr-3">Sells</th>
+                          <th className="py-2 pr-3">POS version</th>
                           <th className="py-2 pr-3">Stock</th>
                           <th className="py-2 pr-3">Company</th>
                           <th className="py-2 pr-3">Region</th>
@@ -676,10 +756,26 @@ export const LocationsManagement: React.FC = () => {
                               </td>
                               <td className="py-2.5 pr-3 text-slate-600">{b.city || '—'}</td>
                               <td className="py-2.5 pr-3">{b.canSell !== false ? <Check className="w-4 h-4 text-teal-600" /> : <span className="text-slate-300">—</span>}</td>
+                              <td className="py-2.5 pr-3">
+                                {b.canSell !== false ? (
+                                  <span className="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold" title={editionSummary(editionOf(b), packages)}>
+                                    {editionOf(b)}
+                                  </span>
+                                ) : <span className="text-slate-300">—</span>}
+                              </td>
                               <td className="py-2.5 pr-3">{b.holdsStock !== false ? <Check className="w-4 h-4 text-teal-600" /> : <span className="text-slate-300">—</span>}</td>
                               <td className="py-2.5 pr-3 text-slate-600">{companyName(b.companyId)}</td>
                               <td className="py-2.5 pr-3 text-slate-600">{regionName(b.regionId)}</td>
-                              <td className="py-2.5 text-right">
+                              <td className="py-2.5 text-right whitespace-nowrap">
+                                {b.canSell !== false && (
+                                  <button
+                                    onClick={() => connectTill(b.id)}
+                                    className="px-2 py-1 mr-1 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-700 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                                    title="Make a pairing code for a till or tablet at this branch"
+                                  >
+                                    <Monitor className="w-3.5 h-3.5" /> Connect a till
+                                  </button>
+                                )}
                                 {canEdit && (
                                   <button onClick={() => openEditLocation(b)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-teal-600 cursor-pointer" title="Edit">
                                     <Pencil className="w-3.5 h-3.5" />

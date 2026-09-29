@@ -95,6 +95,9 @@ public class AppDbContext : DbContext
     public DbSet<BankReconciliation> BankReconciliations => Set<BankReconciliation>();
     public DbSet<AddOnCatalogItem> AddOnCatalogItems => Set<AddOnCatalogItem>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<PlatformPrice> PlatformPrices => Set<PlatformPrice>();
+    public DbSet<PlatformDataVersion> PlatformDataVersions => Set<PlatformDataVersion>();
+    public DbSet<FiscalIntegration> FiscalIntegrations => Set<FiscalIntegration>();
 
     // --- Subscription / entitlements ---
     public DbSet<Plan> Plans => Set<Plan>();
@@ -598,6 +601,24 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<AddOnCatalogItem>()
             .HasIndex(a => a.Key)
+            .IsUnique();
+
+        modelBuilder.Entity<PlatformPrice>().HasKey(p => p.Key);
+        modelBuilder.Entity<PlatformDataVersion>().HasKey(v => v.Key);
+
+        // One tax-authority connection per location.
+        modelBuilder.Entity<FiscalIntegration>()
+            .HasIndex(f => f.BranchId)
+            .IsUnique();
+        modelBuilder.Entity<FiscalIntegration>()
+            .HasIndex(f => f.TenantId);
+
+        // A table's QR code and a shop's pickup link resolve by token, so the tokens are unique.
+        modelBuilder.Entity<DiningTable>()
+            .HasIndex(t => t.QrToken)
+            .IsUnique();
+        modelBuilder.Entity<Branch>()
+            .HasIndex(b => b.OnlineOrderToken)
             .IsUnique();
 
         modelBuilder.Entity<AddOnSubscription>()

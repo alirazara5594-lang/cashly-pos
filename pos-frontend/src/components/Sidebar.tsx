@@ -404,7 +404,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         id: 'settings',
         label: 'System Settings & HQ Hub',
         path: '/settings',
-        icon: Building2
+        icon: Building2,
+        subItems: [
+          // Connecting a new branch's till, tablet or office PC to this ERP.
+          { label: 'Branch Connections', path: '/settings', state: { tab: 'provisioning' }, icon: Plug },
+          { label: 'System Settings', path: '/settings', state: { tab: 'terminal' }, icon: Building2 }
+        ]
       });
     }
 

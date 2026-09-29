@@ -82,6 +82,53 @@ public class RequireLimitFilter : IEndpointFilter
     }
 }
 
+/// <summary>
+/// Whole modules gated by route: one table instead of a filter on each of a module's endpoints, so
+/// an endpoint added under /api/payroll next year is gated the moment it exists. Added once to the
+/// /api group. Requests without a business (the platform admin, anonymous webhooks and public
+/// ordering) pass through to the endpoint's own checks.
+/// </summary>
+public class ModuleFeatureGateFilter : IEndpointFilter
+{
+    private static readonly (string Prefix, string FeatureCode)[] Gates =
+    {
+        ("/api/loyalty", FeatureCodes.Loyalty),
+        ("/api/gift-cards", FeatureCodes.Loyalty),
+        ("/api/promo-codes", FeatureCodes.Loyalty),
+        ("/api/labor", FeatureCodes.Labor),
+        ("/api/payroll", FeatureCodes.Payroll),
+        ("/api/hr/leave-requests", FeatureCodes.Payroll),
+        ("/api/accounting", FeatureCodes.Accounting),
+        ("/api/inventory", FeatureCodes.Inventory),
+        ("/api/recipes", FeatureCodes.Recipes),
+        ("/api/suppliers", FeatureCodes.Purchasing),
+        ("/api/procurement", FeatureCodes.Purchasing),
+        ("/api/integrations/delivery", FeatureCodes.Integrations)
+    };
+
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        var http = context.HttpContext;
+        var path = http.Request.Path;
+        var gate = Gates.FirstOrDefault(g => path.StartsWithSegments(g.Prefix, StringComparison.OrdinalIgnoreCase));
+        if (gate.FeatureCode == null || http.IsSuperAdmin()) return await next(context);
+
+        var tenantId = http.GetTenantId();
+        if (tenantId == null || tenantId == Guid.Empty) return await next(context);
+
+        var subs = http.RequestServices.GetRequiredService<ISubscriptionService>();
+        var check = await subs.CheckFeatureAsync(tenantId.Value, gate.FeatureCode);
+        if (check.Allowed) return await next(context);
+
+        return Results.Json(new
+        {
+            message = check.Reason ?? $"Your plan does not include {gate.FeatureCode}.",
+            featureCode = gate.FeatureCode,
+            upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+    }
+}
+
 /// <summary>Terse constructors so endpoint declarations stay readable.</summary>
 public static class RequireFeature
 {

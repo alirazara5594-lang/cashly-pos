@@ -95,7 +95,16 @@ import type {
   IngredientMasterRow,
   ReturnableOrder,
   SetupCompanyPayload,
-  SetupHeadOfficePayload
+  SetupHeadOfficePayload,
+  SubscriptionTier,
+  BillingLine,
+  MyCharges,
+  PlatformPrice,
+  FiscalConnections,
+  FiscalAuthority,
+  FiscalEnvironment,
+  PublicMenu,
+  PublicOrderResult
 } from '../types';
 
 /**
@@ -354,6 +363,8 @@ export const posApi = {
     companyId?: string;
     /** A region's id; the empty GUID removes the location from its region. */
     regionId?: string;
+    /** The branch's POS version; only head office may change it. */
+    posEdition?: SubscriptionTier;
   }) => {
     const res = await api.put<Branch>(`/api/branches/${id}`, data);
     return res.data;
@@ -371,6 +382,8 @@ export const posApi = {
     holdsStock?: boolean;
     companyId?: string;
     regionId?: string;
+    /** The branch's POS version (tills, tablets, kitchen screens). */
+    posEdition?: SubscriptionTier;
   }) => {
     const res = await api.post('/api/branches', data);
     return res.data;
@@ -530,6 +543,87 @@ export const posApi = {
 
   voidOrder: async (orderId: string, reason?: string) => {
     const res = await api.post(`/api/orders/${orderId}/void`, { reason });
+    return res.data;
+  },
+  /** Take payment for an order placed unpaid (waiter tablet, QR code, pickup link). */
+  settleOrder: async (orderId: string, data: { paymentMethod: PaymentMethod; amountPaidPKR?: number }) => {
+    const res = await api.post<{
+      id: string; orderNumber: string; totalPKR: number; amountPaidPKR: number; changeDuePKR: number;
+      paymentMethod: string; fiscalInvoiceNumber?: string | null; fiscalQrPayload?: string | null;
+    }>(`/api/orders/${orderId}/settle`, data);
+    return res.data;
+  },
+
+  // QR & online ordering
+  createTableQr: async (tableId: string, regenerate = false) => {
+    const res = await api.post<{ tableId: string; tableNumber: string; qrToken: string }>(
+      `/api/tables/${tableId}/qr`, null, { params: { regenerate: regenerate || undefined } });
+    return res.data;
+  },
+  getOnlineOrdering: async (branchId: string) => {
+    const res = await api.get<{ branchId: string; hasAddOn: boolean; pickupToken: string | null }>(`/api/branches/${branchId}/online-ordering`);
+    return res.data;
+  },
+  createPickupLink: async (branchId: string, regenerate = false) => {
+    const res = await api.post<{ branchId: string; pickupToken: string }>(
+      `/api/branches/${branchId}/online-ordering/link`, null, { params: { regenerate: regenerate || undefined } });
+    return res.data;
+  },
+  /** Anonymous: what a guest sees after scanning a table's QR code or opening a pickup link. */
+  getPublicMenu: async (token: string) => {
+    const res = await api.get<PublicMenu>(`/api/public/order/${encodeURIComponent(token)}`);
+    return res.data;
+  },
+  placePublicOrder: async (token: string, data: {
+    items: { productId: string; quantity: number; notes?: string }[];
+    customerName?: string;
+    customerPhone?: string;
+  }) => {
+    const res = await api.post<PublicOrderResult>(`/api/public/order/${encodeURIComponent(token)}`, data);
+    return res.data;
+  },
+
+  // Fiscal invoicing (FBR / PRA / SRB / KPRA), one connection per shop
+  getFiscalConnections: async () => {
+    const res = await api.get<FiscalConnections>('/api/fiscal/connections');
+    return res.data;
+  },
+  saveFiscalConnection: async (branchId: string, data: {
+    authority: FiscalAuthority;
+    environment: FiscalEnvironment;
+    posId?: string;
+    /** Only sent when replacing it; the saved token is never shown again. */
+    accessToken?: string;
+    apiUrl?: string;
+    defaultPctCode?: string;
+    isEnabled: boolean;
+  }) => {
+    const res = await api.put<{ message: string }>(`/api/fiscal/connections/${branchId}`, data);
+    return res.data;
+  },
+  retryFiscalReports: async (branchId: string) => {
+    const res = await api.post<{ reported: number; stillPending: number; lastError?: string | null }>(`/api/fiscal/connections/${branchId}/retry`);
+    return res.data;
+  },
+
+  // Billing
+  /** The business's own charges: Head Office ERP, each shop's POS version, add-ons, WhatsApp usage. */
+  getMyCharges: async () => {
+    const res = await api.get<MyCharges>('/api/billing/my-charges');
+    return res.data;
+  },
+  /** Platform admin: what a business would be invoiced. */
+  getBillingQuote: async (tenantId: string, annual = false) => {
+    const res = await api.get<{ tenantId: string; annual: boolean; hasHeadOffice: boolean; lines: BillingLine[]; totalPKR: number }>(
+      `/api/admin/tenants/${tenantId}/billing-quote`, { params: { annual } });
+    return res.data;
+  },
+  getPlatformPrices: async () => {
+    const res = await api.get<PlatformPrice[]>('/api/admin/platform-prices');
+    return res.data;
+  },
+  updatePlatformPrice: async (key: string, data: { monthlyPricePKR?: number; yearlyPricePKR?: number; includedWhatsAppMessages?: number }) => {
+    const res = await api.put<PlatformPrice>(`/api/admin/platform-prices/${key}`, data);
     return res.data;
   },
 
@@ -1247,7 +1341,7 @@ export const posApi = {
     deploymentMode?: string;
     /** Outlets to create beneath the head office. Read only for MultiBranch, and validated
      *  server-side against the chosen plan's multi-branch flag and branch allowance. */
-    branches?: { name: string; code?: string; city?: string; address?: string; phone?: string }[];
+    branches?: { name: string; code?: string; city?: string; address?: string; phone?: string; posEdition?: SubscriptionTier }[];
     /** The three-way answer; wins over deploymentMode when sent. */
     businessStructure?: BusinessStructure;
     company?: SetupCompanyPayload;

@@ -268,6 +268,17 @@ public class Branch
     /// <summary>Optional grouping for chains (a <see cref="Region"/>). Not the tax region: that is RegionCode.</summary>
     public Guid? RegionId { get; set; }
 
+    /// <summary>
+    /// The POS version this location runs: how many tills and tablets it may connect, and whether
+    /// it may run kitchen screens. With a head office the ERP is the same for every business and
+    /// each branch pays for its own POS version, chosen by head office. Null means "the business's
+    /// own plan", which is what every location had before branches carried a version.
+    /// </summary>
+    public SubscriptionTier? PosEdition { get; set; }
+
+    /// <summary>The token in this shop's online pickup-ordering link (null = no link yet).</summary>
+    public string? OnlineOrderToken { get; set; }
+
     // ------------------------------------------------------------------
     // DEPRECATED device quotas.
     //
@@ -478,6 +489,13 @@ public class DiningTable
     public int Capacity { get; set; } = 4;
     public bool IsOccupied { get; set; } = false;
     public Guid? CurrentOrderId { get; set; }
+
+    /// <summary>
+    /// The unguessable token printed in this table's QR code. A guest who scans it orders for this
+    /// table at this branch without signing in; replacing the token retires every printed code.
+    /// Null until QR ordering is set up for the table.
+    /// </summary>
+    public string? QrToken { get; set; }
 }
 
 public class Order
@@ -711,7 +729,15 @@ public class SaaSPackageConfig
     public int MaxBranches { get; set; }
     public int MaxCounters { get; set; }
     public int MaxOrderTabs { get; set; }
+    /// <summary>Kitchen screens per shop on this version (999 = unlimited, 0 = none).</summary>
+    public int MaxKitchenDisplays { get; set; }
     public int MaxUsers { get; set; }
+
+    /// <summary>What one branch of a head-office business pays for this version. Lower than the
+    /// single-shop price (MonthlyPricePKR): a branch's back office is the Head Office ERP.</summary>
+    public decimal BranchMonthlyPricePKR { get; set; }
+    public decimal BranchYearlyPricePKR { get; set; }
+
     public bool HasKitchenDisplay { get; set; }
     public bool HasDeliveryCOD { get; set; }
     public bool HasInventoryManagement { get; set; }
@@ -724,6 +750,29 @@ public class SaaSPackageConfig
     public int WhatsAppMessagesPerMonth { get; set; } // -1 = unlimited
     public bool IsActive { get; set; } = true;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// A platform price that is not a version or an add-on — today the Head Office ERP, one flat fee
+/// per business with a head office. Edited on the Package Pricing screen.
+/// </summary>
+public class PlatformPrice
+{
+    public string Key { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public decimal MonthlyPricePKR { get; set; }
+    public decimal YearlyPricePKR { get; set; }
+    /// <summary>For the ERP: WhatsApp messages it includes per month.</summary>
+    public int IncludedWhatsAppMessages { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>A one-time platform data change that has been applied, so it never runs twice and an
+/// operator's later edits on the pricing screens survive every restart.</summary>
+public class PlatformDataVersion
+{
+    public string Key { get; set; } = string.Empty;
+    public DateTime AppliedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class ModulePermission
@@ -1439,6 +1488,13 @@ public class SubscriptionInvoice
     public DateTime? PaidAt { get; set; }
     public string? PaymentMethod { get; set; }
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// What the amount is made of, as issued: the Head Office ERP, each shop's POS version and each
+    /// add-on (JSON array of { description, quantity, unitPricePKR, amountPKR }). A snapshot, so a
+    /// later price change never rewrites an invoice already sent.
+    /// </summary>
+    public string? LinesJson { get; set; }
 }
 
 /// <summary>

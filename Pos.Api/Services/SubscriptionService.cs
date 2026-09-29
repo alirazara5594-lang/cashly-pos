@@ -224,6 +224,8 @@ public class SubscriptionService : ISubscriptionService
     private async Task<List<BranchDeviceUsage>> DeviceUsageAsync(EffectiveEntitlements ent, TerminalType type)
     {
         var branches = await SellingBranches(ent).Select(b => new { b.Id, b.Name }).ToListAsync();
+        // Each location's own POS version decides its ceiling (the business's plan when it has none).
+        var allowances = await _entitlements.GetBranchAllowancesAsync(ent.TenantId);
         var cutoff = DateTime.UtcNow.AddHours(-Terminal.DeviceSlotCooldownHours);
 
         // Mirrors Terminal.OccupiesQuotaSlot: not revoked, and either live or retired within the cooldown.
@@ -241,12 +243,16 @@ public class SubscriptionService : ISubscriptionService
             .Select(g => new { BranchId = g.Key, Quantity = g.Sum(a => a.Quantity) })
             .ToDictionaryAsync(x => x.BranchId, x => x.Quantity);
 
-        var perLocation = ent.LimitFor(type == TerminalType.OrderTab ? FeatureCodes.Tablets : FeatureCodes.PosTerminals);
-        return branches.Select(b => new BranchDeviceUsage(
-                b.Id,
-                b.Name,
-                inUse.GetValueOrDefault(b.Id),
-                perLocation == null ? null : perLocation.Value + extras.GetValueOrDefault(b.Id)))
+        var planPerLocation = ent.LimitFor(type == TerminalType.OrderTab ? FeatureCodes.Tablets : FeatureCodes.PosTerminals);
+        return branches.Select(b =>
+            {
+                var perLocation = allowances.TryGetValue(b.Id, out var allowance) ? allowance.LimitFor(type) : planPerLocation;
+                return new BranchDeviceUsage(
+                    b.Id,
+                    b.Name,
+                    inUse.GetValueOrDefault(b.Id),
+                    perLocation == null ? null : perLocation.Value + extras.GetValueOrDefault(b.Id));
+            })
             .ToList();
     }
 
@@ -470,13 +476,24 @@ public class SubscriptionService : ISubscriptionService
         var def = FeatureCatalog.Find(featureCode);
         var name = def?.DisplayName ?? featureCode;
 
-        // Name the SMALLEST plan that unlocks it. Telling a Starter customer to buy Professional
-        // for head office would be both wrong and expensive — Standard has it.
+        // Sold per shop to every customer: there is no version to upgrade to.
+        if (FeatureCodes.SoldSeparately.Contains(featureCode))
+            return $"{name} is an add-on, bought per shop. Ask us to add it to your account.";
+
+        // Name the SMALLEST plan that unlocks it, and the add-on when one sells it on its own.
         var unlockedBy = UnlockedBy(featureCode);
+        var addOn = SoldAsAddOn.Contains(featureCode) ? ", or add it on its own as an add-on" : "";
         return unlockedBy == null
-            ? $"{name} is not included in the {planName} plan."
-            : $"{name} is not available on the {planName} plan. Upgrade to {unlockedBy} to use it.";
+            ? $"{name} is not included in the {planName} plan{(addOn.Length > 0 ? ". Add it as an add-on" : "")}."
+            : $"{name} is not available on the {planName} plan. Upgrade to {unlockedBy}{addOn}.";
     }
+
+    /// <summary>Capabilities a lower version can buy on their own (see the add-on catalogue).</summary>
+    private static readonly HashSet<string> SoldAsAddOn = new(StringComparer.OrdinalIgnoreCase)
+    {
+        FeatureCodes.Kds, FeatureCodes.DeliveryCod, FeatureCodes.Inventory, FeatureCodes.Purchasing,
+        FeatureCodes.Recipes, FeatureCodes.FoodCost, FeatureCodes.Loyalty, FeatureCodes.Accounting, FeatureCodes.Payroll
+    };
 
     private static string? UnlockedBy(string featureCode)
     {

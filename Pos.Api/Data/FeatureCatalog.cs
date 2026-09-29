@@ -28,6 +28,7 @@ public static class FeatureCodes
     public const string Locations = "locations";
     public const string PosTerminals = "pos_terminals";
     public const string Tablets = "tablets";
+    public const string KitchenDisplays = "kitchen_displays";
     public const string Users = "users";
 
     // --- Core modules (present everywhere, graded by depth) -----------------
@@ -52,6 +53,26 @@ public static class FeatureCodes
     public const string Integrations = "integrations";
     public const string DeliveryCod = "delivery_cod";
     public const string WhatsApp = "whatsapp";
+
+    // --- Modules with their own switch ----------------------------------------
+    public const string Loyalty = "loyalty";
+    public const string Labor = "labor";
+    public const string Payroll = "payroll";
+
+    // --- Sold only as add-ons (per shop), never part of a version or the ERP ---
+    public const string FiscalInvoicing = "fiscal_invoicing";
+    public const string OnlinePayments = "online_payments";
+    public const string OnlineOrdering = "online_ordering";
+
+    /// <summary>
+    /// Capabilities no version and no head-office ERP includes: each is bought per shop as an
+    /// add-on, because each costs money to run per shop (a tax authority connection, a payment
+    /// gateway, a delivery platform feed, a public ordering page).
+    /// </summary>
+    public static readonly IReadOnlySet<string> SoldSeparately = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        FiscalInvoicing, OnlinePayments, OnlineOrdering, Integrations, Api
+    };
 }
 
 public sealed record FeatureDefinition(
@@ -71,6 +92,7 @@ public static class FeatureCatalog
         new(FeatureCodes.Locations, "Locations", "Locations that sell. A head office that only runs the back office is not counted.", FeatureLimitType.Count, "Structure"),
         new(FeatureCodes.PosTerminals, "POS Terminals", "Tills that can take payment, per location.", FeatureLimitType.Count, "Structure"),
         new(FeatureCodes.Tablets, "Tablets", "Order-taking tablets and mPOS devices, per location.", FeatureLimitType.Count, "Structure"),
+        new(FeatureCodes.KitchenDisplays, "Kitchen Screens", "Kitchen display screens, per location.", FeatureLimitType.Count, "Structure"),
         new(FeatureCodes.Users, "Back-Office Users", "Owner, manager, accountant and storekeeper logins. Cashiers, waiters and kitchen staff are not counted.", FeatureLimitType.Count, "Structure"),
 
         new(FeatureCodes.Inventory, "Inventory", "Stock on hand, counts and adjustments.", FeatureLimitType.Level, "Operations"),
@@ -83,7 +105,10 @@ public static class FeatureCatalog
         new(FeatureCodes.DeliveryCod, "Delivery & COD", "Rider dispatch and cash-on-delivery settlement.", FeatureLimitType.Boolean, "Operations"),
 
         new(FeatureCodes.Accounting, "Accounting", "Chart of accounts, journals, financial statements.", FeatureLimitType.Level, "Finance"),
-        new(FeatureCodes.Customers, "Customers", "Customer records, credit and loyalty.", FeatureLimitType.Level, "Finance"),
+        new(FeatureCodes.Customers, "Customers", "Customer records and credit (khata).", FeatureLimitType.Level, "Finance"),
+        new(FeatureCodes.Loyalty, "Loyalty, Gift Cards & Promos", "Loyalty points, gift cards and promo codes.", FeatureLimitType.Boolean, "Finance"),
+        new(FeatureCodes.Labor, "Staff Scheduling & Time Clock", "Shift schedules, clock-in and timesheets.", FeatureLimitType.Boolean, "People"),
+        new(FeatureCodes.Payroll, "Payroll & HR", "Payroll periods, payslips and leave.", FeatureLimitType.Boolean, "People"),
         new(FeatureCodes.ConsolidatedReports, "Consolidated Reporting", "Group-wide figures across branches.", FeatureLimitType.Level, "Reporting"),
         new(FeatureCodes.AdvancedReports, "Advanced Reporting", "Deeper analytics and custom ranges.", FeatureLimitType.Boolean, "Reporting"),
         new(FeatureCodes.DirectorDashboard, "Executive Dashboard", "Owner-level KPI overview across the business.", FeatureLimitType.Boolean, "Reporting"),
@@ -93,8 +118,11 @@ public static class FeatureCatalog
         new(FeatureCodes.CentralizedHqControl, "Centralized HQ Control", "Push catalogue, pricing, tax and recipes from head office.", FeatureLimitType.Level, "Administration"),
 
         new(FeatureCodes.Api, "API Access", "Programmatic access for your own tools.", FeatureLimitType.Level, "Integrations"),
-        new(FeatureCodes.Integrations, "Third-Party Integrations", "Delivery platforms and external services.", FeatureLimitType.Level, "Integrations"),
-        new(FeatureCodes.WhatsApp, "WhatsApp Messaging", "Order updates and receipts over WhatsApp.", FeatureLimitType.Boolean, "Integrations")
+        new(FeatureCodes.Integrations, "Delivery Platform Integration", "Orders from Foodpanda-style delivery platforms straight into the till.", FeatureLimitType.Level, "Integrations"),
+        new(FeatureCodes.WhatsApp, "WhatsApp Messaging", "Order updates and receipts over WhatsApp, within the monthly message allowance.", FeatureLimitType.Boolean, "Integrations"),
+        new(FeatureCodes.FiscalInvoicing, "Fiscal Invoicing (FBR / PRA / SRB)", "Report every sale to the tax authority and print its fiscal invoice number and QR code.", FeatureLimitType.Boolean, "Integrations"),
+        new(FeatureCodes.OnlinePayments, "Online Payments", "JazzCash, EasyPaisa, Raast and card payments through a gateway.", FeatureLimitType.Boolean, "Integrations"),
+        new(FeatureCodes.OnlineOrdering, "QR & Online Ordering", "Customers order from a QR code at the table, or a pickup link.", FeatureLimitType.Boolean, "Integrations")
     };
 
     public static FeatureDefinition? Find(string code) =>
@@ -129,6 +157,7 @@ public static class FeatureCatalog
             [FeatureCodes.Locations] = nameof(SaaSPackageConfig.MaxBranches),
             [FeatureCodes.PosTerminals] = nameof(SaaSPackageConfig.MaxCounters),
             [FeatureCodes.Tablets] = nameof(SaaSPackageConfig.MaxOrderTabs),
+            [FeatureCodes.KitchenDisplays] = nameof(SaaSPackageConfig.MaxKitchenDisplays),
             [FeatureCodes.Users] = nameof(SaaSPackageConfig.MaxUsers)
         };
 
@@ -140,61 +169,107 @@ public static class FeatureCatalog
     // For Level features it is a FeatureLevel. For Boolean, a bool.
     // ============================================================
 
+    // ============================================================
+    // THE THREE POS VERSIONS (2026-10)
+    //
+    // Sold per shop. Each version fully serves one kind of customer, so most never need an add-on:
+    //   Starter      — takeaway, kiosk, small café, retail counter
+    //   Standard     — dine-in restaurant, busy café, mart
+    //   Professional — high-volume fast food, big dining hall, food court
+    // For a single shop the version also decides its own back office. A business with a head
+    // office gets the whole ERP instead (EntitlementService), and the version is only its tills.
+    // ============================================================
+
     /// <summary>Boolean capabilities per plan.</summary>
     public static readonly Dictionary<string, (bool Starter, bool Standard, bool Professional)> Booleans = new()
     {
-        // Running a head office is a SHAPE, not a paid feature: every plan may do it, and the plan
-        // governs only how many locations fit (see Counts below). A two-shop owner can therefore
-        // start on Starter rather than being priced out of the product entirely — what they buy by
-        // moving up is headroom and centralised control, not the right to have a second shop.
+        // Opening a head office is how a shop grows into the Head Office ERP (billed separately),
+        // so every version may do it. A second shop is simply another shop with its own version.
         [FeatureCodes.Hq]           = (true,  true,  true),
         [FeatureCodes.MultiBranch]  = (true,  true,  true),
         [FeatureCodes.Tables]       = (true,  true,  true),
         [FeatureCodes.AdvancedReports] = (false, true, true),
         [FeatureCodes.DirectorDashboard] = (false, true, true),
         [FeatureCodes.DeliveryCod]  = (false, true,  true),
-        [FeatureCodes.WhatsApp]     = (true,  true,  true)
+        // Allowed on every version; how many messages go out is the monthly allowance
+        // (SaaSPackageConfig.WhatsAppMessagesPerMonth) plus any message bundles bought.
+        [FeatureCodes.WhatsApp]     = (true,  true,  true),
+        [FeatureCodes.Loyalty]      = (false, true,  true),
+        [FeatureCodes.Labor]        = (false, true,  true),
+        [FeatureCodes.Payroll]      = (false, false, true),
+        // Add-on only: see FeatureCodes.SoldSeparately.
+        [FeatureCodes.FiscalInvoicing] = (false, false, false),
+        [FeatureCodes.OnlinePayments]  = (false, false, false),
+        [FeatureCodes.OnlineOrdering]  = (false, false, false)
     };
 
     /// <summary>Countable ceilings per plan. Null = unlimited.</summary>
     public static readonly Dictionary<string, (int? Starter, int? Standard, int? Professional)> Counts = new()
     {
-        // Branch quotas per tier — monetized per location connected
-        [FeatureCodes.Locations]     = (3, 10, null),
-        [FeatureCodes.PosTerminals]  = (1, 5, null),
-        [FeatureCodes.Tablets]       = (3, 10, null),
-        [FeatureCodes.Users]         = (5, 15, null)
+        // Every shop is billed for its own version, so the number of shops is not capped.
+        [FeatureCodes.Locations]       = (null, null, null),
+        // Devices are per shop.
+        [FeatureCodes.PosTerminals]    = (1, 3, 8),
+        [FeatureCodes.Tablets]         = (2, 8, 20),
+        [FeatureCodes.KitchenDisplays] = (0, 2, null),
+        // Back-office logins for a single shop (cashiers, waiters and kitchen staff are free).
+        [FeatureCodes.Users]           = (3, 10, null)
     };
 
-    /// <summary>Graded capabilities per plan.</summary>
+    /// <summary>Graded capabilities per plan. The app checks on/off; the grade is descriptive.</summary>
     public static readonly Dictionary<string, (FeatureLevel Starter, FeatureLevel Standard, FeatureLevel Professional)> Levels = new()
     {
-        [FeatureCodes.Inventory]            = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.Purchasing]           = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.Accounting]           = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Full),
-        [FeatureCodes.Recipes]              = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.FoodCost]             = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
+        // Inventory, recipes, suppliers and purchase orders start at Standard: a takeaway counter
+        // on Starter sells what it has and does not cost recipes.
+        [FeatureCodes.Inventory]            = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
+        [FeatureCodes.Purchasing]           = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
+        [FeatureCodes.Recipes]              = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
+        [FeatureCodes.FoodCost]             = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
+        // Full books (ledger, P&L, balance sheet) are Professional, or an add-on for Standard.
+        [FeatureCodes.Accounting]           = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.Full),
         [FeatureCodes.Customers]            = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.Kds]                  = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Full),
-        // Moving stock between branches and seeing group-wide figures are the two things that make
-        // a chain feel like one business rather than several. Both are held back to Professional
-        // on purpose: Standard customers can RUN several shops, but they run them separately.
+        [FeatureCodes.Kds]                  = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Full),
         [FeatureCodes.StockTransfers]       = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.Advanced),
         [FeatureCodes.ConsolidatedReports]  = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.Advanced),
         [FeatureCodes.Permissions]          = (FeatureLevel.Basic, FeatureLevel.Advanced, FeatureLevel.Advanced),
         [FeatureCodes.AuditLog]             = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
         [FeatureCodes.CentralizedHqControl] = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.Api]                  = (FeatureLevel.None,  FeatureLevel.Basic, FeatureLevel.Advanced),
-        [FeatureCodes.Integrations]         = (FeatureLevel.None,  FeatureLevel.Basic, FeatureLevel.Advanced)
+        // Add-on only (FeatureCodes.SoldSeparately).
+        [FeatureCodes.Api]                  = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.None),
+        [FeatureCodes.Integrations]         = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.None)
     };
 
-    /// <summary>The three plans, in commercial order.</summary>
+    /// <summary>The three plans, in commercial order. Prices are the single-shop prices.</summary>
     public static readonly (string Code, string Name, string Description, decimal Monthly, decimal Yearly, int Rank)[] Plans =
     {
-        ("starter", "Starter", "Includes initial branch connectivity. Everything a shop or restaurant chain needs to trade, with a head office over the top.", 5000m, 50000m, 1),
-        ("standard", "Standard", "Includes multi-branch connectivity with full inventory, purchasing and accounting, and centralised control from head office.", 12000m, 120000m, 2),
-        ("professional", "Professional", "High-capacity multi-branch scaling, plus inter-branch stock transfers, group-wide consolidated reporting, API and integrations.", 25000m, 250000m, 3)
+        ("starter", "Starter", "For a takeaway, kiosk, small café or retail counter: one till, two tablets, receipts, cash shifts and daily reports.", 5000m, 50000m, 1),
+        ("standard", "Standard", "For a dine-in restaurant, busy café or mart: three tills, eight tablets, kitchen screens, delivery, loyalty, inventory and staff scheduling.", 12000m, 120000m, 2),
+        ("professional", "Professional", "For high-volume fast food, big dining halls and food courts: eight tills, twenty tablets, unlimited kitchen screens, full accounting and payroll.", 25000m, 250000m, 3)
     };
+
+    /// <summary>What one branch of a head-office business pays per month and per year for each
+    /// version. Lower than the single-shop price: the branch's back office is the ERP.</summary>
+    public static readonly Dictionary<string, (decimal Monthly, decimal Yearly)> BranchPrices = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["starter"] = (3000m, 30000m),
+        ["standard"] = (6000m, 60000m),
+        ["professional"] = (10000m, 100000m)
+    };
+
+    /// <summary>WhatsApp messages each version includes per month (-1 = unlimited).</summary>
+    public static readonly Dictionary<string, int> IncludedWhatsAppMessages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["starter"] = 0,
+        ["standard"] = 500,
+        ["professional"] = 2000
+    };
+
+    /// <summary>The Head Office ERP: one flat price per business with a head office.</summary>
+    public const string HeadOfficeErpPriceKey = "HEAD_OFFICE_ERP";
+    public const decimal HeadOfficeErpMonthly = 15000m;
+    public const decimal HeadOfficeErpYearly = 150000m;
+    /// <summary>WhatsApp messages the Head Office ERP includes per month, on top of nothing else.</summary>
+    public const int HeadOfficeErpWhatsAppMessages = 2000;
 
     /// <summary>
     /// What a Count feature's `null` (unlimited) becomes in the column-shaped
@@ -252,7 +327,11 @@ public static class FeatureCatalog
             MaxBranches = Count(FeatureCodes.Locations, idx),
             MaxCounters = Count(FeatureCodes.PosTerminals, idx),
             MaxOrderTabs = Count(FeatureCodes.Tablets, idx),
+            MaxKitchenDisplays = Count(FeatureCodes.KitchenDisplays, idx),
             MaxUsers = Count(FeatureCodes.Users, idx),
+
+            BranchMonthlyPricePKR = BranchPrices.TryGetValue(code, out var branchPrice) ? branchPrice.Monthly : monthly,
+            BranchYearlyPricePKR = BranchPrices.TryGetValue(code, out var branchPriceYear) ? branchPriceYear.Yearly : yearly,
 
             HasKitchenDisplay = LevelOn(FeatureCodes.Kds, idx),
             HasInventoryManagement = LevelOn(FeatureCodes.Inventory, idx),
@@ -266,8 +345,8 @@ public static class FeatureCatalog
             HasMultiBranch = Boolean(FeatureCodes.MultiBranch, idx),
 
             // Metered separately from the on/off switch: the flag says they may send, this says
-            // how many. -1 is the existing sentinel for unmetered.
-            WhatsAppMessagesPerMonth = Boolean(FeatureCodes.WhatsApp, idx) ? -1 : 0,
+            // how many a month the version includes. Bundles bought as add-ons come on top.
+            WhatsAppMessagesPerMonth = IncludedWhatsAppMessages.TryGetValue(code, out var messages) ? messages : 0,
             IsActive = true,
             UpdatedAt = DateTime.UtcNow
         };
@@ -284,7 +363,10 @@ public static class FeatureCatalog
         target.MaxBranches = src.MaxBranches;
         target.MaxCounters = src.MaxCounters;
         target.MaxOrderTabs = src.MaxOrderTabs;
+        target.MaxKitchenDisplays = src.MaxKitchenDisplays;
         target.MaxUsers = src.MaxUsers;
+        target.BranchMonthlyPricePKR = src.BranchMonthlyPricePKR;
+        target.BranchYearlyPricePKR = src.BranchYearlyPricePKR;
         target.HasKitchenDisplay = src.HasKitchenDisplay;
         target.HasDeliveryCOD = src.HasDeliveryCOD;
         target.HasInventoryManagement = src.HasInventoryManagement;

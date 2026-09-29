@@ -124,6 +124,39 @@ public sealed record EffectiveEntitlements
     public bool ShowBillingWarning => Status is TenantStatus.PastDue or TenantStatus.Restricted or TenantStatus.ReadOnly;
 }
 
+/// <summary>
+/// What one location's POS version allows. With a head office the ERP is the same for everyone and
+/// the POS side is sold per branch, so device ceilings are answered per location from here.
+/// </summary>
+/// <param name="Edition">The POS version in force at the location.</param>
+/// <param name="IsOwnEdition">False when the location has no version of its own and follows the business's plan.</param>
+public sealed record BranchPosAllowance(
+    Guid BranchId, SubscriptionTier Edition, bool IsOwnEdition, int MaxCounters, int MaxOrderTabs, int MaxKitchenDisplays)
+{
+    /// <summary>Whether the location may run kitchen screens at all.</summary>
+    public bool KitchenDisplay => MaxKitchenDisplays > 0;
+
+    /// <summary>A device ceiling, or null for unlimited.</summary>
+    public int? LimitFor(TerminalType type)
+    {
+        var raw = type switch
+        {
+            TerminalType.OrderTab => MaxOrderTabs,
+            TerminalType.KitchenDisplay => MaxKitchenDisplays,
+            _ => MaxCounters
+        };
+        return raw >= FeatureCatalog.UnlimitedCount ? null : raw;
+    }
+}
+
+/// <summary>A business's WhatsApp messages this calendar month.</summary>
+/// <param name="Allowance">Messages it may send this month, or null for unlimited.</param>
+public sealed record WhatsAppAllowance(int? Allowance, int Included, int Bundles, int Used)
+{
+    public bool CanSend => Allowance == null || Used < Allowance.Value;
+    public int? Remaining => Allowance == null ? null : Math.Max(0, Allowance.Value - Used);
+}
+
 public interface IEntitlementService
 {
     /// <summary>Reads the cached snapshot, recomputing it if absent or stale.</summary>
@@ -139,6 +172,19 @@ public interface IEntitlementService
     /// <summary>Checks whether one more device of this class fits. Returns the limit either way
     /// so the caller can say "3 of 3 used" instead of just "no".</summary>
     Task<(bool Allowed, int InUse, int Limit)> CanAddDeviceAsync(Guid tenantId, Guid branchId, TerminalType type);
+
+    /// <summary>What each of the business's locations may run under its POS version, by location id.</summary>
+    Task<Dictionary<Guid, BranchPosAllowance>> GetBranchAllowancesAsync(Guid tenantId);
+
+    /// <summary>
+    /// Whether one location may use a per-shop capability — fiscal invoicing, online payments, QR
+    /// ordering, the delivery platform feed. Those are bought per shop: an add-on for that shop,
+    /// one bought for every shop, or a support grant.
+    /// </summary>
+    Task<bool> BranchHasFeatureAsync(Guid tenantId, Guid branchId, string featureCode);
+
+    /// <summary>WhatsApp messages allowed and used this month.</summary>
+    Task<WhatsAppAllowance> GetWhatsAppAllowanceAsync(Guid tenantId);
 }
 
 public class EntitlementService : IEntitlementService
@@ -152,6 +198,16 @@ public class EntitlementService : IEntitlementService
         nameof(SaaSPackageConfig.MaxCounters),
         nameof(SaaSPackageConfig.MaxOrderTabs),
         nameof(SaaSPackageConfig.MaxUsers)
+    };
+
+    /// <summary>
+    /// What a module add-on brings with it besides its own switch. Inventory is not much use
+    /// without the recipes that consume it or the purchase orders that fill it.
+    /// </summary>
+    private static readonly Dictionary<string, string[]> AddOnIncludes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [nameof(SaaSPackageConfig.HasInventoryManagement)] = new[] { FeatureCodes.Purchasing, FeatureCodes.Recipes, FeatureCodes.FoodCost },
+        [nameof(SaaSPackageConfig.HasKitchenDisplay)] = new[] { FeatureCodes.Kds }
     };
 
     /// <summary>Every boolean feature the platform sells. Add a feature here and it becomes
@@ -206,12 +262,17 @@ public class EntitlementService : IEntitlementService
         // A trial that ran out since the snapshot was computed.
         var tenant = await _db.Tenants.AsNoTracking().IgnoreQueryFilters()
             .Where(t => t.Id == tenantId)
-            .Select(t => new { t.IsTrialActive, t.TrialEndsAt, t.Status, t.Tier })
+            .Select(t => new { t.IsTrialActive, t.TrialEndsAt, t.Status, t.Tier, t.DeploymentMode })
             .FirstOrDefaultAsync();
         if (tenant == null) return false;
         if (tenant.IsTrialActive && tenant.TrialEndsAt <= now && snapshot.Status == TenantStatus.Trial)
             return true;
         if (tenant.Status != snapshot.Status) return true;
+
+        // A head-office business gets the whole ERP with no location ceiling (see RecomputeAsync).
+        // A snapshot taken before that rule, or before the business opened its head office, is stale.
+        if (tenant.DeploymentMode == DeploymentMode.HeadOffice && snapshot.MaxBranches < FeatureCatalog.UnlimitedCount)
+            return true;
 
         // The plan moved without a recompute (the platform console writes Tenant.Tier directly), the
         // snapshot predates feature codes being cached beside the package switches, or the package
@@ -272,6 +333,10 @@ public class EntitlementService : IEntitlementService
                 // was part of the old double-counting problem.
                 case "EXTRA_COUNTER":
                 case "EXTRA_TABLET":
+                case "EXTRA_KDS":
+                    break;
+                // Message bundles raise the monthly allowance (GetWhatsAppAllowanceAsync).
+                case "WHATSAPP_1000":
                     break;
                 case "EXTRA_USER":
                     maxUsers += addOn.Quantity;
@@ -281,6 +346,10 @@ public class EntitlementService : IEntitlementService
                     break;
                 default:
                     SetSwitch(addOn.AddOnKey, true);
+                    // A module add-on is the whole module: inventory comes with its recipes,
+                    // suppliers and purchase orders, not just the stock screen.
+                    if (AddOnIncludes.TryGetValue(addOn.AddOnKey, out var alsoIncluded))
+                        foreach (var code in alsoIncluded) SetSwitch(code, true);
                     break;
             }
         }
@@ -309,6 +378,35 @@ public class EntitlementService : IEntitlementService
             {
                 SetSwitch(ov.Key, bool.TryParse(ov.Value, out var on) && on);
             }
+        }
+
+        // --- 3b. One ERP for every head-office business ---------------------
+        // With a head office, the back office is the same product for everyone: every ERP
+        // capability, any number of locations and back-office logins. What differs, and what is
+        // paid for, is each branch's POS version — tills, tablets and kitchen screens per branch
+        // (Branch.PosEdition, enforced in CanAddDeviceAsync). The two till-side switches are on
+        // when at least one branch's version includes them, so their screens exist where needed.
+        if (tenant.DeploymentMode == DeploymentMode.HeadOffice)
+        {
+            // Everything except what is sold per shop to every customer (fiscal invoicing, online
+            // payments, QR ordering, the delivery platform feed, API): those stay as bought.
+            foreach (var def in FeatureCatalog.All.Where(d => d.LimitType != FeatureLimitType.Count
+                                                            && !FeatureCodes.SoldSeparately.Contains(d.Code)))
+                capabilities[def.Code] = true;
+            foreach (var name in FeatureFlagNames)
+                features[name] = true;
+
+            var allowances = (await GetBranchAllowancesCoreAsync(tenantId, tenant.Tier, tenant.DeploymentMode, maxCounters, maxOrderTabs, features, addOns))
+                .Values.ToList();
+            var kdsSomewhere = allowances.Any(a => a.KitchenDisplay);
+            var editions = allowances.Select(a => a.Edition).Distinct().Select(e => e.ToString()).ToList();
+            var codSomewhere = await _db.SaaSPackageConfigs.AsNoTracking()
+                .AnyAsync(p => editions.Contains(p.PackageKey) && p.HasDeliveryCOD);
+            features[nameof(SaaSPackageConfig.HasKitchenDisplay)] = kdsSomewhere || addOns.Any(a => a.AddOnKey == nameof(SaaSPackageConfig.HasKitchenDisplay));
+            features[nameof(SaaSPackageConfig.HasDeliveryCOD)] = codSomewhere || addOns.Any(a => a.AddOnKey == nameof(SaaSPackageConfig.HasDeliveryCOD));
+
+            maxBranches = FeatureCatalog.UnlimitedCount;
+            maxUsers = FeatureCatalog.UnlimitedCount;
         }
 
         // The mirrored nine follow their package switch, whichever name the grant used.
@@ -481,17 +579,139 @@ public class EntitlementService : IEntitlementService
                           && (t.DeactivatedAt == null || t.DeactivatedAt > cutoff));
     }
 
+    public async Task<Dictionary<Guid, BranchPosAllowance>> GetBranchAllowancesAsync(Guid tenantId)
+    {
+        var ent = await GetAsync(tenantId);
+        var tier = Enum.TryParse<SubscriptionTier>(ent.PlanKey, true, out var parsed) ? parsed : SubscriptionTier.Starter;
+        return await GetBranchAllowancesCoreAsync(tenantId, tier, ent.DeploymentMode, ent.MaxCounters, ent.MaxOrderTabs, ent.Features, null);
+    }
+
+    /// <summary>
+    /// Each location's POS allowance. A location with a version of its own gets that version's
+    /// package figures. One without follows the business's plan — its per-location device figures
+    /// with add-ons and overrides applied, exactly what every location had before branches carried
+    /// a version. Kitchen screens then add what was bought for the location: the Kitchen display
+    /// add-on gives a location on Starter a screen, and each Extra kitchen screen adds one.
+    /// </summary>
+    private async Task<Dictionary<Guid, BranchPosAllowance>> GetBranchAllowancesCoreAsync(
+        Guid tenantId, SubscriptionTier tenantTier, DeploymentMode mode, int planCounters, int planTablets,
+        IReadOnlyDictionary<string, bool> planFeatures, IReadOnlyList<AddOnSubscription>? addOns)
+    {
+        var branches = await _db.Branches.AsNoTracking().IgnoreQueryFilters()
+            .Where(b => b.TenantId == tenantId)
+            .Select(b => new { b.Id, b.PosEdition })
+            .ToListAsync();
+        var packages = await _db.SaaSPackageConfigs.AsNoTracking().ToListAsync();
+        SaaSPackageConfig? PackageFor(SubscriptionTier tier) =>
+            packages.FirstOrDefault(p => string.Equals(p.PackageKey, tier.ToString(), StringComparison.OrdinalIgnoreCase));
+
+        addOns ??= await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenantId && a.IsActive)
+            .ToListAsync();
+        var kdsKey = nameof(SaaSPackageConfig.HasKitchenDisplay);
+
+        var result = new Dictionary<Guid, BranchPosAllowance>();
+        foreach (var branch in branches)
+        {
+            var edition = branch.PosEdition ?? tenantTier;
+            var package = PackageFor(edition);
+            var counters = branch.PosEdition != null ? package?.MaxCounters ?? planCounters : planCounters;
+            var tablets = branch.PosEdition != null ? package?.MaxOrderTabs ?? planTablets : planTablets;
+
+            var screens = package?.MaxKitchenDisplays ?? 0;
+            // A single shop whose plan was given kitchen screens by a support grant.
+            if (screens == 0 && branch.PosEdition == null && mode != DeploymentMode.HeadOffice
+                && planFeatures.TryGetValue(kdsKey, out var granted) && granted
+                && !addOns.Any(a => a.AddOnKey == kdsKey))
+                screens = 1;
+            // The Kitchen display add-on: one screen per add-on, for this shop or for every shop.
+            if (screens == 0)
+                screens = addOns.Where(a => a.AddOnKey == kdsKey && (a.BranchId == null || a.BranchId == branch.Id)).Sum(a => a.Quantity);
+            // Extra kitchen screens bought for this shop.
+            if (screens > 0 && screens < FeatureCatalog.UnlimitedCount)
+                screens += addOns.Where(a => a.AddOnKey == "EXTRA_KDS" && a.BranchId == branch.Id).Sum(a => a.Quantity);
+
+            result[branch.Id] = new BranchPosAllowance(branch.Id, edition, branch.PosEdition != null, counters, tablets, screens);
+        }
+        return result;
+    }
+
+    public async Task<bool> BranchHasFeatureAsync(Guid tenantId, Guid branchId, string featureCode)
+    {
+        var ent = await GetAsync(tenantId);
+        if (ent.Capability(featureCode) != true) return false;           // not bought in any form
+        if (!FeatureCodes.SoldSeparately.Contains(featureCode)) return true; // a business-wide capability
+
+        // Sold per shop: an add-on for this shop, one bought for every shop, or — when no add-on
+        // exists at all — a support grant, which covers the whole business.
+        var bought = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenantId && a.IsActive && a.AddOnKey == featureCode)
+            .Select(a => a.BranchId)
+            .ToListAsync();
+        return bought.Count == 0 || bought.Any(b => b == null || b == branchId);
+    }
+
+    public async Task<WhatsAppAllowance> GetWhatsAppAllowanceAsync(Guid tenantId)
+    {
+        var ent = await GetAsync(tenantId);
+
+        // What the plan includes: the Head Office ERP's allowance for a head-office business, the
+        // version's for a single shop. -1 on a version means unlimited.
+        int? included;
+        if (ent.DeploymentMode == DeploymentMode.HeadOffice)
+        {
+            var erp = await _db.PlatformPrices.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Key == FeatureCatalog.HeadOfficeErpPriceKey);
+            included = erp?.IncludedWhatsAppMessages ?? FeatureCatalog.HeadOfficeErpWhatsAppMessages;
+        }
+        else
+        {
+            var perMonth = await _db.SaaSPackageConfigs.AsNoTracking()
+                .Where(p => p.PackageKey == ent.PlanKey)
+                .Select(p => (int?)p.WhatsAppMessagesPerMonth)
+                .FirstOrDefaultAsync() ?? 0;
+            included = perMonth < 0 ? null : perMonth;
+        }
+
+        var bundles = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenantId && a.IsActive && a.AddOnKey == "WHATSAPP_1000")
+            .SumAsync(a => (int?)a.Quantity) ?? 0;
+
+        var monthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var used = await _db.NotificationLogs.AsNoTracking().IgnoreQueryFilters()
+            .CountAsync(n => n.TenantId == tenantId && n.Channel == "whatsapp" && n.SentAt >= monthStart
+                          && (n.Status == "sent" || n.Status == "delivered" || n.Status == "queued"));
+
+        var allowance = included == null ? (int?)null : included.Value + bundles * 1000;
+        return new WhatsAppAllowance(allowance, included ?? -1, bundles, used);
+    }
+
     public async Task<(bool Allowed, int InUse, int Limit)> CanAddDeviceAsync(Guid tenantId, Guid branchId, TerminalType type)
     {
         var ent = await GetAsync(tenantId);
 
-        // Non-selling devices are not metered. A kitchen screen and a back-office workstation
-        // both cost the business money to run and earn the platform nothing per-seat; metering
-        // them just pushes kitchens back to paper and accounts back into spreadsheets.
-        if (type is TerminalType.KitchenDisplay or TerminalType.BackOffice)
+        // A back-office workstation is not metered: it earns the platform nothing per seat, and
+        // metering it just pushes the accounts back into spreadsheets.
+        if (type == TerminalType.BackOffice)
             return (true, await CountDevicesInUseAsync(branchId, type), int.MaxValue);
 
-        var baseLimit = type == TerminalType.OrderTab ? ent.MaxOrderTabs : ent.MaxCounters;
+        (await GetBranchAllowancesAsync(tenantId)).TryGetValue(branchId, out var allowance);
+
+        // Kitchen screens come with the POS version (none on Starter, two on Standard, unlimited
+        // on Professional) plus any bought for the shop. Screens already running are never cut
+        // off; this only decides whether one more may connect.
+        if (type == TerminalType.KitchenDisplay)
+        {
+            var screens = await CountDevicesInUseAsync(branchId, type);
+            if (allowance == null) return (true, screens, int.MaxValue);
+            var screenLimit = allowance.LimitFor(TerminalType.KitchenDisplay);
+            return screenLimit == null ? (true, screens, int.MaxValue) : (screens < screenLimit.Value, screens, screenLimit.Value);
+        }
+
+        // The location's own POS version when it has one; otherwise the business's plan.
+        var baseLimit = allowance != null
+            ? (type == TerminalType.OrderTab ? allowance.MaxOrderTabs : allowance.MaxCounters)
+            : (type == TerminalType.OrderTab ? ent.MaxOrderTabs : ent.MaxCounters);
 
         // Branch-scoped device add-ons stack on top of the plan's per-branch allowance.
         var addOnKey = type == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";

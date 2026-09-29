@@ -117,6 +117,12 @@ builder.Services.AddRateLimiter(options =>
         opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
         opt.QueueLimit = 10;
     });
+    // Guests ordering from a QR code or a pickup link: anyone on the internet can reach these, so
+    // each phone (IP) gets its own small allowance rather than sharing one across every shop.
+    options.AddPolicy("public-orders", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+        http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { Window = TimeSpan.FromMinutes(1), PermitLimit = 20, QueueLimit = 0 }));
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
 builder.Services.AddOpenApi();
@@ -128,10 +134,13 @@ builder.Services.AddScoped<Pos.Api.Middlewares.ICurrentUserAccessor, Pos.Api.Mid
 builder.Services.AddScoped<Pos.Api.Services.IEntitlementService, Pos.Api.Services.EntitlementService>();
 builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Services.DeviceLicenseService>();
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionService, Pos.Api.Services.SubscriptionService>();
+builder.Services.AddScoped<Pos.Api.Services.IBillingService, Pos.Api.Services.BillingService>();
 builder.Services.AddScoped<Pos.Api.Services.ISyncService, Pos.Api.Services.SyncService>();
 // Only actually does anything when Host:Mode is BusinessHost — see SyncWorker.
 builder.Services.AddHostedService<Pos.Api.Services.SyncWorker>();
-builder.Services.AddSingleton<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.NullFiscalInvoiceProvider>();
+// Reports paid sales to FBR / PRA / SRB / KPRA for shops with a fiscal connection and the add-on;
+// does nothing for everyone else.
+builder.Services.AddScoped<Pos.Api.Services.IFiscalInvoiceProvider, Pos.Api.Services.PralFiscalInvoiceProvider>();
 
 // --- Payment gateways (all inert until merchant credentials are configured) ---
 builder.Services.AddSingleton<Pos.Api.Services.IPaymentGatewayProvider, Pos.Api.Services.JazzCashProvider>();
@@ -1456,7 +1465,9 @@ using (var scope = app.Services.CreateScope())
         ("Document numbering", EnsureDocumentNumberingSchemaAsync),
         ("Organisation structure", EnsureOrganizationSchemaAsync),
         ("Master data and stock ledger", EnsureMasterDataSchemaAsync),
-        ("Returns, product purchasing and transfers", EnsureModulesSchemaAsync)
+        ("Returns, product purchasing and transfers", EnsureModulesSchemaAsync),
+        ("Versions, billing and integrations", EnsureCommerceSchemaAsync),
+        ("2026-10 versions and add-ons", ApplyPosVersions202610Async)
     })
     {
         try
@@ -1729,6 +1740,8 @@ static Task EnsureOrganizationSchemaAsync(AppDbContext db) => db.Database.Execut
             ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""HoldsStock"" boolean NOT NULL DEFAULT true;
             ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""CompanyId"" uuid;
             ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""RegionId"" uuid;
+            -- Each branch's POS version (null = the business's own plan).
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""PosEdition"" integer;
 
             -- Read below; normally added by the main startup block, which may not have run.
             ALTER TABLE ""Terminals"" ADD COLUMN IF NOT EXISTS ""RevokedAt"" timestamp with time zone;
@@ -1924,6 +1937,169 @@ static Task EnsureModulesSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlR
 ");
 
 /// <summary>
+/// The 2026-10 versions and add-ons: kitchen-screen counts and branch prices on each version, the
+/// Head Office ERP price, fiscal invoicing connections, QR ordering tokens, and the line-by-line
+/// breakdown on subscription invoices. Idempotent.
+/// </summary>
+static Task EnsureCommerceSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""PlatformPrices"" (
+        ""Key"" text PRIMARY KEY,
+        ""DisplayName"" text NOT NULL,
+        ""MonthlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+        ""YearlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0,
+        ""IncludedWhatsAppMessages"" integer NOT NULL DEFAULT 0,
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS ""PlatformDataVersions"" (
+        ""Key"" text PRIMARY KEY,
+        ""AppliedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS ""FiscalIntegrations"" (
+        ""Id"" uuid PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""Authority"" integer NOT NULL,
+        ""Environment"" integer NOT NULL,
+        ""PosId"" text NOT NULL,
+        ""AccessToken"" text NOT NULL,
+        ""ApiUrl"" text,
+        ""DefaultPctCode"" text NOT NULL DEFAULT '',
+        ""IsEnabled"" boolean NOT NULL DEFAULT false,
+        ""LastSuccessAt"" timestamp with time zone,
+        ""LastError"" text,
+        ""LastErrorAt"" timestamp with time zone,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_FiscalIntegrations_BranchId"" ON ""FiscalIntegrations"" (""BranchId"");
+    CREATE INDEX IF NOT EXISTS ""IX_FiscalIntegrations_TenantId"" ON ""FiscalIntegrations"" (""TenantId"");
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'SaaSPackageConfigs') THEN
+            ALTER TABLE ""SaaSPackageConfigs"" ADD COLUMN IF NOT EXISTS ""MaxKitchenDisplays"" integer NOT NULL DEFAULT 0;
+            ALTER TABLE ""SaaSPackageConfigs"" ADD COLUMN IF NOT EXISTS ""BranchMonthlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+            ALTER TABLE ""SaaSPackageConfigs"" ADD COLUMN IF NOT EXISTS ""BranchYearlyPricePKR"" numeric(18,2) NOT NULL DEFAULT 0;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'DiningTables') THEN
+            ALTER TABLE ""DiningTables"" ADD COLUMN IF NOT EXISTS ""QrToken"" text;
+            CREATE UNIQUE INDEX IF NOT EXISTS ""IX_DiningTables_QrToken"" ON ""DiningTables"" (""QrToken"");
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'Branches') THEN
+            ALTER TABLE ""Branches"" ADD COLUMN IF NOT EXISTS ""OnlineOrderToken"" text;
+            CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Branches_OnlineOrderToken"" ON ""Branches"" (""OnlineOrderToken"");
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'SubscriptionInvoices') THEN
+            ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""LinesJson"" text;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'OrderReturns') THEN
+            ALTER TABLE ""OrderReturns"" ADD COLUMN IF NOT EXISTS ""FiscalInvoiceNumber"" text;
+        END IF;
+    END $$;
+");
+
+/// <summary>
+/// Applies the 2026-10 versions and add-on catalogue ONCE. After that the Package Pricing and
+/// Add-on screens own every number: an operator's edit must survive every restart, which is why
+/// this is recorded in PlatformDataVersions rather than re-applied at each start.
+/// </summary>
+static async Task ApplyPosVersions202610Async(AppDbContext db)
+{
+    const string marker = "pos-versions-2026-10";
+    if (await db.PlatformDataVersions.AnyAsync(v => v.Key == marker)) return;
+
+    // 1. The three versions: their package rows, plan rows and feature rows, from the catalogue.
+    foreach (var (code, name, description, monthly, yearly, rank) in Pos.Api.Data.FeatureCatalog.Plans)
+    {
+        var packageKey = char.ToUpperInvariant(code[0]) + code[1..];
+        var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == packageKey);
+        if (package == null) db.SaaSPackageConfigs.Add(Pos.Api.Data.FeatureCatalog.BuildPackageConfig(code));
+        else
+        {
+            Pos.Api.Data.FeatureCatalog.ApplyPackageConfig(package, code);
+            var fresh = Pos.Api.Data.FeatureCatalog.BuildPackageConfig(code);
+            package.MonthlyPricePKR = fresh.MonthlyPricePKR;
+            package.YearlyPricePKR = fresh.YearlyPricePKR;
+        }
+
+        var plan = await db.Plans.FirstOrDefaultAsync(p => p.Code == code);
+        if (plan != null)
+        {
+            plan.Name = name;
+            plan.Description = description;
+            plan.MonthlyPricePKR = monthly;
+            plan.YearlyPricePKR = yearly;
+            plan.Rank = rank;
+            db.PlanFeatures.RemoveRange(await db.PlanFeatures.Where(f => f.PlanId == plan.Id).ToListAsync());
+            db.PlanFeatures.AddRange(Pos.Api.Data.FeatureCatalog.BuildFeatureRows(plan.Id, code));
+        }
+    }
+
+    // 2. The Head Office ERP price.
+    if (!await db.PlatformPrices.AnyAsync(p => p.Key == Pos.Api.Data.FeatureCatalog.HeadOfficeErpPriceKey))
+        db.PlatformPrices.Add(new PlatformPrice
+        {
+            Key = Pos.Api.Data.FeatureCatalog.HeadOfficeErpPriceKey,
+            DisplayName = "Head Office ERP",
+            MonthlyPricePKR = Pos.Api.Data.FeatureCatalog.HeadOfficeErpMonthly,
+            YearlyPricePKR = Pos.Api.Data.FeatureCatalog.HeadOfficeErpYearly,
+            IncludedWhatsAppMessages = Pos.Api.Data.FeatureCatalog.HeadOfficeErpWhatsAppMessages
+        });
+
+    // 3. The add-on catalogue: capacity per shop, modules for shops on a lower version, and the
+    // integrations everyone can buy. Each price is set so two or three add-ons cost about as much
+    // as the next version up, which makes the upgrade the better deal.
+    var catalogue = new (string Key, string Name, string Description, decimal Monthly, decimal Yearly)[]
+    {
+        ("EXTRA_COUNTER", "Extra till", "One more till at one shop, above what its POS version includes.", 1000m, 10000m),
+        ("EXTRA_TABLET", "Extra tablet", "One more waiter tablet at one shop, above what its POS version includes.", 600m, 6000m),
+        ("EXTRA_KDS", "Extra kitchen screen", "One more kitchen screen at one shop whose POS version has kitchen screens.", 500m, 5000m),
+        ("EXTRA_USER", "Extra back-office login", "One more owner, manager or accountant login for a single shop.", 500m, 5000m),
+        (nameof(SaaSPackageConfig.HasKitchenDisplay), "Kitchen display", "A kitchen screen for a shop on Starter.", 2000m, 20000m),
+        (nameof(SaaSPackageConfig.HasDeliveryCOD), "Delivery & cash on delivery", "Delivery board, riders and cash-on-delivery settlement for a shop on Starter.", 2000m, 20000m),
+        (nameof(SaaSPackageConfig.HasInventoryManagement), "Inventory, recipes & purchasing", "Stock, recipes, suppliers and purchase orders for a shop on Starter.", 3000m, 30000m),
+        (Pos.Api.Data.FeatureCodes.Loyalty, "Loyalty, gift cards & promos", "Loyalty points, gift cards and promo codes for a shop on Starter.", 1500m, 15000m),
+        (Pos.Api.Data.FeatureCodes.Accounting, "Accounting", "Ledger, profit & loss and balance sheet for a shop on Standard.", 3000m, 30000m),
+        (Pos.Api.Data.FeatureCodes.Payroll, "Payroll & HR", "Payroll periods, payslips and leave for a shop on Standard.", 2500m, 25000m),
+        (Pos.Api.Data.FeatureCodes.FiscalInvoicing, "FBR / PRA / SRB fiscal invoicing", "Reports every sale to the tax authority and prints its fiscal invoice number and QR code. Per shop.", 2000m, 20000m),
+        (Pos.Api.Data.FeatureCodes.Integrations, "Delivery platform integration", "Orders from Foodpanda-style platforms arrive in the till. Per shop.", 2500m, 25000m),
+        (Pos.Api.Data.FeatureCodes.OnlinePayments, "Online payments", "JazzCash, EasyPaisa, Raast and card payments through a gateway. Per shop.", 1000m, 10000m),
+        (Pos.Api.Data.FeatureCodes.OnlineOrdering, "QR & online ordering", "Guests order from a QR code at the table, or a pickup link. Per shop.", 3000m, 30000m),
+        ("WHATSAPP_1000", "1,000 WhatsApp messages", "1,000 more WhatsApp messages a month, on top of what the plan includes. Buy several for more.", 1500m, 15000m)
+    };
+    var existing = await db.AddOnCatalogItems.ToListAsync();
+    foreach (var (key, name, description, monthly, yearly) in catalogue)
+    {
+        var item = existing.FirstOrDefault(a => a.Key == key);
+        if (item == null)
+            db.AddOnCatalogItems.Add(new AddOnCatalogItem { Key = key, DisplayName = name, Description = description, MonthlyPricePKR = monthly, YearlyPricePKR = yearly, IsActive = true });
+        else
+        {
+            item.DisplayName = name;
+            item.Description = description;
+            item.MonthlyPricePKR = monthly;
+            item.YearlyPricePKR = yearly;
+            item.IsActive = true;
+        }
+    }
+
+    // Never sell what is already included: these are part of Standard/Professional or the ERP now.
+    var retired = new[]
+    {
+        nameof(SaaSPackageConfig.HasMultiBranch), nameof(SaaSPackageConfig.HasStockTransfers),
+        nameof(SaaSPackageConfig.HasConsolidatedReports), nameof(SaaSPackageConfig.HasDirectorDashboard),
+        nameof(SaaSPackageConfig.HasAdvancedReports), nameof(SaaSPackageConfig.HasWhatsAppMessaging)
+    };
+    foreach (var item in existing.Where(a => retired.Contains(a.Key)))
+        item.IsActive = false;
+
+    db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
+    await db.SaveChangesAsync();
+}
+
+/// <summary>
 /// The one way to set what a location is. Keeps the legacy IsHeadOffice flag in step with the
 /// type, and applies the type's defaults: a branch sells and holds stock, a head office does
 /// neither unless told to, and a warehouse holds stock but never sells.
@@ -2007,10 +2183,12 @@ static (Company Company, Branch? HeadOffice, List<Branch> Branches) CreateInitia
         db.Branches.Add(headOffice);
     }
 
-    // The single-shop shapes have exactly one branch, however many were listed.
+    // The single-shop shapes have exactly one branch, however many were listed. A chain may start
+    // with its head office alone and open branches later (Locations & Head Office), so it gets
+    // only the branches it named — never an invented one.
     var specs = (structure == BusinessStructures.ChainWithHeadOffice ? branchSpecs : branchSpecs.Take(1))
         .Where(s => !string.IsNullOrWhiteSpace(s.Name)).ToList();
-    if (specs.Count == 0)
+    if (specs.Count == 0 && structure != BusinessStructures.ChainWithHeadOffice)
         specs.Add(new SetupLocationSpec($"{tenant.Name} — Main Branch", null, null, null, null, null));
 
     var branches = new List<Branch>();
@@ -2026,7 +2204,9 @@ static (Company Company, Branch? HeadOffice, List<Branch> Branches) CreateInitia
             City = NullIfBlank(spec.City) ?? tenant.City ?? "",
             Address = NullIfBlank(spec.Address) ?? tenant.Address ?? "",
             Phone = NullIfBlank(spec.Phone) ?? tenant.ContactPhone,
-            RegionCode = NullIfBlank(spec.TaxRegionCode) ?? defaultTaxRegionCode
+            RegionCode = NullIfBlank(spec.TaxRegionCode) ?? defaultTaxRegionCode,
+            // The POS version chosen for this branch; a single shop's is the plan it signed up on.
+            PosEdition = spec.PosEdition ?? tenant.Tier
         };
         ApplyLocationType(branch, LocationType.Branch);
         db.Branches.Add(branch);
@@ -2831,12 +3011,12 @@ static async Task<(bool Skipped, bool Sent, string? Reason, Guid? LogId)> SendWh
     if (autoSendGate != null && !autoSendGate(config))
         return (true, false, "Auto-send is turned off for this message type.", null);
 
-    // Whether WhatsApp is on comes from the entitlement engine, so a WhatsApp add-on or a support
-    // grant counts; reading the package switch alone refused tenants who had bought the add-on.
+    // Whether WhatsApp is on comes from the entitlement engine, so a support grant counts.
+    var entitlementService = new Pos.Api.Services.EntitlementService(db);
     Pos.Api.Services.EffectiveEntitlements entitlements;
     try
     {
-        entitlements = await new Pos.Api.Services.EntitlementService(db).GetAsync(tenantId);
+        entitlements = await entitlementService.GetAsync(tenantId);
     }
     catch (InvalidOperationException)
     {
@@ -2845,17 +3025,21 @@ static async Task<(bool Skipped, bool Sent, string? Reason, Guid? LogId)> SendWh
     if (!entitlements.Has(nameof(SaaSPackageConfig.HasWhatsAppMessaging)))
         return (true, false, "WhatsApp messaging is not included in this package.", null);
 
-    // The monthly allowance belongs to the package's own WhatsApp; an add-on buyer on a package
-    // without it is not held to that package's allowance of zero.
-    var actualTier = await db.Tenants.Where(t => t.Id == tenantId).Select(t => (SubscriptionTier?)t.Tier).FirstOrDefaultAsync();
-    var packageConfig = actualTier == null ? null : await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == actualTier.Value.ToString());
-    if (packageConfig != null && packageConfig.HasWhatsAppMessaging && packageConfig.WhatsAppMessagesPerMonth != -1)
+    // Messages are counted: what the version (or the Head Office ERP) includes each month, plus
+    // every 1,000-message bundle bought. Past that nothing more is sent until next month or until
+    // another bundle is added — and the attempt is logged so the owner can see what was held back.
+    var allowance = await entitlementService.GetWhatsAppAllowanceAsync(tenantId);
+    if (!allowance.CanSend)
     {
-        var startOfMonth = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-        var countThisMonth = await db.NotificationLogs.CountAsync(n =>
-            n.TenantId == tenantId && n.SentAt >= startOfMonth && n.Status == "sent");
-        if (countThisMonth >= packageConfig.WhatsAppMessagesPerMonth)
-            return (true, false, "Monthly WhatsApp message limit reached.", null);
+        db.NotificationLogs.Add(new NotificationLog
+        {
+            TenantId = tenantId, OrderId = orderId, Channel = "whatsapp", RecipientPhone = phone,
+            MessageType = messageType, MessageBody = message, Status = "limit_reached",
+            ErrorMessage = $"Monthly WhatsApp allowance of {allowance.Allowance} messages used. Add a 1,000-message bundle to send more.",
+            SentAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+        return (true, false, "Monthly WhatsApp message allowance reached. Add a 1,000-message bundle to send more.", null);
     }
 
     var sender = resolver.Resolve(config.Provider);
@@ -3499,6 +3683,9 @@ authApi.MapPost("/logout", async (AppDbContext db, RefreshTokenDto dto) =>
 // user exists — they are each explicitly marked .AllowAnonymous().
 // ============================================================
 var api = app.MapGroup("/api").RequireAuthorization();
+// Modules that a POS version or add-on switches on (loyalty, scheduling, payroll, accounting,
+// inventory, purchasing, the delivery platform feed) are gated here by route, for every endpoint.
+api.AddEndpointFilter(new Pos.Api.Middlewares.ModuleFeatureGateFilter());
 
 // --- Manager Override: verify ANOTHER user's PIN for a privileged action ---
 // The caller must already be authenticated. This does NOT log the caller in as that user;
@@ -3604,9 +3791,12 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         return Results.BadRequest(new { message = "A restaurant with a similar name already exists. Try a different name." });
 
     var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
+    // A single shop's plan is its POS version. With a head office the ERP is the same for everyone
+    // and each branch carries its own POS version, so the business's plan is only the version a
+    // branch falls back to when it has none of its own.
     var chosenTier = !string.IsNullOrWhiteSpace(dto.SelectedPlan) && Enum.TryParse<SubscriptionTier>(dto.SelectedPlan, true, out var parsedTier)
         ? parsedTier
-        : (structure == BusinessStructures.ChainWithHeadOffice ? SubscriptionTier.Professional : SubscriptionTier.Standard);
+        : SubscriptionTier.Standard;
 
     var tenant = new Tenant
     {
@@ -3628,20 +3818,9 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     };
     // Enforce the subscription tier's branch quota before provisioning anything.
     // Tenants are keyed to a package by Tier.ToString() == SaaSPackageConfig.PackageKey.
-    var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString() && p.IsActive);
-    if (package != null)
-    {
-        if (structure != BusinessStructures.SingleShop && !package.HasMultiBranch)
-            return Results.BadRequest(new { message = $"The {package.DisplayName} package does not include multi-branch deployment. Please upgrade." });
-
-        // Head office runs the back office and does not sell, so the plan does not count it.
-        // The single-shop shapes provision exactly one selling location.
-        var requestedBranchCount = structure == BusinessStructures.ChainWithHeadOffice
-            ? Math.Max(1, dto.Branches?.Count ?? 1)
-            : 1;
-        if (requestedBranchCount > package.MaxBranches)
-            return Results.BadRequest(new { message = $"The {package.DisplayName} package allows a maximum of {package.MaxBranches} branch(es); {requestedBranchCount} were requested. Please upgrade or reduce the branch list." });
-    }
+    // No package ceiling to check here: a single shop provisions exactly one location, and a
+    // business with a head office has no location ceiling at all (one ERP for everyone; each
+    // branch is sold by its own POS version).
 
     db.Tenants.Add(tenant);
 
@@ -3649,7 +3828,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     // an on-prem install and a cloud account set up with the same answers look the same.
     var branchSpecs = structure == BusinessStructures.ChainWithHeadOffice
         ? (dto.Branches ?? new List<BranchInitDto>())
-            .Select(b => new SetupLocationSpec(b.Name, b.Code, b.City ?? dto.City, b.Address ?? dto.Address, b.Phone ?? dto.Phone, null))
+            .Select(b => new SetupLocationSpec(b.Name, b.Code, b.City ?? dto.City, b.Address ?? dto.Address, b.Phone ?? dto.Phone, null, b.PosEdition))
             .ToList()
         : new List<SetupLocationSpec>
         {
@@ -4067,8 +4246,11 @@ api.MapPost("/devices/pairing-codes", async (
     if (!allowed)
         return Results.BadRequest(new
         {
-            message = $"All {limit} {dto.TerminalType} device slots at this branch are in use ({inUse}/{limit}). "
-                    + "Retire a device, buy an extra device for this branch, or upgrade your plan.",
+            // The branch's POS version decides its devices; head office changes it in Locations.
+            message = dto.TerminalType == TerminalType.KitchenDisplay
+                ? $"{branch.Name}'s POS version does not include kitchen screens. Head office can move it to a version that does (Locations & Head Office)."
+                : $"All {limit} {dto.TerminalType} device slots at {branch.Name} are in use ({inUse}/{limit}). "
+                    + $"Retire a device, buy an extra device for this branch, or move {branch.Name} to a bigger POS version (Locations & Head Office).",
             inUse,
             limit,
             upgradeRequired = true,
@@ -4189,7 +4371,13 @@ api.MapPost("/devices/activate", async (
             Ip = http.Connection.RemoteIpAddress?.ToString()
         });
         await db.SaveChangesAsync();
-        return Results.BadRequest(new { message = $"All {limit} {code.TerminalType} slots at this branch are in use.", inUse, limit });
+        return Results.BadRequest(new
+        {
+            message = code.TerminalType == TerminalType.KitchenDisplay
+                ? $"{branch.Name}'s POS version does not include kitchen screens. Ask head office to change it."
+                : $"All {limit} {code.TerminalType} slots at {branch.Name} are in use. Ask head office to free one or move the branch to a bigger POS version.",
+            inUse, limit
+        });
     }
 
     var terminal = new Terminal
@@ -4223,11 +4411,22 @@ api.MapPost("/devices/activate", async (
 
     await db.SaveChangesAsync();
 
+    // The POS version the till just joined, so the installer can show it: head office chose it,
+    // the till only reports it.
+    (await entitlements.GetBranchAllowancesAsync(code.TenantId)).TryGetValue(branch.Id, out var posAllowance);
+
     return Results.Ok(new
     {
         license = license.Token,
         expiresAt = license.ExpiresAt,
         graceEndsAt = license.GraceEndsAt,
+        posEdition = posAllowance?.Edition.ToString(),
+        posAllowance = posAllowance == null ? null : new
+        {
+            counters = posAllowance.LimitFor(TerminalType.Counter),
+            tablets = posAllowance.LimitFor(TerminalType.OrderTab),
+            kitchenDisplay = posAllowance.KitchenDisplay
+        },
         terminalId = terminal.Id,
         terminalName = terminal.TerminalName,
         terminalType = terminal.TerminalType.ToString(),
@@ -4329,7 +4528,9 @@ api.MapPost("/branches", async (
         // The tax jurisdiction, when the location names one; otherwise set per location later.
         RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant(),
         CompanyId = dto.CompanyId ?? (await GetOrCreateDefaultCompanyAsync(db, tenantId.Value, tenant.Name)).Id,
-        RegionId = dto.RegionId
+        RegionId = dto.RegionId,
+        // The POS version head office chose for this branch; the business's plan when none was.
+        PosEdition = dto.PosEdition ?? tenant.Tier
     };
     ApplyLocationType(branch, type, dto.CanSell, dto.HoldsStock);
 
@@ -4354,6 +4555,7 @@ api.MapPost("/branches", async (
     {
         branch.Id, branch.Name, branch.Code, branch.City, branch.IsHeadOffice,
         locationType = branch.LocationType.ToString(), branch.CanSell, branch.HoldsStock, branch.CompanyId, branch.RegionId,
+        posEdition = branch.PosEdition?.ToString(),
         locations = new { inUse = locations.InUse, limit = locations.Limit, remaining = locations.Remaining, isNearLimit = locations.IsNearLimit }
     });
 })
@@ -4372,6 +4574,12 @@ api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Pos.
     var regionId = dto.RegionId == Guid.Empty ? null : dto.RegionId;
     var companyError = await CheckCompanyAndRegionAsync(db, branch.TenantId, dto.CompanyId, regionId);
     if (companyError != null) return companyError;
+
+    // A branch's POS version is what the business pays for, so head office sets it — never staff
+    // signed in at the branch itself.
+    var editionChanges = dto.PosEdition.HasValue && dto.PosEdition != branch.PosEdition;
+    if (editionChanges && http.GetBranchId() != null)
+        return Results.Json(new { message = "Head office sets each branch's POS version." }, statusCode: StatusCodes.Status403Forbidden);
 
     // Work out what the location will be, check the change is allowed, and only then apply it.
     var newType = dto.LocationType ?? branch.LocationType;
@@ -4403,10 +4611,23 @@ api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Pos.
     if (dto.RegionCode != null) branch.RegionCode = string.IsNullOrWhiteSpace(dto.RegionCode) ? null : dto.RegionCode.Trim().ToUpperInvariant();
     if (dto.CompanyId.HasValue) branch.CompanyId = dto.CompanyId.Value;
     if (dto.RegionId.HasValue) branch.RegionId = regionId;
+    var previousEdition = branch.PosEdition;
+    if (dto.PosEdition.HasValue) branch.PosEdition = dto.PosEdition.Value;
     ApplyLocationType(branch, newType, willSell, dto.HoldsStock ?? branch.HoldsStock);
 
     await db.SaveChangesAsync();
     await entitlements.RecomputeAsync(branch.TenantId);
+    if (editionChanges)
+    {
+        // A smaller version can leave the branch with more tills than it now allows. That is a
+        // warning, never a shutdown: the extra devices are flagged, and the newest stop selling at
+        // their next check-in only once the business stays over.
+        await subs.ReconcileOverLimitAsync(branch.TenantId);
+        var actingUser = await http.RequestServices.GetRequiredService<Pos.Api.Middlewares.ICurrentUserAccessor>().GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, branch.TenantId, actingUser, "BranchPosEditionChanged", "Branch", branch.Id,
+            previousEdition?.ToString() ?? "plan default", branch.PosEdition?.ToString());
+        await db.SaveChangesAsync();
+    }
     return Results.Ok(branch);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "edit"));
 
@@ -5076,6 +5297,397 @@ api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, O
 // Reverses everything order creation touched: finished-product stock, recipe ingredient
 // consumption (via the ledger, not a raw mutation), a CustomerKhata tab balance, visit/spend
 // stats, and — if one was posted — the accounting entry (via a reversal, never edited/deleted).
+// Take payment for an order that was placed unpaid — a waiter tablet's table, a guest's QR order,
+// a pickup order paid on collection. This is where such a sale is paid, so this is where it reaches
+// the drawer, the books and the tax authority, and where its table is freed.
+api.MapPost("/orders/{id:guid}/settle", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal, Guid id, SettleOrderDto dto) =>
+{
+    var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
+    if (order == null) return Results.NotFound(new { message = "Order not found." });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
+    if (scopeError != null) return scopeError;
+    if (order.Status == OrderStatus.Cancelled) return Results.BadRequest(new { message = "This order was voided." });
+    if (order.IsPaid) return Results.BadRequest(new { message = "This order is already paid." });
+    if (dto.PaymentMethod == PaymentMethod.CustomerKhata && order.CustomerId == null)
+        return Results.BadRequest(new { message = "Put the order on a customer before charging it to their account." });
+
+    var paid = dto.AmountPaidPKR ?? order.TotalPKR;
+    if (paid < order.TotalPKR && dto.PaymentMethod != PaymentMethod.CustomerKhata)
+        return Results.BadRequest(new { message = $"The order is {order.TotalPKR:N0}; {paid:N0} is not enough." });
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    order.IsPaid = true;
+    order.PaymentMethod = dto.PaymentMethod;
+    order.AmountPaidPKR = paid;
+    order.ChangeDuePKR = dto.PaymentMethod == PaymentMethod.Cash ? Math.Max(0, paid - order.TotalPKR) : 0;
+    order.Status = OrderStatus.Completed;
+    order.CompletedAt = DateTime.UtcNow;
+    if (actingUser != null) order.CashierName = actingUser.FullName;
+
+    if (dto.PaymentMethod == PaymentMethod.Cash)
+    {
+        var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == order.BranchId && !s.IsClosed);
+        if (shift != null)
+        {
+            shift.CashSalesPKR += order.TotalPKR;
+            RecalculateExpectedCash(shift);
+        }
+    }
+    if (dto.PaymentMethod == PaymentMethod.CustomerKhata)
+    {
+        var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId!.Value);
+        if (customer != null) customer.CurrentBalancePKR += order.TotalPKR;
+    }
+
+    // The guests have paid and gone: the table is free again.
+    if (!string.IsNullOrEmpty(order.TableNumber))
+    {
+        var table = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == order.BranchId && t.TableNumber == order.TableNumber);
+        if (table != null && (table.CurrentOrderId == null || table.CurrentOrderId == order.Id))
+        {
+            table.IsOccupied = false;
+            table.CurrentOrderId = null;
+        }
+    }
+
+    await WriteAuditAsync(db, order.TenantId, actingUser, "OrderSettled", "Order", order.Id, null,
+        $"{order.OrderNumber}: {order.TotalPKR:0.##} by {dto.PaymentMethod}");
+    await db.SaveChangesAsync();
+
+    await PostSaleJournalIfNeededAsync(db, order);
+    var (fiscalNumber, fiscalQr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
+    if (fiscalNumber != null || fiscalQr != null)
+    {
+        order.FiscalInvoiceNumber = fiscalNumber;
+        order.FiscalQrPayload = fiscalQr;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        order.Id, order.OrderNumber, order.TotalPKR, order.AmountPaidPKR, order.ChangeDuePKR,
+        paymentMethod = order.PaymentMethod.ToString(), order.FiscalInvoiceNumber, order.FiscalQrPayload
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireTenantStateFilter(Pos.Api.Middlewares.RequireTenantStateFilter.Need.Sell));
+
+// ============================================================
+// FISCAL INVOICING — each shop's connection to FBR / PRA / SRB / KPRA (Services/FiscalInvoiceProvider.cs)
+// ============================================================
+
+api.MapGet("/fiscal/connections", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var pinned = http.GetBranchId();
+    var shops = await db.Branches
+        .Where(b => b.TenantId == tenantId.Value && b.CanSell && (pinned == null || b.Id == pinned.Value))
+        .OrderBy(b => b.Name).ToListAsync();
+    var connections = await db.FiscalIntegrations.Where(f => f.TenantId == tenantId.Value).ToDictionaryAsync(f => f.BranchId);
+    var since = DateTime.UtcNow.AddDays(-7);
+
+    var rows = new List<object>();
+    foreach (var shop in shops)
+    {
+        connections.TryGetValue(shop.Id, out var c);
+        var pending = c is { IsEnabled: true }
+            ? await db.Orders.CountAsync(o => o.BranchId == shop.Id && o.IsPaid && o.Status != OrderStatus.Cancelled
+                                           && o.FiscalInvoiceNumber == null && o.CreatedAt >= since && o.CreatedAt >= c.CreatedAt)
+            : 0;
+        rows.Add(new
+        {
+            branchId = shop.Id,
+            branchName = shop.Name,
+            hasAddOn = await entitlements.BranchHasFeatureAsync(tenantId.Value, shop.Id, Pos.Api.Data.FeatureCodes.FiscalInvoicing),
+            pendingReports = pending,
+            // The access token is a secret: the browser only learns whether one is saved.
+            connection = c == null ? null : new
+            {
+                authority = c.Authority.ToString(), environment = c.Environment.ToString(), c.PosId, c.ApiUrl, c.DefaultPctCode,
+                c.IsEnabled, hasToken = !string.IsNullOrEmpty(c.AccessToken), c.LastSuccessAt, c.LastError, c.LastErrorAt,
+                defaultApiUrl = Pos.Api.Services.FiscalEndpoints.DefaultFor(c.Authority, c.Environment)
+            }
+        });
+    }
+
+    var defaults = Enum.GetValues<FiscalAuthority>()
+        .SelectMany(a => Enum.GetValues<FiscalEnvironment>().Select(e => new
+        {
+            authority = a.ToString(), environment = e.ToString(), url = Pos.Api.Services.FiscalEndpoints.DefaultFor(a, e)
+        }));
+    return Results.Ok(new { shops = rows, defaults });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
+
+api.MapPut("/fiscal/connections/{branchId:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid branchId, SaveFiscalIntegrationDto dto) =>
+{
+    var (scopedTenantId, _, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == branchId && b.TenantId == scopedTenantId!.Value);
+    if (branch == null) return Results.NotFound(new { message = "Shop not found." });
+
+    if (dto.IsEnabled && !await entitlements.BranchHasFeatureAsync(branch.TenantId, branch.Id, Pos.Api.Data.FeatureCodes.FiscalInvoicing))
+        return Results.Json(new
+        {
+            message = $"Fiscal invoicing is an add-on, bought per shop. Ask us to add it for {branch.Name}.",
+            featureCode = Pos.Api.Data.FeatureCodes.FiscalInvoicing, upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+
+    var connection = await db.FiscalIntegrations.FirstOrDefaultAsync(f => f.BranchId == branchId);
+    var isNew = connection == null;
+    connection ??= new FiscalIntegration { TenantId = branch.TenantId, BranchId = branch.Id };
+
+    connection.Authority = dto.Authority;
+    connection.Environment = dto.Environment;
+    if (dto.PosId != null) connection.PosId = dto.PosId.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.AccessToken)) connection.AccessToken = dto.AccessToken.Trim();
+    connection.ApiUrl = NullIfBlank(dto.ApiUrl);
+    if (dto.DefaultPctCode != null) connection.DefaultPctCode = dto.DefaultPctCode.Trim();
+    connection.IsEnabled = dto.IsEnabled;
+    connection.UpdatedAt = DateTime.UtcNow;
+
+    // Switched on, it must be able to report the very next sale.
+    if (connection.IsEnabled)
+    {
+        if (string.IsNullOrWhiteSpace(connection.PosId)) return Results.BadRequest(new { message = "Enter the POS ID the authority registered for this shop." });
+        if (string.IsNullOrWhiteSpace(connection.AccessToken)) return Results.BadRequest(new { message = "Enter the access token the authority issued." });
+        if (string.IsNullOrWhiteSpace(connection.DefaultPctCode)) return Results.BadRequest(new { message = "Enter the PCT code to report on each item." });
+        var url = connection.ApiUrl ?? Pos.Api.Services.FiscalEndpoints.DefaultFor(connection.Authority, connection.Environment);
+        if (url == null) return Results.BadRequest(new { message = $"Enter the {connection.Authority} endpoint address the authority gave you." });
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl) || parsedUrl.Scheme != Uri.UriSchemeHttps)
+            return Results.BadRequest(new { message = "The endpoint must be an https:// address." });
+    }
+
+    if (isNew) db.FiscalIntegrations.Add(connection);
+    await WriteAuditAsync(db, branch.TenantId, await accessor.GetCurrentUserAsync(http), "FiscalConnectionSaved", "Branch", branch.Id, null,
+        $"{connection.Authority} {connection.Environment}, POS ID {connection.PosId}, {(connection.IsEnabled ? "on" : "off")}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = connection.IsEnabled ? $"{branch.Name} now reports every paid sale to {connection.Authority}." : $"Fiscal reporting is off for {branch.Name}." });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+// Report again the paid sales of the last week that did not get a fiscal number (the authority was
+// unreachable, or the connection was being fixed).
+api.MapPost("/fiscal/connections/{branchId:guid}/retry", async (AppDbContext db, HttpContext http,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal, Guid branchId) =>
+{
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var connection = await db.FiscalIntegrations.FirstOrDefaultAsync(f => f.BranchId == branchId && f.IsEnabled);
+    if (connection == null) return Results.BadRequest(new { message = "Fiscal reporting is not switched on for this shop." });
+
+    var since = DateTime.UtcNow.AddDays(-7);
+    var pending = await db.Orders
+        .Where(o => o.BranchId == branchId && o.IsPaid && o.Status != OrderStatus.Cancelled && o.FiscalInvoiceNumber == null
+                 && o.CreatedAt >= since && o.CreatedAt >= connection.CreatedAt)
+        .OrderBy(o => o.CreatedAt).Take(100).ToListAsync();
+
+    var reported = 0;
+    foreach (var order in pending)
+    {
+        var (number, qr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
+        if (number == null) break; // the authority is still refusing or unreachable; stop and say so
+        order.FiscalInvoiceNumber = number;
+        order.FiscalQrPayload = qr;
+        reported++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        reported,
+        stillPending = pending.Count - reported,
+        lastError = reported < pending.Count ? connection.LastError : null
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+// ============================================================
+// QR & ONLINE ORDERING — a guest orders from a table's QR code, or from a shop's pickup link.
+// The order lands in the kitchen and on the till unpaid; staff take payment with /settle.
+// ============================================================
+
+// A printed code must not be guessable: 24 random bytes, URL-safe.
+static string NewPublicToken() =>
+    Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+api.MapPost("/tables/{id:guid}/qr", async (AppDbContext db, HttpContext http, Guid id, bool? regenerate) =>
+{
+    var table = await db.DiningTables.FirstOrDefaultAsync(t => t.Id == id);
+    if (table == null) return Results.NotFound(new { message = "Table not found." });
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, table.BranchId);
+    if (scopeError != null) return scopeError;
+
+    // A new code retires every code printed before it.
+    if (table.QrToken == null || regenerate == true)
+    {
+        table.QrToken = NewPublicToken();
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(new { tableId = table.Id, table.TableNumber, qrToken = table.QrToken });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("menu", "edit"));
+
+api.MapGet("/branches/{id:guid}/online-ordering", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, Guid id) =>
+{
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, id);
+    if (scopeError != null) return scopeError;
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id);
+    if (branch == null) return Results.NotFound();
+    return Results.Ok(new
+    {
+        branchId = branch.Id,
+        hasAddOn = await entitlements.BranchHasFeatureAsync(branch.TenantId, branch.Id, Pos.Api.Data.FeatureCodes.OnlineOrdering),
+        pickupToken = branch.OnlineOrderToken
+    });
+});
+
+api.MapPost("/branches/{id:guid}/online-ordering/link", async (AppDbContext db, HttpContext http, Guid id, bool? regenerate) =>
+{
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, id);
+    if (scopeError != null) return scopeError;
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == id);
+    if (branch == null) return Results.NotFound();
+    if (!branch.CanSell) return Results.BadRequest(new { message = $"{branch.Name} does not sell." });
+    if (branch.OnlineOrderToken == null || regenerate == true)
+    {
+        branch.OnlineOrderToken = NewPublicToken();
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(new { branchId = branch.Id, pickupToken = branch.OnlineOrderToken });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("menu", "edit"));
+
+// The table or shop a public ordering token belongs to.
+static async Task<(Branch? Branch, DiningTable? Table)> ResolvePublicOrderTokenAsync(AppDbContext db, string token)
+{
+    if (string.IsNullOrWhiteSpace(token) || token.Length > 64) return (null, null);
+    var table = await db.DiningTables.AsNoTracking().FirstOrDefaultAsync(t => t.QrToken == token);
+    if (table != null)
+        return (await db.Branches.IgnoreQueryFilters().Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == table.BranchId), table);
+    return (await db.Branches.IgnoreQueryFilters().Include(b => b.Tenant).FirstOrDefaultAsync(b => b.OnlineOrderToken == token), null);
+}
+
+// Whether a guest may order here right now: the shop sells, the business may sell, and the shop
+// has the QR & online ordering add-on.
+static async Task<bool> PublicOrderingOpenAsync(Pos.Api.Services.IEntitlementService entitlements, Branch branch)
+{
+    if (!branch.CanSell) return false;
+    try
+    {
+        if (!(await entitlements.GetAsync(branch.TenantId)).CanSell) return false;
+    }
+    catch (InvalidOperationException)
+    {
+        return false;
+    }
+    return await entitlements.BranchHasFeatureAsync(branch.TenantId, branch.Id, Pos.Api.Data.FeatureCodes.OnlineOrdering);
+}
+
+app.MapGet("/api/public/order/{token}", async (AppDbContext db, Pos.Api.Services.IEntitlementService entitlements, string token) =>
+{
+    var (branch, table) = await ResolvePublicOrderTokenAsync(db, token);
+    if (branch == null) return Results.NotFound(new { message = "This ordering link is not valid any more. Ask the staff for a new one." });
+    if (!await PublicOrderingOpenAsync(entitlements, branch))
+        return Results.NotFound(new { message = "Online ordering is not available at this shop right now. Please order with the staff." });
+
+    // The menu exactly as the till prices it at this shop: withdrawn items left out, the shop's
+    // own prices when the business lets shops set them.
+    var settings = await db.TenantSettings.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == branch.TenantId);
+    var overrides = await db.BranchProductPrices.IgnoreQueryFilters().AsNoTracking()
+        .Where(bp => bp.BranchId == branch.Id).ToDictionaryAsync(bp => bp.ProductId);
+    var branchPricing = settings?.BranchPricing ?? false;
+    var products = (await db.Products.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.TenantId == branch.TenantId && p.IsActive)
+            .OrderBy(p => p.Name).ToListAsync())
+        .Where(p => !overrides.TryGetValue(p.Id, out var own) || own.IsAvailable)
+        .Select(p => new
+        {
+            p.Id, p.Name, p.UrduName, p.Description, p.CategoryId, p.ImageUrl,
+            pricePKR = branchPricing && overrides.TryGetValue(p.Id, out var own) && own.SellingPricePKR is decimal price ? price : p.SellingPricePKR
+        })
+        .ToList();
+    var usedCategories = products.Select(p => p.CategoryId).ToHashSet();
+    var categories = await db.Categories.IgnoreQueryFilters().AsNoTracking()
+        .Where(c => c.TenantId == branch.TenantId)
+        .OrderBy(c => c.SortOrder)
+        .Select(c => new { c.Id, c.Name, c.LocalName })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        businessName = branch.Tenant?.Name,
+        branchName = branch.Name,
+        tableNumber = table?.TableNumber,
+        orderType = table != null ? "DineIn" : "Takeaway",
+        currencySymbol = settings?.CurrencySymbol ?? "Rs",
+        categories = categories.Where(c => usedCategories.Contains(c.Id)),
+        products
+    });
+}).AllowAnonymous().RequireRateLimiting("public-orders");
+
+app.MapPost("/api/public/order/{token}", async (AppDbContext db, Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal, Pos.Api.Services.IWhatsAppSenderResolver waResolver,
+    string token, PublicOrderDto dto) =>
+{
+    var (branch, table) = await ResolvePublicOrderTokenAsync(db, token);
+    if (branch == null) return Results.NotFound(new { message = "This ordering link is not valid any more. Ask the staff for a new one." });
+    if (!await PublicOrderingOpenAsync(entitlements, branch))
+        return Results.NotFound(new { message = "Online ordering is not available at this shop right now. Please order with the staff." });
+
+    if (dto.Items == null || dto.Items.Count == 0) return Results.BadRequest(new { message = "Add something to your order first." });
+    if (dto.Items.Count > 40 || dto.Items.Any(i => i.Quantity < 1 || i.Quantity > 50))
+        return Results.BadRequest(new { message = "Please order up to 50 of an item, and up to 40 different items." });
+    var name = NullIfBlank(dto.CustomerName);
+    var phone = NullIfBlank(dto.CustomerPhone);
+    if (table == null && (name == null || phone == null))
+        return Results.BadRequest(new { message = "Please enter your name and phone number so the shop can reach you." });
+    if (name?.Length > 80 || phone?.Length > 20) return Results.BadRequest(new { message = "Name or phone number is too long." });
+
+    // A table can hold only a few unpaid guest orders at once, so a code left on a table cannot be
+    // used to flood the kitchen.
+    if (table != null)
+    {
+        var recent = DateTime.UtcNow.AddHours(-6);
+        var openAtTable = await db.Orders.IgnoreQueryFilters().CountAsync(o => o.BranchId == branch.Id && o.TableNumber == table.TableNumber
+            && !o.IsPaid && o.Status != OrderStatus.Cancelled && o.CreatedByRole == "Guest" && o.CreatedAt > recent);
+        if (openAtTable >= 5)
+            return Results.Json(new { message = "This table already has several open orders. Please ask your waiter." }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
+
+    var ids = dto.Items.Select(i => i.ProductId).Distinct().ToList();
+    var products = await db.Products.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.TenantId == branch.TenantId && p.IsActive && ids.Contains(p.Id))
+        .ToDictionaryAsync(p => p.Id);
+    if (products.Count != ids.Count)
+        return Results.BadRequest(new { message = "Something in your order is no longer on the menu. Please refresh the menu." });
+
+    // Prices, tax and availability are worked out by the same code as the till; nothing the guest's
+    // phone sends about money is used.
+    var lines = dto.Items.Select(i =>
+    {
+        var product = products[i.ProductId];
+        var notes = NullIfBlank(i.Notes);
+        return new CreateOrderItemDto(product.Id, product.Name, i.Quantity, product.SellingPricePKR, null,
+            notes != null && notes.Length > 200 ? notes[..200] : notes, product.Station);
+    }).ToList();
+    var orderDto = new CreateOrderDto(
+        branch.Id, table != null ? OrderType.DineIn : OrderType.Takeaway, table?.TableNumber,
+        name, phone, null,
+        0, 0, 0, 0, PaymentMethod.Cash, 0, 0, false,
+        table != null ? "QR order" : "Online order", "Guest", lines);
+
+    var (error, order, _) = await CreateOrderCoreAsync(db, branch, orderDto, null, fiscal, waResolver);
+    if (error != null) return error;
+
+    return Results.Ok(new
+    {
+        orderNumber = order!.OrderNumber,
+        subTotalPKR = order.SubTotalPKR,
+        taxPKR = order.TaxPKR,
+        totalPKR = order.TotalPKR,
+        items = order.Items.Select(i => new { i.ProductName, i.Quantity, i.TotalPricePKR }),
+        message = table != null
+            ? "Your order is with the kitchen. Pay your waiter or at the counter when you are done."
+            : "Your order is in. Pay when you collect it."
+    });
+}).AllowAnonymous().RequireRateLimiting("public-orders");
+
 api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
 {
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
@@ -5199,7 +5811,7 @@ api.MapGet("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http
 // that refunds exactly what came back, at the price the customer paid, puts counted goods back on
 // the shelf, pays the money out of the drawer (or off the customer's tab), and books all of it.
 api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
-    Guid id, CreateReturnDto dto) =>
+    Pos.Api.Services.IFiscalInvoiceProvider fiscal, Guid id, CreateReturnDto dto) =>
 {
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
     if (order == null) return Results.NotFound();
@@ -5369,10 +5981,13 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         }
     }
 
+    // A shop that reports sales to the tax authority reports the return too, as a credit note.
+    await fiscal.IssueReturnAsync(order.TenantId, ret.Id);
+
     return Results.Ok(new
     {
         ret.Id, ret.ReturnNumber, refundMethod = ret.RefundMethod.ToString(), ret.SubTotalRefundedPKR, ret.TaxRefundedPKR,
-        ret.TotalRefundedPKR, ret.Restocked, orderRefundedPKR = order.RefundedPKR,
+        ret.TotalRefundedPKR, ret.Restocked, orderRefundedPKR = order.RefundedPKR, fiscalInvoiceNumber = ret.FiscalInvoiceNumber,
         lines = ret.Lines.Select(l => new { l.ProductName, l.Quantity, l.UnitPricePKR, l.TotalPKR })
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to refund sales. Ask a manager to approve."));
@@ -8017,17 +8632,8 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         .Where(b => !string.IsNullOrWhiteSpace(b.Name))
         .ToList();
 
-    // Only locations that sell count. A head office runs the back office and holds no till, so
-    // charging a location for it would be charging for nothing.
-    var sellingLocations = structure == BusinessStructures.ChainWithHeadOffice ? Math.Max(1, requestedBranches.Count) : 1;
-    var maxSellingLocations = chosenPackage?.MaxBranches ?? 1;
-    if (sellingLocations > maxSellingLocations)
-        return Results.BadRequest(new
-        {
-            error = $"The {chosenPackage?.DisplayName ?? "selected"} plan covers {maxSellingLocations} selling location(s); "
-                  + $"head office is not counted. You listed {requestedBranches.Count} branch(es). "
-                  + "Remove one, or choose a larger plan."
-        });
+    // No location ceiling to check: a single shop has exactly one location, and with a head office
+    // the ERP is the same for everyone and each branch is sold by its own POS version.
 
     using var transaction = await db.Database.BeginTransactionAsync();
 
@@ -8060,9 +8666,11 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
         var taxRegion = countryProfile.Iso2 == "PK" ? matchedState?.Code : null;
         var branchSpecs = requestedBranches
             .Select(b => new SetupLocationSpec(b.Name, b.Code, b.City, b.Address, b.Phone,
-                countryProfile.Iso2 == "PK" ? countryProfile.States?.FirstOrDefault(s => s.Code == b.StateCode)?.Code : null))
+                countryProfile.Iso2 == "PK" ? countryProfile.States?.FirstOrDefault(s => s.Code == b.StateCode)?.Code : null,
+                b.PosEdition))
             .ToList();
-        if (branchSpecs.Count == 0)
+        // A shop always has its one branch; a chain may start with the head office alone.
+        if (branchSpecs.Count == 0 && structure != BusinessStructures.ChainWithHeadOffice)
             branchSpecs.Add(new SetupLocationSpec($"{dto.RestaurantName.Trim()} — Main Branch", null, dto.City, dto.Address, dto.Phone, null));
         var (_, headOffice, createdBranches) = CreateInitialStructure(db, tenant, structure, dto.Company, dto.HeadOffice, branchSpecs, taxRegion);
 
@@ -8385,29 +8993,36 @@ app.MapGet("/api/admin/subscription-invoices", async (AppDbContext db, HttpConte
     return Results.Ok(rows);
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, IssueSubscriptionInvoiceDto dto) =>
+app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Pos.Api.Services.IBillingService billing, IssueSubscriptionInvoiceDto dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
     var tenant = await db.Tenants.FindAsync(dto.TenantId);
     if (tenant == null) return Results.NotFound(new { message = "Tenant not found." });
 
-    var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == tenant.Tier.ToString());
-    var amount = dto.AmountPKR ?? (dto.Annual ? package?.YearlyPricePKR : package?.MonthlyPricePKR) ?? 0;
+    // The amount is what the business actually runs: the Head Office ERP, each shop's POS
+    // version and each add-on. An amount typed by hand still wins (a negotiated price).
+    var quote = await billing.QuoteAsync(tenant.Id, dto.Annual);
+    var amount = dto.AmountPKR ?? quote.TotalPKR;
     var periodStart = dto.BillingPeriodStart ?? DateTime.UtcNow;
     var periodEnd = dto.BillingPeriodEnd ?? periodStart.AddMonths(dto.Annual ? 12 : 1);
     var count = await db.SubscriptionInvoices.CountAsync();
+    var shops = quote.Lines.Count(l => l.Kind == "pos");
 
     var invoice = new SubscriptionInvoice
     {
         TenantId = tenant.Id,
         InvoiceNumber = $"INV-{count + 1:00000}",
-        Tier = tenant.Tier.ToString(),
+        Tier = quote.HasHeadOffice ? $"Head Office ERP + {shops} shop{(shops == 1 ? "" : "s")}" : tenant.Tier.ToString(),
         BillingPeriodStart = periodStart,
         BillingPeriodEnd = periodEnd,
         AmountPKR = amount,
         Status = SubscriptionInvoiceStatus.Pending,
         DueAt = dto.DueAt ?? periodStart.AddDays(7),
-        Notes = dto.Notes
+        Notes = dto.Notes,
+        LinesJson = System.Text.Json.JsonSerializer.Serialize(quote.Lines.Select(l => new
+        {
+            description = l.Description, quantity = l.Quantity, unitPricePKR = l.UnitPricePKR, amountPKR = l.AmountPKR, kind = l.Kind
+        }))
     };
     db.SubscriptionInvoices.Add(invoice);
     await db.SaveChangesAsync();
@@ -8515,25 +9130,16 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
     var totalBranches = await db.Branches.CountAsync();
     var totalOrders = await db.Orders.CountAsync();
 
-    // Money and mix — the numbers the dashboard exists for. Plan price comes from the
-    // package catalogue, add-ons from live subscriptions; a tenant's MRR is both.
-    var packages = await db.SaaSPackageConfigs.AsNoTracking().ToListAsync();
-    var priceByTier = packages.ToDictionary(p => p.PackageKey, p => p.MonthlyPricePKR);
-
+    // Money and mix — the numbers the dashboard exists for. A paying business's MRR is what its
+    // monthly bill would be: the Head Office ERP, each shop's POS version and its add-ons.
     var tenantRows = await db.Tenants.AsNoTracking()
         .Select(t => new { t.Name, t.Id, t.Tier, t.IsTrialActive, t.SubscriptionPaidUntil, t.Status, t.IsActive })
         .ToListAsync();
-    var addOnsByTenant = (await db.AddOnSubscriptions.AsNoTracking()
-            .Where(a => a.IsActive)
-            .Select(a => new { a.TenantId, a.PricePKR, a.Quantity })
-            .ToListAsync())
-        .GroupBy(a => a.TenantId)
-        .ToDictionary(g => g.Key, g => g.Sum(a => a.PricePKR * a.Quantity));
 
-    var mrrPKR = tenantRows
-        .Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now)
-        .Sum(t => (priceByTier.TryGetValue(t.Tier.ToString(), out var p) ? p : 0)
-                + (addOnsByTenant.TryGetValue(t.Id, out var extra) ? extra : 0));
+    decimal mrrPKR = 0;
+    var billing = http.RequestServices.GetRequiredService<Pos.Api.Services.IBillingService>();
+    foreach (var paying in tenantRows.Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now))
+        mrrPKR += (await billing.QuoteAsync(paying.Id)).TotalPKR;
 
     var planMix = tenantRows
         .Where(t => t.IsActive)
@@ -9370,7 +9976,10 @@ app.MapPost("/api/admin/packages", async (AppDbContext db, HttpContext http, Cre
         MaxBranches = dto.MaxBranches,
         MaxCounters = dto.MaxCounters,
         MaxOrderTabs = dto.MaxOrderTabs,
+        MaxKitchenDisplays = dto.MaxKitchenDisplays ?? 0,
         MaxUsers = dto.MaxUsers,
+        BranchMonthlyPricePKR = dto.BranchMonthlyPricePKR ?? dto.MonthlyPricePKR,
+        BranchYearlyPricePKR = dto.BranchYearlyPricePKR ?? dto.YearlyPricePKR,
         HasKitchenDisplay = dto.HasKitchenDisplay,
         HasDeliveryCOD = dto.HasDeliveryCOD,
         HasInventoryManagement = dto.HasInventoryManagement,
@@ -9399,7 +10008,10 @@ app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, Htt
     if (dto.MaxBranches.HasValue) pkg.MaxBranches = dto.MaxBranches.Value;
     if (dto.MaxCounters.HasValue) pkg.MaxCounters = dto.MaxCounters.Value;
     if (dto.MaxOrderTabs.HasValue) pkg.MaxOrderTabs = dto.MaxOrderTabs.Value;
+    if (dto.MaxKitchenDisplays.HasValue) pkg.MaxKitchenDisplays = dto.MaxKitchenDisplays.Value;
     if (dto.MaxUsers.HasValue) pkg.MaxUsers = dto.MaxUsers.Value;
+    if (dto.BranchMonthlyPricePKR.HasValue) pkg.BranchMonthlyPricePKR = dto.BranchMonthlyPricePKR.Value;
+    if (dto.BranchYearlyPricePKR.HasValue) pkg.BranchYearlyPricePKR = dto.BranchYearlyPricePKR.Value;
     if (dto.HasKitchenDisplay.HasValue) pkg.HasKitchenDisplay = dto.HasKitchenDisplay.Value;
     if (dto.HasDeliveryCOD.HasValue) pkg.HasDeliveryCOD = dto.HasDeliveryCOD.Value;
     if (dto.HasInventoryManagement.HasValue) pkg.HasInventoryManagement = dto.HasInventoryManagement.Value;
@@ -9466,7 +10078,11 @@ app.MapPost("/api/admin/packages/resync", async (
         Diff("MaxBranches", current.MaxBranches, desired.MaxBranches);
         Diff("MaxCounters", current.MaxCounters, desired.MaxCounters);
         Diff("MaxOrderTabs", current.MaxOrderTabs, desired.MaxOrderTabs);
+        Diff("MaxKitchenDisplays", current.MaxKitchenDisplays, desired.MaxKitchenDisplays);
         Diff("MaxUsers", current.MaxUsers, desired.MaxUsers);
+        Diff("BranchMonthlyPricePKR", current.BranchMonthlyPricePKR, desired.BranchMonthlyPricePKR);
+        Diff("BranchYearlyPricePKR", current.BranchYearlyPricePKR, desired.BranchYearlyPricePKR);
+        Diff("WhatsAppMessagesPerMonth", current.WhatsAppMessagesPerMonth, desired.WhatsAppMessagesPerMonth);
         Diff("HasKitchenDisplay", current.HasKitchenDisplay, desired.HasKitchenDisplay);
         Diff("HasDeliveryCOD", current.HasDeliveryCOD, desired.HasDeliveryCOD);
         Diff("HasInventoryManagement", current.HasInventoryManagement, desired.HasInventoryManagement);
@@ -9523,7 +10139,8 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
         .Select(p => new
         {
             p.PackageKey, p.DisplayName, p.MonthlyPricePKR, p.YearlyPricePKR,
-            p.MaxBranches, p.MaxCounters, p.MaxOrderTabs, p.MaxUsers,
+            p.BranchMonthlyPricePKR, p.BranchYearlyPricePKR,
+            p.MaxBranches, p.MaxCounters, p.MaxOrderTabs, p.MaxKitchenDisplays, p.MaxUsers,
             p.HasKitchenDisplay, p.HasDeliveryCOD, p.HasInventoryManagement,
             p.HasStockTransfers, p.HasDirectorDashboard, p.HasConsolidatedReports,
             p.HasWhatsAppMessaging, p.HasAdvancedReports, p.HasMultiBranch,
@@ -9532,6 +10149,72 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
         .ToListAsync();
     return Results.Ok(packages);
 });
+
+// The prices that are neither a version nor an add-on — the Head Office ERP. Public like the
+// package list, so the plan page can show what a business with a head office pays.
+app.MapGet("/api/public/platform-prices", async (AppDbContext db) =>
+    Results.Ok(await db.PlatformPrices.AsNoTracking().OrderBy(p => p.Key).ToListAsync()));
+
+app.MapGet("/api/admin/platform-prices", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await db.PlatformPrices.OrderBy(p => p.Key).ToListAsync());
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/platform-prices/{key}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    string key, SavePlatformPriceDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var price = await db.PlatformPrices.FirstOrDefaultAsync(p => p.Key == key);
+    if (price == null) return Results.NotFound(new { message = $"No platform price {key}." });
+    if (dto.MonthlyPricePKR is < 0 || dto.YearlyPricePKR is < 0 || dto.IncludedWhatsAppMessages is < -1)
+        return Results.BadRequest(new { message = "Prices cannot be negative." });
+
+    var before = $"{price.MonthlyPricePKR:0.##}/{price.YearlyPricePKR:0.##}, {price.IncludedWhatsAppMessages} messages";
+    if (dto.MonthlyPricePKR.HasValue) price.MonthlyPricePKR = dto.MonthlyPricePKR.Value;
+    if (dto.YearlyPricePKR.HasValue) price.YearlyPricePKR = dto.YearlyPricePKR.Value;
+    if (dto.IncludedWhatsAppMessages.HasValue) price.IncludedWhatsAppMessages = dto.IncludedWhatsAppMessages.Value;
+    price.UpdatedAt = DateTime.UtcNow;
+    await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "PlatformPriceChanged", "PlatformPrice", null,
+        before, $"{price.MonthlyPricePKR:0.##}/{price.YearlyPricePKR:0.##}, {price.IncludedWhatsAppMessages} messages");
+    await db.SaveChangesAsync();
+    return Results.Ok(price);
+}).RequireAuthorization();
+
+// What a business pays, line by line (see Services/BillingService.cs). The platform admin uses it
+// to issue invoices; the business sees its own on its plan page.
+app.MapGet("/api/admin/tenants/{tenantId:guid}/billing-quote", async (Pos.Api.Services.IBillingService billing, HttpContext http,
+    Guid tenantId, bool? annual) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    try
+    {
+        var quote = await billing.QuoteAsync(tenantId, annual == true);
+        return Results.Ok(new { quote.TenantId, quote.Annual, quote.HasHeadOffice, quote.Lines, quote.TotalPKR });
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.NotFound(new { message = "Tenant not found." });
+    }
+}).RequireAuthorization();
+
+app.MapGet("/api/billing/my-charges", async (Pos.Api.Services.IBillingService billing, Pos.Api.Services.IEntitlementService entitlements,
+    HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+    var monthly = await billing.QuoteAsync(tenantId.Value);
+    var yearly = await billing.QuoteAsync(tenantId.Value, annual: true);
+    var messages = await entitlements.GetWhatsAppAllowanceAsync(tenantId.Value);
+    return Results.Ok(new
+    {
+        monthly.HasHeadOffice,
+        lines = monthly.Lines,
+        monthlyTotalPKR = monthly.TotalPKR,
+        yearlyTotalPKR = yearly.TotalPKR,
+        whatsApp = new { allowance = messages.Allowance, used = messages.Used, remaining = messages.Remaining, included = messages.Included, bundles = messages.Bundles }
+    });
+}).RequireAuthorization().AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
 // Reference data for the signup wizard's country/state picker + starting tax config preview.
 app.MapGet("/api/public/countries", (string? verticalPack) => Results.Ok(Pos.Api.Data.CountryTaxProfiles.GetAll(verticalPack)));
@@ -9591,6 +10274,18 @@ app.MapGet("/api/tenant/my-package", async (
         var camel = char.ToLowerInvariant(flag[0]) + flag[1..];
         features[camel] = ent.Has(flag);
     }
+    // The modules a version or add-on switches on, so screens can hide what is not included
+    // rather than open it and be refused.
+    features["loyalty"] = ent.Capability(Pos.Api.Data.FeatureCodes.Loyalty) != false;
+    features["labor"] = ent.Capability(Pos.Api.Data.FeatureCodes.Labor) != false;
+    features["payroll"] = ent.Capability(Pos.Api.Data.FeatureCodes.Payroll) != false;
+    features["accounting"] = ent.Capability(Pos.Api.Data.FeatureCodes.Accounting) != false;
+    features["purchasing"] = ent.Capability(Pos.Api.Data.FeatureCodes.Purchasing) != false;
+    features["recipes"] = ent.Capability(Pos.Api.Data.FeatureCodes.Recipes) != false;
+    features["fiscalInvoicing"] = ent.Capability(Pos.Api.Data.FeatureCodes.FiscalInvoicing) == true;
+    features["onlinePayments"] = ent.Capability(Pos.Api.Data.FeatureCodes.OnlinePayments) == true;
+    features["onlineOrdering"] = ent.Capability(Pos.Api.Data.FeatureCodes.OnlineOrdering) == true;
+    features["deliveryIntegration"] = ent.Capability(Pos.Api.Data.FeatureCodes.Integrations) == true;
 
     var activeAddOnKeys = await db.AddOnSubscriptions.IgnoreQueryFilters()
         .Where(a => a.TenantId == tenantId.Value && a.IsActive)
@@ -9740,7 +10435,16 @@ static (string Module, string? Route) AddOnUnlockInfo(string key) => key switch
     nameof(SaaSPackageConfig.HasMultiBranch) => ("Multi-Branch Operations (adding branches)", null),
     "EXTRA_COUNTER" => ("POS Terminal Devices (Settings → Devices, per branch)", "/settings"),
     "EXTRA_TABLET" => ("Tablet Waiter App Devices (per branch)", "/order-tab"),
+    "EXTRA_KDS" => ("Kitchen Screens (Settings → Branch Connections, per branch)", "/settings"),
     "EXTRA_USER" => ("Staff & PIN Access (adding staff logins)", "/users"),
+    "WHATSAPP_1000" => ("WhatsApp Messages (1,000 more each month)", "/whatsapp-config"),
+    Pos.Api.Data.FeatureCodes.Loyalty => ("Loyalty, Gift Cards & Promo Codes", "/loyalty"),
+    Pos.Api.Data.FeatureCodes.Accounting => ("Accounting (ledger, P&L, balance sheet)", "/accounting"),
+    Pos.Api.Data.FeatureCodes.Payroll => ("Payroll & HR", "/labor"),
+    Pos.Api.Data.FeatureCodes.FiscalInvoicing => ("Fiscal Invoicing (Tax Configuration → Fiscal invoicing)", "/tax-configuration"),
+    Pos.Api.Data.FeatureCodes.OnlinePayments => ("Online Payments (Payment Gateways)", "/payment-settings"),
+    Pos.Api.Data.FeatureCodes.OnlineOrdering => ("QR & Online Ordering (Floor & Table Setup)", "/floors"),
+    Pos.Api.Data.FeatureCodes.Integrations => ("Delivery Platform Integration", "/delivery-integrations"),
     _ => ("Unknown — key does not match any known feature or quota", null)
 };
 
@@ -9812,13 +10516,18 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
     var catalogItem = await db.AddOnCatalogItems.FirstOrDefaultAsync(a => a.Key == dto.AddOnKey);
     if (catalogItem == null) return Results.BadRequest(new { message = $"No catalog entry for {dto.AddOnKey}." });
 
-    // Branch-scoped add-ons — a device allowance applies to one branch's floor, so granting one
-    // without picking a branch would be ambiguous on any multi-branch tenant. EXTRA_USER stays
+    // Branch-scoped add-ons. A device add-on raises one shop's allowance, so it must name the shop.
+    // A per-shop service (fiscal invoicing, online payments, QR ordering, the platform feed, a
+    // kitchen display) may name one shop, or none to cover every shop. EXTRA_USER stays
     // tenant-wide since MaxUsers is a tenant-level ceiling.
     Guid? branchId = null;
-    if (dto.AddOnKey is "EXTRA_COUNTER" or "EXTRA_TABLET")
+    var mustNameShop = dto.AddOnKey is "EXTRA_COUNTER" or "EXTRA_TABLET" or "EXTRA_KDS";
+    var mayNameShop = mustNameShop || Pos.Api.Data.FeatureCodes.SoldSeparately.Contains(dto.AddOnKey)
+                      || dto.AddOnKey == nameof(SaaSPackageConfig.HasKitchenDisplay);
+    if (mustNameShop && dto.BranchId == null)
+        return Results.BadRequest(new { message = $"{dto.AddOnKey} needs a branch — pick which branch gets the extra device." });
+    if (mayNameShop && dto.BranchId != null)
     {
-        if (dto.BranchId == null) return Results.BadRequest(new { message = $"{dto.AddOnKey} needs a branch — pick which branch gets the extra device." });
         var branchBelongsToTenant = await db.Branches.AnyAsync(b => b.Id == dto.BranchId.Value && b.TenantId == tenantId);
         if (!branchBelongsToTenant) return Results.BadRequest(new { message = "That branch does not belong to this tenant." });
         branchId = dto.BranchId.Value;
@@ -10768,6 +11477,7 @@ api.MapDelete("/promo-codes/{id:guid}", async (AppDbContext db, HttpContext http
 api.MapPost("/payments/initiate", async (
     AppDbContext db, HttpContext http,
     Pos.Api.Services.IPaymentGatewayResolver gateways,
+    Pos.Api.Services.IEntitlementService entitlements,
     InitiatePaymentDto dto) =>
 {
     var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == dto.OrderId);
@@ -10775,6 +11485,14 @@ api.MapPost("/payments/initiate", async (
 
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
     if (scopeError != null) return scopeError;
+
+    // Online payments are an add-on bought per shop.
+    if (!await entitlements.BranchHasFeatureAsync(order.TenantId, order.BranchId, Pos.Api.Data.FeatureCodes.OnlinePayments))
+        return Results.Json(new
+        {
+            message = "Online payments are an add-on, bought per shop. Ask us to add them for this shop.",
+            featureCode = Pos.Api.Data.FeatureCodes.OnlinePayments, upgradeRequired = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
 
     if (order.IsPaid) return Results.BadRequest(new { message = "This order is already marked paid." });
 
@@ -10908,6 +11626,7 @@ api.MapPost("/integrations/delivery/{platform}/webhook", async (
     Pos.Api.Services.IDeliveryPlatformResolver connectors,
     Pos.Api.Services.IFiscalInvoiceProvider fiscal,
     Pos.Api.Services.IWhatsAppSenderResolver waResolver,
+    Pos.Api.Services.IEntitlementService entitlements,
     string platform, Guid tenantId, Guid branchId) =>
 {
     var connector = connectors.Resolve(platform);
@@ -10916,6 +11635,11 @@ api.MapPost("/integrations/delivery/{platform}/webhook", async (
     var branch = await db.Branches.Include(b => b.Tenant)
         .FirstOrDefaultAsync(b => b.Id == branchId && b.TenantId == tenantId);
     if (branch == null) return Results.NotFound(new { message = "Branch not found for this tenant." });
+
+    // The platform feed is an add-on bought per shop; a shop without it takes no platform orders.
+    if (!await entitlements.BranchHasFeatureAsync(tenantId, branchId, Pos.Api.Data.FeatureCodes.Integrations))
+        return Results.Json(new { message = "This shop does not have the delivery platform integration." },
+            statusCode: StatusCodes.Status402PaymentRequired);
 
     using var reader = new StreamReader(http.Request.Body);
     var rawBody = await reader.ReadToEndAsync();
@@ -12715,7 +13439,8 @@ public record VerifyPinDto(string Username, string PinCode, string? RequiredPerm
 public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRate, decimal? DigitalTaxRate, bool? IsActive);
 /// <summary>RegionCode is the tax jurisdiction; RegionId the grouping (Guid.Empty clears it).</summary>
 public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs,
-    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null);
+    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null,
+    SubscriptionTier? PosEdition = null);
 public record SaveCompanyDto(string? LegalName, string? TradeName, string? TaxRegistrationNumber, string? SalesTaxRegistrationNumber, string? Address);
 /// <summary>SellingPricePKR null = the company price; IsAvailable false = not sold at that branch.</summary>
 public record SetBranchPriceDto(Guid BranchId, decimal? SellingPricePKR, bool IsAvailable = true);
@@ -12819,7 +13544,8 @@ public record SetupInitDto(
     string? InstallationType = null,
     string? AppSurface = null
 );
-public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs);
+public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs,
+    SubscriptionTier? PosEdition = null);
 public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
 public record UpdateTerminalDto(string? TerminalName, bool? IsActive);
 
@@ -12870,13 +13596,24 @@ public record SetupHeadOfficeDto(string? Name, string? City, string? Address, st
 public record SetupPoliciesDto(CatalogControl? CatalogControl, bool? BranchPricing, PurchasingControl? PurchasingControl, bool? AllowNegativeStock);
 
 /// <summary>One location as described at setup, whichever wizard described it.</summary>
-public record SetupLocationSpec(string Name, string? Code, string? City, string? Address, string? Phone, string? TaxRegionCode);
+public record SetupLocationSpec(string Name, string? Code, string? City, string? Address, string? Phone, string? TaxRegionCode,
+    SubscriptionTier? PosEdition = null);
 
 public record EnableHeadOfficeDto(string? Name, string? City, string? Address, string? Phone, bool? HoldsStock);
 
 /// <summary>One outlet listed at signup. Only Name is required; the rest fall back to the
 /// tenant's own city/province so a chain in one city does not have to retype it per branch.</summary>
-public record SignupBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode);
+public record SignupBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode,
+    SubscriptionTier? PosEdition = null);
+/// <summary>Taking payment for an order placed unpaid. AmountPaidPKR defaults to the order total.</summary>
+public record SettleOrderDto(PaymentMethod PaymentMethod, decimal? AmountPaidPKR);
+/// <summary>A shop's tax-authority connection. AccessToken is only replaced when a new one is given.</summary>
+public record SaveFiscalIntegrationDto(FiscalAuthority Authority, FiscalEnvironment Environment, string? PosId, string? AccessToken,
+    string? ApiUrl, string? DefaultPctCode, bool IsEnabled);
+public record SavePlatformPriceDto(decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? IncludedWhatsAppMessages);
+/// <summary>A guest's order from a table QR code or a shop's pickup link.</summary>
+public record PublicOrderItemDto(Guid ProductId, int Quantity, string? Notes);
+public record PublicOrderDto(List<PublicOrderItemDto> Items, string? CustomerName, string? CustomerPhone, string? Notes);
 /// <summary>Force moves a tenant onto a smaller plan they do not currently fit. Reserved for
 /// "the customer insists" — devices beyond the new allowance stop selling at their next heartbeat.</summary>
 public record ChangeTierDto(SubscriptionTier Tier, DateTime? PaidUntil, bool? Force = null);
@@ -12894,8 +13631,10 @@ public record PlanChangeImpact(
 public record WhatsAppConfigDto(string Provider, string? ApiKey, string? ApiSecret, string? PhoneNumberId, string? AccessToken, string? WebhookUrl, bool IsEnabled, bool AutoSendOrderUpdates, bool AutoSendReceipt);
 public record TestWhatsAppDto(string PhoneNumber, string RestaurantName);
 public record OrderNotificationDto(Guid TenantId, Guid? OrderId, string OrderNumber, string PhoneNumber, string MessageType, string ItemSummary, decimal TotalPKR, string PaymentMethod, string? DeliveryAddress, string PackageTier, string? CustomMessage);
-public record CreatePackageDto(string PackageKey, string DisplayName, decimal MonthlyPricePKR, decimal YearlyPricePKR, int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers, bool HasKitchenDisplay, bool HasDeliveryCOD, bool HasInventoryManagement, bool HasStockTransfers, bool HasDirectorDashboard, bool HasConsolidatedReports, bool HasWhatsAppMessaging, bool HasAdvancedReports, bool HasMultiBranch, int WhatsAppMessagesPerMonth);
-public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth);
+public record CreatePackageDto(string PackageKey, string DisplayName, decimal MonthlyPricePKR, decimal YearlyPricePKR, int MaxBranches, int MaxCounters, int MaxOrderTabs, int MaxUsers, bool HasKitchenDisplay, bool HasDeliveryCOD, bool HasInventoryManagement, bool HasStockTransfers, bool HasDirectorDashboard, bool HasConsolidatedReports, bool HasWhatsAppMessaging, bool HasAdvancedReports, bool HasMultiBranch, int WhatsAppMessagesPerMonth,
+    int? MaxKitchenDisplays = null, decimal? BranchMonthlyPricePKR = null, decimal? BranchYearlyPricePKR = null);
+public record UpdatePackageDto(string? DisplayName, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, int? MaxBranches, int? MaxCounters, int? MaxOrderTabs, int? MaxUsers, bool? HasKitchenDisplay, bool? HasDeliveryCOD, bool? HasInventoryManagement, bool? HasStockTransfers, bool? HasDirectorDashboard, bool? HasConsolidatedReports, bool? HasWhatsAppMessaging, bool? HasAdvancedReports, bool? HasMultiBranch, int? WhatsAppMessagesPerMonth,
+    int? MaxKitchenDisplays = null, decimal? BranchMonthlyPricePKR = null, decimal? BranchYearlyPricePKR = null);
 public record CreateAddOnCatalogItemDto(string Key, string DisplayName, string? Description, decimal MonthlyPricePKR, decimal YearlyPricePKR);
 public record UpdateAddOnCatalogItemDto(string? DisplayName, string? Description, decimal? MonthlyPricePKR, decimal? YearlyPricePKR, bool? IsActive);
 public record GrantAddOnDto(string AddOnKey, decimal? PricePKR, int? Quantity, Guid? BranchId);
@@ -12987,4 +13726,5 @@ public record SyncReceiveDto(string? BusinessId, Guid TenantId, string? EntityTy
 public record ChangePlanDto(string PlanCode, string? Reason);
 /// <summary>LocationType is Branch (default) or Warehouse; a head office is created through enable-hq.</summary>
 public record CreateBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode,
-    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null);
+    LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null,
+    SubscriptionTier? PosEdition = null);

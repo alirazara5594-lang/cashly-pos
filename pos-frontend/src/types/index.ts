@@ -78,6 +78,104 @@ export interface EffectivePackageFeatures {
   hasWhatsAppMessaging: boolean;
   hasAdvancedReports: boolean;
   hasMultiBranch: boolean;
+  /** Modules a POS version (or add-on) switches on. Missing on older servers = included. */
+  loyalty?: boolean;
+  labor?: boolean;
+  payroll?: boolean;
+  accounting?: boolean;
+  purchasing?: boolean;
+  recipes?: boolean;
+  /** Sold per shop as add-ons; true when bought for at least one shop. */
+  fiscalInvoicing?: boolean;
+  onlinePayments?: boolean;
+  onlineOrdering?: boolean;
+  deliveryIntegration?: boolean;
+}
+
+/** One line of what a business pays: the Head Office ERP, a shop's POS version, or an add-on. */
+export interface BillingLine {
+  kind: 'erp' | 'pos' | 'addon';
+  description: string;
+  quantity: number;
+  unitPricePKR: number;
+  amountPKR: number;
+  branchId?: string | null;
+  code?: string | null;
+}
+
+/** The business's own bill, for its plan page. */
+export interface MyCharges {
+  hasHeadOffice: boolean;
+  lines: BillingLine[];
+  monthlyTotalPKR: number;
+  yearlyTotalPKR: number;
+  whatsApp: { allowance: number | null; used: number; remaining: number | null; included: number; bundles: number };
+}
+
+/** A platform price that is neither a version nor an add-on (the Head Office ERP). */
+export interface PlatformPrice {
+  key: string;
+  displayName: string;
+  monthlyPricePKR: number;
+  yearlyPricePKR: number;
+  includedWhatsAppMessages: number;
+}
+
+export type FiscalAuthority = 'Fbr' | 'Pra' | 'Srb' | 'Kpra';
+export type FiscalEnvironment = 'Sandbox' | 'Production';
+
+/** One shop's connection to its tax authority. The access token never comes back. */
+export interface FiscalShopRow {
+  branchId: string;
+  branchName: string;
+  hasAddOn: boolean;
+  pendingReports: number;
+  connection: {
+    authority: FiscalAuthority;
+    environment: FiscalEnvironment;
+    posId: string;
+    apiUrl?: string | null;
+    defaultPctCode: string;
+    isEnabled: boolean;
+    hasToken: boolean;
+    lastSuccessAt?: string | null;
+    lastError?: string | null;
+    lastErrorAt?: string | null;
+    defaultApiUrl?: string | null;
+  } | null;
+}
+
+export interface FiscalConnections {
+  shops: FiscalShopRow[];
+  defaults: { authority: FiscalAuthority; environment: FiscalEnvironment; url: string | null }[];
+}
+
+/** The menu a guest sees from a table QR code or a pickup link. */
+export interface PublicMenu {
+  businessName?: string | null;
+  branchName: string;
+  tableNumber?: string | null;
+  orderType: 'DineIn' | 'Takeaway';
+  currencySymbol: string;
+  categories: { id: string; name: string; localName?: string | null }[];
+  products: {
+    id: string;
+    name: string;
+    urduName?: string | null;
+    description?: string | null;
+    categoryId: string;
+    imageUrl?: string | null;
+    pricePKR: number;
+  }[];
+}
+
+export interface PublicOrderResult {
+  orderNumber: string;
+  subTotalPKR: number;
+  taxPKR: number;
+  totalPKR: number;
+  items: { productName: string; quantity: number; totalPricePKR: number }[];
+  message: string;
 }
 
 /** Where a tenant sits on the billing ladder. Mirrors the server's TenantStatus. */
@@ -218,6 +316,10 @@ export interface DeviceActivationResponse {
   appSurface: 'Erp' | 'Pos' | 'Hybrid';
   packs: string[];
   primaryPack: string;
+  /** The POS version of the branch this device joined (head office chose it). */
+  posEdition?: SubscriptionTier | null;
+  /** What that version allows at the branch; null counts mean unlimited. */
+  posAllowance?: { counters: number | null; tablets: number | null; kitchenDisplay: boolean } | null;
 }
 
 export interface HeartbeatResponse {
@@ -260,6 +362,11 @@ export interface PublicPackage {
   hasAdvancedReports: boolean;
   hasMultiBranch: boolean;
   whatsAppMessagesPerMonth: number;
+  /** Kitchen screens per shop (999 = unlimited). */
+  maxKitchenDisplays?: number;
+  /** What one branch of a head-office business pays for this version. */
+  branchMonthlyPricePKR?: number;
+  branchYearlyPricePKR?: number;
 }
 export type TerminalType = 'Counter' | 'OrderTab' | 'KitchenDisplay' | 'BackOffice';
 export type OrderType = 'DineIn' | 'Takeaway' | 'Delivery' | 'CallOrder';
@@ -357,6 +464,9 @@ export interface Order {
   /** Money given back through returns so far. The sale itself is never edited. */
   refundedPKR?: number;
 
+  /** The customer the sale is on, when there is one. */
+  customerId?: string | null;
+
   items: CartItem[];
 }
 
@@ -379,6 +489,8 @@ export interface DiningTable {
   capacity: number;
   isOccupied: boolean;
   currentOrderId?: string;
+  /** The token in this table's QR ordering code (null until set up). */
+  qrToken?: string | null;
 }
 
 export interface Rider {
@@ -416,6 +528,11 @@ export interface Branch {
   companyId?: string | null;
   /** Optional grouping for chains — not the tax region (that is regionCode). */
   regionId?: string | null;
+  /**
+   * The POS version this location runs (tills, tablets, kitchen screens). With a head office the
+   * ERP is the same for everyone and each branch has its own POS version. Null = the business's plan.
+   */
+  posEdition?: SubscriptionTier | null;
 }
 
 /** The three shapes a business can take at setup. */
@@ -948,6 +1065,8 @@ export interface BranchInitPayload {
   phone?: string;
   allowedCounters?: number;
   allowedOrderTabs?: number;
+  /** The branch's POS version, chosen by head office. */
+  posEdition?: SubscriptionTier;
 }
 
 /** The legal entity as entered at setup; everything optional. */

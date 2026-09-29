@@ -49,6 +49,8 @@ const DeliveryIntegrationSettings = lazy(() => import('./pages/DeliveryIntegrati
 const MyAddOns = lazy(() => import('./pages/MyAddOns').then(m => ({ default: m.MyAddOns })));
 const LocationsManagement = lazy(() => import('./pages/LocationsManagement').then(m => ({ default: m.LocationsManagement })));
 const ReturnsManagement = lazy(() => import('./pages/ReturnsManagement').then(m => ({ default: m.ReturnsManagement })));
+const OpenOrders = lazy(() => import('./pages/OpenOrders').then(m => ({ default: m.OpenOrders })));
+const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ default: m.PublicOrder })));
 
 /** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
  * connection, but real on a slow one, so it's a spinner, not a blank screen. */
@@ -209,6 +211,17 @@ function MainLayoutInner() {
     };
   }, [setIsOnline, refreshOfflineCount, checkInstallationStatus, autoSyncOnReconnect, addToast]);
 
+  // A guest ordering from a table QR code or a pickup link: no installation check, no sign-in.
+  if (location.pathname.startsWith('/order/')) {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <Routes>
+          <Route path="/order/:token" element={<PublicOrder />} />
+        </Routes>
+      </Suspense>
+    );
+  }
+
   // Full-screen dedicated view for Installation Wizard
   if (location.pathname === '/setup') {
     return <InstallationWizard />;
@@ -316,6 +329,9 @@ function MainLayoutInner() {
                 permission, which the server checks. */}
             <Route path="/returns" element={
               isPlatformSuperAdmin ? <Navigate to="/super-admin" replace /> : <ReturnsManagement />} />
+            {/* Unpaid orders (waiter tablets, QR codes, pickup links) waiting for payment. */}
+            <Route path="/open-orders" element={
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace /> : <OpenOrders />} />
 
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />

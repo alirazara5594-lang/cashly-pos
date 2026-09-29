@@ -40,6 +40,9 @@ public class OrderReturn
     public Guid? CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>The tax authority's number for this credit note, when the shop reports sales.</summary>
+    public string? FiscalInvoiceNumber { get; set; }
+
     public ICollection<OrderReturnLine> Lines { get; set; } = new List<OrderReturnLine>();
 }
 
