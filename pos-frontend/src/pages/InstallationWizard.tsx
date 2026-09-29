@@ -195,32 +195,28 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     }
   ];
 
-  // Plan Configurations for POS + ERP (All versions have UNLIMITED branches!)
+  // Plan Configurations for POS + ERP
   const POS_ERP_PLANS = [
     {
       key: 'Starter' as const,
       label: 'Starter',
-      branchesText: 'Unlimited Branches',
-      terminalsPerBranch: '2 Tills + 5 Tablets / branch',
       badge: undefined,
       description: 'Central management for emerging multi-outlet food brands.',
       features: [
-        '🏢 Unlimited Outlets / Branches',
-        '🖥️ 2 Counters + 5 Tablets per branch',
+        '🏢 Central Head Office & Branch Operations',
+        '🖥️ Counter Terminals & Waiter Tablets',
         '📦 Central Menu & Inventory Sync',
-        '📊 Daily Store Sales Reports'
+        '📊 Branch Sales Reports'
       ]
     },
     {
       key: 'Standard' as const,
       label: 'Standard',
-      branchesText: 'Unlimited Branches',
-      terminalsPerBranch: '5 Tills + 15 Tablets / branch',
       badge: 'Most Popular',
       description: 'Growing restaurant chains with central purchasing & branch operations.',
       features: [
-        '🏢 Unlimited Outlets / Branches',
-        '🖥️ 5 Counters + 15 Tablets per branch',
+        '🏢 Central Head Office & Branch Operations',
+        '🖥️ Counter Terminals & Waiter Tablets',
         '🔄 Inter-Branch Stock Transfers & Vendor POs',
         '📈 Consolidated Director Analytics & P&L',
         '👥 Role-Based Department Permissions'
@@ -229,13 +225,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     {
       key: 'Professional' as const,
       label: 'Professional',
-      branchesText: 'Unlimited Branches',
-      terminalsPerBranch: 'Unlimited Terminals & Tablets',
       badge: 'Enterprise',
       description: 'Established enterprise food chains, commissaries & franchises.',
       features: [
-        '🏢 Unlimited Outlets / Branches',
-        '🖥️ Unlimited Tills & Order Tablets',
+        '🏢 Enterprise Multi-Branch Control',
+        '🖥️ Tills, Order Tablets & Kitchen Displays',
         '🏭 Central Commissary & Production Recipes',
         '📒 Full Chart of Accounts & General Ledger',
         '🛡️ Multi-Warehouse & External API Sync'
@@ -520,7 +514,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             </p>
             <p className="text-xs text-slate-500 mt-1">
               Active Plan: <span className="font-semibold text-teal-600">{selectedPlan}</span>
-              {signupSuccess.systemType === 'POS_ERP' && ' • Unlimited Branches'}
             </p>
           </div>
 
@@ -650,7 +643,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl w-full mx-auto p-6 md:p-8">
+        {/* The plan step gets more room so its three edition cards are not cramped. */}
+        <div className={`${step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto p-6 md:p-8`}>
           {errorMessage && (
             <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-sm flex items-center gap-3">
               <div className="w-2 h-2 rounded-full bg-rose-400 animate-ping shrink-0" />
@@ -749,8 +743,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     </p>
 
                     <ul className="space-y-2 text-xs text-slate-700 pt-3 border-t border-slate-200">
-                      <li className="flex items-center gap-2 font-semibold text-teal-800">
-                        <span className="text-teal-600 font-bold">✓</span> 🏢 Unlimited Branches on ALL Versions!
+                      <li className="flex items-center gap-2">
+                        <span className="text-teal-600 font-bold">✓</span> Central Head Office & Multi-Branch Network
                       </li>
                       <li className="flex items-center gap-2">
                         <span className="text-teal-600 font-bold">✓</span> Centralized Supply Chain & Inter-Branch Transfers
@@ -784,7 +778,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 </div>
                 <p className="text-sm text-slate-500">
                   {systemType === 'POS_ERP'
-                    ? 'Every POS + ERP edition includes UNLIMITED branches. Select based on features and capacity.'
+                    ? 'Select the edition that fits your business scale and operational requirements.'
                     : 'Select the terminal capacity that fits your single-location restaurant.'}
                 </p>
               </div>
@@ -792,51 +786,44 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               {/* POS + ERP Plans */}
               {systemType === 'POS_ERP' ? (
                 <div className="space-y-3">
-                  <div className="p-3 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-800 flex items-center gap-2">
-                    <Building2 className="w-4 h-4 text-teal-600 shrink-0" />
-                    <span><strong>Great news:</strong> All POS + ERP plans include <strong>Unlimited Branches</strong> at no extra charge!</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                     {POS_ERP_PLANS.map((plan) => {
                       const isActive = selectedPlan === plan.key;
                       return (
                         <div
                           key={plan.key}
                           onClick={() => setSelectedPlan(plan.key)}
-                          className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
+                          className={`relative p-6 md:p-7 min-h-[22rem] rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
                             isActive
                               ? 'border-teal-500 bg-teal-50/50 shadow-md ring-1 ring-teal-500/40'
                               : 'border-slate-200 bg-white hover:border-slate-300'
                           }`}
                         >
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <span className="text-base font-extrabold text-slate-900">{plan.label}</span>
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xl font-extrabold text-slate-900">{plan.label}</span>
                               {plan.badge && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
+                                <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
                                   {plan.badge}
                                 </span>
                               )}
                               {isActive && (
-                                <CheckCircle2 className="w-4 h-4 fill-teal-500 text-white" />
+                                <CheckCircle2 className="w-5 h-5 fill-teal-500 text-white shrink-0" />
                               )}
                             </div>
 
-                            <p className="text-xs text-slate-500 leading-tight">{plan.description}</p>
+                            <p className="text-sm text-slate-500 leading-snug">{plan.description}</p>
 
-                            <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                            <div className="pt-3 border-t border-slate-200 space-y-2.5">
                               {plan.features.map((feat, fidx) => (
-                                <div key={fidx} className="text-xs text-slate-700 flex items-start gap-1.5">
-                                  <span className="text-[11px] leading-tight">{feat}</span>
+                                <div key={fidx} className="text-sm text-slate-700 flex items-start gap-1.5">
+                                  <span className="leading-snug">{feat}</span>
                                 </div>
                               ))}
                             </div>
                           </div>
 
-                          <div className="mt-4 pt-3 border-t border-slate-100 text-[11px] text-teal-700 font-semibold">
-                            {plan.branchesText}
-                          </div>
+
                         </div>
                       );
                     })}
@@ -844,7 +831,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 </div>
               ) : (
                 /* POS Only Plans */
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                   {POS_ONLY_PLANS.map((plan) => {
                     const isActive = selectedPlan === plan.key;
                     return (
@@ -855,48 +842,48 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                           setAllowedCounters(plan.counters);
                           setAllowedOrderTabs(plan.tablets);
                         }}
-                        className={`relative p-5 rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
+                        className={`relative p-6 md:p-7 min-h-[22rem] rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
                           isActive
                             ? 'border-teal-500 bg-teal-50/50 shadow-md ring-1 ring-teal-500/40'
                             : 'border-slate-200 bg-white hover:border-slate-300'
                         }`}
                       >
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-base font-extrabold text-slate-900">{plan.label}</span>
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xl font-extrabold text-slate-900">{plan.label}</span>
                             {plan.badge && (
-                              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
+                              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
                                 {plan.badge}
                               </span>
                             )}
                             {isActive && (
-                              <CheckCircle2 className="w-4 h-4 fill-teal-500 text-white" />
+                              <CheckCircle2 className="w-5 h-5 fill-teal-500 text-white shrink-0" />
                             )}
                           </div>
 
-                          <p className="text-xs text-slate-500 leading-tight">{plan.description}</p>
+                          <p className="text-sm text-slate-500 leading-snug">{plan.description}</p>
 
-                          <div className="grid grid-cols-2 gap-2 py-2">
-                            <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
-                              <span className="text-[9px] uppercase font-bold text-slate-400 block">Counters</span>
-                              <span className="text-base font-black text-slate-900">{plan.counters}</span>
+                          <div className="grid grid-cols-2 gap-3 py-2">
+                            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">Counters</span>
+                              <span className="text-xl font-black text-slate-900">{plan.counters}</span>
                             </div>
-                            <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
-                              <span className="text-[9px] uppercase font-bold text-slate-400 block">Tablets</span>
-                              <span className="text-base font-black text-slate-900">{plan.tablets}</span>
+                            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">Tablets</span>
+                              <span className="text-xl font-black text-slate-900">{plan.tablets}</span>
                             </div>
                           </div>
 
-                          <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                          <div className="pt-3 border-t border-slate-200 space-y-2.5">
                             {plan.features.map((feat, fidx) => (
-                              <div key={fidx} className="text-xs text-slate-700 flex items-center gap-1.5">
+                              <div key={fidx} className="text-sm text-slate-700 flex items-center gap-1.5">
                                 <span className="text-teal-600 font-bold">✓</span> {feat}
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="mt-4 pt-3 border-t border-slate-100 text-[11px] text-teal-700 font-semibold">
+                        <div className="mt-5 pt-3 border-t border-slate-100 text-xs text-teal-700 font-semibold">
                           Single Outlet • Instant Deploy
                         </div>
                       </div>
@@ -1229,7 +1216,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 )}
 
-                {/* If POS + ERP: Head Office + Unlimited Branches */}
+                {/* If POS + ERP: Head Office + Initial Outlets */}
                 {systemType === 'POS_ERP' && (
                   <div className="pt-3 border-t border-slate-200 space-y-4">
                     <div className="space-y-2">
@@ -1261,7 +1248,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                           <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                             <Store className="w-3.5 h-3.5 text-teal-600" /> Selling Branch Outlets
                           </h4>
-                          <p className="text-[11px] text-slate-500">You can add unlimited branches with your plan.</p>
+                          <p className="text-[11px] text-slate-500">Configure your initial branch locations.</p>
                         </div>
                         <button 
                           type="button"
@@ -1450,11 +1437,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <span className="text-slate-400 uppercase tracking-wider font-semibold text-[10px]">Selected Plan Edition</span>
                     <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
                       <span className="text-teal-700">{selectedPlan} Edition</span>
-                      {systemType === 'POS_ERP' && (
-                        <span className="text-[10px] bg-teal-100 text-teal-800 font-bold px-2 py-0.5 rounded-full">
-                          Unlimited Branches
-                        </span>
-                      )}
                     </div>
                   </div>
 
@@ -1495,7 +1477,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
       {/* Bottom Navigation Bar */}
       <div className="shrink-0 border-t border-slate-200 bg-white px-6 md:px-10 py-4">
-        <div className="max-w-4xl w-full mx-auto flex items-center justify-between gap-4">
+        <div className={`${step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto flex items-center justify-between gap-4`}>
           {step > 1 ? (
             <button
               type="button"
