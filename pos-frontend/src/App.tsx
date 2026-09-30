@@ -52,6 +52,7 @@ const ReturnsManagement = lazy(() => import('./pages/ReturnsManagement').then(m 
 const OpenOrders = lazy(() => import('./pages/OpenOrders').then(m => ({ default: m.OpenOrders })));
 const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ default: m.PublicOrder })));
 const ConnectDevice = lazy(() => import('./pages/ConnectDevice').then(m => ({ default: m.ConnectDevice })));
+const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
 
 /** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
  * connection, but real on a slow one, so it's a spinner, not a blank screen. */
@@ -228,6 +229,15 @@ function MainLayoutInner() {
   // /signup and new devices connect at /connect, both linked from the sign-in screen.
   if (location.pathname === '/setup') {
     return isAuthenticated ? <InstallationWizard /> : <Navigate to="/" replace />;
+  }
+
+  // The link from a "forgot password" email. Reachable signed out, like /signup.
+  if (location.pathname === '/reset-password') {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <ResetPassword />
+      </Suspense>
+    );
   }
 
   // Pairing a till, tablet, kitchen screen or office PC with a code from its manager.

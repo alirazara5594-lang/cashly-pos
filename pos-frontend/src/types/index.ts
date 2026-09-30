@@ -121,6 +121,7 @@ export interface TenantOwnerAccount {
   email: string | null;
   isActive: boolean;
   hasPassword: boolean;
+  twoFactorEnabled: boolean;
   /** Set while the account is locked after wrong passwords or PINs. */
   lockedUntil: string | null;
 }
@@ -832,6 +833,17 @@ export interface LoginResponse {
   token: string;
   refreshToken?: string;
   user: CurrentUser & { permissions?: AuthPermissions };
+  /** 2-step sign-in is on: no session yet — send a code with `challenge` to /api/auth/2fa/verify. */
+  twoFactorRequired?: boolean;
+  challenge?: string;
+}
+
+/** The signed-in person's own sign-in settings. */
+export interface AccountSecurity {
+  email: string | null;
+  hasPassword: boolean;
+  twoFactorEnabled: boolean;
+  recoveryCodesLeft: number;
 }
 
 export interface VerifyPinResponse {
@@ -853,6 +865,7 @@ export interface AppUser {
   /** Back-office sign-in (email + password); absent for staff who only use a till's PIN. */
   email?: string | null;
   hasPassword?: boolean;
+  twoFactorEnabled?: boolean;
   permissions: {
     canViewFinancialReports: boolean;
     canManageInventory: boolean;

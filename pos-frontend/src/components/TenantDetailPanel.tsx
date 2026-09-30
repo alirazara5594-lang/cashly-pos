@@ -656,8 +656,10 @@ const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [emailDrafts, setEmailDrafts] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [issued, setIssued] = useState<{ userId: string; email: string; password: string; signedOut: number } | null>(null);
+  const [issued, setIssued] = useState<{ userId: string; email: string; password: string; signedOut: number; twoFactorOff: boolean } | null>(null);
   const [copied, setCopied] = useState(false);
+  // Owners whose 2-step sign-in should be turned off with the reset (they lost their phone).
+  const [lostPhone, setLostPhone] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -679,8 +681,8 @@ const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
     setIssued(null);
     setCopied(false);
     try {
-      const res = await posApi.resetOwnerPassword(tenantId, owner.id, owner.email ? undefined : email);
-      setIssued({ userId: owner.id, email: res.email, password: res.temporaryPassword, signedOut: res.signedOutSessions });
+      const res = await posApi.resetOwnerPassword(tenantId, owner.id, owner.email ? undefined : email, !!lostPhone[owner.id]);
+      setIssued({ userId: owner.id, email: res.email, password: res.temporaryPassword, signedOut: res.signedOutSessions, twoFactorOff: res.twoFactorTurnedOff });
       setOwners(await posApi.getTenantOwners(tenantId));
     } catch (err) {
       setError(getApiErrorMessage(err, 'Could not reset the password.'));
@@ -708,8 +710,20 @@ const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 {!o.isActive && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">Disabled</span>}
                 {o.lockedUntil && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">Locked</span>}
                 {o.email && !o.hasPassword && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">No password</span>}
+                {o.twoFactorEnabled && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200">2-step on</span>}
               </div>
             </div>
+            {o.twoFactorEnabled && (
+              <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!lostPhone[o.id]}
+                  onChange={(e) => setLostPhone(p => ({ ...p, [o.id]: e.target.checked }))}
+                  className="w-3.5 h-3.5 accent-teal-500"
+                />
+                Also turn off 2-step sign-in (they lost their phone)
+              </label>
+            )}
             {!o.email && (
               <input
                 type="email"
@@ -742,7 +756,8 @@ const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
                 </div>
                 <p className="text-[10px] text-teal-800 leading-snug">
                   Read it to the owner. They sign in with <strong>{issued.email}</strong> and this password, then set their own
-                  in Staff &amp; Pin Access (key button). {issued.signedOut > 0 && `${issued.signedOut} old session(s) were signed out.`}
+                  with the shield button (My sign-in &amp; security) at the top. {issued.signedOut > 0 && `${issued.signedOut} old session(s) were signed out.`}
+                  {issued.twoFactorOff && ' 2-step sign-in is off — they can turn it on again with their new phone.'}
                 </p>
               </div>
             )}

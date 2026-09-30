@@ -101,6 +101,7 @@ import type {
   MyCharges,
   PlatformPrice,
   TenantOwnerAccount,
+  AccountSecurity,
   FiscalConnections,
   FiscalAuthority,
   FiscalEnvironment,
@@ -157,6 +158,9 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/login',
   '/api/auth/pin-login',
   '/api/auth/email-login',
+  '/api/auth/2fa/verify',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
   '/api/auth/refresh',
@@ -314,10 +318,52 @@ export const posApi = {
     storeSession(res.data);
     return res.data;
   },
-  /** The back office: email + password. The branch is chosen afterwards. */
+  /** The back office: email + password. The branch is chosen afterwards. With 2-step sign-in on,
+   *  the answer is `twoFactorRequired` + a `challenge` for verifyTwoFactor instead of a session. */
   emailLogin: async (email: string, password: string) => {
     const res = await api.post<LoginResponse>('/api/auth/email-login', { email, password });
     storeSession(res.data);
+    return res.data;
+  },
+  /** The second step: a code from the authenticator app, or a recovery code. */
+  verifyTwoFactor: async (challenge: string, code: string) => {
+    const res = await api.post<LoginResponse>('/api/auth/2fa/verify', { challenge, code });
+    storeSession(res.data);
+    return res.data;
+  },
+  /** Emails a one-time link to set a new password (when this server can send email). */
+  forgotPassword: async (email: string) => {
+    const res = await api.post<{ emailEnabled: boolean; message?: string }>('/api/auth/forgot-password', { email });
+    return res.data;
+  },
+  resetPassword: async (token: string, newPassword: string) => {
+    const res = await api.post<{ message: string; email?: string }>('/api/auth/reset-password', { token, newPassword });
+    return res.data;
+  },
+  // The signed-in person's own sign-in settings.
+  getMySecurity: async () => {
+    const res = await api.get<AccountSecurity>('/api/auth/security');
+    return res.data;
+  },
+  changeMyPassword: async (currentPassword: string, newPassword: string) => {
+    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    const res = await api.post<{ message: string; signedOutSessions: number }>('/api/auth/security/password', { currentPassword, newPassword, refreshToken });
+    return res.data;
+  },
+  setupTwoFactor: async () => {
+    const res = await api.post<{ secret: string; otpauthUri: string }>('/api/auth/security/2fa/setup');
+    return res.data;
+  },
+  enableTwoFactor: async (code: string) => {
+    const res = await api.post<{ recoveryCodes: string[] }>('/api/auth/security/2fa/enable', { code });
+    return res.data;
+  },
+  disableTwoFactor: async (code: string) => {
+    const res = await api.post<{ message: string }>('/api/auth/security/2fa/disable', { code });
+    return res.data;
+  },
+  renewRecoveryCodes: async (code: string) => {
+    const res = await api.post<{ recoveryCodes: string[] }>('/api/auth/security/2fa/recovery-codes', { code });
     return res.data;
   },
   /** Move this session to another branch the user covers, without signing out. */
@@ -647,9 +693,9 @@ export const posApi = {
     return res.data;
   },
   /** Sets a one-time temporary back-office password, unlocks the account and signs it out everywhere. */
-  resetOwnerPassword: async (tenantId: string, userId: string, email?: string) => {
-    const res = await api.post<{ email: string; temporaryPassword: string; signedOutSessions: number }>(
-      `/api/admin/tenants/${tenantId}/users/${userId}/reset-password`, { email: email || undefined });
+  resetOwnerPassword: async (tenantId: string, userId: string, email?: string, disableTwoFactor = false) => {
+    const res = await api.post<{ email: string; temporaryPassword: string; signedOutSessions: number; twoFactorTurnedOff: boolean }>(
+      `/api/admin/tenants/${tenantId}/users/${userId}/reset-password`, { email: email || undefined, disableTwoFactor });
     return res.data;
   },
   getPlatformPrices: async () => {

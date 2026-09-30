@@ -80,6 +80,10 @@ export const LoginGate: React.FC = () => {
   const [showForgot, setShowForgot] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<PendingBranchChoice | null>(null);
+  // Password (or PIN) right, 2-step sign-in on: the code from the authenticator app comes next.
+  const [twoFactor, setTwoFactor] = useState<{ challenge: string; via: 'email' | 'username' } | null>(null);
+  const [code, setCode] = useState('');
+  const [forgotState, setForgotState] = useState<{ sending: boolean; message?: string; noEmail?: boolean }>({ sending: false });
 
   const typedRestaurant = restaurant.trim();
   const switchMode = (next: Mode) => {
@@ -141,6 +145,11 @@ export const LoginGate: React.FC = () => {
       if (mode === 'email') {
         const result = await posApi.emailLogin(email.trim(), password);
         save(EMAIL_KEY, email.trim());
+        if (result.twoFactorRequired && result.challenge) {
+          setTwoFactor({ challenge: result.challenge, via: 'email' });
+          setCode('');
+          return;
+        }
         await continueAfterSignIn(result);
         return;
       }
@@ -148,6 +157,11 @@ export const LoginGate: React.FC = () => {
         // On a till this still signs in at the till's branch, so its sales land there.
         const result = await posApi.login(username.trim(), pinCode.trim(), tillBranchId, typedRestaurant);
         save(RESTAURANT_KEY, typedRestaurant);
+        if (result.twoFactorRequired && result.challenge) {
+          setTwoFactor({ challenge: result.challenge, via: 'username' });
+          setCode('');
+          return;
+        }
         if (tillBranchId) await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions, tillBranchId);
         else await continueAfterSignIn(result);
         return;
@@ -176,6 +190,47 @@ export const LoginGate: React.FC = () => {
       setPassword('');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const submitCode = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!twoFactor || !code.trim() || loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const result = await posApi.verifyTwoFactor(twoFactor.challenge, code.trim());
+      setTwoFactor(null);
+      if (twoFactor.via === 'username' && tillBranchId) {
+        await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions, tillBranchId);
+      } else {
+        await continueAfterSignIn(result);
+      }
+    } catch (err) {
+      const expired = (err as { response?: { data?: { expired?: boolean } } }).response?.data?.expired;
+      if (expired) {
+        // Took too long: back to the password, which has to be typed again.
+        setTwoFactor(null);
+        setPassword('');
+        setPinCode('');
+      }
+      setError(getApiErrorMessage(err, 'That code is not right.'));
+      setCode('');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const sendResetLink = async () => {
+    if (!email.trim() || forgotState.sending) return;
+    setForgotState({ sending: true });
+    try {
+      const res = await posApi.forgotPassword(email.trim());
+      setForgotState(res.emailEnabled
+        ? { sending: false, message: res.message ?? 'If an account uses that email, a reset link is on its way.' }
+        : { sending: false, noEmail: true });
+    } catch (err) {
+      setForgotState({ sending: false, message: getApiErrorMessage(err, 'Could not send the link. Try again in a minute.') });
     }
   };
 
@@ -285,7 +340,41 @@ export const LoginGate: React.FC = () => {
           </div>
         </div>
 
-        {pending ? (
+        {twoFactor ? (
+          // 2-step sign-in: the password was right; now the code from their phone.
+          <form onSubmit={submitCode} className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-teal-600" />
+              <span className="text-xs font-bold text-slate-900">2-step sign-in</span>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Open your authenticator app (Google Authenticator, Microsoft Authenticator…) and type the 6-digit code for Cashly POS.
+            </p>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              value={code}
+              onChange={(e) => { setCode(e.target.value.slice(0, 12)); setError(''); }}
+              placeholder="123 456"
+              className="w-full px-3 py-4 bg-slate-50 border border-slate-200 rounded-xl text-center text-3xl tracking-[0.4em] font-mono text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+            />
+            <p className="text-[10px] text-slate-400">Lost your phone? Type one of your recovery codes instead (like abcd-2345).</p>
+            {error && <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold">{error}</div>}
+            <button
+              type="submit"
+              disabled={loading || code.trim().length < 6}
+              className="w-full px-4 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Key className="w-4 h-4" /> {loading ? 'Checking…' : 'Verify'}
+            </button>
+            <button type="button" onClick={() => { setTwoFactor(null); setPassword(''); setPinCode(''); setError(''); }}
+              className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
+              <ArrowLeft className="w-3 h-3" /> Back to sign in
+            </button>
+          </form>
+        ) : pending ? (
           // Only for someone who works at more than one location.
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
             <div className="flex items-center gap-2">
@@ -388,15 +477,33 @@ export const LoginGate: React.FC = () => {
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
-                  <button type="button" onClick={() => setShowForgot(v => !v)}
+                  <button type="button" onClick={() => { setShowForgot(v => !v); setForgotState({ sending: false }); }}
                     className="mt-1 text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
                     Forgot password?
                   </button>
                   {showForgot && (
-                    <p className="mt-1 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2">
-                      Staff: ask your restaurant owner to set a new one in <strong>Staff &amp; Pin Access</strong>.
-                      Owners: contact Cashly support to reset it.
-                    </p>
+                    <div className="mt-1 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
+                      {forgotState.noEmail ? (
+                        <p>
+                          This server cannot send email yet. Staff: ask your restaurant owner to set a new password in
+                          <strong> Staff &amp; Pin Access</strong>. Owners: contact Cashly support.
+                        </p>
+                      ) : forgotState.message ? (
+                        <p className="text-teal-800">{forgotState.message}</p>
+                      ) : (
+                        <>
+                          <p>We will email a link to <strong>{email.trim() || 'the email above'}</strong> to set a new password.</p>
+                          <button
+                            type="button"
+                            onClick={sendResetLink}
+                            disabled={!email.trim() || forgotState.sending}
+                            className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-bold transition"
+                          >
+                            {forgotState.sending ? 'Sending…' : 'Email me a reset link'}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               </>

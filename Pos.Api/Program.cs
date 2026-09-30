@@ -65,6 +65,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
             ClockSkew = TimeSpan.FromMinutes(5)
         };
+        options.Events = new Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerEvents
+        {
+            // Only a session token signs someone in: it names a user and carries no issuer (sign-in
+            // and support sessions alike). A till's device licence is signed with the same key but
+            // has an issuer and no user — without this check, copying a licence off a till would
+            // have been a way into the API with no PIN at all.
+            OnTokenValidated = context =>
+            {
+                var hasUser = !string.IsNullOrEmpty(context.Principal?.FindFirst("userId")?.Value);
+                var hasIssuer = !string.IsNullOrEmpty(context.Principal?.FindFirst("iss")?.Value);
+                if (!hasUser || hasIssuer) context.Fail("Not a sign-in token.");
+                return Task.CompletedTask;
+            }
+        };
     });
 builder.Services.AddAuthorization();
 
@@ -139,6 +153,10 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddOpenApi();
 // Counts wrong PINs per till (see /api/auth/pin-login).
 builder.Services.AddMemoryCache();
+// "Forgot password" emails (inert until SMTP is configured — see Services/EmailSender.cs) and the
+// encryption of 2-step secrets.
+builder.Services.AddSingleton<Pos.Api.Services.IEmailSender, Pos.Api.Services.SmtpEmailSender>();
+builder.Services.AddSingleton(new Pos.Api.Services.SecretProtector(jwtKey));
 
 // --- Security / tenancy services ---
 builder.Services.AddHttpContextAccessor();
@@ -1532,6 +1550,24 @@ static Task EnsureSignInSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRa
     ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""PinLookup"" text NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Users_Email"" ON ""Users"" (""Email"") WHERE ""Email"" IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Users_TenantId_PinLookup"" ON ""Users"" (""TenantId"", ""PinLookup"") WHERE ""PinLookup"" IS NOT NULL;
+
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""TwoFactorEnabled"" boolean NOT NULL DEFAULT false;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""TwoFactorSecret"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""TwoFactorPendingSecret"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""TwoFactorRecoveryCodes"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""TwoFactorLastStep"" bigint NOT NULL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS ""PasswordResetTokens"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""UserId"" uuid NOT NULL,
+        ""TokenHash"" text NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""ExpiresAt"" timestamp with time zone NOT NULL,
+        ""UsedAt"" timestamp with time zone NULL,
+        ""CreatedByIp"" text NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_PasswordResetTokens_TokenHash"" ON ""PasswordResetTokens"" (""TokenHash"");
+    CREATE INDEX IF NOT EXISTS ""IX_PasswordResetTokens_UserId"" ON ""PasswordResetTokens"" (""UserId"");
 ");
 
 /// <summary>Creates the counter table and moves document-number uniqueness to per business.
@@ -3560,6 +3596,82 @@ static object SignInResponse(AppUser user, Guid? sessionBranchId, string accessT
     }
 };
 
+// The halfway point of a sign-in that needs a 2-step code: a 5-minute token saying who got the
+// password (or PIN) right. Signed with its own key and issuer, so it can never pass as a sign-in.
+static SymmetricSecurityKey TwoFactorChallengeKey(IConfiguration config) => new(System.Security.Cryptography.SHA256.HashData(
+    Encoding.UTF8.GetBytes("cashly-2fa-challenge:" + (config["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!"))));
+
+static string IssueTwoFactorChallenge(IConfiguration config, AppUser user, Guid? sessionBranchId)
+{
+    var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+        issuer: "cashly-2fa",
+        audience: "cashly-2fa",
+        claims: new[]
+        {
+            new System.Security.Claims.Claim("uid", user.Id.ToString()),
+            new System.Security.Claims.Claim("sb", sessionBranchId?.ToString() ?? "")
+        },
+        expires: DateTime.UtcNow.AddMinutes(5),
+        signingCredentials: new SigningCredentials(TwoFactorChallengeKey(config), SecurityAlgorithms.HmacSha256));
+    return new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(token);
+}
+
+static (Guid UserId, Guid? SessionBranchId)? ReadTwoFactorChallenge(IConfiguration config, string? challenge)
+{
+    if (string.IsNullOrWhiteSpace(challenge)) return null;
+    try
+    {
+        var principal = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().ValidateToken(challenge, new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = "cashly-2fa",
+            ValidateAudience = true,
+            ValidAudience = "cashly-2fa",
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = TwoFactorChallengeKey(config),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30)
+        }, out _);
+        if (!Guid.TryParse(principal.FindFirst("uid")?.Value, out var userId)) return null;
+        Guid? branchId = Guid.TryParse(principal.FindFirst("sb")?.Value, out var b) ? b : null;
+        return (userId, branchId);
+    }
+    catch
+    {
+        return null;
+    }
+}
+
+// The signed-in person changing their own sign-in settings — never a support session or the
+// platform admin.
+static async Task<AppUser?> SelfForSecurityAsync(AppDbContext db, HttpContext http)
+{
+    if (http.User.FindFirst("impersonating")?.Value == "true") return null;
+    var userId = http.GetUserId();
+    if (userId == null) return null;
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId.Value && u.IsActive);
+    return user == null || user.Role == UserRole.SuperAdmin ? null : user;
+}
+
+static void TurnOffTwoFactor(AppUser user)
+{
+    user.TwoFactorEnabled = false;
+    user.TwoFactorSecret = null;
+    user.TwoFactorPendingSecret = null;
+    user.TwoFactorRecoveryCodes = null;
+}
+
+static async Task<int> SignOutEverywhereAsync(AppDbContext db, Guid userId, string? keepRefreshToken = null)
+{
+    var keepHash = string.IsNullOrWhiteSpace(keepRefreshToken) ? null
+        : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(keepRefreshToken)));
+    var query = db.RefreshTokens.IgnoreQueryFilters().Where(r => r.UserId == userId && r.RevokedAt == null);
+    if (keepHash != null) query = query.Where(r => r.TokenHash != keepHash);
+    var sessions = await query.ToListAsync();
+    foreach (var session in sessions) session.RevokedAt = DateTime.UtcNow;
+    return sessions.Count;
+}
+
 // A paired till: PIN only. The licence names the business, branch and device.
 authApi.MapPost("/pin-login", async (AppDbContext db, HttpContext http, Pos.Api.Services.IDeviceLicenseService licenses,
     Microsoft.Extensions.Caching.Memory.IMemoryCache cache, PinLoginDto dto) =>
@@ -3649,12 +3761,247 @@ authApi.MapPost("/email-login", async (AppDbContext db, HttpContext http, EmailL
         return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
     }
 
+    // Password right; with 2-step sign-in on, the code comes next (/api/auth/2fa/verify).
+    if (user.TwoFactorEnabled)
+        return Results.Ok(new { twoFactorRequired = true, challenge = IssueTwoFactorChallenge(builder.Configuration, user, null) });
+
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
     await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null, $"Email sign-in, IP {clientIp}");
     var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp);
     await db.SaveChangesAsync();
     return Results.Ok(SignInResponse(user, null, accessToken, refreshToken));
+});
+
+// The second step: a code from the authenticator app, or one of the recovery codes.
+authApi.MapPost("/2fa/verify", async (AppDbContext db, HttpContext http, Pos.Api.Services.SecretProtector protector, TwoFactorVerifyDto dto) =>
+{
+    const int MaxFailedAttempts = 5;
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    var challenge = ReadTwoFactorChallenge(builder.Configuration, dto.Challenge);
+    var user = challenge == null ? null
+        : await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == challenge.Value.UserId && u.IsActive);
+    if (challenge == null || user == null || !user.TwoFactorEnabled)
+        return Results.Json(new { message = "This sign-in took too long. Please start again.", expired = true }, statusCode: StatusCodes.Status401Unauthorized);
+    if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+        return Results.Json(new { message = $"Too many failed attempts. Try again in {Math.Ceiling((user.LockedUntil.Value - DateTime.UtcNow).TotalMinutes)} minute(s)." },
+            statusCode: StatusCodes.Status423Locked);
+
+    string? how = null;
+    var secret = protector.Unprotect(user.TwoFactorSecret);
+    if (secret != null && Pos.Api.Services.TwoFactorCodes.Verify(secret, dto.Code, user.TwoFactorLastStep) is long step)
+    {
+        user.TwoFactorLastStep = step;
+        how = "authenticator code";
+    }
+    else if (Pos.Api.Services.TwoFactorCodes.ConsumeRecoveryCode(user.TwoFactorRecoveryCodes, dto.Code) is string remaining)
+    {
+        user.TwoFactorRecoveryCodes = remaining;
+        how = "recovery code";
+    }
+
+    if (how == null)
+    {
+        user.FailedLoginAttempts += 1;
+        var lockedOut = user.FailedLoginAttempts >= MaxFailedAttempts;
+        if (lockedOut)
+        {
+            user.LockedUntil = DateTime.UtcNow.AddMinutes(15);
+            user.FailedLoginAttempts = 0;
+        }
+        await WriteAuditAsync(db, user.TenantId, user, lockedOut ? "AccountLocked" : "LoginFailed", "AppUser", user.Id,
+            null, $"Wrong 2-step code (IP {clientIp})");
+        await db.SaveChangesAsync();
+        return Results.Json(new { message = "That code is not right. Use the newest code from your app." }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null,
+        $"Signed in with 2-step ({how}), IP {clientIp}");
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, challenge.Value.SessionBranchId);
+    await db.SaveChangesAsync();
+    return Results.Ok(SignInResponse(user, challenge.Value.SessionBranchId, accessToken, refreshToken));
+});
+
+// --- The signed-in person's own sign-in settings: password and 2-step sign-in ---
+
+authApi.MapGet("/security", async (AppDbContext db, HttpContext http) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    return Results.Ok(new
+    {
+        email = user.Email,
+        hasPassword = user.PasswordHash != null,
+        twoFactorEnabled = user.TwoFactorEnabled,
+        recoveryCodesLeft = Pos.Api.Services.TwoFactorCodes.CountRecoveryCodes(user.TwoFactorRecoveryCodes)
+    });
+}).RequireAuthorization();
+
+authApi.MapPost("/security/password", async (AppDbContext db, HttpContext http, ChangePasswordDto dto) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    if (user.Email == null)
+        return Results.BadRequest(new { message = "Your account has no email yet. Ask your owner to add one in Staff & Pin Access." });
+    if (user.PasswordHash != null && (string.IsNullOrEmpty(dto.CurrentPassword) || !BCrypt.Net.BCrypt.Verify(dto.CurrentPassword, user.PasswordHash)))
+        return Results.BadRequest(new { message = "Your current password is not right." });
+    var problem = PasswordProblem(dto.NewPassword);
+    if (problem != null) return Results.BadRequest(new { message = problem });
+
+    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NewPassword);
+    // Anyone who knew the old password is signed out; this device stays signed in.
+    var signedOut = await SignOutEverywhereAsync(db, user.Id, dto.RefreshToken);
+    await WriteAuditAsync(db, user.TenantId, user, "PasswordChanged", "AppUser", user.Id, null, $"{signedOut} other session(s) signed out");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Password changed.", signedOutSessions = signedOut });
+}).RequireAuthorization();
+
+// Step 1 of turning on 2-step sign-in: a new secret for the app to scan. Nothing changes until a
+// code from it is confirmed.
+authApi.MapPost("/security/2fa/setup", async (AppDbContext db, HttpContext http, Pos.Api.Services.SecretProtector protector) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    if (user.TwoFactorEnabled) return Results.BadRequest(new { message = "2-step sign-in is already on." });
+
+    var secret = Pos.Api.Services.TwoFactorCodes.NewSecret();
+    user.TwoFactorPendingSecret = protector.Protect(secret);
+    await db.SaveChangesAsync();
+    var account = user.Email ?? user.Username;
+    return Results.Ok(new { secret, otpauthUri = Pos.Api.Services.TwoFactorCodes.SetupUri(secret, account) });
+}).RequireAuthorization();
+
+// Step 2: the first code from the app proves it is set up. Returns the recovery codes, once.
+authApi.MapPost("/security/2fa/enable", async (AppDbContext db, HttpContext http, Pos.Api.Services.SecretProtector protector, TwoFactorCodeDto dto) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    var pending = protector.Unprotect(user.TwoFactorPendingSecret);
+    if (pending == null) return Results.BadRequest(new { message = "Start the setup again." });
+    if (Pos.Api.Services.TwoFactorCodes.Verify(pending, dto.Code, 0) is not long step)
+        return Results.BadRequest(new { message = "That code is not right. Check the time on your phone and use the newest code." });
+
+    var recoveryCodes = Pos.Api.Services.TwoFactorCodes.NewRecoveryCodes();
+    user.TwoFactorEnabled = true;
+    user.TwoFactorSecret = user.TwoFactorPendingSecret;
+    user.TwoFactorPendingSecret = null;
+    user.TwoFactorLastStep = step;
+    user.TwoFactorRecoveryCodes = Pos.Api.Services.TwoFactorCodes.SerializeHashes(recoveryCodes);
+    await WriteAuditAsync(db, user.TenantId, user, "TwoFactorTurnedOn", "AppUser", user.Id, null, null);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { recoveryCodes });
+}).RequireAuthorization();
+
+// Turning it off, or making new recovery codes, needs a current code (or a recovery code).
+authApi.MapPost("/security/2fa/disable", async (AppDbContext db, HttpContext http, Pos.Api.Services.SecretProtector protector, TwoFactorCodeDto dto) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    if (!user.TwoFactorEnabled) return Results.Ok(new { message = "2-step sign-in is already off." });
+    var secret = protector.Unprotect(user.TwoFactorSecret);
+    var valid = (secret != null && Pos.Api.Services.TwoFactorCodes.Verify(secret, dto.Code, user.TwoFactorLastStep) != null)
+                || Pos.Api.Services.TwoFactorCodes.ConsumeRecoveryCode(user.TwoFactorRecoveryCodes, dto.Code) != null;
+    if (!valid) return Results.BadRequest(new { message = "That code is not right." });
+
+    TurnOffTwoFactor(user);
+    await WriteAuditAsync(db, user.TenantId, user, "TwoFactorTurnedOff", "AppUser", user.Id, null, "By the account holder");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "2-step sign-in is off." });
+}).RequireAuthorization();
+
+authApi.MapPost("/security/2fa/recovery-codes", async (AppDbContext db, HttpContext http, Pos.Api.Services.SecretProtector protector, TwoFactorCodeDto dto) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    var secret = protector.Unprotect(user.TwoFactorSecret);
+    if (!user.TwoFactorEnabled || secret == null) return Results.BadRequest(new { message = "2-step sign-in is off." });
+    if (Pos.Api.Services.TwoFactorCodes.Verify(secret, dto.Code, user.TwoFactorLastStep) is not long step)
+        return Results.BadRequest(new { message = "That code is not right." });
+
+    var recoveryCodes = Pos.Api.Services.TwoFactorCodes.NewRecoveryCodes();
+    user.TwoFactorLastStep = step;
+    user.TwoFactorRecoveryCodes = Pos.Api.Services.TwoFactorCodes.SerializeHashes(recoveryCodes);
+    await WriteAuditAsync(db, user.TenantId, user, "RecoveryCodesRenewed", "AppUser", user.Id, null, null);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { recoveryCodes });
+}).RequireAuthorization();
+
+// --- Forgot password: a one-time link by email (inert until email is configured) ---
+
+authApi.MapPost("/forgot-password", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender, ForgotPasswordDto dto) =>
+{
+    if (!emailSender.IsConfigured) return Results.Ok(new { emailEnabled = false });
+
+    // The same answer whether or not the email has an account, so the form cannot be used to find
+    // out who has one.
+    var answer = new { emailEnabled = true, message = "If an account uses that email, a link to set a new password is on its way. It works for 30 minutes." };
+    var address = NormalizeEmail(dto.Email);
+    var user = address == null ? null
+        : await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Email == address && u.IsActive && u.Role != UserRole.SuperAdmin);
+    if (user == null || address == null) return Results.Ok(answer);
+
+    // One email every two minutes at most, so the form cannot flood somebody's inbox.
+    var now = DateTime.UtcNow;
+    var recent = await db.PasswordResetTokens.IgnoreQueryFilters()
+        .AnyAsync(t => t.UserId == user.Id && t.CreatedAt > now.AddMinutes(-2));
+    if (recent) return Results.Ok(answer);
+
+    // Only the newest link works.
+    var older = await db.PasswordResetTokens.IgnoreQueryFilters().Where(t => t.UserId == user.Id && t.UsedAt == null).ToListAsync();
+    foreach (var token in older) token.UsedAt = now;
+
+    var raw = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+        .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    db.PasswordResetTokens.Add(new PasswordResetToken
+    {
+        UserId = user.Id,
+        TokenHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(raw))),
+        ExpiresAt = now.AddMinutes(30),
+        CreatedByIp = http.Connection.RemoteIpAddress?.ToString()
+    });
+    await WriteAuditAsync(db, user.TenantId, user, "PasswordResetRequested", "AppUser", user.Id, null, $"IP {http.Connection.RemoteIpAddress}");
+    await db.SaveChangesAsync();
+
+    var link = $"{emailSender.PublicUrl}/reset-password?token={raw}";
+    var name = System.Net.WebUtility.HtmlEncode(user.FullName);
+    var text = $"Hello {user.FullName},\n\nSomeone asked to set a new password for your Cashly POS back office ({address}).\n\n" +
+               $"Open this link within 30 minutes to choose a new password:\n{link}\n\n" +
+               "If it was not you, ignore this email — your password stays the same.\n\nCashly POS";
+    var html = $"<p>Hello {name},</p><p>Someone asked to set a new password for your Cashly POS back office ({System.Net.WebUtility.HtmlEncode(address)}).</p>" +
+               $"<p><a href=\"{link}\" style=\"display:inline-block;padding:10px 18px;background:#14b8a6;color:#fff;border-radius:8px;text-decoration:none;font-weight:bold\">Set a new password</a></p>" +
+               "<p>The link works for 30 minutes, once. If it was not you, ignore this email — your password stays the same.</p><p>Cashly POS</p>";
+    // Sent in the background so the answer takes the same time whether or not there is an account.
+    _ = Task.Run(async () =>
+    {
+        try { await emailSender.SendAsync(address, "Set a new Cashly POS password", html, text); }
+        catch (Exception ex) { Console.WriteLine($"[Email] Password reset email to {address} failed: {ex.Message}"); }
+    });
+    return Results.Ok(answer);
+});
+
+authApi.MapPost("/reset-password", async (AppDbContext db, ResetPasswordWithTokenDto dto) =>
+{
+    var expired = Results.BadRequest(new { message = "This link has expired or was already used. Ask for a new one from the sign-in screen." });
+    if (string.IsNullOrWhiteSpace(dto.Token)) return expired;
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.Token.Trim())));
+    var token = await db.PasswordResetTokens.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.TokenHash == hash);
+    if (token == null || token.UsedAt != null || token.ExpiresAt < DateTime.UtcNow) return expired;
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == token.UserId && u.IsActive);
+    if (user == null) return expired;
+    var problem = PasswordProblem(dto.NewPassword);
+    if (problem != null) return Results.BadRequest(new { message = problem });
+
+    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NewPassword);
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    token.UsedAt = DateTime.UtcNow;
+    // 2-step sign-in, when on, still applies: a reset link changes the password, nothing else.
+    var signedOut = await SignOutEverywhereAsync(db, user.Id);
+    await WriteAuditAsync(db, user.TenantId, user, "PasswordReset", "AppUser", user.Id, null, $"By email link; {signedOut} session(s) signed out");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Your new password is set. Sign in with it now.", email = user.Email });
 });
 
 authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
@@ -3736,6 +4083,11 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
     // second shop) pins the session there instead of their home branch.
     var (sessionBranchId, branchError) = await ResolveSessionBranchAsync(db, user, dto.BranchId);
     if (branchError != null) return branchError;
+
+    // With 2-step sign-in on, username + PIN needs the code too — otherwise it would be the way
+    // around it. (A till's PIN-only sign-in does not ask: the till is a trusted, paired device.)
+    if (user.TwoFactorEnabled)
+        return Results.Ok(new { twoFactorRequired = true, challenge = IssueTwoFactorChallenge(builder.Configuration, user, sessionBranchId) });
 
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
@@ -7768,7 +8120,7 @@ api.MapGet("/users", async (AppDbContext db, HttpContext http, Guid tenantId, Gu
     {
         id = u.Id, tenantId = u.TenantId, branchId = u.BranchId, fullName = u.FullName, username = u.Username,
         role = u.Role.ToString(), isActive = u.IsActive, createdAt = u.CreatedAt,
-        email = u.Email, hasPassword = u.PasswordHash != null,
+        email = u.Email, hasPassword = u.PasswordHash != null, twoFactorEnabled = u.TwoFactorEnabled,
         permissions = new { u.CanViewFinancialReports, u.CanManageInventory, u.CanManageMenuAndTax, u.CanGiveDiscounts, u.CanVoidOrders }
     }));
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "view"));
@@ -7909,6 +8261,12 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
         if (changedEmail == null) user.PasswordHash = null;
     }
     if (!string.IsNullOrEmpty(dto.Password)) user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+    // A staff member who lost their phone: the owner turns their 2-step sign-in off, and they set it up again.
+    if (dto.DisableTwoFactor == true && user.TwoFactorEnabled)
+    {
+        TurnOffTwoFactor(user);
+        await WriteAuditAsync(db, user.TenantId, await accessor.GetCurrentUserAsync(http), "TwoFactorTurnedOff", "AppUser", user.Id, null, "By a manager");
+    }
     if (dto.IsActive.HasValue) user.IsActive = dto.IsActive.Value;
     if (dto.CanViewFinancialReports.HasValue) user.CanViewFinancialReports = dto.CanViewFinancialReports.Value;
     if (dto.CanManageInventory.HasValue) user.CanManageInventory = dto.CanManageInventory.Value;
@@ -7938,7 +8296,7 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     {
         id = user.Id, tenantId = user.TenantId, branchId = user.BranchId, fullName = user.FullName, username = user.Username,
         role = user.Role.ToString(), isActive = user.IsActive, createdAt = user.CreatedAt,
-        email = user.Email, hasPassword = user.PasswordHash != null,
+        email = user.Email, hasPassword = user.PasswordHash != null, twoFactorEnabled = user.TwoFactorEnabled,
         department = user.Department, designation = user.Designation, employmentType = user.EmploymentType.ToString(),
         monthlyRatePKR = user.MonthlyRatePKR, hourlyRatePKR = user.HourlyRatePKR, bankAccountNumber = user.BankAccountNumber,
         joiningDate = user.JoiningDate, isPayrollEligible = user.IsPayrollEligible, departmentId = user.DepartmentId, designationId = user.DesignationId,
@@ -10845,6 +11203,7 @@ app.MapGet("/api/admin/tenants/{tenantId:guid}/owners", async (Guid tenantId, Ap
         {
             u.Id, u.FullName, u.Username, u.Email, u.IsActive,
             hasPassword = u.PasswordHash != null,
+            twoFactorEnabled = u.TwoFactorEnabled,
             lockedUntil = u.LockedUntil > DateTime.UtcNow ? u.LockedUntil : null
         })
         .ToListAsync();
@@ -10886,16 +11245,17 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-passwo
     user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(temporary);
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
+    // A lost phone: without this the owner could not get past the 2-step code.
+    var twoFactorTurnedOff = dto.DisableTwoFactor && user.TwoFactorEnabled;
+    if (dto.DisableTwoFactor) TurnOffTwoFactor(user);
 
     // Whoever held the old password (or a stolen session) is signed out everywhere.
-    var sessions = await db.RefreshTokens.IgnoreQueryFilters()
-        .Where(r => r.UserId == user.Id && r.RevokedAt == null).ToListAsync();
-    foreach (var session in sessions) session.RevokedAt = DateTime.UtcNow;
+    var signedOut = await SignOutEverywhereAsync(db, user.Id);
 
     await WriteAuditAsync(db, tenantId, await accessor.GetCurrentUserAsync(http), "PasswordResetBySupport", "AppUser", user.Id,
-        hadEmail, $"Temporary password set for {email}; {sessions.Count} session(s) signed out");
+        hadEmail, $"Temporary password set for {email}; {signedOut} session(s) signed out" + (twoFactorTurnedOff ? "; 2-step sign-in turned off" : ""));
     await db.SaveChangesAsync();
-    return Results.Ok(new { email, temporaryPassword = temporary, signedOutSessions = sessions.Count });
+    return Results.Ok(new { email, temporaryPassword = temporary, signedOutSessions = signedOut, twoFactorTurnedOff });
 }).RequireAuthorization();
 
 // ============================================================
@@ -13807,10 +14167,16 @@ public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, stri
 /// <summary>Email "" removes the back-office sign-in; Password is set only when sent.</summary>
 public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders,
     string? Department = null, string? Designation = null, EmploymentType? EmploymentType = null, decimal? MonthlyRatePKR = null, decimal? HourlyRatePKR = null, string? BankAccountNumber = null, DateTime? JoiningDate = null, bool? IsPayrollEligible = null,
-    Guid? DepartmentId = null, Guid? DesignationId = null, string? Email = null, string? Password = null);
+    Guid? DepartmentId = null, Guid? DesignationId = null, string? Email = null, string? Password = null, bool? DisableTwoFactor = null);
 public record PinLoginDto(string? License, string? DeviceFingerprint, string? PinCode);
-/// <summary>Email is needed only when the account has none yet.</summary>
-public record ResetPasswordDto(string? Email);
+/// <summary>Email is needed only when the account has none yet. DisableTwoFactor is for a lost phone.</summary>
+public record ResetPasswordDto(string? Email, bool DisableTwoFactor = false);
+public record TwoFactorVerifyDto(string? Challenge, string? Code);
+public record TwoFactorCodeDto(string? Code);
+/// <summary>RefreshToken keeps the device making the change signed in; every other session is signed out.</summary>
+public record ChangePasswordDto(string? CurrentPassword, string? NewPassword, string? RefreshToken);
+public record ForgotPasswordDto(string? Email);
+public record ResetPasswordWithTokenDto(string? Token, string? NewPassword);
 public record EmailLoginDto(string? Email, string? Password);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);

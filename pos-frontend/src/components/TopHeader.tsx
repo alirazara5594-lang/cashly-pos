@@ -16,10 +16,12 @@ import {
   ChefHat,
   Check,
   User,
-  LogOut
+  LogOut,
+  ShieldCheck
 } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 import { AlertsBell } from './AlertsBell';
+import { AccountSecurityModal } from './AccountSecurityModal';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { MyBranch } from '../types';
@@ -69,6 +71,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  // Password and 2-step sign-in for the person signed in (not the platform admin's own account).
+  const [isSecurityOpen, setIsSecurityOpen] = useState(false);
+  const canManageOwnSignIn = !!currentUser && currentUser.role !== 'SuperAdmin';
 
   // Staff pinned to a branch switch on the server: the session moves to another branch they
   // cover, so what they ring up lands there. Owners and head office staff already see every
@@ -316,6 +321,15 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                   {currentUser.role || 'Staff'}
                 </span>
               </button>
+              {canManageOwnSignIn && (
+                <button
+                  onClick={() => setIsSecurityOpen(true)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 text-xs font-semibold transition cursor-pointer"
+                  title="My sign-in & security — password and 2-step sign-in"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                </button>
+              )}
               <button
                 onClick={onLogout}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs font-semibold transition cursor-pointer"
@@ -325,6 +339,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               </button>
             </div>
           )}
+          {isSecurityOpen && <AccountSecurityModal onClose={() => setIsSecurityOpen(false)} />}
 
           <button
             onClick={onOpenCallOrder}

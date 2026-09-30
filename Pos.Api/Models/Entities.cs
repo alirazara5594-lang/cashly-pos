@@ -845,6 +845,17 @@ public class AppUser
     /// business: two people at one restaurant cannot share a PIN.</summary>
     public string? PinLookup { get; set; }
 
+    // 2-step sign-in for the back office: a code from an authenticator app (see Services/TwoFactor.cs).
+    public bool TwoFactorEnabled { get; set; }
+    /// <summary>The authenticator secret, encrypted (SecretProtector).</summary>
+    public string? TwoFactorSecret { get; set; }
+    /// <summary>A secret being set up, until the first code from it is confirmed. Encrypted.</summary>
+    public string? TwoFactorPendingSecret { get; set; }
+    /// <summary>JSON array of SHA-256 hashes of the unused recovery codes.</summary>
+    public string? TwoFactorRecoveryCodes { get; set; }
+    /// <summary>The time step of the last code accepted, so a code cannot be used twice.</summary>
+    public long TwoFactorLastStep { get; set; }
+
     public UserRole Role { get; set; } = UserRole.Cashier;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -1658,6 +1669,20 @@ public class AddOnCatalogItem
 // token that gets reused after the legitimate client already rotated is a
 // detectable signal, not a silent free pass.
 // ============================================================
+
+/// <summary>
+/// A "forgot password" link. Only a hash of the token is kept; it works once and for 30 minutes.
+/// </summary>
+public class PasswordResetToken
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public string TokenHash { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime ExpiresAt { get; set; }
+    public DateTime? UsedAt { get; set; }
+    public string? CreatedByIp { get; set; }
+}
 
 public class RefreshToken
 {

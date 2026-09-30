@@ -53,6 +53,7 @@ public class AppDbContext : DbContext
     public DbSet<CashShift> CashShifts => Set<CashShift>();
     public DbSet<CashEntry> CashEntries => Set<CashEntry>();
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<StockTransferOrder> StockTransferOrders => Set<StockTransferOrder>();
     public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
     public DbSet<Supplier> Suppliers => Set<Supplier>();
@@ -153,6 +154,8 @@ public class AppDbContext : DbContext
             .HasIndex(u => new { u.TenantId, u.PinLookup })
             .IsUnique()
             .HasFilter("\"PinLookup\" IS NOT NULL");
+        modelBuilder.Entity<PasswordResetToken>().HasIndex(t => t.TokenHash).IsUnique();
+        modelBuilder.Entity<PasswordResetToken>().HasIndex(t => t.UserId);
 
         modelBuilder.Entity<Company>()
             .HasIndex(c => c.TenantId);
