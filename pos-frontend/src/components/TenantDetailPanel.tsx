@@ -7,7 +7,7 @@ import {
 import { posApi, getApiErrorMessage } from '../services/api';
 import type {
   TenantOverview, PlanChangePreview, PlanOption,
-  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine
+  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine, TenantOwnerAccount
 } from '../types';
 
 /**
@@ -597,6 +597,8 @@ const OverviewTab: React.FC<{
         </button>
       </Section>
 
+      <OwnerSignIn tenantId={tenantIdFrom(data)} />
+
       <div className="grid grid-cols-2 gap-2">
         <button
           disabled={busy}
@@ -640,6 +642,115 @@ const OverviewTab: React.FC<{
         </div>
       )}
     </div>
+  );
+};
+
+/**
+ * An owner who forgot their back-office password calls support (Cashly sends no email yet). This
+ * sets a temporary password to read out to them — shown once — unlocks the account and signs it
+ * out everywhere. They change it in Staff & Pin Access after signing in.
+ */
+const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
+  const [owners, setOwners] = useState<TenantOwnerAccount[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [emailDrafts, setEmailDrafts] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [issued, setIssued] = useState<{ userId: string; email: string; password: string; signedOut: number } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getTenantOwners(tenantId)
+      .then(rows => { if (!cancelled) setOwners(rows); })
+      .catch(err => { if (!cancelled) setLoadError(getApiErrorMessage(err, 'Could not load the owner accounts.')); });
+    return () => { cancelled = true; };
+  }, [tenantId]);
+
+  const reset = async (owner: TenantOwnerAccount) => {
+    const email = (emailDrafts[owner.id] ?? '').trim();
+    if (!owner.email && !email) {
+      setError('Enter the owner\'s email first — it becomes their back-office sign-in.');
+      return;
+    }
+    if (!window.confirm(`Set a new temporary password for ${owner.fullName}? They will be signed out on every device.`)) return;
+    setBusyId(owner.id);
+    setError(null);
+    setIssued(null);
+    setCopied(false);
+    try {
+      const res = await posApi.resetOwnerPassword(tenantId, owner.id, owner.email ? undefined : email);
+      setIssued({ userId: owner.id, email: res.email, password: res.temporaryPassword, signedOut: res.signedOutSessions });
+      setOwners(await posApi.getTenantOwners(tenantId));
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Could not reset the password.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Section icon={<KeyRound className="w-3.5 h-3.5" />} title="Owner sign-in">
+      {loadError && <p className="text-[11px] text-rose-600">{loadError}</p>}
+      {!owners && !loadError && <p className="text-[11px] text-slate-400">Loading…</p>}
+      {owners?.length === 0 && <p className="text-[11px] text-slate-500">No owner accounts yet.</p>}
+
+      <div className="space-y-2">
+        {owners?.map(o => (
+          <div key={o.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-slate-900">{o.fullName}</div>
+                <div className="text-[10px] text-slate-500 font-mono">@{o.username}</div>
+                <div className="text-[11px] text-slate-600 truncate">{o.email ?? <span className="text-amber-700">No email — signs in with username + PIN only</span>}</div>
+              </div>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                {!o.isActive && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-600">Disabled</span>}
+                {o.lockedUntil && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">Locked</span>}
+                {o.email && !o.hasPassword && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">No password</span>}
+              </div>
+            </div>
+            {!o.email && (
+              <input
+                type="email"
+                value={emailDrafts[o.id] ?? ''}
+                onChange={(e) => setEmailDrafts(d => ({ ...d, [o.id]: e.target.value }))}
+                placeholder="Owner's email for back-office sign-in"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs"
+              />
+            )}
+            <button
+              disabled={busyId !== null}
+              onClick={() => reset(o)}
+              className="w-full py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-[11px] font-bold transition"
+            >
+              {busyId === o.id ? 'Resetting…' : o.lockedUntil ? 'Unlock & reset password' : 'Reset password'}
+            </button>
+            {issued?.userId === o.id && (
+              <div className="p-2.5 rounded-lg bg-teal-50 border border-teal-200 space-y-1.5">
+                <div className="text-[10px] font-bold text-teal-800 uppercase">Temporary password — shown once</div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 px-2 py-1 rounded bg-white border border-teal-200 text-sm font-mono font-bold text-slate-900 tracking-wider select-all">
+                    {issued.password}
+                  </code>
+                  <button
+                    onClick={() => { navigator.clipboard?.writeText(issued.password).then(() => setCopied(true)).catch(() => {}); }}
+                    className="px-2 py-1 rounded bg-white border border-teal-200 text-[10px] font-bold text-teal-700"
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <p className="text-[10px] text-teal-800 leading-snug">
+                  Read it to the owner. They sign in with <strong>{issued.email}</strong> and this password, then set their own
+                  in Staff &amp; Pin Access (key button). {issued.signedOut > 0 && `${issued.signedOut} old session(s) were signed out.`}
+                </p>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {error && <p className="text-[11px] text-rose-600">{error}</p>}
+    </Section>
   );
 };
 

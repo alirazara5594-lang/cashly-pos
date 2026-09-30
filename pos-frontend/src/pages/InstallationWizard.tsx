@@ -21,7 +21,8 @@ import {
   Server, 
   Network, 
   Copy,
-  Check
+  Check,
+  KeyRound
 } from 'lucide-react';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
@@ -52,6 +53,14 @@ const REVIEW_STEP = 5;
 
 const POS_EDITIONS: SubscriptionTier[] = ['Starter', 'Standard', 'Professional'];
 
+/** All one digit (0000) or a straight run up or down (1234, 654321). */
+const isEasyPin = (pin: string) => {
+  if (/^(\d)\1+$/.test(pin)) return true;
+  const digits = pin.split('').map(Number);
+  const steps = digits.slice(1).map((d, i) => d - digits[i]);
+  return steps.every(s => s === 1) || steps.every(s => s === -1);
+};
+
 export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceSignup = false }) => {
   const navigate = useNavigate();
   const { setTenants, setDeploymentMode, setIsInstalled } = usePosStore();
@@ -70,7 +79,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     restaurantName: string; 
     username: string; 
     pin: string; 
-    serverUrl?: string; 
+    serverUrl?: string;
     systemType: InstallationSystemType;
     erpRole?: ErpDeploymentRole;
   } | null>(null);
@@ -89,14 +98,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const [pairingInputToken, setPairingInputToken] = useState('');
   const [isPairing, setIsPairing] = useState(false);
 
-  // Form State
-  const [restaurantName, setRestaurantName] = useState('Royal Grill & Kitchen');
+  // Form State. A public registration starts blank (the placeholders show examples): sample values
+  // left in place would register a fake business, and the second visitor to keep them hits a name
+  // that is already taken.
+  const [restaurantName, setRestaurantName] = useState(forceSignup ? '' : 'Royal Grill & Kitchen');
   const [businessType, setBusinessType] = useState<BusinessType>('Restaurant');
   const [currency, setCurrency] = useState('PKR');
   const [countryCode, setCountryCode] = useState('PK');
-  const [city, setCity] = useState('Islamabad');
-  const [address, setAddress] = useState('Sector F-7 Markaz');
-  const [phone, setPhone] = useState('051-1234567');
+  const [city, setCity] = useState(forceSignup ? '' : 'Islamabad');
+  const [address, setAddress] = useState(forceSignup ? '' : 'Sector F-7 Markaz');
+  const [phone, setPhone] = useState(forceSignup ? '' : '051-1234567');
 
   // Single Branch Settings (POS Only)
   const [mainBranchName, setMainBranchName] = useState('Main Dining Branch');
@@ -125,11 +136,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // owner can add branches here or at any time later from Locations & Head Office.
   const [branches, setBranches] = useState<BranchInitPayload[]>([]);
 
-  // Admin Account
-  const [adminFullName, setAdminFullName] = useState('Restaurant Owner');
-  const [adminUsername, setAdminUsername] = useState('admin');
-  const [adminPin, setAdminPin] = useState('1234');
+  // Admin Account. Never a default username or PIN on a registration: admin / 1234 kept by a
+  // visitor is an account anyone can guess.
+  const [adminFullName, setAdminFullName] = useState(forceSignup ? '' : 'Restaurant Owner');
+  const [adminUsername, setAdminUsername] = useState(forceSignup ? '' : 'admin');
+  const [adminPin, setAdminPin] = useState(forceSignup ? '' : '1234');
   const [adminEmail, setAdminEmail] = useState('');
+  // Back-office sign-in for a new registration (email + password); the PIN is for the tills.
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
 
   // Offline & Server Settings
   const enableOfflineDb = true;
@@ -175,7 +190,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     let cancelled = false;
     posApi.getSetupStatus()
       .then((status) => {
-        if (!cancelled && status?.isConfigured) setSignupMode(true);
+        if (!cancelled && status?.isConfigured) {
+          setSignupMode(true);
+          setAdminUsername('');
+          setAdminPin('');
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -314,8 +333,17 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       if (!adminFullName.trim()) return 'Full name is required.';
       if (adminUsername.trim().length < 3) return 'Username must be at least 3 characters.';
       if (!/^\d{4,6}$/.test(adminPin.trim())) return 'Security PIN must be 4 to 6 digits.';
+      if (signupMode && isEasyPin(adminPin.trim())) {
+        return 'Choose a PIN that is harder to guess — not 1234, 0000 or similar.';
+      }
       if (signupMode && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
         return 'A valid email address is required to register the business.';
+      }
+      if (signupMode) {
+        if (adminPassword.length < 8 || !/[A-Za-z]/.test(adminPassword) || !/\d/.test(adminPassword)) {
+          return 'Choose a password of at least 8 characters, with letters and numbers.';
+        }
+        if (adminPassword !== adminPasswordConfirm) return 'The two passwords do not match.';
       }
     }
 
@@ -394,6 +422,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           country: country?.name,
           adminUsername: adminUsername.trim().toLowerCase(),
           adminPin: adminPin.trim(),
+          adminPassword,
           businessType,
           // POS Only: the plan is its POS version. POS + ERP: the ERP is the same for everyone and
           // each branch carries its own version; Standard is only what a branch falls back to.
@@ -431,6 +460,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           systemType,
           erpRole
         });
+        // The sign-in screen on this device fills in the new owner's email (and the restaurant, for
+        // the username fallback).
+        try {
+          localStorage.setItem('cashly_login_email', adminEmail.trim().toLowerCase());
+          localStorage.setItem('cashly_restaurant', restaurantName.trim());
+        } catch { /* optional */ }
         return;
       }
 
@@ -477,6 +512,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       setDeploymentMode(deploymentMode);
       setIsInstalled(true);
       localStorage.setItem('cashly_is_installed', 'true');
+      localStorage.setItem('cashly_restaurant', restaurantName.trim());
       localStorage.setItem('cashly_deployment_mode', deploymentMode);
       localStorage.setItem('cashly_offline_enabled', enableOfflineDb ? 'true' : 'false');
       localStorage.setItem('cashly_system_type', systemType);
@@ -606,6 +642,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <ShieldCheck className="w-4 h-4 text-teal-600" /> Master Admin Login
             </div>
             <div className="flex justify-between items-center py-1 border-b border-slate-100">
+              <span className="text-xs text-slate-500">Restaurant</span>
+              <span className="text-sm text-slate-900 font-bold">{signupSuccess.restaurantName}</span>
+            </div>
+            {signupMode && adminEmail.trim() && (
+              <div className="flex justify-between items-center py-1 border-b border-slate-100">
+                <span className="text-xs text-slate-500">Back office email</span>
+                <span className="text-sm text-slate-900 font-bold">{adminEmail.trim().toLowerCase()}</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center py-1 border-b border-slate-100">
               <span className="text-xs text-slate-500">Username</span>
               <span className="text-sm text-slate-900 font-mono font-bold">{signupSuccess.username}</span>
             </div>
@@ -615,7 +661,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <span className="text-sm text-slate-400 font-mono font-bold tracking-widest">••••</span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Sign in with the PIN you chose during setup. Change it after signing in if you kept the default.
+              {signupMode
+                ? <>Back office: sign in with your <strong>email and password</strong>. On a till or tablet: just your <strong>PIN</strong>.</>
+                : 'Sign in with your restaurant name, username and the PIN you chose during setup.'}
             </p>
           </div>
 
@@ -655,10 +703,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
           <button
             type="button"
-            onClick={() => navigate(isErp ? '/director' : '/')}
+            onClick={() => navigate(signupMode ? '/' : isErp ? '/director' : '/')}
             className="w-full py-3.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition shadow-lg shadow-teal-500/25 cursor-pointer flex items-center justify-center gap-2"
           >
-            {isErp ? (
+            {signupMode ? (
+              // A new registration is not signed in yet; the next screen is the login.
+              <>
+                <KeyRound className="w-4 h-4" /> Go to Sign In
+              </>
+            ) : isErp ? (
               <>
                 <Building2 className="w-4 h-4" /> Open ERP Director Dashboard
               </>
@@ -1425,7 +1478,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       type="text" 
                       value={adminUsername}
                       onChange={(e) => setAdminUsername(e.target.value)}
-                      placeholder="admin"
+                      placeholder="e.g. ali.owner"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
                     />
                   </div>
@@ -1439,24 +1492,58 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       maxLength={6}
                       value={adminPin}
                       onChange={(e) => setAdminPin(e.target.value)}
-                      placeholder="1234"
+                      placeholder="4 to 6 digits"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
                     />
                   </div>
 
                   {signupMode && (
-                    <div className="space-y-1.5 md:col-span-3">
-                      <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                        <Mail className="w-3.5 h-3.5 text-teal-600" /> Email Address*
-                      </label>
-                      <input 
-                        type="email" 
-                        value={adminEmail}
-                        onChange={(e) => setAdminEmail(e.target.value)}
-                        placeholder="owner@example.com"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
-                      />
-                    </div>
+                    <>
+                      {/* The back-office sign-in, the way Toast does it: email + password. The PIN
+                          above is for the tills. */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                          <Mail className="w-3.5 h-3.5 text-teal-600" /> Email Address*
+                        </label>
+                        <input
+                          type="email"
+                          value={adminEmail}
+                          onChange={(e) => setAdminEmail(e.target.value)}
+                          autoComplete="email"
+                          placeholder="owner@example.com"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-teal-600" /> Password*
+                        </label>
+                        <input
+                          type="password"
+                          value={adminPassword}
+                          onChange={(e) => setAdminPassword(e.target.value)}
+                          autoComplete="new-password"
+                          placeholder="8+ characters, letters and numbers"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-teal-600" /> Confirm Password*
+                        </label>
+                        <input
+                          type="password"
+                          value={adminPasswordConfirm}
+                          onChange={(e) => setAdminPasswordConfirm(e.target.value)}
+                          autoComplete="new-password"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        />
+                      </div>
+                      <p className="md:col-span-3 text-[11px] text-slate-500 -mt-1">
+                        <strong>Back office</strong> (reports, menu, settings): sign in with your email and password.{' '}
+                        <strong>Tills and tablets</strong>: just your PIN.
+                      </p>
+                    </>
                   )}
                 </div>
 

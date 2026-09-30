@@ -144,6 +144,15 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<AppUser>()
             .HasIndex(u => new { u.TenantId, u.Username })
             .IsUnique();
+        // One email per account on the whole platform; one PIN per person within a business.
+        modelBuilder.Entity<AppUser>()
+            .HasIndex(u => u.Email)
+            .IsUnique()
+            .HasFilter("\"Email\" IS NOT NULL");
+        modelBuilder.Entity<AppUser>()
+            .HasIndex(u => new { u.TenantId, u.PinLookup })
+            .IsUnique()
+            .HasFilter("\"PinLookup\" IS NOT NULL");
 
         modelBuilder.Entity<Company>()
             .HasIndex(c => c.TenantId);

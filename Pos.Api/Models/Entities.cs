@@ -833,6 +833,18 @@ public class AppUser
     public string FullName { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
     public string PinCodeHash { get; set; } = string.Empty;
+
+    // Sign-in the way Toast does it: on a till paired to a branch, staff type only their PIN; in
+    // the back office, owners and managers use email + password.
+    /// <summary>Back-office sign-in. Unique across the platform, stored lower-case; null for
+    /// staff who only ever use a till.</summary>
+    public string? Email { get; set; }
+    public string? PasswordHash { get; set; }
+    /// <summary>Keyed hash of the PIN (HMAC with the server secret, per business), so a till can
+    /// find whose PIN was typed without trying every staff member's BCrypt hash. Unique within a
+    /// business: two people at one restaurant cannot share a PIN.</summary>
+    public string? PinLookup { get; set; }
+
     public UserRole Role { get; set; } = UserRole.Cashier;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

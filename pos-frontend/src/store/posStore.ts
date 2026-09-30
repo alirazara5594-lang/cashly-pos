@@ -131,13 +131,25 @@ function readStoredUser(): CurrentUser | null {
   return { ...raw, role: normalizeRole(raw.role) ?? 'Cashier' } as CurrentUser;
 }
 
+/** The branch picked on the login screen, remembered on this device. */
+export const LOGIN_BRANCH_KEY = 'cashly_login_branch';
+
 /**
- * The branch a session opens at: the one the user is signed in at, else the branch this till is
- * paired to, else the first location that sells. The head office and warehouses come last — they
- * have no till, so opening the POS there helps no one.
+ * The branch a session opens at: the one the user is signed in at, else the one picked on the
+ * login screen, else the branch this till is paired to, else the first location that sells. The
+ * head office and warehouses come last — they have no till, so opening the POS there helps no one.
  */
 function pickActiveBranch(branches: Branch[], sessionBranchId?: string | null): Branch | null {
   const byId = (id?: string | null) => (id ? branches.find(b => b.id === id) : undefined);
+  // The branch chosen on the login screen. The server pins branch staff to it; an owner's session
+  // covers every branch, so for them this is simply where the app opens.
+  const loginBranchId = (() => {
+    try {
+      return localStorage.getItem(LOGIN_BRANCH_KEY);
+    } catch {
+      return null;
+    }
+  })();
   const tillBranchId = (() => {
     try {
       return isActivated() ? getStoredTerminal()?.branchId ?? null : null;
@@ -146,6 +158,7 @@ function pickActiveBranch(branches: Branch[], sessionBranchId?: string | null): 
     }
   })();
   return byId(sessionBranchId)
+    || byId(loginBranchId)
     || byId(tillBranchId)
     || branches.find(b => b.canSell !== false && !b.isHeadOffice)
     || branches[0]
@@ -439,14 +452,9 @@ export const usePosStore = create<PosState>((set, get) => ({
       const status = await posApi.getSetupStatus();
       const isInstalled = status.isConfigured;
       localStorage.setItem('cashly_is_installed', isInstalled ? 'true' : 'false');
-      if (status.tenants && status.tenants.length > 0) {
-        const primary = status.tenants[0];
-        const mode = primary.hasHeadOffice || primary.branchCount > 1 ? 'MultiBranch' : 'Single';
-        localStorage.setItem('cashly_deployment_mode', mode);
-        set({ isInstalled, deploymentMode: mode });
-      } else {
-        set({ isInstalled });
-      }
+      // The business's shape (single shop or head office) comes from the signed-in user's own
+      // tenant after login (setTenants), not from this public check.
+      set({ isInstalled });
       return isInstalled;
     } catch (err) {
       console.warn('Backend setup status check failed, using local flag:', err);

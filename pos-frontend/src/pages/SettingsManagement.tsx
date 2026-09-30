@@ -598,7 +598,7 @@ export const SettingsManagement: React.FC = () => {
                 </h2>
                 <p className="text-xs text-slate-500">
                   Pick the location, generate a one-time code, then enter it on the till or tablet
-                  itself (Install POS → Connect to ERP). The code expires in 15 minutes, works once,
+                  itself (sign-in screen → Connect a till or tablet). The code expires in 15 minutes, works once,
                   and binds that device to the location you picked.
                 </p>
               </div>
@@ -782,7 +782,7 @@ export const SettingsManagement: React.FC = () => {
                 <ShieldCheck className="w-5 h-5 shrink-0 text-teal-600 mt-0.5" />
                 <div>
                   <strong className="text-slate-900">On the device:</strong> open Cashly POS, choose
-                  <strong> Activate this device</strong>, and enter the code. The device receives a
+                  <strong> Connect a till or tablet</strong> on the sign-in screen, and enter the code. The device receives a
                   licence tied to that machine, renewed automatically whenever it is online. It keeps
                   selling offline, and only stops if it goes unreachable for an extended period.
                 </div>

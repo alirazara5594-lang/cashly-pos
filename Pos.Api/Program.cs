@@ -103,20 +103,31 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // --- Rate Limiting ---
 builder.Services.AddRateLimiter(options =>
 {
-    options.AddFixedWindowLimiter("auth", opt =>
-    {
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.PermitLimit = 10;
-        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 5;
-    });
-    options.AddFixedWindowLimiter("default", opt =>
-    {
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.PermitLimit = 100;
-        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 10;
-    });
+    // Sign-in, token refresh, registration. Counted per IP: it used to be one shared allowance of
+    // 10 a minute for the whole platform, so a handful of restaurants signing in at shift change
+    // (or their tills refreshing tokens) locked everyone else out. A shop's tills usually share one
+    // IP, hence 20 with a short queue; guessing a PIN is still stopped by the account lockout
+    // after 5 wrong tries.
+    options.AddPolicy("auth", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+        http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            Window = TimeSpan.FromMinutes(1),
+            PermitLimit = 20,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit = 5
+        }));
+    // On-prem business servers checking in and syncing with the cloud. Per IP for the same reason
+    // as "auth": one shared allowance meant every customer's server competed for the same 100.
+    options.AddPolicy("default", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+        http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            Window = TimeSpan.FromMinutes(1),
+            PermitLimit = 100,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit = 10
+        }));
     // Guests ordering from a QR code or a pickup link: anyone on the internet can reach these, so
     // each phone (IP) gets its own small allowance rather than sharing one across every shop.
     options.AddPolicy("public-orders", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
@@ -126,6 +137,8 @@ builder.Services.AddRateLimiter(options =>
 });
 
 builder.Services.AddOpenApi();
+// Counts wrong PINs per till (see /api/auth/pin-login).
+builder.Services.AddMemoryCache();
 
 // --- Security / tenancy services ---
 builder.Services.AddHttpContextAccessor();
@@ -1467,7 +1480,8 @@ using (var scope = app.Services.CreateScope())
         ("Master data and stock ledger", EnsureMasterDataSchemaAsync),
         ("Returns, product purchasing and transfers", EnsureModulesSchemaAsync),
         ("Versions, billing and integrations", EnsureCommerceSchemaAsync),
-        ("2026-10 versions and add-ons", ApplyPosVersions202610Async)
+        ("2026-10 versions and add-ons", ApplyPosVersions202610Async),
+        ("PIN and email sign-in", EnsureSignInSchemaAsync)
     })
     {
         try
@@ -1509,6 +1523,16 @@ using (var scope = app.Services.CreateScope())
 // A counter row per business per series, bumped atomically in the database, fixes both. Number
 // formats are unchanged, so receipts and reports read exactly as before.
 // ============================================================
+
+/// <summary>Columns for Toast-style sign-in: email + password for the back office, and the PIN
+/// lookup a till uses to sign staff in by PIN alone. Idempotent.</summary>
+static Task EnsureSignInSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""Email"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""PasswordHash"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""PinLookup"" text NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Users_Email"" ON ""Users"" (""Email"") WHERE ""Email"" IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Users_TenantId_PinLookup"" ON ""Users"" (""TenantId"", ""PinLookup"") WHERE ""PinLookup"" IS NOT NULL;
+");
 
 /// <summary>Creates the counter table and moves document-number uniqueness to per business.
 /// Idempotent; run at startup, and again on demand if a sale beats startup to it.</summary>
@@ -3451,6 +3475,188 @@ app.MapGet("/", () => Results.Ok(new
 // --- Auth: PIN Login ---
 var authApi = app.MapGroup("/api/auth").RequireRateLimiting("auth");
 
+// A restaurant's name or ID reduced to letters and digits, for matching what someone types at sign-in.
+static string RestaurantKey(string value) =>
+    System.Text.RegularExpressions.Regex.Replace(value.ToLowerInvariant(), "[^a-z0-9]", "");
+
+// The one restaurant someone means when they type its name (or ID) at sign-in: an exact name or ID
+// first, else a loose match (case, spaces and punctuation ignored). Null when none, or when a loose
+// match is not unique — then they have to type it exactly.
+static async Task<Tenant?> FindRestaurantAsync(AppDbContext db, string typed)
+{
+    typed = typed.Trim();
+    var lower = typed.ToLowerInvariant();
+    var asSlug = System.Text.RegularExpressions.Regex.Replace(lower.Replace(" ", "-"), @"[^a-z0-9\-]", "");
+    var exact = await db.Tenants.IgnoreQueryFilters()
+        .Where(t => t.Slug == lower || t.Slug == asSlug || t.Name.ToLower() == lower)
+        .Take(2).ToListAsync();
+    if (exact.Count == 1) return exact[0];
+    if (exact.Count > 1) return null;
+
+    var wanted = RestaurantKey(typed);
+    if (wanted.Length == 0) return null;
+    var all = await db.Tenants.IgnoreQueryFilters().Select(t => new { t.Id, t.Slug, t.Name }).ToListAsync();
+    var loose = all.Where(t => RestaurantKey(t.Slug) == wanted || RestaurantKey(t.Name) == wanted).Take(2).ToList();
+    return loose.Count == 1 ? await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == loose[0].Id) : null;
+}
+
+// ------------------------------------------------------------
+// SIGN-IN, THE WAY TOAST DOES IT
+//
+// * A till, tablet or kitchen screen paired to a branch: staff type ONLY their PIN. The device's
+//   licence already says which business and branch it is, so the PIN just has to be unique within
+//   the business — which PinLookup enforces.
+// * The back office (any browser or office PC): email + password, unique across the platform, so
+//   no restaurant name is needed on any server. The branch is chosen after signing in.
+// * Restaurant + username + PIN stays as the fallback for staff with no email.
+// ------------------------------------------------------------
+
+// A keyed hash of a PIN, per business: lets a till find whose PIN was typed in one indexed lookup.
+// Keyed with the server secret, so a copy of the database alone does not give the PINs away.
+static string PinLookupFor(IConfiguration config, Guid tenantId, string pin)
+{
+    var secret = config["Jwt:Key"] ?? Environment.GetEnvironmentVariable("JWT_KEY") ?? "CashlyPOS_SuperSecretKey_2024_Change_In_Production!";
+    using var hmac = new System.Security.Cryptography.HMACSHA256(Encoding.UTF8.GetBytes("pin-lookup:" + secret));
+    return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{tenantId:N}:{pin.Trim()}")));
+}
+
+// Someone else at this business already signs in with this PIN.
+static Task<bool> PinTakenAsync(AppDbContext db, Guid tenantId, string lookup, Guid? exceptUserId) =>
+    db.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == tenantId && u.PinLookup == lookup && u.Id != exceptUserId);
+
+static string? NormalizeEmail(string? email) =>
+    string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
+
+// Why a password will not do, or null when it will.
+static string? PasswordProblem(string? password)
+{
+    if (string.IsNullOrEmpty(password) || password.Length < 8) return "Use a password of at least 8 characters.";
+    if (!password.Any(char.IsLetter) || !password.Any(char.IsDigit)) return "Use letters and numbers in the password.";
+    return null;
+}
+
+// What every successful sign-in returns, whichever way the person signed in.
+static object SignInResponse(AppUser user, Guid? sessionBranchId, string accessToken, string refreshToken) => new
+{
+    token = accessToken,
+    refreshToken,
+    user = new
+    {
+        id = user.Id,
+        fullName = user.FullName,
+        username = user.Username,
+        role = user.Role.ToString(),
+        tenantId = user.TenantId,
+        branchId = sessionBranchId ?? user.BranchId,
+        homeBranchId = user.BranchId,
+        permissions = new
+        {
+            user.CanViewFinancialReports,
+            user.CanManageInventory,
+            user.CanManageMenuAndTax,
+            user.CanGiveDiscounts,
+            user.CanVoidOrders
+        }
+    }
+};
+
+// A paired till: PIN only. The licence names the business, branch and device.
+authApi.MapPost("/pin-login", async (AppDbContext db, HttpContext http, Pos.Api.Services.IDeviceLicenseService licenses,
+    Microsoft.Extensions.Caching.Memory.IMemoryCache cache, PinLoginDto dto) =>
+{
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    var device = await licenses.ValidateAsync(dto.License, dto.DeviceFingerprint);
+    if (device.State is Pos.Api.Services.DeviceLicenseState.Invalid or Pos.Api.Services.DeviceLicenseState.Revoked
+        || device.TenantId == null || device.BranchId == null || device.TerminalId == null)
+        return Results.Json(new { message = device.Reason ?? "This device is not connected. Connect it again from the sign-in screen.", deviceNotConnected = true },
+            statusCode: StatusCodes.Status403Forbidden);
+
+    // A PIN is short, so guessing is stopped per device: ten wrong PINs and the till waits five minutes.
+    var failKey = $"pin-fail:{device.TerminalId}";
+    var fails = Microsoft.Extensions.Caching.Memory.CacheExtensions.TryGetValue(cache, failKey, out int counted) ? counted : 0;
+    if (fails >= 10)
+        return Results.Json(new { message = "Too many wrong PINs on this device. Wait 5 minutes and try again." }, statusCode: StatusCodes.Status423Locked);
+
+    var pin = dto.PinCode?.Trim() ?? "";
+    AppUser? user = null;
+    if (System.Text.RegularExpressions.Regex.IsMatch(pin, @"^\d{4,6}$"))
+    {
+        var lookup = PinLookupFor(builder.Configuration, device.TenantId.Value, pin);
+        user = await db.Users.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(u => u.TenantId == device.TenantId.Value && u.PinLookup == lookup && u.IsActive && u.Role != UserRole.SuperAdmin);
+        if (user != null && !BCrypt.Net.BCrypt.Verify(pin, user.PinCodeHash))
+        {
+            // The PIN was changed somewhere that did not refresh the lookup; it no longer points here.
+            user.PinLookup = null;
+            await db.SaveChangesAsync();
+            user = null;
+        }
+    }
+
+    if (user == null)
+    {
+        Microsoft.Extensions.Caching.Memory.CacheExtensions.Set(cache, failKey, fails + 1, TimeSpan.FromMinutes(5));
+        return Results.Json(new { message = "Wrong PIN." }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+    if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+        return Results.Json(new { message = $"This account is locked. Try again in {Math.Ceiling((user.LockedUntil.Value - DateTime.UtcNow).TotalMinutes)} minute(s)." },
+            statusCode: StatusCodes.Status423Locked);
+    cache.Remove(failKey);
+
+    // Staff sign in at the till's branch; someone based at another branch must be set up to cover it.
+    var (sessionBranchId, branchError) = await ResolveSessionBranchAsync(db, user, device.BranchId);
+    if (branchError != null) return branchError;
+
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null,
+        $"PIN at device {device.TerminalId}, IP {clientIp}");
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, sessionBranchId);
+    await db.SaveChangesAsync();
+    return Results.Ok(SignInResponse(user, sessionBranchId, accessToken, refreshToken));
+});
+
+// The back office: email + password. The branch is chosen after signing in (/api/auth/my-branches).
+authApi.MapPost("/email-login", async (AppDbContext db, HttpContext http, EmailLoginDto dto) =>
+{
+    const int MaxFailedAttempts = 5;
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    var email = NormalizeEmail(dto.Email);
+    if (email == null || string.IsNullOrEmpty(dto.Password))
+        return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
+
+    var user = await db.Users.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(u => u.Email == email && u.IsActive && u.Role != UserRole.SuperAdmin);
+    if (user != null && user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+        return Results.Json(new { message = $"Too many failed attempts. Try again in {Math.Ceiling((user.LockedUntil.Value - DateTime.UtcNow).TotalMinutes)} minute(s)." },
+            statusCode: StatusCodes.Status423Locked);
+
+    if (user == null || user.PasswordHash == null || !BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash))
+    {
+        if (user != null)
+        {
+            user.FailedLoginAttempts += 1;
+            var lockedOut = user.FailedLoginAttempts >= MaxFailedAttempts;
+            if (lockedOut)
+            {
+                user.LockedUntil = DateTime.UtcNow.AddMinutes(15);
+                user.FailedLoginAttempts = 0;
+            }
+            await WriteAuditAsync(db, user.TenantId, user, lockedOut ? "AccountLocked" : "LoginFailed", "AppUser", user.Id,
+                null, $"Wrong password (IP {clientIp})");
+            await db.SaveChangesAsync();
+        }
+        return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null, $"Email sign-in, IP {clientIp}");
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp);
+    await db.SaveChangesAsync();
+    return Results.Ok(SignInResponse(user, null, accessToken, refreshToken));
+});
+
 authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
 {
     const int MaxFailedAttempts = 5;
@@ -3464,20 +3670,34 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
     var normalizedUsername = dto.Username.ToLower().Trim();
     var candidateQuery = db.Users.IgnoreQueryFilters().Where(u => u.Username == normalizedUsername && u.IsActive);
 
+    // The restaurant the person works for, typed as its name or its ID. Case, spaces and
+    // punctuation do not matter: "Royal Grill & Kitchen", "royal grill kitchen" and
+    // "royal-grill--kitchen" are the same restaurant. That is what lets every business have its
+    // own "admin".
     if (!string.IsNullOrWhiteSpace(dto.TenantSlug))
     {
-        var slug = dto.TenantSlug.Trim().ToLowerInvariant();
-        var slugTenantId = await db.Tenants.IgnoreQueryFilters()
-            .Where(t => t.Slug == slug).Select(t => (Guid?)t.Id).FirstOrDefaultAsync();
-        if (slugTenantId == null) return Results.Unauthorized();
-        candidateQuery = candidateQuery.Where(u => u.TenantId == slugTenantId.Value);
+        var restaurantTenant = await FindRestaurantAsync(db, dto.TenantSlug);
+        // Same answer as a wrong PIN.
+        if (restaurantTenant == null) return Results.Unauthorized();
+        candidateQuery = candidateQuery.Where(u => u.TenantId == restaurantTenant.Id);
+    }
+
+    // A till signs in at the branch it is paired to, and that branch belongs to one restaurant, so
+    // only that restaurant's people can sign in there. (Everyone else chooses a branch after
+    // signing in, from /api/auth/my-branches.)
+    if (dto.BranchId is Guid pickedBranchId && pickedBranchId != Guid.Empty)
+    {
+        var branchTenantId = await db.Branches.IgnoreQueryFilters()
+            .Where(b => b.Id == pickedBranchId).Select(b => (Guid?)b.TenantId).FirstOrDefaultAsync();
+        if (branchTenantId == null) return Results.Unauthorized();
+        candidateQuery = candidateQuery.Where(u => u.TenantId == branchTenantId.Value);
     }
 
     var candidates = await candidateQuery.Take(2).ToListAsync();
     if (candidates.Count > 1)
         return Results.BadRequest(new
         {
-            message = "That username exists at more than one business. Please include your business identifier.",
+            message = "That username is used at more than one restaurant. Enter your restaurant name.",
             requiresTenantSlug = true
         });
 
@@ -3519,35 +3739,20 @@ authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto
 
     user.FailedLoginAttempts = 0;
     user.LockedUntil = null;
+    // Someone who signed in before PIN-only sign-in existed gets their PIN lookup now, so their
+    // next sign-in at a till can be PIN only — unless a colleague already has the same PIN.
+    if (user.PinLookup == null)
+    {
+        var lookup = PinLookupFor(builder.Configuration, user.TenantId, dto.PinCode);
+        if (!await PinTakenAsync(db, user.TenantId, lookup, user.Id)) user.PinLookup = lookup;
+    }
     await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null,
         sessionBranchId == null ? $"IP {clientIp}" : $"IP {clientIp}, at branch {sessionBranchId}");
 
     var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, sessionBranchId);
     await db.SaveChangesAsync();
 
-    return Results.Ok(new
-    {
-        token = accessToken,
-        refreshToken,
-        user = new
-        {
-            id = user.Id,
-            fullName = user.FullName,
-            username = user.Username,
-            role = user.Role.ToString(),
-            tenantId = user.TenantId,
-            branchId = sessionBranchId ?? user.BranchId,
-            homeBranchId = user.BranchId,
-            permissions = new
-            {
-                user.CanViewFinancialReports,
-                user.CanManageInventory,
-                user.CanManageMenuAndTax,
-                user.CanGiveDiscounts,
-                user.CanVoidOrders
-            }
-        }
-    });
+    return Results.Ok(SignInResponse(user, sessionBranchId, accessToken, refreshToken));
 });
 
 authApi.MapPost("/refresh", async (AppDbContext db, HttpContext http, RefreshTokenDto dto) =>
@@ -3746,38 +3951,19 @@ api.MapPost("/auth/verify-pin", async (AppDbContext db, HttpContext http, Pos.Ap
 }).RequireRateLimiting("auth");
 
 // --- Setup & Installation Wizard ---
+// Anyone can call this, so it says only whether the server has a business yet. It used to list
+// every business with its branches, which handed a stranger the whole customer list.
 api.MapGet("/setup/status", async (AppDbContext db) =>
-{
-    var tenantCount = await db.Tenants.CountAsync();
-    var tenants = await db.Tenants
-        .Include(t => t.Branches)
-        .Select(t => new
-        {
-            t.Id,
-            t.Name,
-            t.BusinessType,
-            t.Tier,
-            t.IsActive,
-            BranchCount = t.Branches.Count,
-            HasHeadOffice = t.Branches.Any(b => b.IsHeadOffice),
-            Branches = t.Branches.Select(b => new { b.Id, b.Name, b.Code, b.City, b.IsHeadOffice })
-        })
-        .ToListAsync();
-
-    return Results.Ok(new
-    {
-        isConfigured = tenantCount > 0,
-        tenantCount,
-        tenants
-    });
-}).AllowAnonymous(); // bootstrap: must be reachable before any user exists
+    Results.Ok(new { isConfigured = await db.Tenants.IgnoreQueryFilters().AnyAsync() }))
+    .AllowAnonymous(); // bootstrap: must be reachable before any user exists
 
 api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 {
-    // Bootstrap only. This creates the FIRST business on a fresh install, with no login and a paid
-    // year. Once any business exists, new ones register through /auth/signup (trial, plan limits,
-    // slug checks), which is what the installation wizard already switches to on a configured
-    // server. Left open, anyone could mint a free paid account on a live server.
+    // Bootstrap only. This creates the FIRST business on a fresh install, with no login. Once any
+    // business exists, new ones register through /auth/signup (plan limits, slug checks), which is
+    // what the installation wizard already switches to on a configured server. Like signup it
+    // starts a 30-day trial: it used to hand out a paid year, which anyone could claim on a server
+    // that had no business yet.
     if (await db.Tenants.IgnoreQueryFilters().AnyAsync())
         return Results.Json(new { message = "This server is already set up. Sign in, or register a new business through signup." },
             statusCode: StatusCodes.Status409Conflict);
@@ -3812,8 +3998,8 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         Tier = chosenTier,
         // The shape itself (DeploymentMode) is set by CreateInitialStructure below.
         IsActive = true,
-        IsTrialActive = false,
-        SubscriptionPaidUntil = DateTime.UtcNow.AddYears(1),
+        IsTrialActive = true,
+        TrialEndsAt = DateTime.UtcNow.AddDays(30),
         CreatedAt = DateTime.UtcNow
     };
     // Enforce the subscription tier's branch quota before provisioning anything.
@@ -3850,6 +4036,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         FullName = string.IsNullOrWhiteSpace(dto.AdminFullName) ? "Master Admin" : dto.AdminFullName.Trim(),
         Username = string.IsNullOrWhiteSpace(dto.AdminUsername) ? "admin" : dto.AdminUsername.Trim().ToLower(),
         PinCodeHash = pinHash,
+        PinLookup = PinLookupFor(builder.Configuration, tenant.Id, adminPin),
         Role = UserRole.OwnerAdmin,
         IsActive = true,
         CreatedAt = DateTime.UtcNow,
@@ -7574,26 +7761,14 @@ api.MapGet("/users", async (AppDbContext db, HttpContext http, Guid tenantId, Gu
     var query = db.Users.Where(u => u.TenantId == tenantId);
     if (branchId.HasValue) query = query.Where(u => u.BranchId == null || u.BranchId == branchId.Value);
     var users = await query.OrderBy(u => u.Role).ThenBy(u => u.FullName).ToListAsync();
-
-    if (!users.Any())
-    {
-        var seedUsers = new List<AppUser>
-        {
-            new() { TenantId = tenantId, BranchId = null, FullName = "Director / Restaurant Owner", Username = "owner_admin", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("9999"), Role = UserRole.OwnerAdmin, IsActive = true, CanViewFinancialReports = true, CanManageInventory = true, CanManageMenuAndTax = true, CanGiveDiscounts = true, CanVoidOrders = true },
-            new() { TenantId = tenantId, BranchId = branchId, FullName = "Branch Operations Manager", Username = "branch_mgr", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("5555"), Role = UserRole.BranchManager, IsActive = true, CanViewFinancialReports = true, CanManageInventory = true, CanManageMenuAndTax = false, CanGiveDiscounts = true, CanVoidOrders = true },
-            new() { TenantId = tenantId, BranchId = branchId, FullName = "Main Counter Cashier", Username = "cashier_1", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1234"), Role = UserRole.Cashier, IsActive = true, CanViewFinancialReports = false, CanManageInventory = false, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false },
-            new() { TenantId = tenantId, BranchId = branchId, FullName = "Head Chef (Kitchen Lead)", Username = "chef_lead", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("4321"), Role = UserRole.KitchenChef, IsActive = true, CanViewFinancialReports = false, CanManageInventory = true, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false },
-            new() { TenantId = tenantId, BranchId = branchId, FullName = "Dining Hall Captain (Waiter)", Username = "waiter_tab1", PinCodeHash = BCrypt.Net.BCrypt.HashPassword("1111"), Role = UserRole.Waiter, IsActive = true, CanViewFinancialReports = false, CanManageInventory = false, CanManageMenuAndTax = false, CanGiveDiscounts = false, CanVoidOrders = false }
-        };
-        db.Users.AddRange(seedUsers);
-        await db.SaveChangesAsync();
-        users = seedUsers;
-    }
+    // No sample staff are made up here any more: a business with nobody on the list used to get five
+    // accounts with well-known PINs (9999, 5555, 1234, 4321, 1111) — a way in for anyone who guessed.
 
     return Results.Ok(users.Select(u => new
     {
         id = u.Id, tenantId = u.TenantId, branchId = u.BranchId, fullName = u.FullName, username = u.Username,
         role = u.Role.ToString(), isActive = u.IsActive, createdAt = u.CreatedAt,
+        email = u.Email, hasPassword = u.PasswordHash != null,
         permissions = new { u.CanViewFinancialReports, u.CanManageInventory, u.CanManageMenuAndTax, u.CanGiveDiscounts, u.CanVoidOrders }
     }));
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "view"));
@@ -7609,6 +7784,29 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
 
     if (await db.Users.AnyAsync(u => u.TenantId == scopedTenantId.Value && u.Username == dto.Username.ToLower().Trim()))
         return Results.BadRequest(new { message = "That username is already taken in this restaurant." });
+
+    // At a till the PIN alone says who is signing in, so it has to be this person's own.
+    var newPin = dto.PinCode?.Trim() ?? "";
+    if (!System.Text.RegularExpressions.Regex.IsMatch(newPin, @"^\d{4,6}$"))
+        return Results.BadRequest(new { message = "Give them a PIN of 4 to 6 digits." });
+    var newPinLookup = PinLookupFor(builder.Configuration, scopedTenantId.Value, newPin);
+    if (await PinTakenAsync(db, scopedTenantId.Value, newPinLookup, null))
+        return Results.BadRequest(new { message = "Someone at this restaurant already uses that PIN. Choose a different one — at a till, the PIN alone says who is signing in." });
+
+    // Optional back-office sign-in.
+    var newEmail = NormalizeEmail(dto.Email);
+    if (newEmail != null && (!newEmail.Contains('@') || newEmail.Length > 200))
+        return Results.BadRequest(new { message = "That email address does not look right." });
+    if (newEmail != null && await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == newEmail))
+        return Results.BadRequest(new { message = "That email is already used by another account." });
+    string? newPasswordHash = null;
+    if (!string.IsNullOrEmpty(dto.Password))
+    {
+        if (newEmail == null) return Results.BadRequest(new { message = "Add an email address to go with the password." });
+        var passwordProblem = PasswordProblem(dto.Password);
+        if (passwordProblem != null) return Results.BadRequest(new { message = passwordProblem });
+        newPasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+    }
 
     // Enforce the plan's user quota — back-office logins only. Cashiers, waiters and kitchen staff
     // are unlimited: charging per till login just makes a shop share one PIN, which empties the
@@ -7630,7 +7828,10 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     {
         TenantId = scopedTenantId.Value, BranchId = dto.BranchId, FullName = dto.FullName,
         Username = dto.Username.ToLower().Trim(),
-        PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode ?? "1234"),
+        PinCodeHash = BCrypt.Net.BCrypt.HashPassword(newPin),
+        PinLookup = newPinLookup,
+        Email = newEmail,
+        PasswordHash = newPasswordHash,
         Role = dto.Role, IsActive = true,
         CanViewFinancialReports = dto.CanViewFinancialReports || dto.Role == UserRole.Accountant,
         CanManageInventory = dto.CanManageInventory || dto.Role == UserRole.InventoryUser,
@@ -7666,11 +7867,48 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
             return Results.BadRequest(new { message = $"{users.Reason} Cashiers, waiters and kitchen staff do not count towards this limit, or you can buy the Extra Staff Account add-on." });
     }
 
+    // A new PIN must be 4–6 digits and this person's own (a till signs in by PIN alone).
+    string? changedPinLookup = null;
+    if (!string.IsNullOrEmpty(dto.PinCode))
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(dto.PinCode.Trim(), @"^\d{4,6}$"))
+            return Results.BadRequest(new { message = "Use a PIN of 4 to 6 digits." });
+        changedPinLookup = PinLookupFor(builder.Configuration, user.TenantId, dto.PinCode);
+        if (await PinTakenAsync(db, user.TenantId, changedPinLookup, user.Id))
+            return Results.BadRequest(new { message = "Someone at this restaurant already uses that PIN. Choose a different one — at a till, the PIN alone says who is signing in." });
+    }
+
+    // Back-office sign-in: an email ("" removes it, and the password with it) and a password.
+    var changedEmail = dto.Email == null ? user.Email : NormalizeEmail(dto.Email);
+    if (dto.Email != null && changedEmail != null)
+    {
+        if (!changedEmail.Contains('@') || changedEmail.Length > 200)
+            return Results.BadRequest(new { message = "That email address does not look right." });
+        if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == changedEmail && u.Id != user.Id))
+            return Results.BadRequest(new { message = "That email is already used by another account." });
+    }
+    if (!string.IsNullOrEmpty(dto.Password))
+    {
+        if (changedEmail == null) return Results.BadRequest(new { message = "Add an email address to go with the password." });
+        var passwordProblem = PasswordProblem(dto.Password);
+        if (passwordProblem != null) return Results.BadRequest(new { message = passwordProblem });
+    }
+
     var before = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
 
     if (!string.IsNullOrEmpty(dto.FullName)) user.FullName = dto.FullName;
     if (dto.Role.HasValue) user.Role = dto.Role.Value;
-    if (!string.IsNullOrEmpty(dto.PinCode)) user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode);
+    if (!string.IsNullOrEmpty(dto.PinCode))
+    {
+        user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode.Trim());
+        user.PinLookup = changedPinLookup;
+    }
+    if (dto.Email != null)
+    {
+        user.Email = changedEmail;
+        if (changedEmail == null) user.PasswordHash = null;
+    }
+    if (!string.IsNullOrEmpty(dto.Password)) user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
     if (dto.IsActive.HasValue) user.IsActive = dto.IsActive.Value;
     if (dto.CanViewFinancialReports.HasValue) user.CanViewFinancialReports = dto.CanViewFinancialReports.Value;
     if (dto.CanManageInventory.HasValue) user.CanManageInventory = dto.CanManageInventory.Value;
@@ -7700,6 +7938,7 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     {
         id = user.Id, tenantId = user.TenantId, branchId = user.BranchId, fullName = user.FullName, username = user.Username,
         role = user.Role.ToString(), isActive = user.IsActive, createdAt = user.CreatedAt,
+        email = user.Email, hasPassword = user.PasswordHash != null,
         department = user.Department, designation = user.Designation, employmentType = user.EmploymentType.ToString(),
         monthlyRatePKR = user.MonthlyRatePKR, hourlyRatePKR = user.HourlyRatePKR, bankAccountNumber = user.BankAccountNumber,
         joiningDate = user.JoiningDate, isPayrollEligible = user.IsPayrollEligible, departmentId = user.DepartmentId, designationId = user.DesignationId,
@@ -8598,6 +8837,23 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
     var desiredUsername = dto.AdminUsername.ToLower().Trim();
     if (desiredUsername.Length < 3)
         return Results.BadRequest(new { error = "Username must be at least 3 characters." });
+    var ownerPin = dto.AdminPin?.Trim() ?? "";
+    if (!System.Text.RegularExpressions.Regex.IsMatch(ownerPin, @"^\d{4,6}$"))
+        return Results.BadRequest(new { error = "The PIN must be 4 to 6 digits." });
+
+    // The owner's email is their back-office sign-in, so it can belong to one account only.
+    var ownerEmail = NormalizeEmail(dto.Email);
+    if (ownerEmail == null || !ownerEmail.Contains('@'))
+        return Results.BadRequest(new { error = "A valid email address is required." });
+    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == ownerEmail))
+        return Results.BadRequest(new { error = "An account with this email already exists. Sign in with it instead, or use a different email." });
+    string? ownerPasswordHash = null;
+    if (!string.IsNullOrEmpty(dto.AdminPassword))
+    {
+        var passwordProblem = PasswordProblem(dto.AdminPassword);
+        if (passwordProblem != null) return Results.BadRequest(new { error = passwordProblem });
+        ownerPasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.AdminPassword);
+    }
 
     // The chosen plan only shapes trial limits (branches/counters/tabs) — everyone gets the same
     // 30-day, all-features trial regardless of tier, same as before. Falls back to Starter for a
@@ -8685,7 +8941,11 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             BranchId = null,
             FullName = dto.ContactName.Trim(),
             Username = dto.AdminUsername.ToLower().Trim(),
-            PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.AdminPin),
+            PinCodeHash = BCrypt.Net.BCrypt.HashPassword(ownerPin),
+            // Signs in by PIN at a till, and by email + password in the back office.
+            PinLookup = PinLookupFor(builder.Configuration, tenant.Id, ownerPin),
+            Email = ownerEmail,
+            PasswordHash = ownerPasswordHash,
             Role = UserRole.OwnerAdmin,
             IsActive = true,
             CanViewFinancialReports = true,
@@ -9728,6 +9988,7 @@ app.MapPost("/api/auth/redeem-invite", async (AppDbContext db, HttpContext http,
         FullName = string.IsNullOrWhiteSpace(dto.FullName) ? tenant.ContactName : dto.FullName.Trim(),
         Username = username,
         PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin.Trim()),
+        PinLookup = PinLookupFor(builder.Configuration, tenant.Id, dto.Pin),
         Role = UserRole.OwnerAdmin,
         IsActive = true,
         CanViewFinancialReports = true,
@@ -10563,6 +10824,78 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", a
 
     var afterRevoke = await entitlements.RecomputeAsync(tenantId);
     return Results.Ok(new { addOn = sub, snapshotVersion = afterRevoke.Version });
+}).RequireAuthorization();
+
+// ============================================================
+// OWNER SIGN-IN SUPPORT (platform admin)
+//
+// Cashly sends no email yet, so an owner who forgets their back-office password calls support.
+// The platform admin sets a temporary password here and reads it to them; it is shown once, never
+// stored in the clear, and the owner changes it in Staff & Pin Access after signing in.
+// ============================================================
+
+// A business's owner accounts and how each signs in.
+app.MapGet("/api/admin/tenants/{tenantId:guid}/owners", async (Guid tenantId, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var owners = await db.Users.IgnoreQueryFilters()
+        .Where(u => u.TenantId == tenantId && u.Role == UserRole.OwnerAdmin)
+        .OrderBy(u => u.FullName)
+        .Select(u => new
+        {
+            u.Id, u.FullName, u.Username, u.Email, u.IsActive,
+            hasPassword = u.PasswordHash != null,
+            lockedUntil = u.LockedUntil > DateTime.UtcNow ? u.LockedUntil : null
+        })
+        .ToListAsync();
+    return Results.Ok(owners);
+}).RequireAuthorization();
+
+// Sets a temporary back-office password (and the email, when the account has none yet), unlocks the
+// account and signs out its existing sessions. Returns the temporary password once.
+app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-password", async (
+    Guid tenantId, Guid userId, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    ResetPasswordDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId);
+    if (user == null) return Results.NotFound(new { message = "No such account at this business." });
+    if (user.Role == UserRole.SuperAdmin) return Results.BadRequest(new { message = "Not for platform accounts." });
+
+    var email = NormalizeEmail(dto.Email) ?? user.Email;
+    if (email == null)
+        return Results.BadRequest(new { message = "This account has no email yet. Enter the owner's email to sign in with." });
+    if (!email.Contains('@') || email.Length > 200)
+        return Results.BadRequest(new { message = "That email address does not look right." });
+    if (email != user.Email && await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == email && u.Id != user.Id))
+        return Results.BadRequest(new { message = "That email is already used by another account." });
+
+    // Ten characters, no look-alikes (0/O, 1/l/I), always letters and digits.
+    const string letters = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ";
+    const string digits = "23456789";
+    var alphabet = letters + digits;
+    string temporary;
+    do
+    {
+        temporary = new string(Enumerable.Range(0, 10)
+            .Select(_ => alphabet[System.Security.Cryptography.RandomNumberGenerator.GetInt32(alphabet.Length)]).ToArray());
+    } while (!temporary.Any(char.IsLetter) || !temporary.Any(char.IsDigit));
+
+    var hadEmail = user.Email;
+    user.Email = email;
+    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(temporary);
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+
+    // Whoever held the old password (or a stolen session) is signed out everywhere.
+    var sessions = await db.RefreshTokens.IgnoreQueryFilters()
+        .Where(r => r.UserId == user.Id && r.RevokedAt == null).ToListAsync();
+    foreach (var session in sessions) session.RevokedAt = DateTime.UtcNow;
+
+    await WriteAuditAsync(db, tenantId, await accessor.GetCurrentUserAsync(http), "PasswordResetBySupport", "AppUser", user.Id,
+        hadEmail, $"Temporary password set for {email}; {sessions.Count} session(s) signed out");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { email, temporaryPassword = temporary, signedOutSessions = sessions.Count });
 }).RequireAuthorization();
 
 // ============================================================
@@ -13468,10 +13801,17 @@ public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal Qua
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
 public record UpdateIngredientMasterDto(string? Name, string? Category, string? Unit, decimal? MinAlertLevel);
 public record RecipeItemInputDto(Guid IngredientId, decimal QuantityRequired, string? Unit);
-public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders);
+/// <summary>Email and Password are the back-office sign-in (optional: till-only staff need just a PIN).</summary>
+public record CreateUserDto(Guid TenantId, Guid? BranchId, string FullName, string Username, string? PinCode, UserRole Role, bool CanViewFinancialReports, bool CanManageInventory, bool CanManageMenuAndTax, bool CanGiveDiscounts, bool CanVoidOrders,
+    string? Email = null, string? Password = null);
+/// <summary>Email "" removes the back-office sign-in; Password is set only when sent.</summary>
 public record UpdateUserDto(string? FullName, UserRole? Role, string? PinCode, bool? IsActive, bool? CanViewFinancialReports, bool? CanManageInventory, bool? CanManageMenuAndTax, bool? CanGiveDiscounts, bool? CanVoidOrders,
     string? Department = null, string? Designation = null, EmploymentType? EmploymentType = null, decimal? MonthlyRatePKR = null, decimal? HourlyRatePKR = null, string? BankAccountNumber = null, DateTime? JoiningDate = null, bool? IsPayrollEligible = null,
-    Guid? DepartmentId = null, Guid? DesignationId = null);
+    Guid? DepartmentId = null, Guid? DesignationId = null, string? Email = null, string? Password = null);
+public record PinLoginDto(string? License, string? DeviceFingerprint, string? PinCode);
+/// <summary>Email is needed only when the account has none yet.</summary>
+public record ResetPasswordDto(string? Email);
+public record EmailLoginDto(string? Email, string? Password);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 /// <summary>A line names a raw ingredient (IngredientId) or a finished product (ProductId).</summary>
@@ -13565,7 +13905,8 @@ public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, str
 /// HasMultiBranch flag and MaxBranches allowance before anything is created.
 /// </summary>
 public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null,
-    string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null);
+    string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null,
+    string? AdminPassword = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only

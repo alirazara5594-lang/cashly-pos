@@ -113,6 +113,18 @@ export interface MyCharges {
 }
 
 /** A platform price that is neither a version nor an add-on (the Head Office ERP). */
+/** An owner account of a business, as the platform admin's support tools see it. */
+export interface TenantOwnerAccount {
+  id: string;
+  fullName: string;
+  username: string;
+  email: string | null;
+  isActive: boolean;
+  hasPassword: boolean;
+  /** Set while the account is locked after wrong passwords or PINs. */
+  lockedUntil: string | null;
+}
+
 export interface PlatformPrice {
   key: string;
   displayName: string;
@@ -838,6 +850,9 @@ export interface AppUser {
   role: UserRole;
   isActive: boolean;
   createdAt: string;
+  /** Back-office sign-in (email + password); absent for staff who only use a till's PIN. */
+  email?: string | null;
+  hasPassword?: boolean;
   permissions: {
     canViewFinancialReports: boolean;
     canManageInventory: boolean;
@@ -1118,27 +1133,9 @@ export interface SetupInitPayload {
   appSurface?: string;
 }
 
+/** Public, so it only says whether the server has a business yet — never which ones. */
 export interface SetupStatusResponse {
   isConfigured: boolean;
-  tenantCount: number;
-  tenants: Array<{
-    id: string;
-    name: string;
-    businessType: BusinessType;
-    tier: SubscriptionTier;
-    isActive: boolean;
-    branchCount: number;
-    hasHeadOffice: boolean;
-    branches: Array<{
-      id: string;
-      name: string;
-      code: string;
-      city: string;
-      isHeadOffice: boolean;
-      allowedCounters: number;
-      allowedOrderTabs: number;
-    }>;
-  }>;
 }
 
 /**

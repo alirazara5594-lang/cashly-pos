@@ -39,7 +39,7 @@ export const AccountStatusBanner: React.FC<AccountStatusBannerProps> = ({ packag
         {deviceStatus.mustReactivate && (
           <>
             {' '}
-            <Link to="/setup" className="underline font-semibold">Activate this device</Link>
+            <Link to="/connect" className="underline font-semibold">Connect this device again</Link>
           </>
         )}
       </Banner>

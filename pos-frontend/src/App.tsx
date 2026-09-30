@@ -51,6 +51,7 @@ const LocationsManagement = lazy(() => import('./pages/LocationsManagement').the
 const ReturnsManagement = lazy(() => import('./pages/ReturnsManagement').then(m => ({ default: m.ReturnsManagement })));
 const OpenOrders = lazy(() => import('./pages/OpenOrders').then(m => ({ default: m.OpenOrders })));
 const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ default: m.PublicOrder })));
+const ConnectDevice = lazy(() => import('./pages/ConnectDevice').then(m => ({ default: m.ConnectDevice })));
 
 /** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
  * connection, but real on a slow one, so it's a spinner, not a blank screen. */
@@ -70,7 +71,6 @@ function MainLayoutInner() {
     theme,
     setIsOnline,
     refreshOfflineCount,
-    isInstalled,
     checkInstallationStatus,
     autoSyncOnReconnect,
     currentUser,
@@ -222,15 +222,21 @@ function MainLayoutInner() {
     );
   }
 
-  // Full-screen dedicated view for Installation Wizard
+  // The sign-in screen comes first for everyone signed out. The setup wizard is for someone
+  // already signed in (Settings → Re-run Setup Wizard); a visitor who lands on /setup — an old
+  // bookmark, or the redirect older versions made — goes to sign in. New businesses register at
+  // /signup and new devices connect at /connect, both linked from the sign-in screen.
   if (location.pathname === '/setup') {
-    return <InstallationWizard />;
+    return isAuthenticated ? <InstallationWizard /> : <Navigate to="/" replace />;
   }
 
-  // If first-time run with zero configuration and not on setup, redirect to setup.
-  // This MUST stay ahead of the login gate — installation happens with no login.
-  if (!isCheckingSetup && !isInstalled && location.pathname !== '/setup') {
-    return <Navigate to="/setup" replace />;
+  // Pairing a till, tablet, kitchen screen or office PC with a code from its manager.
+  if (location.pathname === '/connect') {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <ConnectDevice />
+      </Suspense>
+    );
   }
 
   // Public self-serve signup must stay reachable without a session. It is the SAME wizard as

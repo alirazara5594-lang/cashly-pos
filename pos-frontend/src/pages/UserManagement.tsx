@@ -9,7 +9,9 @@ import {
   Wallet,
   X,
   Save,
-  MapPin
+  MapPin,
+  KeyRound,
+  Mail
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
@@ -18,6 +20,20 @@ import type { AppUser, UserRole, Department, Designation, Region } from '../type
 /** The server's sentinel for "clear this Guid? field" — a real empty Guid, since JSON `null`/omitted
  * both mean "don't touch it" and can't express "remove the existing value" for a nullable value type. */
 const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
+
+/** Roles that work in the back office, so they may also sign in there with email + password. */
+const BACK_OFFICE_ROLES: UserRole[] = ['OwnerAdmin', 'BranchManager'];
+
+/** A random 4-digit PIN that is not an easy one (0000, 1234, 4321). The server still checks it is
+ * not already somebody else's at this restaurant. */
+const suggestPin = () => {
+  for (;;) {
+    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    const d = pin.split('').map(Number);
+    const steps = d.slice(1).map((x, i) => x - d[i]);
+    if (!steps.every(s => s === 0) && !steps.every(s => s === 1) && !steps.every(s => s === -1)) return pin;
+  }
+};
 
 export const UserManagement: React.FC = () => {
   const { selectedTenant, selectedBranch, branches, currentUser } = usePosStore();
@@ -85,9 +101,19 @@ export const UserManagement: React.FC = () => {
   // New User Form State
   const [fullName, setFullName] = useState('');
   const [username, setUsername] = useState('');
-  const [pinCode, setPinCode] = useState('1234');
+  // No default PIN: at a till the PIN alone says who is signing in, so every person needs their own.
+  const [pinCode, setPinCode] = useState('');
   const [role, setRole] = useState<UserRole>('Cashier');
   const [branchScope, setBranchScope] = useState<string>('current');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [addError, setAddError] = useState('');
+
+  // Sign-in details of an existing account: back-office email/password, and a new till PIN.
+  const [signInUser, setSignInUser] = useState<AppUser | null>(null);
+  const [signInForm, setSignInForm] = useState({ email: '', password: '', pin: '' });
+  const [signInSaving, setSignInSaving] = useState(false);
+  const [signInError, setSignInError] = useState('');
 
   // Permission flags
   const [canViewReports, setCanViewReports] = useState(false);
@@ -214,31 +240,72 @@ export const UserManagement: React.FC = () => {
       Waiter: 5
     };
 
+    if (!/^\d{4,6}$/.test(pinCode.trim())) {
+      setAddError('Give them a PIN of 4 to 6 digits.');
+      return;
+    }
+    const backOffice = BACK_OFFICE_ROLES.includes(role);
+    setAddError('');
     try {
       await posApi.createUser({
         tenantId: selectedTenant.id,
         branchId: branchScope === 'all' ? undefined : branchScope === 'current' ? selectedBranch?.id : branchScope,
         fullName: fullName.trim(),
         username: username.trim(),
-        pinCode: pinCode.trim() || '1234',
+        pinCode: pinCode.trim(),
         role: roleNumberMap[role],
         canViewFinancialReports: canViewReports,
         canManageInventory,
         canManageMenuAndTax,
         canGiveDiscounts,
-        canVoidOrders
+        canVoidOrders,
+        email: backOffice && newEmail.trim() ? newEmail.trim() : undefined,
+        password: backOffice && newEmail.trim() && newPassword ? newPassword : undefined
       });
 
       setActionSuccess(`Staff account created for ${fullName.trim()} (${role})`);
       setIsAddUserOpen(false);
       setFullName('');
       setUsername('');
-      setPinCode('1234');
+      setPinCode('');
+      setNewEmail('');
+      setNewPassword('');
       await fetchUsers();
       setTimeout(() => setActionSuccess(null), 3500);
     } catch (err) {
-      console.error(err);
-      alert('Failed to create staff account');
+      // The server says why: a PIN someone else uses, an email already taken, a weak password.
+      setAddError(getApiErrorMessage(err, 'Failed to create staff account'));
+    }
+  };
+
+  const openSignInEdit = (user: AppUser) => {
+    setSignInForm({ email: user.email ?? '', password: '', pin: '' });
+    setSignInError('');
+    setSignInUser(user);
+  };
+
+  const handleSaveSignIn = async () => {
+    if (!signInUser) return;
+    const { email, password, pin } = signInForm;
+    if (pin && !/^\d{4,6}$/.test(pin)) { setSignInError('Use a PIN of 4 to 6 digits.'); return; }
+    if (password && !email.trim()) { setSignInError('Add an email address to go with the password.'); return; }
+    setSignInSaving(true);
+    setSignInError('');
+    try {
+      await posApi.updateUser(signInUser.id, {
+        // "" removes the back-office sign-in; unchanged fields are left alone.
+        email: email.trim() === (signInUser.email ?? '') ? undefined : email.trim(),
+        password: password || undefined,
+        pinCode: pin || undefined
+      });
+      setActionSuccess(`Sign-in details updated for ${signInUser.fullName}`);
+      setSignInUser(null);
+      await fetchUsers();
+      setTimeout(() => setActionSuccess(null), 3000);
+    } catch (err) {
+      setSignInError(getApiErrorMessage(err, 'Could not save the sign-in details.'));
+    } finally {
+      setSignInSaving(false);
     }
   };
 
@@ -342,6 +409,7 @@ export const UserManagement: React.FC = () => {
               onClick={() => {
                 // Start on the branch being viewed; the list offers every other location too.
                 setBranchScope(selectedBranch?.id ?? (assignableBranches[0]?.id || 'current'));
+                setAddError('');
                 setIsAddUserOpen(true);
               }}
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-black transition shadow-lg shadow-teal-500/25"
@@ -398,6 +466,11 @@ export const UserManagement: React.FC = () => {
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-900 text-sm">{u.fullName}</div>
                       <div className="text-[11px] text-slate-500 font-mono">@{u.username}</div>
+                      {u.email && (
+                        <div className="text-[11px] text-slate-500 flex items-center gap-1" title={u.hasPassword ? 'Signs in to the back office with this email' : 'No password set yet'}>
+                          <Mail className="w-3 h-3" /> {u.email}{!u.hasPassword && <span className="text-amber-600"> · no password</span>}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-3">
                       {getRoleBadge(u.role)}
@@ -467,6 +540,13 @@ export const UserManagement: React.FC = () => {
                             <MapPin className="w-3.5 h-3.5" />
                           </button>
                         )}
+                        <button
+                          onClick={() => openSignInEdit(u)}
+                          className="p-1.5 rounded-lg bg-slate-100 text-slate-500 hover:bg-teal-100 hover:text-teal-600 transition"
+                          title="Sign-in: till PIN, back-office email and password"
+                        >
+                          <KeyRound className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => openPayrollEdit(u)}
                           className={`p-1.5 rounded-lg transition ${
@@ -571,16 +651,64 @@ export const UserManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-500 font-medium mb-1">Quick Terminal PIN Code (4 Digits)</label>
-                  <input
-                    type="text"
-                    maxLength={4}
-                    value={pinCode}
-                    onChange={(e) => setPinCode(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
-                  />
+                  <label className="block text-xs text-slate-500 font-medium mb-1">Till PIN * (4–6 digits, their own)</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={pinCode}
+                      onChange={(e) => { setPinCode(e.target.value.replace(/\D/g, '')); setAddError(''); }}
+                      placeholder="e.g. 4829"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { setPinCode(suggestPin()); setAddError(''); }}
+                      className="px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px] font-bold border border-slate-200 shrink-0"
+                      title="Suggest a random PIN"
+                    >
+                      Suggest
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-400">At a till, the PIN alone signs them in.</p>
                 </div>
               </div>
+
+              {/* Owners and managers can also use the back office with email + password. */}
+              {BACK_OFFICE_ROLES.includes(role) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                  <div className="sm:col-span-2 text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <Mail className="w-3.5 h-3.5 text-teal-600" /> Back office sign-in (optional)
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">Email</label>
+                    <input
+                      type="email"
+                      value={newEmail}
+                      onChange={(e) => { setNewEmail(e.target.value); setAddError(''); }}
+                      autoComplete="off"
+                      placeholder="manager@yourrestaurant.com"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">Password</label>
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => { setNewPassword(e.target.value); setAddError(''); }}
+                      autoComplete="new-password"
+                      placeholder="8+ characters, letters and numbers"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {addError && (
+                <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{addError}</div>
+              )}
 
               {/* Permission Checkboxes */}
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
@@ -644,6 +772,95 @@ export const UserManagement: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Sign-in details: a new till PIN, and the back-office email + password */}
+      {signInUser && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-teal-500" />
+                <h3 className="font-bold text-slate-900 text-base">Sign-in — {signInUser.fullName}</h3>
+              </div>
+              <button onClick={() => setSignInUser(null)} className="text-slate-400 hover:text-slate-900"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-500 font-medium mb-1">New till PIN (leave blank to keep it)</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={signInForm.pin}
+                  onChange={(e) => setSignInForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, '') }))}
+                  placeholder="4–6 digits"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-teal-600 focus:border-teal-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSignInForm(f => ({ ...f, pin: suggestPin() }))}
+                  className="px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px] font-bold border border-slate-200 shrink-0"
+                >
+                  Suggest
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+              <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-teal-600" /> Back office sign-in
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 font-medium mb-1">Email (clear it to remove back-office sign-in)</label>
+                <input
+                  type="email"
+                  value={signInForm.email}
+                  onChange={(e) => setSignInForm(f => ({ ...f, email: e.target.value }))}
+                  autoComplete="off"
+                  placeholder="name@yourrestaurant.com"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 font-medium mb-1">
+                  {signInUser.hasPassword ? 'New password (leave blank to keep it)' : 'Password'}
+                </label>
+                <input
+                  type="password"
+                  value={signInForm.password}
+                  onChange={(e) => setSignInForm(f => ({ ...f, password: e.target.value }))}
+                  autoComplete="new-password"
+                  placeholder="8+ characters, letters and numbers"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {signInError && (
+              <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{signInError}</div>
+            )}
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSignInUser(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveSignIn}
+                disabled={signInSaving}
+                className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition flex items-center gap-1.5"
+              >
+                <Save className="w-3.5 h-3.5" /> {signInSaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </div>
         </div>
       )}

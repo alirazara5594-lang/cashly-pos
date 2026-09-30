@@ -100,6 +100,7 @@ import type {
   BillingLine,
   MyCharges,
   PlatformPrice,
+  TenantOwnerAccount,
   FiscalConnections,
   FiscalAuthority,
   FiscalEnvironment,
@@ -154,6 +155,8 @@ api.interceptors.request.use((config) => {
  */
 const PUBLIC_ENDPOINTS = [
   '/api/auth/login',
+  '/api/auth/pin-login',
+  '/api/auth/email-login',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
   '/api/auth/refresh',
@@ -195,6 +198,14 @@ let onUnauthorized: UnauthorizedHandler | null = null;
 
 export function registerAuthRedirect(fn: UnauthorizedHandler | null) {
   onUnauthorized = fn;
+}
+
+/** Keeps a fresh sign-in where the request interceptor and the refresh logic look for it. */
+function storeSession(data: LoginResponse) {
+  if (!data.token) return;
+  localStorage.setItem('cashly_pos_token', data.token);
+  if (data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', data.refreshToken);
+  localStorage.setItem('cashly_pos_user', JSON.stringify(data.user));
 }
 
 function clearSession() {
@@ -283,18 +294,30 @@ export function registerBillingHandler(handler: (status: string, message: string
 }
 
 export const posApi = {
-  // Auth
+  // Auth — the way Toast does it: PIN only on a paired till, email + password in the back office,
+  // and restaurant + username + PIN as the fallback for staff with no email.
   /**
    * `branchId` is the branch this till is paired to. Staff who cover more than one branch are
    * signed in THERE, so the sale lands at the till's branch; staff not set up for it are refused.
+   * `restaurant` is the restaurant's name (or ID) — every business can have its own "admin".
    */
-  login: async (username: string, pinCode: string, branchId?: string | null) => {
-    const res = await api.post<LoginResponse>('/api/auth/login', { username, pinCode, branchId: branchId || undefined });
-    if (res.data.token) {
-      localStorage.setItem('cashly_pos_token', res.data.token);
-      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
-      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
-    }
+  login: async (username: string, pinCode: string, branchId?: string | null, restaurant?: string | null) => {
+    const res = await api.post<LoginResponse>('/api/auth/login', {
+      username, pinCode, branchId: branchId || undefined, tenantSlug: restaurant || undefined
+    });
+    storeSession(res.data);
+    return res.data;
+  },
+  /** A paired till: the PIN alone. The device's licence says which business and branch it is. */
+  pinLogin: async (pinCode: string, license: string, deviceFingerprint: string) => {
+    const res = await api.post<LoginResponse>('/api/auth/pin-login', { pinCode, license, deviceFingerprint });
+    storeSession(res.data);
+    return res.data;
+  },
+  /** The back office: email + password. The branch is chosen afterwards. */
+  emailLogin: async (email: string, password: string) => {
+    const res = await api.post<LoginResponse>('/api/auth/email-login', { email, password });
+    storeSession(res.data);
     return res.data;
   },
   /** Move this session to another branch the user covers, without signing out. */
@@ -616,6 +639,17 @@ export const posApi = {
   getBillingQuote: async (tenantId: string, annual = false) => {
     const res = await api.get<{ tenantId: string; annual: boolean; hasHeadOffice: boolean; lines: BillingLine[]; totalPKR: number }>(
       `/api/admin/tenants/${tenantId}/billing-quote`, { params: { annual } });
+    return res.data;
+  },
+  /** A business's owner accounts and how each signs in (platform admin). */
+  getTenantOwners: async (tenantId: string) => {
+    const res = await api.get<TenantOwnerAccount[]>(`/api/admin/tenants/${tenantId}/owners`);
+    return res.data;
+  },
+  /** Sets a one-time temporary back-office password, unlocks the account and signs it out everywhere. */
+  resetOwnerPassword: async (tenantId: string, userId: string, email?: string) => {
+    const res = await api.post<{ email: string; temporaryPassword: string; signedOutSessions: number }>(
+      `/api/admin/tenants/${tenantId}/users/${userId}/reset-password`, { email: email || undefined });
     return res.data;
   },
   getPlatformPrices: async () => {
@@ -1009,6 +1043,9 @@ export const posApi = {
     canManageMenuAndTax: boolean;
     canGiveDiscounts: boolean;
     canVoidOrders: boolean;
+    /** Optional back-office sign-in. */
+    email?: string;
+    password?: string;
   }) => {
     const res = await api.post<AppUser>('/api/users', data);
     return res.data;
@@ -1333,6 +1370,8 @@ export const posApi = {
     stateName?: string;
     adminUsername: string;
     adminPin: string;
+    /** The owner's back-office password (signs in with the email above). */
+    adminPassword?: string;
     businessType?: BusinessType;
     packageKey?: string;
     /** Which sector pack this business runs — decides its POS layout and item model. */
