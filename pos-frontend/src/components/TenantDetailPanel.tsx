@@ -2,9 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   X, ShieldAlert, Clock, Gift, Eye, Activity, AlertTriangle,
   CreditCard, Server, RefreshCw, Trash2, LayoutDashboard, Puzzle,
-  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History
+  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History, Globe
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { restaurantSignInLink, webNameProblem } from '../services/restaurantAddress';
+import { beginSupportSession } from '../services/supportSession';
 import type {
   TenantOverview, PlanChangePreview, PlanOption,
   AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine, TenantOwnerAccount
@@ -281,11 +283,11 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
     setMessage(null);
     try {
       const res = await posApi.impersonateTenant(tenantId, impersonateReason.trim(), false);
-      // Read-only by default: support can look without being able to change anything.
-      window.localStorage.setItem('cashly_pos_token', res.token);
-      setMessage({ tone: 'ok', text: `Read-only session open for ${res.expiresInMinutes} minutes. Reload to use it.` });
+      // Read-only by default: support can look without being able to change anything. The console
+      // opens the restaurant now; "End support session" (or the 30 minutes) brings you back here.
       setImpersonateOpen(false);
       setImpersonateReason('');
+      beginSupportSession(res);
     } catch (err) {
       setMessage({ tone: 'err', text: getApiErrorMessage(err, 'Could not start a support session.') });
     } finally {
@@ -597,6 +599,9 @@ const OverviewTab: React.FC<{
         </button>
       </Section>
 
+      <WebAddressSection webName={tenant.slug} busy={busy}
+        onChange={(name) => run(() => posApi.changeTenantWebName(tenantIdFrom(data), name), `Web address changed to ${name}.`)} />
+
       <OwnerSignIn tenantId={tenantIdFrom(data)} />
 
       <div className="grid grid-cols-2 gap-2">
@@ -642,6 +647,62 @@ const OverviewTab: React.FC<{
         </div>
       )}
     </div>
+  );
+};
+
+/**
+ * The restaurant's own sign-in address, and changing it. Only the platform admin may change it:
+ * staff bookmarks of the old address stop working.
+ */
+const WebAddressSection: React.FC<{ webName: string; busy: boolean; onChange: (name: string) => void }> = ({ webName, busy, onChange }) => {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(webName);
+  const [copied, setCopied] = useState(false);
+  const link = restaurantSignInLink(webName);
+  const problem = webNameProblem(draft);
+
+  return (
+    <Section icon={<Globe className="w-3.5 h-3.5" />} title="Sign-in address">
+      <div className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+        <span className="flex-1 min-w-0 text-xs font-mono font-bold text-slate-800 truncate">{link.replace(/^https?:\/\//, '')}</span>
+        <button
+          onClick={() => { navigator.clipboard?.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); }}
+          className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[10px] font-bold text-slate-600"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <button
+          onClick={() => { setDraft(webName); setEditing(v => !v); }}
+          className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[10px] font-bold text-slate-600"
+        >
+          Change
+        </button>
+      </div>
+      {editing && (
+        <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
+          <p className="text-[11px] text-amber-900">
+            Staff bookmarks and links to the old address stop working. Tell the restaurant the new one.
+          </p>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 30))}
+            className="w-full bg-white border border-amber-200 rounded-lg px-3 py-1.5 text-xs font-mono"
+          />
+          {draft !== webName && problem && <p className="text-[11px] text-rose-600">{problem}</p>}
+          <button
+            disabled={busy || !!problem || draft === webName}
+            onClick={() => {
+              if (!window.confirm(`Change the address to ${restaurantSignInLink(draft).replace(/^https?:\/\//, '')}? The old one stops working.`)) return;
+              setEditing(false);
+              onChange(draft);
+            }}
+            className="w-full py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white text-[11px] font-bold"
+          >
+            Save new address
+          </button>
+        </div>
+      )}
+    </Section>
   );
 };
 

@@ -655,6 +655,8 @@ export interface ReturnableOrder {
 export interface Tenant {
   id: string;
   name: string;
+  /** The restaurant's web name — its own sign-in address (/r/<slug>, later <slug>.<domain>). */
+  slug?: string;
   businessType: BusinessType;
   tier: SubscriptionTier;
   isActive: boolean;
@@ -836,6 +838,18 @@ export interface LoginResponse {
   /** 2-step sign-in is on: no session yet — send a code with `challenge` to /api/auth/2fa/verify. */
   twoFactorRequired?: boolean;
   challenge?: string;
+}
+
+/** `POST /api/admin/tenants/{id}/impersonate` — the platform admin's support session in a restaurant. */
+export interface SupportSessionStart {
+  token: string;
+  expiresInMinutes: number;
+  readOnly: boolean;
+  tenantName: string;
+  tenantId: string;
+  userId: string;
+  role: UserRole;
+  warning: string;
 }
 
 /** The signed-in person's own sign-in settings. */

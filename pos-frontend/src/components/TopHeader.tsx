@@ -22,6 +22,7 @@ import {
 import { usePosStore } from '../store/posStore';
 import { AlertsBell } from './AlertsBell';
 import { AccountSecurityModal } from './AccountSecurityModal';
+import { getSupportSession } from '../services/supportSession';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { MyBranch } from '../types';
@@ -73,7 +74,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const [isSyncing, setIsSyncing] = useState(false);
   // Password and 2-step sign-in for the person signed in (not the platform admin's own account).
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
-  const canManageOwnSignIn = !!currentUser && currentUser.role !== 'SuperAdmin';
+  // Not the platform admin's own account, and not a support session (it has no sign-in of its own).
+  const canManageOwnSignIn = !!currentUser && currentUser.role !== 'SuperAdmin' && !getSupportSession();
 
   // Staff pinned to a branch switch on the server: the session moves to another branch they
   // cover, so what they ring up lands there. Owners and head office staff already see every

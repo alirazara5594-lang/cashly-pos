@@ -11,6 +11,8 @@ import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
+import { rememberRestaurantAddress, webNameFromPath } from './services/restaurantAddress';
+import { endSupportSession, getSupportSession } from './services/supportSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
 
@@ -53,6 +55,9 @@ const OpenOrders = lazy(() => import('./pages/OpenOrders').then(m => ({ default:
 const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ default: m.PublicOrder })));
 const ConnectDevice = lazy(() => import('./pages/ConnectDevice').then(m => ({ default: m.ConnectDevice })));
 const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
+
+/** The only screens of the platform admin, who owns no restaurant. */
+const PLATFORM_ADMIN_PATHS = ['/super-admin', '/pricing-admin'];
 
 /** Shown while a lazily-loaded route's chunk is being fetched — brief on a normal
  * connection, but real on a slow one, so it's a spinner, not a blank screen. */
@@ -105,10 +110,17 @@ function MainLayoutInner() {
   const isPlatformSuperAdmin = normalizeRole(currentUser?.role) === 'SuperAdmin';
 
   const isAuthenticated = !!currentUser && !!token;
+  /** The platform admin inside a restaurant ("View as customer"), when one is open. */
+  const supportSession = isAuthenticated ? getSupportSession() : null;
 
   // Teach the axios 401 handler how to end the session and return to the gate.
   useEffect(() => {
     registerAuthRedirect(() => {
+      // A support session that ran out goes back to the platform admin, not to the sign-in page.
+      if (getSupportSession()) {
+        endSupportSession();
+        return;
+      }
       usePosStore.getState().logout();
       navigate('/', { replace: true });
     });
@@ -223,6 +235,14 @@ function MainLayoutInner() {
     );
   }
 
+  // A restaurant's own sign-in link (<site>/r/<webName>): this device remembers the restaurant and
+  // opens its sign-in, which then asks only username + PIN. (With a domain, the subdomain says it.)
+  const linkWebName = webNameFromPath(location.pathname);
+  if (linkWebName) {
+    rememberRestaurantAddress(linkWebName);
+    return <Navigate to="/" replace />;
+  }
+
   // The sign-in screen comes first for everyone signed out. The setup wizard is for someone
   // already signed in (Settings → Re-run Setup Wizard); a visitor who lands on /setup — an old
   // bookmark, or the redirect older versions made — goes to sign in. New businesses register at
@@ -277,6 +297,13 @@ function MainLayoutInner() {
     return <LoginGate />;
   }
 
+  // The platform admin owns no restaurant: a restaurant screen would ask the server for "this
+  // restaurant", be refused with a 401, and sign them out. Any address other than the platform
+  // screens goes to Tenant Management instead (View as customer is the way into a restaurant).
+  if (isPlatformSuperAdmin && !PLATFORM_ADMIN_PATHS.includes(location.pathname)) {
+    return <Navigate to="/super-admin" replace />;
+  }
+
   return (
     <div className={`min-h-screen flex flex-col bg-mesh selection:bg-teal-500 selection:text-slate-950 font-sans transition-colors duration-200 ${
       theme === 'light' ? 'theme-light' : 'theme-dark'
@@ -300,16 +327,37 @@ function MainLayoutInner() {
           isSidebarOpen={isMobileSidebarOpen}
           currentUser={currentUser}
           onSwitchUser={() => {
+            // A support session just ends, back to the platform admin's own session.
+            if (supportSession) { endSupportSession(); return; }
             // Fast cashier handoff: drop the session and fall straight back to the
             // login gate on the next render — no full page reload.
             logout();
             navigate('/', { replace: true });
           }}
           onLogout={() => {
+            if (supportSession) { endSupportSession(); return; }
             logout();
             navigate('/', { replace: true });
           }}
         />
+
+        {/* The platform admin looking inside a restaurant ("View as customer"). */}
+        {supportSession && (
+          <div className="px-4 py-2 bg-purple-600 text-white text-xs flex flex-wrap items-center gap-x-3 gap-y-1" role="status">
+            <strong>Support session:</strong>
+            <span>
+              viewing {supportSession.tenantName}{supportSession.readOnly ? ' (read-only)' : ''} until{' '}
+              {new Date(supportSession.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+              Recorded in their audit log.
+            </span>
+            <button
+              onClick={endSupportSession}
+              className="ml-auto px-3 py-1 rounded-lg bg-white text-purple-700 font-bold hover:bg-purple-50 transition"
+            >
+              End support session
+            </button>
+          </div>
+        )}
 
         {/* Account and device state, above everything. Graduated, never a hard block. */}
         <AccountStatusBanner packageInfo={packageInfo} deviceStatus={deviceStatus} />

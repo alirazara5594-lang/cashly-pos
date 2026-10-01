@@ -22,8 +22,10 @@ import {
   Network, 
   Copy,
   Check,
-  KeyRound
+  KeyRound,
+  Globe
 } from 'lucide-react';
+import { restaurantLinkParts, restaurantSignInLink, suggestWebName, webNameProblem } from '../services/restaurantAddress';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { usePosStore } from '../store/posStore';
@@ -82,7 +84,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     serverUrl?: string;
     systemType: InstallationSystemType;
     erpRole?: ErpDeploymentRole;
+    /** The restaurant's own sign-in address name (registration only). */
+    webName?: string;
   } | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // 1. Primary System Choice: POS Only vs POS + ERP
   const [systemType, setSystemType] = useState<InstallationSystemType>('POS_ERP');
@@ -145,6 +150,26 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Back-office sign-in for a new registration (email + password); the PIN is for the tills.
   const [adminPassword, setAdminPassword] = useState('');
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
+
+  // The restaurant's own sign-in address (/r/<name> now, <name>.<domain> later): suggested from the
+  // restaurant's name until the owner edits it, and checked with the server as they type.
+  const [webNameInput, setWebNameInput] = useState('');
+  const [webNameEdited, setWebNameEdited] = useState(false);
+  const webName = webNameEdited ? webNameInput : suggestWebName(restaurantName);
+  const [webCheck, setWebCheck] = useState<{ name: string; available: boolean; problem: string | null; alternative: string | null } | null>(null);
+  useEffect(() => {
+    if (!signupMode || webNameProblem(webName)) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      posApi.checkWebName(webName)
+        .then(r => { if (!cancelled) setWebCheck(r); })
+        .catch(() => { /* checked again when they press Next */ });
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [webName, signupMode]);
+  const webNameLocalProblem = webNameProblem(webName);
+  const webCheckNow = webCheck && webCheck.name === webName ? webCheck : null;
+  const webLinkParts = restaurantLinkParts();
 
   // Offline & Server Settings
   const enableOfflineDb = true;
@@ -320,6 +345,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     // Business Profile Step
     if (s === PROFILE_STEP) {
       if (!restaurantName.trim()) return 'Restaurant / Brand name is required.';
+      if (signupMode) {
+        if (webNameLocalProblem) return `Web address: ${webNameLocalProblem}`;
+        if (!webCheckNow) return 'Still checking your web address — try again in a moment.';
+        if (!webCheckNow.available) return `Web address: ${webCheckNow.problem ?? 'already taken.'}`;
+      }
       if (systemType === 'POS_ERP' && erpRole === 'ERP_SERVER') {
         if (!hqName.trim()) return 'Head Office Name is required.';
         if (branches.some(b => !b.name.trim())) return 'All branch outlets must have a name.';
@@ -423,6 +453,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           adminUsername: adminUsername.trim().toLowerCase(),
           adminPin: adminPin.trim(),
           adminPassword,
+          webName,
           businessType,
           // POS Only: the plan is its POS version. POS + ERP: the ERP is the same for everyone and
           // each branch carries its own version; Standard is only what a branch falls back to.
@@ -458,7 +489,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           pin: adminPin.trim(),
           serverUrl: apiUrl || 'http://localhost:5288',
           systemType,
-          erpRole
+          erpRole,
+          webName
         });
         // The sign-in screen on this device fills in the new owner's email (and the restaurant, for
         // the username fallback).
@@ -667,8 +699,39 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             </p>
           </div>
 
-          {/* If Head Office ERP was installed: show Connection Credentials Box for POS Terminals */}
-          {isErp && (
+          {/* The restaurant's own sign-in address: staff sign in there with just username + PIN, and
+              tills are connected there with a pairing code. */}
+          {signupMode && signupSuccess.webName && (
+            <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-left space-y-2">
+              <div className="text-xs font-bold text-teal-900 uppercase tracking-wider flex items-center gap-1.5">
+                <Globe className="w-4 h-4 text-teal-600" /> Your restaurant's sign-in address
+              </div>
+              <div className="flex items-center gap-2 bg-white border border-teal-200 rounded-lg p-2">
+                <span className="text-sm font-mono font-bold text-slate-800 flex-1 truncate">
+                  {restaurantSignInLink(signupSuccess.webName).replace(/^https?:\/\//, '')}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(restaurantSignInLink(signupSuccess.webName!)).catch(() => {});
+                    setCopiedLink(true);
+                    setTimeout(() => setCopiedLink(false), 2000);
+                  }}
+                  className="p-1 text-teal-600 hover:text-teal-800 transition"
+                  title="Copy the address"
+                >
+                  {copiedLink ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-teal-800">
+                Send it to your staff (WhatsApp is fine): they open it and sign in with just their username and PIN.
+                Connect tills and tablets from the same address with <strong>Connect a till or tablet</strong>.
+              </p>
+            </div>
+          )}
+
+          {/* If Head Office ERP was installed on this machine: the server address its tills connect to */}
+          {isErp && !signupMode && (
             <div className="p-4 rounded-xl bg-sky-50 border border-sky-200 text-left space-y-3">
               <div className="flex items-center justify-between">
                 <div className="text-xs font-bold text-sky-900 uppercase tracking-wider flex items-center gap-1.5">
@@ -703,7 +766,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
           <button
             type="button"
-            onClick={() => navigate(signupMode ? '/' : isErp ? '/director' : '/')}
+            onClick={() => {
+              // A new registration goes to its own restaurant's sign-in address.
+              if (signupMode && signupSuccess.webName) window.location.assign(restaurantSignInLink(signupSuccess.webName));
+              else navigate(signupMode ? '/' : isErp ? '/director' : '/');
+            }}
             className="w-full py-3.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition shadow-lg shadow-teal-500/25 cursor-pointer flex items-center justify-center gap-2"
           >
             {signupMode ? (
@@ -1249,6 +1316,60 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     </select>
                   </div>
                 </div>
+
+                {/* The restaurant's own sign-in address — where its staff sign in with just username + PIN. */}
+                {signupMode && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5 text-teal-600" /> Your sign-in web address*
+                    </label>
+                    <div className={`flex items-stretch rounded-xl border overflow-hidden bg-slate-50 ${
+                      webNameLocalProblem || (webCheckNow && !webCheckNow.available) ? 'border-rose-300' : webCheckNow?.available ? 'border-teal-400' : 'border-slate-200'
+                    }`}>
+                      <span className="px-3 flex items-center text-xs text-slate-500 bg-slate-100 border-r border-slate-200 shrink-0">{webLinkParts.prefix}</span>
+                      <input
+                        type="text"
+                        value={webName}
+                        onChange={(e) => {
+                          setWebNameEdited(true);
+                          setWebNameInput(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 30));
+                        }}
+                        spellCheck={false}
+                        autoComplete="off"
+                        placeholder="royalgrill"
+                        className="flex-1 min-w-0 bg-transparent px-2 py-2 text-sm font-bold text-slate-900 focus:outline-none"
+                      />
+                      {webLinkParts.suffix && (
+                        <span className="px-3 flex items-center text-xs text-slate-500 bg-slate-100 border-l border-slate-200 shrink-0">{webLinkParts.suffix}</span>
+                      )}
+                    </div>
+                    <p className="text-[11px]">
+                      {webNameLocalProblem ? (
+                        <span className="text-rose-600">{webNameLocalProblem}</span>
+                      ) : !webCheckNow ? (
+                        <span className="text-slate-400">Checking…</span>
+                      ) : webCheckNow.available ? (
+                        <span className="text-teal-700 font-semibold">✓ Available</span>
+                      ) : (
+                        <span className="text-rose-600">
+                          {webCheckNow.problem}
+                          {webCheckNow.alternative && (
+                            <>
+                              {' '}
+                              <button type="button" className="underline font-semibold"
+                                onClick={() => { setWebNameEdited(true); setWebNameInput(webCheckNow.alternative!); }}>
+                                Use {webCheckNow.alternative}
+                              </button>
+                            </>
+                          )}
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Your staff open this address to sign in with just their username and PIN. It cannot be changed later without Cashly support.
+                    </p>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="space-y-1.5">

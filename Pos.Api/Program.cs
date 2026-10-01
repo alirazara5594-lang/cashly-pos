@@ -98,11 +98,29 @@ var corsOrigins = (builder.Configuration["CorsOrigins"] ?? Environment.GetEnviro
 var allOrigins = new[] { "http://localhost:5173", "http://localhost:5174", "http://localhost:3000", "https://cashly-pos.vercel.app" }
     .Concat(corsOrigins).Distinct().ToArray();
 
+// Cashly's own domain, once there is one (e.g. "cashlypos.com"). Every restaurant then has its own
+// address, royalgrill.cashlypos.com, and the platform admin signs in only at admin.cashlypos.com.
+// Unset: restaurants use <site>/r/<name> and nothing else changes.
+var baseDomain = (builder.Configuration["App:BaseDomain"] ?? Environment.GetEnvironmentVariable("APP_BASE_DOMAIN"))
+    ?.Trim().TrimStart('.').ToLowerInvariant();
+if (string.IsNullOrWhiteSpace(baseDomain)) baseDomain = null;
+var allowLocalhostSubdomains = builder.Environment.IsDevelopment();
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(allOrigins)
+        policy.SetIsOriginAllowed(origin =>
+            {
+                if (allOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase)) return true;
+                if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+                var host = uri.Host.ToLowerInvariant();
+                // Every restaurant's own address on Cashly's domain.
+                if (baseDomain != null && uri.Scheme == Uri.UriSchemeHttps && (host == baseDomain || host.EndsWith("." + baseDomain)))
+                    return true;
+                // Trying restaurant addresses on a developer's machine: royalgrill.localhost:5173.
+                return allowLocalhostSubdomains && (host == "localhost" || host.EndsWith(".localhost"));
+            })
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
@@ -147,6 +165,11 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("public-orders", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
         http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { Window = TimeSpan.FromMinutes(1), PermitLimit = 20, QueueLimit = 0 }));
+    // Anonymous look-ups by the registration and sign-in pages (is a web name free, whose address
+    // is this) — per IP, generous enough for typing.
+    options.AddPolicy("public-lookup", http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+        http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { Window = TimeSpan.FromMinutes(1), PermitLimit = 60, QueueLimit = 0 }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
@@ -3515,6 +3538,104 @@ var authApi = app.MapGroup("/api/auth").RequireRateLimiting("auth");
 static string RestaurantKey(string value) =>
     System.Text.RegularExpressions.Regex.Replace(value.ToLowerInvariant(), "[^a-z0-9]", "");
 
+// ------------------------------------------------------------
+// WEB NAMES — each restaurant's own sign-in address
+//
+// Stored as Tenant.Slug. Before there is a domain the address is <site>/r/<name>; once App:BaseDomain
+// is set it becomes <name>.<domain>. Either way staff there sign in with just username + PIN.
+// The rules are those of a real subdomain, so every name taken now still works then.
+// ------------------------------------------------------------
+
+// Kept for Cashly's own addresses (and the /r/ path), so no restaurant can take them.
+static bool IsReservedWebName(string name) => name is
+    "www" or "app" or "admin" or "api" or "mail" or "email" or "smtp" or "ftp" or "demo" or "support" or "help"
+    or "docs" or "blog" or "status" or "static" or "cdn" or "assets" or "dashboard" or "portal" or "login"
+    or "signup" or "register" or "account" or "accounts" or "billing" or "pay" or "payments" or "dev" or "test"
+    or "staging" or "cashly" or "cashlypos" or "pos" or "erp" or "root" or "system" or "ns1" or "ns2" or "r";
+
+// Why a web name will not do, or null when it will.
+static string? WebNameProblem(string? name)
+{
+    if (string.IsNullOrWhiteSpace(name)) return "Choose a web address.";
+    if (name.Length < 3 || name.Length > 30) return "Use 3 to 30 characters.";
+    if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))
+        return "Use only small letters, numbers and dashes (a dash cannot be first or last).";
+    if (name.Contains("--")) return "Do not put two dashes in a row.";
+    if (IsReservedWebName(name)) return "That address is kept for Cashly. Choose another.";
+    return null;
+}
+
+// A valid web name from a restaurant's name: "Royal Grill & Kitchen" → "royal-grill-kitchen".
+static string SuggestWebName(string restaurantName)
+{
+    var name = System.Text.RegularExpressions.Regex.Replace(restaurantName.ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
+    if (name.Length > 30) name = name[..30].Trim('-');
+    if (name.Length < 3) name = (name + "-shop").Trim('-');
+    if (IsReservedWebName(name)) name += "-pos";
+    return name;
+}
+
+// The wanted web name when it is free, else the same with -2, -3… on the end.
+static async Task<string> FreeWebNameAsync(AppDbContext db, string wanted)
+{
+    var candidate = wanted;
+    for (var n = 2; await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == candidate); n++)
+    {
+        var suffix = $"-{n}";
+        candidate = (wanted.Length + suffix.Length > 30 ? wanted[..(30 - suffix.Length)].TrimEnd('-') : wanted) + suffix;
+    }
+    return candidate;
+}
+
+// Registration's live check while the owner types their web name.
+app.MapGet("/api/public/web-names/check", async (AppDbContext db, string? name) =>
+{
+    var normalized = (name ?? "").Trim().ToLowerInvariant();
+    var problem = WebNameProblem(normalized);
+    if (problem != null) return Results.Ok(new { name = normalized, available = false, problem, alternative = (string?)null });
+    var taken = await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == normalized);
+    return Results.Ok(new
+    {
+        name = normalized,
+        available = !taken,
+        problem = taken ? "That address is already taken." : null,
+        alternative = taken ? await FreeWebNameAsync(db, normalized) : null
+    });
+}).AllowAnonymous().RequireRateLimiting("public-lookup");
+
+// The restaurant a sign-in address belongs to — just its name, for the sign-in page's heading. It
+// is that restaurant's own public address, so saying who it belongs to gives nothing away.
+app.MapGet("/api/public/restaurants/{webName}", async (AppDbContext db, string webName) =>
+{
+    var normalized = webName.Trim().ToLowerInvariant();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Slug == normalized);
+    return tenant == null
+        ? Results.NotFound(new { message = "No restaurant uses this address." })
+        : Results.Ok(new { webName = tenant.Slug, name = tenant.Name });
+}).AllowAnonymous().RequireRateLimiting("public-lookup");
+
+// The platform admin changing a restaurant's web name. Staff bookmarks of the old address stop
+// working, which is why the restaurant itself cannot do this.
+app.MapPut("/api/admin/tenants/{tenantId:guid}/web-name", async (Guid tenantId, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, ChangeWebNameDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId);
+    if (tenant == null) return Results.NotFound();
+    var name = (dto.WebName ?? "").Trim().ToLowerInvariant();
+    var problem = WebNameProblem(name);
+    if (problem != null) return Results.BadRequest(new { message = problem });
+    if (name == tenant.Slug) return Results.Ok(new { webName = name });
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == name && t.Id != tenant.Id))
+        return Results.BadRequest(new { message = "That address is already taken." });
+
+    var old = tenant.Slug;
+    tenant.Slug = name;
+    await WriteAuditAsync(db, tenant.Id, await accessor.GetCurrentUserAsync(http), "WebNameChanged", "Tenant", tenant.Id, old, name);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { webName = name });
+}).RequireAuthorization();
+
 // The one restaurant someone means when they type its name (or ID) at sign-in: an exact name or ID
 // first, else a loose match (case, spaces and punctuation ignored). Null when none, or when a loose
 // match is not unique — then they have to type it exactly.
@@ -3759,6 +3880,19 @@ authApi.MapPost("/email-login", async (AppDbContext db, HttpContext http, EmailL
             await db.SaveChangesAsync();
         }
         return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    // At a restaurant's own address only that restaurant's people sign in. Told only after the
+    // password was right, so the answer gives nothing away to anyone else.
+    if (!string.IsNullOrWhiteSpace(dto.Restaurant))
+    {
+        var addressTenant = await FindRestaurantAsync(db, dto.Restaurant);
+        if (addressTenant == null || addressTenant.Id != user.TenantId)
+        {
+            var ownWebName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == user.TenantId).Select(t => t.Slug).FirstOrDefaultAsync();
+            return Results.Json(new { message = "This account belongs to another restaurant. Sign in at your own restaurant's address.", webName = ownWebName },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
     }
 
     // Password right; with 2-step sign-in on, the code comes next (/api/auth/2fa/verify).
@@ -4320,13 +4454,8 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         return Results.Json(new { message = "This server is already set up. Sign in, or register a new business through signup." },
             statusCode: StatusCodes.Status409Conflict);
 
-    var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
-    slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
-
-    // Same rule the signup endpoint enforces: slug collisions blow up on the unique index, so
-    // reject with a message the wizard can show instead of a raw database error.
-    if (await db.Tenants.AnyAsync(t => t.Slug == slug))
-        return Results.BadRequest(new { message = "A restaurant with a similar name already exists. Try a different name." });
+    // The web name (sign-in address), made from the restaurant's name.
+    var slug = await FreeWebNameAsync(db, SuggestWebName(dto.RestaurantName));
 
     var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
     // A single shop's plan is its POS version. With a head office the ERP is the same for everyone
@@ -9182,11 +9311,22 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, 
 
 authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto dto) =>
 {
-    // Validate unique slug
-    var slug = dto.RestaurantName.ToLower().Trim().Replace(" ", "-");
-    slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\-]", "");
-    if (await db.Tenants.AnyAsync(t => t.Slug == slug))
-        return Results.BadRequest(new { error = "A restaurant with a similar name already exists. Try a different name." });
+    // The restaurant's web name is its sign-in address: /r/<name> now, <name>.yourdomain.com once
+    // there is a domain. The owner picks it; an older client that sends none gets one made from
+    // the restaurant's name. Two restaurants may share a name — never an address.
+    string slug;
+    if (!string.IsNullOrWhiteSpace(dto.WebName))
+    {
+        slug = dto.WebName.Trim().ToLowerInvariant();
+        var webNameProblem = WebNameProblem(slug);
+        if (webNameProblem != null) return Results.BadRequest(new { error = webNameProblem });
+        if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == slug))
+            return Results.BadRequest(new { error = "That web address is already taken. Choose another." });
+    }
+    else
+    {
+        slug = await FreeWebNameAsync(db, SuggestWebName(dto.RestaurantName));
+    }
 
     // Usernames only have to be unique WITHIN a tenant — the database index says so. A global
     // check meant the first business to register "admin" took that name away from every business
@@ -9682,6 +9822,12 @@ authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, 
 {
     var clientIp = http.Connection.RemoteIpAddress?.ToString();
 
+    // Once Cashly has its own domain, the platform admin signs in only at admin.<domain> — never from
+    // a restaurant's address, where the option is not even shown.
+    if (baseDomain != null && Uri.TryCreate(http.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
+        && !string.Equals(origin.Host, "admin." + baseDomain, StringComparison.OrdinalIgnoreCase))
+        return Results.Json(new { message = $"Platform Admin sign-in is only at admin.{baseDomain}." }, statusCode: StatusCodes.Status403Forbidden);
+
     // Super admin credentials from configuration (not hardcoded)
     var superAdminUsername = builder.Configuration["SuperAdmin:Username"] ?? "superadmin";
     var superAdminPin = builder.Configuration["SuperAdmin:Pin"] ?? Environment.GetEnvironmentVariable("SUPER_ADMIN_PIN") ?? "999999";
@@ -10100,11 +10246,9 @@ app.MapPost("/api/admin/tenants/provision", async (
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
-    var slug = System.Text.RegularExpressions.Regex.Replace(
-        dto.BusinessName.ToLower().Trim().Replace(" ", "-"), @"[^a-z0-9\-]", "");
-    if (string.IsNullOrWhiteSpace(slug)) return Results.BadRequest(new { message = "Business name must contain letters or digits." });
-    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Slug == slug))
-        return Results.BadRequest(new { message = "A business with a similar name already exists." });
+    // The web name (sign-in address), made from the business's name; changeable later by the
+    // platform admin (PUT /api/admin/tenants/{id}/web-name).
+    var slug = await FreeWebNameAsync(db, SuggestWebName(dto.BusinessName));
 
     var packKey = Pos.Api.Data.VerticalPacks.Find(dto.VerticalPack)?.Key ?? Pos.Api.Data.VerticalPacks.Retail;
     var countryProfile = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country, dto.VerticalPack)
@@ -10424,6 +10568,10 @@ app.MapPost("/api/admin/tenants/{id:guid}/impersonate", async (
         expiresInMinutes = 30,
         readOnly = !writeAccess,
         tenantName = tenant.Name,
+        // What the console signs in as for the session — the same values the token carries.
+        tenantId = tenant.Id,
+        userId = actingUser.Id,
+        role = (writeAccess ? UserRole.OwnerAdmin : UserRole.BranchManager).ToString(),
         warning = "This session is recorded against the customer's audit log."
     });
 }).RequireAuthorization();
@@ -14177,7 +14325,9 @@ public record TwoFactorCodeDto(string? Code);
 public record ChangePasswordDto(string? CurrentPassword, string? NewPassword, string? RefreshToken);
 public record ForgotPasswordDto(string? Email);
 public record ResetPasswordWithTokenDto(string? Token, string? NewPassword);
-public record EmailLoginDto(string? Email, string? Password);
+/// <summary>Restaurant is the web name when signing in at a restaurant's own address.</summary>
+public record EmailLoginDto(string? Email, string? Password, string? Restaurant = null);
+public record ChangeWebNameDto(string? WebName);
 public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 /// <summary>A line names a raw ingredient (IngredientId) or a finished product (ProductId).</summary>
@@ -14272,7 +14422,7 @@ public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, str
 /// </summary>
 public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null,
     string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null,
-    string? AdminPassword = null);
+    string? AdminPassword = null, string? WebName = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor } from 'lucide-react';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
+import { currentRestaurantAddress, forgetRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
 import { usePosStore, LOGIN_BRANCH_KEY } from '../store/posStore';
 import type { AuthPermissions, CurrentUser, LoginResponse, MyBranch } from '../types';
 
@@ -32,7 +33,9 @@ type SignedInUser = CurrentUser & { permissions?: AuthPermissions };
  *  - till:     a till, tablet or kitchen screen paired to a branch. The PIN alone; the device
  *              already knows the restaurant and branch.
  *  - email:    the back office on any browser or office PC. Email + password; no restaurant name.
- *  - username: the fallback for staff with no email — restaurant + username + PIN.
+ *  - username: username + PIN. At a restaurant's own address (its subdomain, or its /r/ link) the
+ *              restaurant is known; elsewhere it is asked for only when that username exists at
+ *              more than one restaurant.
  *  - platform: Cashly's own platform admin.
  */
 type Mode = 'till' | 'email' | 'username' | 'platform';
@@ -67,12 +70,29 @@ export const LoginGate: React.FC = () => {
   const tillBranchId = terminal && terminal.type !== 'BackOffice' ? terminal.branchId : null;
   const tillBranchName = tillBranchId ? getCachedStatus().branchName ?? null : null;
 
-  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : 'email');
+  // A restaurant's own sign-in address: its subdomain, or the /r/<name> link this device opened.
+  // The restaurant is known there, so its staff give just username + PIN.
+  const [address, setAddress] = useState(() => currentRestaurantAddress());
+  const [addressInfo, setAddressInfo] = useState<{ webName: string; name: string | null; missing?: boolean } | null>(null);
+  useEffect(() => {
+    if (!address) return;
+    let cancelled = false;
+    posApi.getRestaurantByWebName(address.webName)
+      .then(r => { if (!cancelled) setAddressInfo({ webName: address.webName, name: r.name }); })
+      .catch(err => { if (!cancelled) setAddressInfo({ webName: address.webName, name: null, missing: getApiErrorStatus(err) === 404 }); });
+    return () => { cancelled = true; };
+  }, [address]);
+  const restaurantHere = address && addressInfo?.webName === address.webName ? addressInfo : null;
+  const showPlatformAdmin = !address && isPlatformAdminAddress();
+
+  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : currentRestaurantAddress() ? 'username' : 'email');
   const [email, setEmail] = useState(() => readSaved(EMAIL_KEY));
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  // Username sign-in asks only for username + PIN. The restaurant is asked for only when the server
+  // says that username exists at more than one restaurant (every business may have an "admin").
   const [restaurant, setRestaurant] = useState(() => readSaved(RESTAURANT_KEY));
-  const [editingRestaurant, setEditingRestaurant] = useState(() => !readSaved(RESTAURANT_KEY));
+  const [restaurantNeeded, setRestaurantNeeded] = useState(false);
   const [username, setUsername] = useState('');
   const [pinCode, setPinCode] = useState('');
   const [error, setError] = useState('');
@@ -93,6 +113,18 @@ export const LoginGate: React.FC = () => {
     setDeviceNotConnected(false);
     setShowForgot(false);
   };
+
+  // "Not Royal Grill?" — this device stops opening that restaurant's sign-in (an /r/ link only;
+  // a subdomain always means its own restaurant).
+  const leaveRestaurantAddress = () => {
+    forgetRestaurantAddress();
+    setAddress(null);
+    setAddressInfo(null);
+    switchMode(tillBranchId ? 'till' : 'email');
+  };
+
+  // Where "the other restaurant's address" links go when someone signs in at the wrong one.
+  const [otherAddress, setOtherAddress] = useState<string | null>(null);
 
   /** Hand the session to the app, remembering the branch for next time. */
   const finish = async (user: SignedInUser, token: string, permissions: AuthPermissions | undefined, branchId?: string | null) => {
@@ -121,7 +153,7 @@ export const LoginGate: React.FC = () => {
   const ready =
     mode === 'till' ? /^\d{4,6}$/.test(pinCode)
       : mode === 'email' ? !!email.trim() && !!password
-      : mode === 'username' ? !!typedRestaurant && !!username.trim() && !!pinCode.trim()
+      : mode === 'username' ? !!username.trim() && !!pinCode.trim() && (!!address || !restaurantNeeded || !!typedRestaurant)
       : !!username.trim() && !!pinCode.trim();
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -130,6 +162,7 @@ export const LoginGate: React.FC = () => {
     setLoading(true);
     setError('');
     setDeviceNotConnected(false);
+    setOtherAddress(null);
     try {
       if (mode === 'till') {
         const license = getStoredLicense();
@@ -143,7 +176,8 @@ export const LoginGate: React.FC = () => {
         return;
       }
       if (mode === 'email') {
-        const result = await posApi.emailLogin(email.trim(), password);
+        // At a restaurant's own address only that restaurant's people sign in.
+        const result = await posApi.emailLogin(email.trim(), password, address?.webName);
         save(EMAIL_KEY, email.trim());
         if (result.twoFactorRequired && result.challenge) {
           setTwoFactor({ challenge: result.challenge, via: 'email' });
@@ -154,9 +188,11 @@ export const LoginGate: React.FC = () => {
         return;
       }
       if (mode === 'username') {
-        // On a till this still signs in at the till's branch, so its sales land there.
-        const result = await posApi.login(username.trim(), pinCode.trim(), tillBranchId, typedRestaurant);
-        save(RESTAURANT_KEY, typedRestaurant);
+        // On a till this still signs in at the till's branch, so its sales land there. The restaurant
+        // comes from the address when there is one; otherwise only when the server asked for it.
+        const restaurantForLogin = address?.webName ?? (restaurantNeeded ? typedRestaurant : null);
+        const result = await posApi.login(username.trim(), pinCode.trim(), tillBranchId, restaurantForLogin);
+        if (!address && restaurantNeeded) save(RESTAURANT_KEY, typedRestaurant);
         if (result.twoFactorRequired && result.challenge) {
           setTwoFactor({ challenge: result.challenge, via: 'username' });
           setCode('');
@@ -175,14 +211,22 @@ export const LoginGate: React.FC = () => {
       await finish(user, result.token, user.permissions);
     } catch (err) {
       const status = getApiErrorStatus(err);
-      const data = (err as { response?: { data?: { deviceNotConnected?: boolean } } }).response?.data;
+      const data = (err as { response?: { data?: { deviceNotConnected?: boolean; requiresTenantSlug?: boolean; webName?: string } } }).response?.data;
       if (mode === 'till' && data?.deviceNotConnected) setDeviceNotConnected(true);
+      if (mode === 'username' && data?.requiresTenantSlug) {
+        // That username exists at more than one restaurant: ask which one, and keep the PIN typed.
+        setRestaurantNeeded(true);
+        setError('This username is used at more than one restaurant. Add your restaurant name and press Sign In again.');
+        return;
+      }
+      // Right password, wrong restaurant's address: point them at their own.
+      if (mode === 'email' && status === 403 && data?.webName) setOtherAddress(restaurantSignInLink(data.webName));
       setError(getApiErrorMessage(
         err,
         status === 401
           ? mode === 'till' ? 'Wrong PIN.'
             : mode === 'email' ? 'Wrong email or password.'
-            : mode === 'username' ? 'Wrong restaurant, username or PIN'
+            : mode === 'username' ? (restaurantNeeded && !address ? 'Wrong restaurant, username or PIN' : 'Wrong username or PIN')
             : 'Invalid username or PIN'
           : 'Sign-in failed — check your connection'
       ));
@@ -330,7 +374,24 @@ export const LoginGate: React.FC = () => {
             <h1 className="text-xl font-black text-slate-900 tracking-tight">
               Cashly <span className="text-teal-600">POS</span>
             </h1>
-            {(mode === 'till' || selectedTenant?.name) && (
+            {address ? (
+              // This restaurant's own sign-in address.
+              <div className="mt-2 space-y-0.5">
+                <p className="text-base font-black text-slate-800 flex items-center justify-center gap-1.5">
+                  <Store className="w-4 h-4 text-teal-600" />
+                  {restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')}
+                </p>
+                {restaurantHere?.missing && (
+                  <p className="text-[11px] text-rose-600">No restaurant uses this address. Check the link you were given.</p>
+                )}
+                {!address.fromSubdomain && (
+                  <button type="button" onClick={leaveRestaurantAddress}
+                    className="text-[11px] text-slate-400 hover:text-teal-700 font-semibold">
+                    {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
+                  </button>
+                )}
+              </div>
+            ) : (mode === 'till' || selectedTenant?.name) && (
               <p className="text-[11px] text-slate-500 font-semibold flex items-center justify-center gap-1.5 mt-1">
                 <Store className="w-3.5 h-3.5 text-teal-600" />
                 {[selectedTenant?.name, mode === 'till' ? tillBranchName : null].filter(Boolean).join(' • ') || 'This till'}
@@ -427,7 +488,8 @@ export const LoginGate: React.FC = () => {
                 <ShieldCheck className="w-4 h-4 text-teal-600" />
                 <span className="text-xs font-bold text-slate-900">{title}</span>
               </div>
-              {mode !== 'till' && (
+              {/* Cashly's own sign-in: never on a restaurant's address, and with a domain only at admin.<domain>. */}
+              {mode !== 'till' && (showPlatformAdmin || mode === 'platform') && (
                 <button
                   type="button"
                   onClick={() => switchMode(mode === 'platform' ? (tillBranchId ? 'till' : 'email') : 'platform')}
@@ -511,28 +573,19 @@ export const LoginGate: React.FC = () => {
 
             {mode === 'username' && (
               <>
-                {editingRestaurant ? (
+                {/* Only when the server could not tell which restaurant this username belongs to
+                    (never at a restaurant's own address, which already says). */}
+                {restaurantNeeded && !address && (
                   <div>
                     <label className={labelClass}>Restaurant</label>
                     <input type="text" value={restaurant} autoFocus spellCheck={false} autoComplete="organization"
                       onChange={(e) => { setRestaurant(e.target.value); setError(''); }}
-                      placeholder="Your restaurant's name, as registered" className={inputClass} />
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
-                    <span className="flex items-center gap-2 min-w-0">
-                      <Store className="w-4 h-4 text-teal-600 shrink-0" />
-                      <span className="text-sm font-bold text-slate-900 truncate">{typedRestaurant}</span>
-                    </span>
-                    <button type="button" onClick={() => { setEditingRestaurant(true); setError(''); }}
-                      className="text-[11px] text-blue-600 hover:text-blue-500 font-bold shrink-0">
-                      Change
-                    </button>
+                      placeholder="Your restaurant's name or web address" className={inputClass} />
                   </div>
                 )}
                 <div>
                   <label className={labelClass}>Username</label>
-                  <input type="text" value={username} autoFocus={!editingRestaurant} autoComplete="username"
+                  <input type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
                     onChange={(e) => { setUsername(e.target.value); setError(''); }}
                     placeholder="e.g. ali.cashier" className={inputClass} />
                 </div>
@@ -558,6 +611,9 @@ export const LoginGate: React.FC = () => {
                 <div>{error}</div>
                 {deviceNotConnected && (
                   <a href="/connect" className="block underline">Connect this device again</a>
+                )}
+                {otherAddress && (
+                  <a href={otherAddress} className="block underline break-all">Go to {otherAddress.replace(/^https?:\/\//, '')}</a>
                 )}
               </div>
             )}
@@ -587,23 +643,27 @@ export const LoginGate: React.FC = () => {
             {mode === 'username' && (
               <button type="button" onClick={() => switchMode(tillBranchId ? 'till' : 'email')}
                 className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
-                {tillBranchId ? <><Monitor className="w-3 h-3" /> Back to PIN sign-in</> : <><Mail className="w-3 h-3" /> Sign in with email instead</>}
+                {tillBranchId ? <><Monitor className="w-3 h-3" /> Back to PIN sign-in</>
+                  : <><Mail className="w-3 h-3" /> {address ? 'Owner or manager? Sign in with email' : 'Sign in with email instead'}</>}
               </button>
             )}
 
-            {/* The way in for a new business — visitors arriving from the website's Demo button. */}
-            {mode === 'email' && (
+            {/* The way in for a new business — visitors arriving from the website's Demo button.
+                Only on Cashly's main address, not on a restaurant's own. */}
+            {mode === 'email' && !address && (
               <div className="pt-3 border-t border-slate-100 text-center space-y-2">
                 <p className="text-[11px] text-slate-500">New to Cashly?</p>
                 <a href="/signup"
                   className="block w-full px-4 py-2.5 rounded-xl border-2 border-teal-500 text-teal-700 hover:bg-teal-50 font-bold text-sm transition">
                   New Registration — 30-day free trial
                 </a>
-                {/* A new till, tablet or kitchen screen at an existing restaurant. */}
-                <a href="/connect" className="block text-[11px] text-slate-500 hover:text-teal-700 font-semibold transition">
-                  Connect a till or tablet →
-                </a>
               </div>
+            )}
+            {/* A new till, tablet or kitchen screen at an existing restaurant. */}
+            {(mode === 'email' || mode === 'username') && !tillBranchId && (
+              <a href="/connect" className="block text-center text-[11px] text-slate-500 hover:text-teal-700 font-semibold transition">
+                Connect a till or tablet →
+              </a>
             )}
           </form>
         )}

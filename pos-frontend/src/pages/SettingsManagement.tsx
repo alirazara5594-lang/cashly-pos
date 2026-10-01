@@ -24,6 +24,7 @@ import {
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { posApi } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
+import { RestaurantAddressCard } from '../components/RestaurantAddressCard';
 import type { PendingPairingCode, PairingCodeResponse, DeviceCapacity, DepartmentRole, ModuleKey } from '../types';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -381,6 +382,9 @@ export const SettingsManagement: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Where this restaurant's staff sign in with just username + PIN. */}
+        {selectedTenant?.slug && <RestaurantAddressCard webName={selectedTenant.slug} />}
 
         {/* Tab Navigation */}
         <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-200 pb-2 text-xs font-semibold">

@@ -131,6 +131,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const navSections = useMemo<NavSection[]>(() => {
+    // The platform admin has no restaurant of its own, so every restaurant screen would ask the
+    // server for "this restaurant", be refused, and sign them out. They get the platform screens
+    // only; to look inside a restaurant: Tenant Management → Manage → View as customer (and each
+    // restaurant's audit log is a tab there).
+    if (isPlatformSuperAdmin) {
+      return [{
+        title: 'Platform Administration',
+        items: [
+          { id: 'tenants', label: 'Tenant Management', path: '/super-admin', icon: Building2 },
+          { id: 'pricing', label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard }
+        ]
+      }];
+    }
+
     const sections: NavSection[] = [];
 
     // ── Operational screens: visible to ANY signed-in user. These are not module

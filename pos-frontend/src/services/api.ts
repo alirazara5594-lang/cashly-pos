@@ -102,6 +102,7 @@ import type {
   PlatformPrice,
   TenantOwnerAccount,
   AccountSecurity,
+  SupportSessionStart,
   FiscalConnections,
   FiscalAuthority,
   FiscalEnvironment,
@@ -320,9 +321,20 @@ export const posApi = {
   },
   /** The back office: email + password. The branch is chosen afterwards. With 2-step sign-in on,
    *  the answer is `twoFactorRequired` + a `challenge` for verifyTwoFactor instead of a session. */
-  emailLogin: async (email: string, password: string) => {
-    const res = await api.post<LoginResponse>('/api/auth/email-login', { email, password });
+  emailLogin: async (email: string, password: string, restaurant?: string | null) => {
+    const res = await api.post<LoginResponse>('/api/auth/email-login', { email, password, restaurant: restaurant || undefined });
     storeSession(res.data);
+    return res.data;
+  },
+  /** Registration's live check: is this web name (sign-in address) free and valid? */
+  checkWebName: async (name: string) => {
+    const res = await api.get<{ name: string; available: boolean; problem: string | null; alternative: string | null }>(
+      '/api/public/web-names/check', { params: { name } });
+    return res.data;
+  },
+  /** Whose sign-in address this is — the restaurant's name for the page heading. */
+  getRestaurantByWebName: async (webName: string) => {
+    const res = await api.get<{ webName: string; name: string }>(`/api/public/restaurants/${encodeURIComponent(webName)}`);
     return res.data;
   },
   /** The second step: a code from the authenticator app, or a recovery code. */
@@ -685,6 +697,11 @@ export const posApi = {
   getBillingQuote: async (tenantId: string, annual = false) => {
     const res = await api.get<{ tenantId: string; annual: boolean; hasHeadOffice: boolean; lines: BillingLine[]; totalPKR: number }>(
       `/api/admin/tenants/${tenantId}/billing-quote`, { params: { annual } });
+    return res.data;
+  },
+  /** Change a restaurant's web name (platform admin). Old bookmarks of its address stop working. */
+  changeTenantWebName: async (tenantId: string, webName: string) => {
+    const res = await api.put<{ webName: string }>(`/api/admin/tenants/${tenantId}/web-name`, { webName });
     return res.data;
   },
   /** A business's owner accounts and how each signs in (platform admin). */
@@ -1391,7 +1408,7 @@ export const posApi = {
     return res.data;
   },
   impersonateTenant: async (tenantId: string, reason: string, allowWrites = false) => {
-    const res = await api.post(`/api/admin/tenants/${tenantId}/impersonate`, { reason, allowWrites });
+    const res = await api.post<SupportSessionStart>(`/api/admin/tenants/${tenantId}/impersonate`, { reason, allowWrites });
     return res.data;
   },
   getDeviceHealth: async (staleHours = 24) => {
@@ -1418,6 +1435,8 @@ export const posApi = {
     adminPin: string;
     /** The owner's back-office password (signs in with the email above). */
     adminPassword?: string;
+    /** The restaurant's web name — its own sign-in address. */
+    webName?: string;
     businessType?: BusinessType;
     packageKey?: string;
     /** Which sector pack this business runs — decides its POS layout and item model. */
