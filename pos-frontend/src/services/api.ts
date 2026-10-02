@@ -107,7 +107,8 @@ import type {
   FiscalAuthority,
   FiscalEnvironment,
   PublicMenu,
-  PublicOrderResult
+  PublicOrderResult,
+  OnboardingStatus
 } from '../types';
 
 /**
@@ -162,6 +163,8 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/2fa/verify',
   '/api/auth/forgot-password',
   '/api/auth/reset-password',
+  '/api/auth/confirm-email',
+  '/api/auth/mobile-code',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
   '/api/auth/refresh',
@@ -350,6 +353,41 @@ export const posApi = {
   },
   resetPassword: async (token: string, newPassword: string) => {
     const res = await api.post<{ message: string; email?: string }>('/api/auth/reset-password', { token, newPassword });
+    return res.data;
+  },
+  /** Opens the link from a "confirm your email" message. Works signed in or not. */
+  confirmEmail: async (token: string) => {
+    const res = await api.post<{ message: string; email?: string }>('/api/auth/confirm-email', { token });
+    return res.data;
+  },
+  /** Emails the signed-in person a link to confirm their address. */
+  sendEmailConfirmation: async () => {
+    const res = await api.post<{ emailEnabled: boolean; confirmed: boolean; message?: string }>('/api/auth/send-email-confirmation');
+    return res.data;
+  },
+  /** Whether registration asks for a code sent to the owner's mobile, and how it is sent. */
+  getMobileVerification: async () => {
+    const res = await api.get<{ enabled: boolean; channel: string }>('/api/public/mobile-verification');
+    return res.data;
+  },
+  /** Sends a 6-digit code to the mobile. Country (by name) decides how a local number is read. */
+  sendMobileCode: async (mobile: string, country?: string) => {
+    const res = await api.post<{ sent: boolean; channel: string; expiresInMinutes: number }>('/api/auth/mobile-code', { mobile, country });
+    return res.data;
+  },
+  /** Checks the code; the proof it returns goes with the registration. */
+  verifyMobileCode: async (mobile: string, code: string, country?: string) => {
+    const res = await api.post<{ verified: boolean; proof: string }>('/api/auth/mobile-code/verify', { mobile, country, code });
+    return res.data;
+  },
+  /** What a new business has done so far, for the Getting started checklist. */
+  getOnboardingStatus: async () => {
+    const res = await api.get<OnboardingStatus>('/api/onboarding/status');
+    return res.data;
+  },
+  /** Removes the sample menu (an item already sold is hidden rather than deleted). */
+  removeSampleMenu: async () => {
+    const res = await api.delete<{ removed: number; hidden: number; message: string }>('/api/onboarding/sample-menu');
     return res.data;
   },
   // The signed-in person's own sign-in settings.
@@ -1454,6 +1492,12 @@ export const posApi = {
     setUpAccounting?: boolean;
     installationType?: string;
     appSurface?: string;
+    /** The owner's mobile number. One free trial per number. */
+    ownerMobile?: string;
+    /** Start with a few sample items, to ring up a test sale straight away. */
+    seedSampleMenu?: boolean;
+    /** From verifyMobileCode, when the server asks for mobile codes. */
+    mobileProof?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;
@@ -1857,11 +1901,11 @@ export const posApi = {
     const res = await api.put<Account>(`/api/accounting/chart-of-accounts/${id}`, data);
     return res.data;
   },
-  getJournalEntries: async (params?: { tenantId?: string; from?: string; to?: string; referenceType?: string }) => {
+  getJournalEntries: async (params?: { tenantId?: string; from?: string; to?: string; referenceType?: string; companyId?: string }) => {
     const res = await api.get<JournalEntry[]>('/api/accounting/journal-entries', { params });
     return res.data;
   },
-  createJournalEntry: async (data: { tenantId?: string; branchId?: string; entryDate?: string; description: string; lines: { accountCode: string; debitPKR: number; creditPKR: number }[] }) => {
+  createJournalEntry: async (data: { tenantId?: string; branchId?: string; companyId?: string; entryDate?: string; description: string; lines: { accountCode: string; debitPKR: number; creditPKR: number }[] }) => {
     const res = await api.post<JournalEntry>('/api/accounting/journal-entries', data);
     return res.data;
   },
@@ -1869,16 +1913,17 @@ export const posApi = {
     const res = await api.post<JournalEntry>(`/api/accounting/journal-entries/${id}/reverse`, { reason });
     return res.data;
   },
-  getTrialBalance: async (tenantId?: string, asOf?: string) => {
-    const res = await api.get<TrialBalanceReport>('/api/accounting/trial-balance', { params: { tenantId, asOf } });
+  // companyId: one company's books; left out, the whole business consolidated.
+  getTrialBalance: async (tenantId?: string, asOf?: string, companyId?: string) => {
+    const res = await api.get<TrialBalanceReport>('/api/accounting/trial-balance', { params: { tenantId, asOf, companyId } });
     return res.data;
   },
-  getProfitLoss: async (params?: { tenantId?: string; from?: string; to?: string }) => {
+  getProfitLoss: async (params?: { tenantId?: string; from?: string; to?: string; companyId?: string }) => {
     const res = await api.get<ProfitLossReport>('/api/accounting/profit-loss', { params });
     return res.data;
   },
-  getBalanceSheet: async (tenantId?: string, asOf?: string) => {
-    const res = await api.get<BalanceSheetReport>('/api/accounting/balance-sheet', { params: { tenantId, asOf } });
+  getBalanceSheet: async (tenantId?: string, asOf?: string, companyId?: string) => {
+    const res = await api.get<BalanceSheetReport>('/api/accounting/balance-sheet', { params: { tenantId, asOf, companyId } });
     return res.data;
   },
 

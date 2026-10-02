@@ -22,7 +22,7 @@ public class CurrentUserAccessor : ICurrentUserAccessor
     }
 }
 
-// Requires a fresh-from-DB permission check. OwnerAdmin and SuperAdmin always pass.
+// Requires a fresh-from-DB permission check. The owner, an HQ admin and SuperAdmin always pass.
 public class RequirePermissionFilter : IEndpointFilter
 {
     private readonly Func<AppUser, bool> _check;
@@ -39,7 +39,7 @@ public class RequirePermissionFilter : IEndpointFilter
         var accessor = context.HttpContext.RequestServices.GetRequiredService<ICurrentUserAccessor>();
         var user = await accessor.GetCurrentUserAsync(context.HttpContext);
         if (user == null) return Results.Unauthorized();
-        if (user.Role == UserRole.OwnerAdmin || user.Role == UserRole.SuperAdmin || _check(user))
+        if (UserRoles.RunsBusiness(user.Role) || user.Role == UserRole.SuperAdmin || _check(user))
             return await next(context);
         return Results.Json(new { message = _deniedMessage }, statusCode: StatusCodes.Status403Forbidden);
     }
@@ -71,7 +71,7 @@ public class RequireModuleFilter : IEndpointFilter
         var stateGate = await TenantStateGate.CheckAsync(context.HttpContext, _action is "view" or "export");
         if (stateGate != null) return stateGate;
 
-        if (user.Role == UserRole.OwnerAdmin || user.Role == UserRole.SuperAdmin)
+        if (UserRoles.RunsBusiness(user.Role) || user.Role == UserRole.SuperAdmin)
             return await next(context);
 
         var permission = await db.ModulePermissions

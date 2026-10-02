@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { tierLabel } from '../utils/tierLabel';
 import type {
   Branch,
   BusinessPolicies,
@@ -121,12 +122,15 @@ export const LocationsManagement: React.FC = () => {
   /** A branch's till is connected by pairing: open the device screen with this branch picked. */
   const connectTill = (branchId: string) =>
     navigate('/settings', { state: { tab: 'provisioning', branchId } });
+  // The owner alone adds selling locations and sets POS versions (what the business pays for);
+  // an HQ admin runs everything else.
   const isOwner = ['OwnerAdmin', 'SuperAdmin'].includes(normalizeRole(currentUser?.role) ?? '');
   const canEdit = hasModuleAccess(currentUser?.role, modulePermissions, 'admin', 'edit');
   // Policies govern every branch, so staff signed in at one branch may read them but not change them.
   const canSetPolicies = canEdit && !currentUser?.branchId;
-  // A branch's POS version is what the business pays for: head office sets it, never the branch.
-  const canSetEdition = canEdit && !currentUser?.branchId;
+  // A branch's POS version is what the business pays for: the owner sets it, never the branch
+  // (nor an HQ admin, who runs the business but not its bill).
+  const canSetEdition = canEdit && !currentUser?.branchId && isOwner;
 
   const [tab, setTab] = useState<Tab>('locations');
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -276,7 +280,7 @@ export const LocationsManagement: React.FC = () => {
           posEdition: sells && f.posEdition !== f.originalPosEdition ? f.posEdition : undefined
         });
         flash('success', sells && f.posEdition !== f.originalPosEdition
-          ? `${f.name.trim()} saved. Its POS version is now ${f.posEdition}.`
+          ? `${f.name.trim()} saved. Its POS version is now ${tierLabel(f.posEdition)}.`
           : `${f.name.trim()} saved.`);
       } else {
         await posApi.createBranch({
@@ -671,7 +675,7 @@ export const LocationsManagement: React.FC = () => {
                                 >
                                   <div className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                                     {active && <Check className="w-3.5 h-3.5 text-teal-600" />}
-                                    {edition}
+                                    {tierLabel(edition)}
                                   </div>
                                   <div className="text-[11px] text-slate-500">{editionSummary(edition, packages)}</div>
                                 </button>
@@ -679,11 +683,11 @@ export const LocationsManagement: React.FC = () => {
                             })}
                           </div>
                           {!canSetEdition && (
-                            <p className="text-[11px] text-slate-400">Head office sets each branch's POS version.</p>
+                            <p className="text-[11px] text-slate-400">The owner sets each branch's POS version, because it changes what the business pays.</p>
                           )}
                           {locationForm.id && locationForm.originalPosEdition && locationForm.posEdition !== locationForm.originalPosEdition && (
                             <p className="text-[11px] text-amber-700">
-                              Moving from {locationForm.originalPosEdition} to {locationForm.posEdition}. If the branch has more tills or
+                              Moving from {tierLabel(locationForm.originalPosEdition)} to {tierLabel(locationForm.posEdition)}. If the branch has more tills or
                               tablets than the new version allows, the newest ones stop selling until some are retired.
                             </p>
                           )}
@@ -759,7 +763,7 @@ export const LocationsManagement: React.FC = () => {
                               <td className="py-2.5 pr-3">
                                 {b.canSell !== false ? (
                                   <span className="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold" title={editionSummary(editionOf(b), packages)}>
-                                    {editionOf(b)}
+                                    {tierLabel(editionOf(b))}
                                   </span>
                                 ) : <span className="text-slate-300">—</span>}
                               </td>

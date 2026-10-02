@@ -26,6 +26,7 @@ import { getSupportSession } from '../services/supportSession';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { MyBranch } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 /** "Head office" / "Warehouse" beside a location's name; nothing for an ordinary branch. */
 function locationTag(b: { locationType?: string; isHeadOffice?: boolean }): string {
@@ -171,7 +172,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                     activePackage === 'Standard' ? 'bg-blue-100 text-blue-700 border border-blue-200' :
                     'bg-amber-100 text-amber-700 border border-amber-200'
                   }`}>
-                    {activePackage}
+                    {tierLabel(activePackage)}
                   </span>
                 </div>
                 <div className="text-slate-500 text-[10px]">
@@ -225,7 +226,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                     <div key={t.id} className="p-1.5 rounded-lg hover:bg-slate-50">
                       <div className="font-semibold text-slate-900 flex items-center justify-between">
                         <span>{t.name}</span>
-                        <span className="text-[10px] px-1 bg-slate-100 text-teal-600 rounded border border-slate-200">{t.tier}</span>
+                        <span className="text-[10px] px-1 bg-slate-100 text-teal-600 rounded border border-slate-200">{tierLabel(t.tier)}</span>
                       </div>
                       <div className="mt-1 pl-2 space-y-1">
                         {t.branches?.map(b => (

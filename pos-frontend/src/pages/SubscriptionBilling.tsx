@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Receipt, Plus, RefreshCw, CheckCircle2, Ban, X, Save, ChevronDown, ChevronRight } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { BillingLine, SubscriptionInvoice } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 interface Quote {
   annual: boolean;
@@ -159,7 +160,7 @@ export const SubscriptionBilling: React.FC = () => {
             className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
           >
             <option value="">All tenants</option>
-            {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({t.tier})</option>)}
+            {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({tierLabel(t.tier)})</option>)}
           </select>
           <button
             onClick={loadInvoices}
@@ -229,7 +230,7 @@ export const SubscriptionBilling: React.FC = () => {
                     ) : inv.invoiceNumber}
                   </td>
                   {!selectedTenantId && <td className="px-4 py-2.5 text-xs text-slate-700">{tenantName(inv.tenantId)}</td>}
-                  <td className="px-4 py-2.5 text-[11px] text-slate-500">{inv.tier}</td>
+                  <td className="px-4 py-2.5 text-[11px] text-slate-500">{tierLabel(inv.tier)}</td>
                   <td className="px-4 py-2.5 text-[11px] text-slate-500">
                     {new Date(inv.billingPeriodStart).toLocaleDateString()} – {new Date(inv.billingPeriodEnd).toLocaleDateString()}
                   </td>

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { PlanOption, PlatformPrice } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 
@@ -321,15 +322,15 @@ export const PricingAdmin: React.FC = () => {
         {packages.map((pkg) => (
           <div
             key={pkg.id}
-            className={`p-5 rounded-2xl bg-white border ${tierColors[pkg.name] || 'border-slate-200'} space-y-5`}
+            className={`p-5 rounded-2xl bg-white border ${tierColors[pkg.slug] || 'border-slate-200'} space-y-5`}
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Package className="w-5 h-5 text-teal-500" />
                 <h2 className="text-base font-black text-slate-900">{pkg.name}</h2>
               </div>
-              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${tierBadge[pkg.name] || 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
-                {pkg.slug}
+              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${tierBadge[pkg.slug] || 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
+                {tierLabel(pkg.slug)}
               </span>
             </div>
 

@@ -5,6 +5,7 @@ import {
   KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History, Globe
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { tierLabel } from '../utils/tierLabel';
 import { restaurantSignInLink, webNameProblem } from '../services/restaurantAddress';
 import { beginSupportSession } from '../services/supportSession';
 import type {
@@ -233,7 +234,7 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
     setMessage(null);
     try {
       await posApi.changeTenantTier(tenantId, targetTier, new Date(paidUntil).toISOString(), force);
-      setMessage({ tone: 'ok', text: `Plan changed to ${targetTier}. Devices pick it up on their next heartbeat.` });
+      setMessage({ tone: 'ok', text: `Plan changed to ${tierLabel(targetTier)}. Devices pick it up on their next heartbeat.` });
       setPreview(null);
       setForceArmed(false);
       await load();
@@ -323,7 +324,7 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
       <Shell
         onClose={onClose}
         title={tenant.name}
-        subtitle={`${tenant.tier} · ${tenant.status}`}
+        subtitle={`${tierLabel(tenant.tier)} · ${tenant.status}`}
         nav={TABS.map(t => (
           <button
             key={t.key}
@@ -537,7 +538,7 @@ const OverviewTab: React.FC<{
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-2">
-        <Stat label="Plan" value={tenant.tier} />
+        <Stat label="Plan" value={tierLabel(tenant.tier)} />
         <Stat label="Status" value={tenant.status} tone={statusTone} />
         <Stat label="Sector" value={entitlements.primaryPack} />
         <Stat label="Est. MRR" value={pkr(billing.estimatedMrrPKR)} />
@@ -906,7 +907,7 @@ const PlanTab: React.FC<{
       <Section icon={<CreditCard className="w-3.5 h-3.5" />} title="Current plan">
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-black text-slate-900">{currentPlan?.displayName ?? tenant.tier}</span>
+            <span className="text-sm font-black text-slate-900">{currentPlan?.displayName ?? tierLabel(tenant.tier)}</span>
             <span className="text-xs font-bold text-slate-700">{pkr(currentPlan?.monthlyPricePKR ?? billing.planPricePKR)}/mo</span>
           </div>
           <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600">
@@ -1018,7 +1019,7 @@ const PlanTab: React.FC<{
                     : 'bg-teal-500 hover:bg-teal-600'
                 }`}
               >
-                {forceArmed && preview.blockers.length > 0 ? 'Apply anyway (forced)' : `Move to ${preview.targetTier}`}
+                {forceArmed && preview.blockers.length > 0 ? 'Apply anyway (forced)' : `Move to ${tierLabel(preview.targetTier)}`}
               </button>
             </div>
             {forceArmed && preview.blockers.length > 0 && (

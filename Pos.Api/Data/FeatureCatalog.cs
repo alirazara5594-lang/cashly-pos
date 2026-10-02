@@ -244,7 +244,9 @@ public static class FeatureCatalog
     {
         ("starter", "Starter", "For a takeaway, kiosk, small café or retail counter: one till, two tablets, receipts, cash shifts and daily reports.", 5000m, 50000m, 1),
         ("standard", "Standard", "For a dine-in restaurant, busy café or mart: three tills, eight tablets, kitchen screens, delivery, loyalty, inventory and staff scheduling.", 12000m, 120000m, 2),
-        ("professional", "Professional", "For high-volume fast food, big dining halls and food courts: eight tills, twenty tablets, unlimited kitchen screens, full accounting and payroll.", 25000m, 250000m, 3)
+        // Sold as "Enterprise". The code ("professional") and package key ("Professional") stay as
+        // they were: they are what saved data and API guards reference.
+        ("professional", "Enterprise", "For high-volume fast food, big dining halls and food courts: eight tills, twenty tablets, unlimited kitchen screens, full accounting and payroll.", 25000m, 250000m, 3)
     };
 
     /// <summary>What one branch of a head-office business pays per month and per year for each

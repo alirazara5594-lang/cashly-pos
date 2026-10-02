@@ -16,8 +16,8 @@ import {
   Building
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import { usePosStore } from '../store/posStore';
-import type { Account, AccountType, JournalEntry, TrialBalanceReport, ProfitLossReport, BalanceSheetReport, AccountingPeriod, UnreconciledReport, BankReconciliation } from '../types';
+import { usePosStore, runsBusiness } from '../store/posStore';
+import type { Account, AccountType, Company, JournalEntry, TrialBalanceReport, ProfitLossReport, BalanceSheetReport, AccountingPeriod, UnreconciledReport, BankReconciliation } from '../types';
 
 type TabKey = 'coa' | 'journal' | 'trial-balance' | 'profit-loss' | 'balance-sheet' | 'periods' | 'reconciliation';
 
@@ -31,7 +31,7 @@ const ACCOUNT_TYPES: AccountType[] = ['Asset', 'Liability', 'Equity', 'Revenue',
 
 export const AccountingManagement: React.FC = () => {
   const { selectedTenant, currentUser } = usePosStore();
-  const isOwner = currentUser?.role === 'OwnerAdmin' || currentUser?.role === 'SuperAdmin';
+  const isOwner = runsBusiness(currentUser?.role) || currentUser?.role === 'SuperAdmin';
 
   const [activeTab, setActiveTab] = useState<TabKey>('coa');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -49,6 +49,23 @@ export const AccountingManagement: React.FC = () => {
 
   const [plFrom, setPlFrom] = useState(daysAgoISO(30));
   const [plTo, setPlTo] = useState(daysAgoISO(0));
+
+  // A business trading as several companies keeps a set of books for each. '' = all of them,
+  // consolidated (what the companies owe one another nets out).
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [companyId, setCompanyId] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getCompanies()
+      .then(rows => { if (!cancelled) setCompanies(Array.isArray(rows) ? rows : []); })
+      .catch(() => { /* one set of books, as before */ });
+    return () => { cancelled = true; };
+  }, [selectedTenant?.id]);
+  const hasSeveralCompanies = companies.length > 1;
+  const companyName = (id?: string | null) => {
+    const c = companies.find(x => x.id === id);
+    return c ? (c.tradeName || c.legalName) : '';
+  };
 
   // New account modal
   const [isNewAccountOpen, setIsNewAccountOpen] = useState(false);
@@ -99,23 +116,24 @@ export const AccountingManagement: React.FC = () => {
     if (!selectedTenant?.id) return;
     setLoadingJournal(true);
     try {
-      const data = await posApi.getJournalEntries({ tenantId: selectedTenant.id });
+      const data = await posApi.getJournalEntries({ tenantId: selectedTenant.id, companyId: companyId || undefined });
       setJournal(Array.isArray(data) ? data : []);
     } catch (err) {
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load journal entries') });
     } finally {
       setLoadingJournal(false);
     }
-  }, [selectedTenant?.id]);
+  }, [selectedTenant?.id, companyId]);
 
   const loadReports = useCallback(async () => {
     if (!selectedTenant?.id) return;
     setLoadingReport(true);
     try {
+      const company = companyId || undefined;
       const [tb, pl, bs] = await Promise.all([
-        posApi.getTrialBalance(selectedTenant.id),
-        posApi.getProfitLoss({ tenantId: selectedTenant.id, from: plFrom, to: plTo }),
-        posApi.getBalanceSheet(selectedTenant.id)
+        posApi.getTrialBalance(selectedTenant.id, undefined, company),
+        posApi.getProfitLoss({ tenantId: selectedTenant.id, from: plFrom, to: plTo, companyId: company }),
+        posApi.getBalanceSheet(selectedTenant.id, undefined, company)
       ]);
       setTrialBalance(tb);
       setProfitLoss(pl);
@@ -125,7 +143,7 @@ export const AccountingManagement: React.FC = () => {
     } finally {
       setLoadingReport(false);
     }
-  }, [selectedTenant?.id, plFrom, plTo]);
+  }, [selectedTenant?.id, plFrom, plTo, companyId]);
 
   useEffect(() => { loadAccounts(); }, [loadAccounts]);
   useEffect(() => { if (activeTab === 'journal') loadJournal(); }, [activeTab, loadJournal]);
@@ -268,6 +286,8 @@ export const AccountingManagement: React.FC = () => {
     try {
       await posApi.createJournalEntry({
         tenantId: selectedTenant?.id,
+        // Into the company whose books are open; with all of them open, the default company.
+        companyId: companyId || undefined,
         description: entryDesc.trim(),
         lines: entryLines
           .filter(l => l.accountCode && (Number(l.debitPKR) || Number(l.creditPKR)))
@@ -312,6 +332,22 @@ export const AccountingManagement: React.FC = () => {
               Double-entry bookkeeping — sales, purchases, and payroll post here automatically.
             </p>
           </div>
+          {/* One set of books per company; all of them together is the group, consolidated. */}
+          {hasSeveralCompanies && (
+            <label className="flex items-center gap-1.5 ml-2 text-[11px] font-semibold text-slate-600">
+              Books:
+              <select
+                value={companyId}
+                onChange={(e) => setCompanyId(e.target.value)}
+                className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:border-teal-500 focus:outline-none"
+              >
+                <option value="">All companies (consolidated)</option>
+                {companies.map(c => (
+                  <option key={c.id} value={c.id}>{c.tradeName || c.legalName}{c.isDefault ? ' (main)' : ''}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1 flex-wrap">
@@ -337,6 +373,13 @@ export const AccountingManagement: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {hasSeveralCompanies && (activeTab === 'trial-balance' || activeTab === 'balance-sheet') && !companyId && (
+        <div className="px-3.5 py-2 rounded-xl bg-sky-50 border border-sky-200 text-[11px] text-sky-800">
+          Consolidated: what your companies owe one another (Intercompany Receivable and Payable) is left out,
+          because the group cannot owe itself. Pick a company to see its own books.
+        </div>
+      )}
 
       {message && (
         <div className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border ${
@@ -449,6 +492,9 @@ export const AccountingManagement: React.FC = () => {
                     <span className="text-xs font-mono font-bold text-teal-600">{j.entryNumber}</span>
                     <span className="text-xs text-slate-700">{j.description}</span>
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-bold">{j.referenceType}</span>
+                    {hasSeveralCompanies && !companyId && companyName(j.companyId) && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 font-bold">{companyName(j.companyId)}</span>
+                    )}
                     {j.status === 'Reversed' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-bold">REVERSED</span>}
                   </div>
                   <div className="flex items-center gap-3 text-[11px] text-slate-500">

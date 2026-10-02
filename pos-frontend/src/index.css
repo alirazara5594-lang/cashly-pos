@@ -2,31 +2,48 @@
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════════════
-   CASHLY BRAND — logo purple #863BFF (the favicon bolt).
+   CASHLY BRAND — cyan teal #2A8193, a deep teal sidebar (#1F5F6D)
+   and a pale cyan page.
 
    Redefining Tailwind's built-in `teal` scale repaints every
    `teal-*` utility already used across the app (buttons, badges,
    focus rings, the works) in the brand colour — component class
-   names never change, only the paint under them. Tints run
-   lavender (50–400), shades run deep violet (600–950); the blue
-   #47BFFF from the logo's sparkle is used only in gradients.
+   names never change, only the paint under them.
+
+   `purple` is the app's second accent (owner and head-office
+   badges, the waiter tablet, the Professional tier) and is
+   repainted sea green the same way, so no purple is left anywhere.
+   Backgrounds stay white and neutral grey; the colour is in the
+   sidebar, buttons and accents.
    ═══════════════════════════════════════════════════════════════ */
 @theme {
-  --color-teal-50: #f9f6ff;
-  --color-teal-100: #f3edff;
-  --color-teal-200: #e7d7ff;
-  --color-teal-300: #d3b8ff;
-  --color-teal-400: #af7cff;
-  --color-teal-500: #863bff;
-  --color-teal-600: #7232d9;
-  --color-teal-700: #5726a6;
-  --color-teal-800: #431e80;
-  --color-teal-900: #331661;
-  --color-teal-950: #220f40;
+  --color-teal-50: #eff9fb;
+  --color-teal-100: #d8f0f4;
+  --color-teal-200: #b4e0e8;
+  --color-teal-300: #84c8d5;
+  --color-teal-400: #52a9ba;
+  --color-teal-500: #2a8193;
+  --color-teal-600: #236e7e;
+  --color-teal-700: #1f5f6d;
+  --color-teal-800: #1c4f5a;
+  --color-teal-900: #1a424b;
+  --color-teal-950: #0d2930;
+
+  --color-purple-50: #effaf6;
+  --color-purple-100: #d9f2ea;
+  --color-purple-200: #b5e3d5;
+  --color-purple-300: #82c9b5;
+  --color-purple-400: #4fa58e;
+  --color-purple-500: #378672;
+  --color-purple-600: #2d6f5f;
+  --color-purple-700: #275a4e;
+  --color-purple-800: #224a41;
+  --color-purple-900: #1e3e37;
+  --color-purple-950: #0f2420;
 }
 
-/* shadcn/ui design tokens — mapped to this app's brand purple (#863BFF) so
-   new shadcn components match the pages already shipped. */
+/* shadcn/ui design tokens — mapped to this app's brand cyan teal (#2A8193)
+   so new shadcn components match the pages already shipped. */
 :root {
   --radius: 0.75rem;
   --background: oklch(1 0 0);
@@ -35,7 +52,7 @@
   --card-foreground: oklch(0.208 0.042 265.755);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.208 0.042 265.755);
-  --primary: oklch(0.568 0.264 293.4);
+  --primary: #236e7e;
   --primary-foreground: oklch(0.984 0.003 247.858);
   --secondary: oklch(0.968 0.007 247.896);
   --secondary-foreground: oklch(0.208 0.042 265.755);
@@ -46,7 +63,7 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.929 0.013 255.508);
   --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.568 0.264 293.4);
+  --ring: #2a8193;
 }
 
 @theme inline {
@@ -101,13 +118,9 @@
    LIGHT THEME — Modern Clean Design
    ═══════════════════════════════════════════════════════════════ */
 
-/* Mesh gradient background — light */
+/* App background — light: plain white */
 .bg-mesh {
-  background:
-    radial-gradient(at 20% 80%, rgba(134, 59, 255, 0.06) 0px, transparent 50%),
-    radial-gradient(at 80% 20%, rgba(126, 20, 255, 0.04) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(71, 191, 255, 0.03) 0px, transparent 50%),
-    #f8fafc;
+  background: #ffffff;
 }
 
 /* Glass card — light */
@@ -142,7 +155,7 @@
 
 /* Gradient text */
 .text-gradient {
-  background: linear-gradient(135deg, #7232d9, #863bff, #a06bff);
+  background: linear-gradient(135deg, #1f5f6d, #2a8193, #378672);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -157,13 +170,13 @@
 
 /* Gradient buttons */
 .btn-gradient {
-  background: linear-gradient(135deg, #7232d9, #863bff);
+  background: linear-gradient(135deg, #1f5f6d, #2a8193);
   color: #fff;
   transition: all 0.3s ease;
-  box-shadow: 0 4px 15px rgba(134, 59, 255, 0.25);
+  box-shadow: 0 4px 15px rgba(42, 129, 147, 0.25);
 }
 .btn-gradient:hover {
-  box-shadow: 0 6px 25px rgba(134, 59, 255, 0.4);
+  box-shadow: 0 6px 25px rgba(42, 129, 147, 0.4);
   transform: translateY(-1px);
 }
 
@@ -189,7 +202,7 @@
 
 /* Glow effects — soft */
 .glow-teal {
-  box-shadow: 0 0 20px rgba(134, 59, 255, 0.1), 0 0 40px rgba(134, 59, 255, 0.03);
+  box-shadow: 0 0 20px rgba(42, 129, 147, 0.1), 0 0 40px rgba(42, 129, 147, 0.03);
 }
 
 .glow-emerald {
@@ -217,9 +230,9 @@
 
 /* Sidebar active item */
 .sidebar-active {
-  background: linear-gradient(135deg, rgba(134, 59, 255, 0.1), rgba(126, 20, 255, 0.06));
-  border: 1px solid rgba(134, 59, 255, 0.2);
-  color: #863bff;
+  background: linear-gradient(135deg, rgba(42, 129, 147, 0.1), rgba(31, 95, 109, 0.06));
+  border: 1px solid rgba(42, 129, 147, 0.2);
+  color: #236e7e;
   font-weight: 700;
 }
 
@@ -250,17 +263,17 @@
 
 /* Table row hover */
 .table-row-hover:hover {
-  background: rgba(134, 59, 255, 0.04);
+  background: rgba(42, 129, 147, 0.04);
 }
 
 /* Input focus glow — light */
 input:focus, select:focus {
-  box-shadow: 0 0 0 2px rgba(134, 59, 255, 0.15);
+  box-shadow: 0 0 0 2px rgba(42, 129, 147, 0.15);
 }
 
 /* Badge glow — light */
 .badge-glow {
-  box-shadow: 0 0 8px rgba(134, 59, 255, 0.2);
+  box-shadow: 0 0 8px rgba(42, 129, 147, 0.2);
 }
 
 /* Stats card gradient borders */
@@ -275,7 +288,7 @@ input:focus, select:focus {
   left: 0;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent-color, #863bff), transparent);
+  background: linear-gradient(90deg, transparent, var(--accent-color, #2a8193), transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -289,9 +302,9 @@ input:focus, select:focus {
 
 .theme-dark .bg-mesh {
   background:
-    radial-gradient(at 20% 80%, rgba(134, 59, 255, 0.06) 0px, transparent 50%),
-    radial-gradient(at 80% 20%, rgba(126, 20, 255, 0.04) 0px, transparent 50%),
-    radial-gradient(at 50% 50%, rgba(71, 191, 255, 0.03) 0px, transparent 50%),
+    radial-gradient(at 20% 80%, rgba(42, 129, 147, 0.06) 0px, transparent 50%),
+    radial-gradient(at 80% 20%, rgba(31, 95, 109, 0.04) 0px, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(55, 134, 114, 0.04) 0px, transparent 50%),
     #0b1120 !important;
 }
 
@@ -303,6 +316,12 @@ input:focus, select:focus {
 
 .theme-dark .sidebar-glass {
   background: rgba(11, 17, 32, 0.95) !important;
+}
+
+/* The sidebar is a teal gradient in the light theme; here it goes flat and darker. */
+.theme-dark .app-sidebar {
+  background: #0e2328 !important;
+  border-color: rgba(148, 163, 184, 0.1) !important;
 }
 
 .theme-dark .glass {
@@ -372,48 +391,48 @@ input:focus, select:focus {
 .theme-dark .hover\:text-slate-600:hover { color: #94a3b8 !important; }
 
 /* ── Accent backgrounds (subtle on dark) ── */
-.theme-dark .bg-teal-50 { background-color: rgba(134, 59, 255, 0.1) !important; }
+.theme-dark .bg-teal-50 { background-color: rgba(82, 169, 186, 0.14) !important; }
 .theme-dark .bg-amber-50 { background-color: rgba(251, 191, 36, 0.1) !important; }
 .theme-dark .bg-rose-50 { background-color: rgba(251, 113, 133, 0.1) !important; }
 .theme-dark .bg-blue-50 { background-color: rgba(96, 165, 250, 0.1) !important; }
-.theme-dark .bg-purple-50 { background-color: rgba(167, 139, 250, 0.1) !important; }
+.theme-dark .bg-purple-50 { background-color: rgba(79, 165, 142, 0.12) !important; }
 .theme-dark .bg-emerald-50 { background-color: rgba(52, 211, 153, 0.1) !important; }
 
-.theme-dark .hover\:bg-teal-50:hover { background-color: rgba(134, 59, 255, 0.18) !important; }
+.theme-dark .hover\:bg-teal-50:hover { background-color: rgba(82, 169, 186, 0.22) !important; }
 .theme-dark .hover\:bg-rose-50:hover { background-color: rgba(251, 113, 133, 0.18) !important; }
 .theme-dark .hover\:bg-amber-50:hover { background-color: rgba(251, 191, 36, 0.18) !important; }
 .theme-dark .hover\:bg-blue-50:hover { background-color: rgba(96, 165, 250, 0.18) !important; }
 
 /* ── Accent text (brighter on dark) ── */
-.theme-dark .text-teal-700 { color: #b58aff !important; }
-.theme-dark .text-teal-600 { color: #b58aff !important; }
-.theme-dark .text-teal-500 { color: #9660ff !important; }
+.theme-dark .text-teal-700 { color: #8fd0dd !important; }
+.theme-dark .text-teal-600 { color: #8fd0dd !important; }
+.theme-dark .text-teal-500 { color: #52a9ba !important; }
 .theme-dark .text-amber-700 { color: #fbbf24 !important; }
 .theme-dark .text-amber-600 { color: #fbbf24 !important; }
 .theme-dark .text-rose-700 { color: #fb7185 !important; }
 .theme-dark .text-rose-600 { color: #fb7185 !important; }
 .theme-dark .text-blue-700 { color: #60a5fa !important; }
 .theme-dark .text-blue-600 { color: #60a5fa !important; }
-.theme-dark .text-purple-700 { color: #a78bfa !important; }
-.theme-dark .text-purple-600 { color: #a78bfa !important; }
+.theme-dark .text-purple-700 { color: #7fd0b8 !important; }
+.theme-dark .text-purple-600 { color: #7fd0b8 !important; }
 .theme-dark .text-emerald-700 { color: #34d399 !important; }
 .theme-dark .text-emerald-600 { color: #34d399 !important; }
 
 /* ── Accent borders ── */
-.theme-dark .border-teal-200 { border-color: rgba(134, 59, 255, 0.3) !important; }
+.theme-dark .border-teal-200 { border-color: rgba(42, 129, 147, 0.3) !important; }
 .theme-dark .border-amber-200 { border-color: rgba(251, 191, 36, 0.3) !important; }
 .theme-dark .border-rose-200 { border-color: rgba(251, 113, 133, 0.3) !important; }
 .theme-dark .border-blue-200 { border-color: rgba(96, 165, 250, 0.3) !important; }
-.theme-dark .border-purple-200 { border-color: rgba(167, 139, 250, 0.3) !important; }
+.theme-dark .border-purple-200 { border-color: rgba(79, 165, 142, 0.3) !important; }
 .theme-dark .border-emerald-200 { border-color: rgba(52, 211, 153, 0.3) !important; }
-.theme-dark .border-teal-500 { border-color: rgba(134, 59, 255, 0.5) !important; }
+.theme-dark .border-teal-500 { border-color: rgba(42, 129, 147, 0.5) !important; }
 
 /* ── Gradient button dark variant ── */
 .theme-dark .btn-gradient {
-  box-shadow: 0 4px 20px rgba(134, 59, 255, 0.2) !important;
+  box-shadow: 0 4px 20px rgba(42, 129, 147, 0.2) !important;
 }
 .theme-dark .btn-gradient:hover {
-  box-shadow: 0 6px 30px rgba(134, 59, 255, 0.35) !important;
+  box-shadow: 0 6px 30px rgba(42, 129, 147, 0.35) !important;
 }
 
 /* ── Shadows ── */
@@ -422,7 +441,7 @@ input:focus, select:focus {
 .theme-dark .shadow-lg { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important; }
 .theme-dark .shadow-xl { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55) !important; }
 .theme-dark .shadow-2xl { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.65) !important; }
-.theme-dark .shadow-teal-500\/25 { box-shadow: 0 4px 20px rgba(134, 59, 255, 0.15) !important; }
+.theme-dark .shadow-teal-500\/25 { box-shadow: 0 4px 20px rgba(42, 129, 147, 0.15) !important; }
 
 /* ── Modals ── */
 .theme-dark .fixed .bg-white { background-color: #111827 !important; }
@@ -436,15 +455,15 @@ input:focus, select:focus {
 .theme-dark input:focus,
 .theme-dark select:focus,
 .theme-dark textarea:focus {
-  box-shadow: 0 0 0 2px rgba(134, 59, 255, 0.25) !important;
-  border-color: rgba(134, 59, 255, 0.4) !important;
+  box-shadow: 0 0 0 2px rgba(42, 129, 147, 0.25) !important;
+  border-color: rgba(42, 129, 147, 0.4) !important;
 }
 
 /* ── Sidebar active ── */
 .theme-dark .sidebar-active {
-  background: linear-gradient(135deg, rgba(134, 59, 255, 0.15), rgba(126, 20, 255, 0.08)) !important;
-  border-color: rgba(134, 59, 255, 0.35) !important;
-  color: #b58aff !important;
+  background: linear-gradient(135deg, rgba(42, 129, 147, 0.15), rgba(31, 95, 109, 0.08)) !important;
+  border-color: rgba(42, 129, 147, 0.35) !important;
+  color: #8fd0dd !important;
 }
 
 /* ── Card hover ── */
@@ -455,15 +474,15 @@ input:focus, select:focus {
 
 /* ── Glow effects ── */
 .theme-dark .glow-teal {
-  box-shadow: 0 0 20px rgba(134, 59, 255, 0.15), 0 0 40px rgba(134, 59, 255, 0.05) !important;
+  box-shadow: 0 0 20px rgba(42, 129, 147, 0.15), 0 0 40px rgba(42, 129, 147, 0.05) !important;
 }
 .theme-dark .badge-glow {
-  box-shadow: 0 0 8px rgba(134, 59, 255, 0.35) !important;
+  box-shadow: 0 0 8px rgba(42, 129, 147, 0.35) !important;
 }
 
 /* ── Table row hover ── */
 .theme-dark .table-row-hover:hover {
-  background: rgba(134, 59, 255, 0.06) !important;
+  background: rgba(42, 129, 147, 0.06) !important;
 }
 
 /* ── Empty states ── */

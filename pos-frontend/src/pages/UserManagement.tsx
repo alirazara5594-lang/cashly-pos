@@ -14,7 +14,7 @@ import {
   Mail
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import { usePosStore } from '../store/posStore';
+import { usePosStore, normalizeRole } from '../store/posStore';
 import type { AppUser, UserRole, Department, Designation, Region } from '../types';
 
 /** The server's sentinel for "clear this Guid? field" — a real empty Guid, since JSON `null`/omitted
@@ -22,7 +22,10 @@ import type { AppUser, UserRole, Department, Designation, Region } from '../type
 const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
 
 /** Roles that work in the back office, so they may also sign in there with email + password. */
-const BACK_OFFICE_ROLES: UserRole[] = ['OwnerAdmin', 'BranchManager'];
+const BACK_OFFICE_ROLES: UserRole[] = ['OwnerAdmin', 'HqAdmin', 'BranchManager', 'Accountant', 'InventoryUser'];
+
+/** Roles that cover every location, and that only the owner may hand out. */
+const OWNER_LEVEL_ROLES: UserRole[] = ['OwnerAdmin', 'HqAdmin'];
 
 /** A random 4-digit PIN that is not an easy one (0000, 1234, 4321). The server still checks it is
  * not already somebody else's at this restaurant. */
@@ -37,6 +40,8 @@ const suggestPin = () => {
 
 export const UserManagement: React.FC = () => {
   const { selectedTenant, selectedBranch, branches, currentUser } = usePosStore();
+  // Owner-level roles are the owner's to hand out.
+  const canGrantOwnerLevel = ['OwnerAdmin', 'SuperAdmin'].includes(normalizeRole(currentUser?.role) ?? '');
   // Staff signed in at one branch add people to that branch; the owner and head office to any.
   const assignableBranches = currentUser?.branchId ? branches.filter(b => b.id === currentUser.branchId) : branches;
 
@@ -194,12 +199,24 @@ export const UserManagement: React.FC = () => {
   // Quick preset helper when selecting a role
   const handleRoleChange = (newRole: UserRole) => {
     setRole(newRole);
-    if (newRole === 'OwnerAdmin') {
+    if (newRole === 'OwnerAdmin' || newRole === 'HqAdmin') {
       setCanViewReports(true);
       setCanManageInventory(true);
       setCanManageMenuAndTax(true);
       setCanGiveDiscounts(true);
       setCanVoidOrders(true);
+    } else if (newRole === 'Accountant') {
+      setCanViewReports(true);
+      setCanManageInventory(false);
+      setCanManageMenuAndTax(false);
+      setCanGiveDiscounts(false);
+      setCanVoidOrders(false);
+    } else if (newRole === 'InventoryUser') {
+      setCanViewReports(false);
+      setCanManageInventory(true);
+      setCanManageMenuAndTax(false);
+      setCanGiveDiscounts(false);
+      setCanVoidOrders(false);
     } else if (newRole === 'BranchManager') {
       setCanViewReports(true);
       setCanManageInventory(true);
@@ -237,7 +254,10 @@ export const UserManagement: React.FC = () => {
       BranchManager: 2,
       Cashier: 3,
       KitchenChef: 4,
-      Waiter: 5
+      Waiter: 5,
+      Accountant: 6,
+      InventoryUser: 7,
+      HqAdmin: 8
     };
 
     if (!/^\d{4,6}$/.test(pinCode.trim())) {
@@ -249,7 +269,8 @@ export const UserManagement: React.FC = () => {
     try {
       await posApi.createUser({
         tenantId: selectedTenant.id,
-        branchId: branchScope === 'all' ? undefined : branchScope === 'current' ? selectedBranch?.id : branchScope,
+        // An owner or HQ admin covers every location.
+        branchId: OWNER_LEVEL_ROLES.includes(role) || branchScope === 'all' ? undefined : branchScope === 'current' ? selectedBranch?.id : branchScope,
         fullName: fullName.trim(),
         username: username.trim(),
         pinCode: pinCode.trim(),
@@ -396,6 +417,12 @@ export const UserManagement: React.FC = () => {
     switch (r) {
       case 'OwnerAdmin':
         return <span className="px-2.5 py-1 rounded-lg bg-purple-100 text-purple-700 border border-purple-200 text-[11px] font-bold">Owner / Executive</span>;
+      case 'HqAdmin':
+        return <span className="px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 border border-purple-200 text-[11px] font-bold">HQ Admin</span>;
+      case 'Accountant':
+        return <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 border border-emerald-200 text-[11px] font-bold">Accountant</span>;
+      case 'InventoryUser':
+        return <span className="px-2.5 py-1 rounded-lg bg-orange-100 text-orange-700 border border-orange-200 text-[11px] font-bold">Storekeeper</span>;
       case 'BranchManager':
         return <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-700 border border-sky-200 text-[11px] font-bold">Branch Manager</span>;
       case 'KitchenChef':
@@ -645,16 +672,31 @@ export const UserManagement: React.FC = () => {
                     <option value="Waiter">Waiter / Tab Captain (Table Orders)</option>
                     <option value="KitchenChef">Kitchen Chef (KDS Only)</option>
                     <option value="BranchManager">Branch Manager</option>
-                    <option value="OwnerAdmin">Owner / Executive (All Permissions)</option>
+                    <option value="Accountant">Accountant (Books & Financial Reports)</option>
+                    <option value="InventoryUser">Storekeeper (Stock & Purchasing)</option>
+                    {/* Only the owner hands out owner-level roles (the server checks this too). */}
+                    {canGrantOwnerLevel && (
+                      <>
+                        <option value="HqAdmin">HQ Admin (Runs the business, no billing)</option>
+                        <option value="OwnerAdmin">Owner / Executive (All Permissions)</option>
+                      </>
+                    )}
                   </select>
+                  {role === 'HqAdmin' && (
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Every location and module, like you. Cannot change the plan or a branch's POS version, add a
+                      selling location, or change an owner's or HQ admin's account.
+                    </p>
+                  )}
                 </div>
 
                 <div>
                   <label className="block text-xs text-slate-500 font-medium mb-1">Branch Assignment</label>
                   <select
-                    value={branchScope}
+                    value={OWNER_LEVEL_ROLES.includes(role) ? 'all' : branchScope}
                     onChange={(e) => setBranchScope(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    disabled={OWNER_LEVEL_ROLES.includes(role)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-60"
                   >
                     {assignableBranches.length === 0 && (
                       <option value="current">Current Location ({selectedBranch?.name || 'Selected Branch'})</option>

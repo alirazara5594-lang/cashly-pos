@@ -10,6 +10,7 @@ import { RequireFeature } from './components/RequireFeature';
 import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
+import { GettingStarted } from './components/GettingStarted';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { rememberRestaurantAddress, webNameFromPath } from './services/restaurantAddress';
 import { endSupportSession, getSupportSession } from './services/supportSession';
@@ -55,6 +56,7 @@ const OpenOrders = lazy(() => import('./pages/OpenOrders').then(m => ({ default:
 const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ default: m.PublicOrder })));
 const ConnectDevice = lazy(() => import('./pages/ConnectDevice').then(m => ({ default: m.ConnectDevice })));
 const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
+const ConfirmEmail = lazy(() => import('./pages/ConfirmEmail').then(m => ({ default: m.ConfirmEmail })));
 
 /** The only screens of the platform admin, who owns no restaurant. */
 const PLATFORM_ADMIN_PATHS = ['/super-admin', '/pricing-admin'];
@@ -260,6 +262,15 @@ function MainLayoutInner() {
     );
   }
 
+  // The link from a "confirm your email" message. Reachable signed in or out.
+  if (location.pathname === '/confirm-email') {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <ConfirmEmail />
+      </Suspense>
+    );
+  }
+
   // Pairing a till, tablet, kitchen screen or office PC with a code from its manager.
   if (location.pathname === '/connect') {
     return (
@@ -361,6 +372,11 @@ function MainLayoutInner() {
 
         {/* Account and device state, above everything. Graduated, never a hard block. */}
         <AccountStatusBanner packageInfo={packageInfo} deviceStatus={deviceStatus} />
+
+        {/* The owner's first-days checklist; gone once it is all done or they hide it. */}
+        {normalizeRole(currentUser?.role) === 'OwnerAdmin' && !supportSession && currentUser?.tenantId && (
+          <GettingStarted key={currentUser.tenantId} tenantId={currentUser.tenantId} />
+        )}
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <Suspense fallback={<RouteLoadingFallback />}>

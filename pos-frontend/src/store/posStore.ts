@@ -36,7 +36,10 @@ const ROLE_BY_ORDINAL: Record<number, UserRole> = {
   2: 'BranchManager',
   3: 'Cashier',
   4: 'KitchenChef',
-  5: 'Waiter'
+  5: 'Waiter',
+  6: 'Accountant',
+  7: 'InventoryUser',
+  8: 'HqAdmin'
 };
 
 /**
@@ -54,8 +57,15 @@ export function normalizeRole(role: unknown): UserRole | null {
   return null;
 }
 
-/** Roles that bypass every module check (mirrors the backend's ModuleBaseline). */
-const FULL_ACCESS_ROLES: UserRole[] = ['OwnerAdmin', 'SuperAdmin'];
+/** Roles that bypass every module check (mirrors the backend's ModuleBaseline). An HQ admin runs
+ *  the business like the owner; only billing and ownership stay the owner's. */
+const FULL_ACCESS_ROLES: UserRole[] = ['OwnerAdmin', 'HqAdmin', 'SuperAdmin'];
+
+/** The owner, or an HQ admin: the people who run the whole business. */
+export const runsBusiness = (role: unknown) => {
+  const r = normalizeRole(role);
+  return r === 'OwnerAdmin' || r === 'HqAdmin';
+};
 
 /** Modules a BranchManager can VIEW (but not edit) with no explicit permission row. */
 const BRANCH_MANAGER_VIEW_MODULES: ModuleKey[] = [

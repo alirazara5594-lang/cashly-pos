@@ -214,6 +214,8 @@ builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.MetaWhatsAppSender>();
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.WhaticketWhatsAppSender>();
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSenderResolver, Pos.Api.Services.WhatsAppSenderResolver>();
+// Registration codes to the owner's mobile (WhatsApp or SMS; see Services/MobileCodeSender.cs).
+builder.Services.AddSingleton<Pos.Api.Services.IMobileCodeSender, Pos.Api.Services.MobileCodeSender>();
 
 var app = builder.Build();
 
@@ -1522,7 +1524,10 @@ using (var scope = app.Services.CreateScope())
         ("Returns, product purchasing and transfers", EnsureModulesSchemaAsync),
         ("Versions, billing and integrations", EnsureCommerceSchemaAsync),
         ("2026-10 versions and add-ons", ApplyPosVersions202610Async),
-        ("PIN and email sign-in", EnsureSignInSchemaAsync)
+        ("Enterprise version name", ApplyEnterpriseNameAsync),
+        ("PIN and email sign-in", EnsureSignInSchemaAsync),
+        ("Onboarding", EnsureOnboardingSchemaAsync),
+        ("Books per company", EnsureCompanyBooksSchemaAsync)
     })
     {
         try
@@ -1591,6 +1596,64 @@ static Task EnsureSignInSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRa
     );
     CREATE UNIQUE INDEX IF NOT EXISTS ""IX_PasswordResetTokens_TokenHash"" ON ""PasswordResetTokens"" (""TokenHash"");
     CREATE INDEX IF NOT EXISTS ""IX_PasswordResetTokens_UserId"" ON ""PasswordResetTokens"" (""UserId"");
+");
+
+/// <summary>
+/// Each journal entry belongs to one company's books. Adds the column, then files every entry not
+/// yet filed: under its location's company, else the business's default company. Only touches
+/// entries with no company, so it is idempotent and cheap after the first run.
+/// </summary>
+static Task EnsureCompanyBooksSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'JournalEntries') THEN
+            ALTER TABLE ""JournalEntries"" ADD COLUMN IF NOT EXISTS ""CompanyId"" uuid NULL;
+            CREATE INDEX IF NOT EXISTS ""IX_JournalEntries_CompanyId"" ON ""JournalEntries"" (""CompanyId"");
+            UPDATE ""JournalEntries"" je SET ""CompanyId"" = b.""CompanyId""
+                FROM ""Branches"" b
+                WHERE je.""CompanyId"" IS NULL AND je.""BranchId"" = b.""Id"" AND b.""CompanyId"" IS NOT NULL;
+            UPDATE ""JournalEntries"" je SET ""CompanyId"" = c.""Id""
+                FROM ""Companies"" c
+                WHERE je.""CompanyId"" IS NULL AND c.""TenantId"" = je.""TenantId"" AND c.""IsDefault"";
+        END IF;
+    END $$;
+");
+
+/// <summary>Columns for a new business's first days: email confirmation, the owner's mobile (one
+/// trial per number) and the removable sample menu. Idempotent.</summary>
+static Task EnsureOnboardingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""EmailConfirmedAt"" timestamp with time zone NULL;
+    ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactMobile"" text NULL;
+    CREATE INDEX IF NOT EXISTS ""IX_Tenants_ContactMobile"" ON ""Tenants"" (""ContactMobile"") WHERE ""ContactMobile"" IS NOT NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""IsSample"" boolean NOT NULL DEFAULT false;
+    ALTER TABLE ""Categories"" ADD COLUMN IF NOT EXISTS ""IsSample"" boolean NOT NULL DEFAULT false;
+
+    CREATE TABLE IF NOT EXISTS ""EmailConfirmationTokens"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""UserId"" uuid NOT NULL,
+        ""TokenHash"" text NOT NULL,
+        ""Email"" text NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""ExpiresAt"" timestamp with time zone NOT NULL,
+        ""UsedAt"" timestamp with time zone NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_EmailConfirmationTokens_TokenHash"" ON ""EmailConfirmationTokens"" (""TokenHash"");
+    CREATE INDEX IF NOT EXISTS ""IX_EmailConfirmationTokens_UserId"" ON ""EmailConfirmationTokens"" (""UserId"");
+
+    ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""ContactMobileVerifiedAt"" timestamp with time zone NULL;
+    CREATE TABLE IF NOT EXISTS ""MobileVerifications"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""Mobile"" text NOT NULL,
+        ""CodeHash"" text NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""ExpiresAt"" timestamp with time zone NOT NULL,
+        ""Attempts"" integer NOT NULL DEFAULT 0,
+        ""VerifiedAt"" timestamp with time zone NULL,
+        ""ProofHash"" text NULL,
+        ""ConsumedAt"" timestamp with time zone NULL,
+        ""CreatedByIp"" text NULL
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_MobileVerifications_Mobile"" ON ""MobileVerifications"" (""Mobile"");
 ");
 
 /// <summary>Creates the counter table and moves document-number uniqueness to per business.
@@ -2183,6 +2246,25 @@ static async Task ApplyPosVersions202610Async(AppDbContext db)
 }
 
 /// <summary>
+/// The top version is sold as "Enterprise". Renames its display name ONCE, and only where it still
+/// reads "Professional", so a name chosen on the Package Pricing screen is kept. The package key and
+/// plan code are not touched: saved data and the API guards reference those.
+/// </summary>
+static async Task ApplyEnterpriseNameAsync(AppDbContext db)
+{
+    const string marker = "enterprise-name-2026-10";
+    if (await db.PlatformDataVersions.AnyAsync(v => v.Key == marker)) return;
+
+    foreach (var package in await db.SaaSPackageConfigs.Where(p => p.PackageKey == "Professional" && p.DisplayName == "Professional").ToListAsync())
+        package.DisplayName = "Enterprise";
+    foreach (var plan in await db.Plans.Where(p => p.Code == "professional" && p.Name == "Professional").ToListAsync())
+        plan.Name = "Enterprise";
+
+    db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
+    await db.SaveChangesAsync();
+}
+
+/// <summary>
 /// The one way to set what a location is. Keeps the legacy IsHeadOffice flag in step with the
 /// type, and applies the type's defaults: a branch sells and holds stock, a head office does
 /// neither unless told to, and a warehouse holds stock but never sells.
@@ -2298,6 +2380,31 @@ static (Company Company, Branch? HeadOffice, List<Branch> Branches) CreateInitia
 
     tenant.DeploymentMode = structure == BusinessStructures.SingleShop ? DeploymentMode.Standalone : DeploymentMode.HeadOffice;
     return (company, headOffice, branches);
+}
+
+/// <summary>
+/// A small sample menu, so a new business can ring up a test sale in its first two minutes. Every
+/// row is marked IsSample, which is what "Remove sample menu" deletes. The caller saves.
+/// </summary>
+static void SeedSampleMenu(AppDbContext db, Guid tenantId)
+{
+    var catBurgers = new Category { Id = Guid.NewGuid(), TenantId = tenantId, Name = "Burgers & Sandwiches", Icon = "sandwich", SortOrder = 1, IsSample = true };
+    var catPizza = new Category { Id = Guid.NewGuid(), TenantId = tenantId, Name = "Pizzas & Platters", Icon = "pizza", SortOrder = 2, IsSample = true };
+    var catBeverages = new Category { Id = Guid.NewGuid(), TenantId = tenantId, Name = "Beverages & Drinks", Icon = "coffee", SortOrder = 3, IsSample = true };
+    var catSides = new Category { Id = Guid.NewGuid(), TenantId = tenantId, Name = "Sides & Desserts", Icon = "cake", SortOrder = 4, IsSample = true };
+    db.Categories.AddRange(catBurgers, catPizza, catBeverages, catSides);
+
+    var p1 = new Product { Id = Guid.NewGuid(), TenantId = tenantId, CategoryId = catBurgers.Id, SKU = "B-01", Barcode = "1000000001", Name = "Classic Smash Burger", UrduName = "کلاسک سمیش برگر", CostPricePKR = 380, SellingPricePKR = 750, Unit = "Piece", Station = KitchenStation.Grill, IsActive = true, IsSample = true };
+    var p2 = new Product { Id = Guid.NewGuid(), TenantId = tenantId, CategoryId = catBurgers.Id, SKU = "B-02", Barcode = "1000000002", Name = "Crispy Zinger Crunch", UrduName = "کرسپی زنگر برگر", CostPricePKR = 320, SellingPricePKR = 620, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true, IsSample = true };
+    var p3 = new Product { Id = Guid.NewGuid(), TenantId = tenantId, CategoryId = catPizza.Id, SKU = "P-01", Barcode = "1000000003", Name = "Royal Chicken Tikka Pizza", UrduName = "چکن تکہ پیزا", CostPricePKR = 650, SellingPricePKR = 1350, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true, IsSample = true };
+    var p4 = new Product { Id = Guid.NewGuid(), TenantId = tenantId, CategoryId = catBeverages.Id, SKU = "D-01", Barcode = "1000000004", Name = "Fresh Mint Margarita", UrduName = "منٹ مارگریٹا", CostPricePKR = 90, SellingPricePKR = 290, Unit = "Glass", Station = KitchenStation.BeverageBar, IsActive = true, IsSample = true };
+    var p5 = new Product { Id = Guid.NewGuid(), TenantId = tenantId, CategoryId = catSides.Id, SKU = "S-01", Barcode = "1000000005", Name = "Loaded Gourmet Fries", UrduName = "لوڈڈ فرائز", CostPricePKR = 160, SellingPricePKR = 390, Unit = "Portion", Station = KitchenStation.MainKitchen, IsActive = true, IsSample = true };
+
+    p1.Modifiers.Add(new ProductModifier { Name = "Extra Cheese Slice", PricePKR = 90 });
+    p1.Modifiers.Add(new ProductModifier { Name = "Double Patty Upgrade", PricePKR = 250 });
+    p2.Modifiers.Add(new ProductModifier { Name = "Spicy Chipotle Dip", PricePKR = 60 });
+
+    db.Products.AddRange(p1, p2, p3, p4, p5);
 }
 
 /// <summary>
@@ -2912,9 +3019,13 @@ static (string Code, string Name, AccountType Type, string SubType)[] GetDefault
     ("1010", "Bank Account", AccountType.Asset, "Current Asset"),
     ("1020", "Digital Wallet / Card Settlement", AccountType.Asset, "Current Asset"),
     ("1100", "Accounts Receivable", AccountType.Asset, "Current Asset"),
+    // Owed between the business's own companies (a transfer from one to another). Netted out of the
+    // consolidated statements: the group cannot owe itself.
+    ("1150", "Intercompany Receivable", AccountType.Asset, "Current Asset"),
     ("1200", "Inventory", AccountType.Asset, "Current Asset"),
     ("2000", "Accounts Payable", AccountType.Liability, "Current Liability"),
     ("2100", "Sales Tax Payable", AccountType.Liability, "Current Liability"),
+    ("2150", "Intercompany Payable", AccountType.Liability, "Current Liability"),
     ("3000", "Owner's Equity", AccountType.Equity, "Equity"),
     ("3900", "Retained Earnings", AccountType.Equity, "Equity"),
     ("4000", "Sales Revenue", AccountType.Revenue, "Operating Revenue"),
@@ -2956,7 +3067,8 @@ static async Task<string> GenerateJournalEntryNumberAsync(AppDbContext db, Guid 
 /// </summary>
 static async Task<JournalEntry> PostJournalEntryAsync(
     AppDbContext db, Guid tenantId, Guid? branchId, DateTime entryDate, string description,
-    string referenceType, Guid? referenceId, string createdBy, List<(string AccountCode, decimal Debit, decimal Credit)> lines)
+    string referenceType, Guid? referenceId, string createdBy, List<(string AccountCode, decimal Debit, decimal Credit)> lines,
+    Guid? companyId = null)
 {
     var totalDebit = Math.Round(lines.Sum(l => l.Debit), 2);
     var totalCredit = Math.Round(lines.Sum(l => l.Credit), 2);
@@ -2980,6 +3092,8 @@ static async Task<JournalEntry> PostJournalEntryAsync(
     {
         TenantId = tenantId,
         BranchId = branchId,
+        // Whose books: named by the caller, else the branch's company, else the default company.
+        CompanyId = companyId ?? await CompanyOfBranchAsync(db, tenantId, branchId),
         EntryNumber = await GenerateJournalEntryNumberAsync(db, tenantId),
         EntryDate = entryDate,
         Description = description,
@@ -2994,6 +3108,91 @@ static async Task<JournalEntry> PostJournalEntryAsync(
     }
     db.JournalEntries.Add(entry);
     return entry;
+}
+
+/// <summary>The company whose books a location's entries go in: its own, or the default company
+/// (also for an entry with no location). Null only for a business with no company at all.</summary>
+static async Task<Guid?> CompanyOfBranchAsync(AppDbContext db, Guid tenantId, Guid? branchId)
+{
+    if (branchId.HasValue)
+    {
+        var own = await db.Branches.IgnoreQueryFilters()
+            .Where(b => b.Id == branchId.Value && b.TenantId == tenantId).Select(b => b.CompanyId).FirstOrDefaultAsync();
+        if (own.HasValue) return own;
+    }
+    return await db.Companies.IgnoreQueryFilters()
+        .Where(c => c.TenantId == tenantId && c.IsDefault).Select(c => (Guid?)c.Id).FirstOrDefaultAsync();
+}
+
+/// <summary>
+/// The posted journal lines a financial statement is built from. With a company: that company's
+/// own books. Without: the whole business consolidated, and then the intercompany accounts (1150,
+/// 2150) are left out, because what one of the business's companies owes another nets to nothing
+/// for the group. They are always posted in equal pairs, so leaving both out keeps it balanced.
+/// </summary>
+static IQueryable<JournalLine> StatementLines(AppDbContext db, Guid tenantId, Guid? companyId)
+{
+    var lines = db.JournalLines.Include(l => l.Account).Include(l => l.JournalEntry)
+        .Where(l => l.JournalEntry!.TenantId == tenantId && l.JournalEntry!.Status == JournalEntryStatus.Posted);
+    return companyId.HasValue
+        ? lines.Where(l => l.JournalEntry!.CompanyId == companyId.Value)
+        : lines.Where(l => l.Account!.Code != "1150" && l.Account!.Code != "2150");
+}
+
+/// <summary>Adds any standard account the business's chart is missing (accounts added to the
+/// standard chart after theirs was seeded). Does nothing for a business not using accounting.</summary>
+static async Task EnsureStandardAccountsAsync(AppDbContext db, Guid tenantId)
+{
+    var have = await db.Accounts.Where(a => a.TenantId == tenantId).Select(a => a.Code).ToListAsync();
+    if (have.Count == 0) return;
+    foreach (var (code, name, type, subType) in GetDefaultChartOfAccounts().Where(a => !have.Contains(a.Code)))
+        db.Accounts.Add(new Account { TenantId = tenantId, Code = code, Name = name, Type = type, SubType = subType, IsSystemAccount = true });
+    await db.SaveChangesAsync();
+}
+
+/// <summary>
+/// A stock transfer between two locations of DIFFERENT companies is a sale between those companies
+/// at cost: the sender's stock becomes money owed to it, the receiver's stock arrives with a debt.
+/// Posted when the goods are received (a transfer cancelled in transit never touches the books).
+/// Between locations of one company nothing is posted: its stock only moved within its own books.
+///
+/// Like a sale's posting, it never blocks the transfer itself.
+/// </summary>
+static async Task PostIntercompanyTransferAsync(AppDbContext db, StockTransferOrder order, string by)
+{
+    if (!await HasAccountingAsync(db, order.TenantId)) return;
+    var fromCompany = await CompanyOfBranchAsync(db, order.TenantId, order.SourceBranchId);
+    var toCompany = await CompanyOfBranchAsync(db, order.TenantId, order.DestinationBranchId);
+    if (fromCompany == null || toCompany == null || fromCompany == toCompany) return;
+
+    // At cost: what the stock left the sender's shelves at, exactly as its stock ledger recorded.
+    var valuePKR = Math.Round(await db.StockLedgerEntries
+        .Where(e => e.TenantId == order.TenantId && e.ReferenceType == "StockTransfer" && e.ReferenceId == order.Id
+                 && e.MovementType == StockMovementType.TransferOut)
+        .SumAsync(e => (decimal?)(-e.QuantityChange * e.UnitCostPKR)) ?? 0m, 2);
+    if (valuePKR <= 0) return;
+
+    var staged = new List<JournalEntry>();
+    try
+    {
+        await EnsureStandardAccountsAsync(db, order.TenantId);
+        staged.Add(await PostJournalEntryAsync(db, order.TenantId, order.SourceBranchId, DateTime.UtcNow,
+            $"Transfer {order.TransferNumber} sent to another company (at cost)", "StockTransfer", order.Id, by,
+            new List<(string, decimal, decimal)> { ("1150", valuePKR, 0m), ("1200", 0m, valuePKR) }, fromCompany));
+        staged.Add(await PostJournalEntryAsync(db, order.TenantId, order.DestinationBranchId, DateTime.UtcNow,
+            $"Transfer {order.TransferNumber} received from another company (at cost)", "StockTransfer", order.Id, by,
+            new List<(string, decimal, decimal)> { ("1200", valuePKR, 0m), ("2150", 0m, valuePKR) }, toCompany));
+    }
+    catch (Exception ex)
+    {
+        // Unstage the half-posted entries so the transfer's own save does not trip over them.
+        foreach (var entry in staged)
+        {
+            foreach (var line in entry.Lines) db.Entry(line).State = EntityState.Detached;
+            db.Entry(entry).State = EntityState.Detached;
+        }
+        Console.WriteLine($"[Accounting] Could not post intercompany transfer {order.TransferNumber}: {ex.Message}");
+    }
 }
 
 /// <summary>
@@ -3248,7 +3447,7 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
     if (discount > 0)
     {
         var mayDiscount = actingUser != null &&
-            (actingUser.Role == UserRole.OwnerAdmin || actingUser.Role == UserRole.SuperAdmin || actingUser.CanGiveDiscounts);
+            (UserRoles.RunsBusiness(actingUser.Role) || actingUser.Role == UserRole.SuperAdmin || actingUser.CanGiveDiscounts);
         if (!mayDiscount)
         {
             result.DiscountRejected = true;
@@ -3684,6 +3883,24 @@ static Task<bool> PinTakenAsync(AppDbContext db, Guid tenantId, string lookup, G
 static string? NormalizeEmail(string? email) =>
     string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
+// What is kept of a mobile code: a hash, bound to the number it was sent to.
+static string MobileCodeHash(string mobileDigits, string code) =>
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes($"mobile-code:{mobileDigits}:{code}")));
+
+// A mobile number as digits with the country code, however it was typed: "0300-1234567",
+// "+92 300 1234567" and "923001234567" are the same number. Null when it cannot be a phone number.
+static string? NormalizeMobile(string? raw, string? countryPhoneCode)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return null;
+    var digits = new string(raw.Where(char.IsDigit).ToArray());
+    var country = new string((countryPhoneCode ?? "+92").Where(char.IsDigit).ToArray());
+    if (raw.TrimStart().StartsWith('+')) { /* already has its country code */ }
+    else if (digits.StartsWith("00")) digits = digits[2..];
+    else if (digits.StartsWith('0')) digits = country + digits[1..];
+    else if (!digits.StartsWith(country) || digits.Length <= 10) digits = country + digits;
+    return digits.Length is >= 10 and <= 15 ? digits : null;
+}
+
 // Why a password will not do, or null when it will.
 static string? PasswordProblem(string? password)
 {
@@ -3772,6 +3989,63 @@ static async Task<AppUser?> SelfForSecurityAsync(AppDbContext db, HttpContext ht
     if (userId == null) return null;
     var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId.Value && u.IsActive);
     return user == null || user.Role == UserRole.SuperAdmin ? null : user;
+}
+
+/// <summary>
+/// Sends a "confirm your email" link to the user's address. Only the newest link works; it lasts
+/// 3 days. The send itself runs in the background and a failure is only logged: confirming is
+/// never what stands between someone and their account. The caller checks email is configured.
+/// </summary>
+static async Task SendEmailConfirmationAsync(AppDbContext db, Pos.Api.Services.IEmailSender emailSender, AppUser user)
+{
+    if (string.IsNullOrEmpty(user.Email) || !emailSender.IsConfigured) return;
+    var now = DateTime.UtcNow;
+    foreach (var older in await db.EmailConfirmationTokens.IgnoreQueryFilters().Where(t => t.UserId == user.Id && t.UsedAt == null).ToListAsync())
+        older.UsedAt = now;
+
+    var raw = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+        .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    db.EmailConfirmationTokens.Add(new EmailConfirmationToken
+    {
+        UserId = user.Id,
+        Email = user.Email,
+        TokenHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(raw))),
+        ExpiresAt = now.AddDays(3)
+    });
+    await db.SaveChangesAsync();
+
+    var address = user.Email;
+    var link = $"{emailSender.PublicUrl}/confirm-email?token={raw}";
+    var name = System.Net.WebUtility.HtmlEncode(user.FullName);
+    var text = $"Hello {user.FullName},\n\nPlease confirm that {address} is your email for Cashly POS.\n\n" +
+               $"Open this link within 3 days:\n{link}\n\n" +
+               "If you did not create a Cashly POS account, ignore this email.\n\nCashly POS";
+    var html = $"<p>Hello {name},</p><p>Please confirm that {System.Net.WebUtility.HtmlEncode(address)} is your email for Cashly POS.</p>" +
+               $"<p><a href=\"{link}\" style=\"display:inline-block;padding:10px 18px;background:#236e7e;color:#fff;border-radius:8px;text-decoration:none;font-weight:bold\">Confirm my email</a></p>" +
+               "<p>The link works for 3 days. If you did not create a Cashly POS account, ignore this email.</p><p>Cashly POS</p>";
+    _ = Task.Run(async () =>
+    {
+        try { await emailSender.SendAsync(address, "Confirm your Cashly POS email", html, text); }
+        catch (Exception ex) { Console.WriteLine($"[Email] Confirmation email to {address} failed: {ex.Message}"); }
+    });
+}
+
+/// <summary>
+/// Who may hand out which role, and change whose account. Only the owner makes owners and HQ
+/// admins, and only the owner changes or removes their accounts: anyone else who could would be one
+/// step from taking the business over (a new owner login, or a reset owner password). Returns the
+/// refusal, or null when the change is allowed.
+/// </summary>
+static IResult? StaffChangeProblem(HttpContext http, AppUser? actor, AppUser? target, UserRole? newRole)
+{
+    if (http.IsSuperAdmin()) return null;
+    if (actor == null) return Results.Unauthorized();
+    if (actor.Role == UserRole.OwnerAdmin) return null;
+    if (newRole.HasValue && UserRoles.IsOwnerLevel(newRole.Value) && newRole != target?.Role)
+        return Results.Json(new { message = "Only the owner can make someone an owner or HQ admin." }, statusCode: StatusCodes.Status403Forbidden);
+    if (target != null && UserRoles.IsOwnerLevel(target.Role) && target.Id != actor.Id)
+        return Results.Json(new { message = "Only the owner can change or remove an owner's or HQ admin's account." }, statusCode: StatusCodes.Status403Forbidden);
+    return null;
 }
 
 static void TurnOffTwoFactor(AppUser user)
@@ -4138,6 +4412,117 @@ authApi.MapPost("/reset-password", async (AppDbContext db, ResetPasswordWithToke
     return Results.Ok(new { message = "Your new password is set. Sign in with it now.", email = user.Email });
 });
 
+// --- Confirm email: a one-time link proving the owner can receive mail at their sign-in address ---
+
+authApi.MapPost("/send-email-confirmation", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender) =>
+{
+    var user = await SelfForSecurityAsync(db, http);
+    if (user == null) return Results.Json(new { message = "Not available in this session." }, statusCode: StatusCodes.Status403Forbidden);
+    if (string.IsNullOrEmpty(user.Email)) return Results.BadRequest(new { message = "This account has no email address." });
+    if (user.EmailConfirmedAt != null) return Results.Ok(new { emailEnabled = emailSender.IsConfigured, confirmed = true, message = "Your email is already confirmed." });
+    if (!emailSender.IsConfigured) return Results.Ok(new { emailEnabled = false, confirmed = false });
+
+    // One email every two minutes at most, so the button cannot flood an inbox.
+    var recent = await db.EmailConfirmationTokens.IgnoreQueryFilters().AnyAsync(t => t.UserId == user.Id && t.CreatedAt > DateTime.UtcNow.AddMinutes(-2));
+    if (recent) return Results.Ok(new { emailEnabled = true, confirmed = false, message = $"A link was sent to {user.Email} a moment ago. Check your inbox and spam folder." });
+
+    await SendEmailConfirmationAsync(db, emailSender, user);
+    return Results.Ok(new { emailEnabled = true, confirmed = false, message = $"We sent a link to {user.Email}. Open it within 3 days to confirm your email." });
+}).RequireAuthorization();
+
+authApi.MapPost("/confirm-email", async (AppDbContext db, ConfirmEmailDto dto) =>
+{
+    var expired = Results.BadRequest(new { message = "This link has expired or was already used. Sign in and ask for a new one from Getting started." });
+    if (string.IsNullOrWhiteSpace(dto.Token)) return expired;
+    var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.Token.Trim())));
+    var token = await db.EmailConfirmationTokens.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.TokenHash == hash);
+    if (token == null || token.UsedAt != null || token.ExpiresAt < DateTime.UtcNow) return expired;
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == token.UserId && u.IsActive);
+    // The link confirms the address it was sent to, never one the account changed to since.
+    if (user == null || user.Email != token.Email) return expired;
+
+    token.UsedAt = DateTime.UtcNow;
+    user.EmailConfirmedAt ??= DateTime.UtcNow;
+    await WriteAuditAsync(db, user.TenantId, user, "EmailConfirmed", "AppUser", user.Id, null, user.Email);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Your email is confirmed. Thank you!", email = user.Email });
+});
+
+// --- Mobile codes at registration: one free trial per mobile number the person really has ---
+
+app.MapGet("/api/public/mobile-verification", (Pos.Api.Services.IMobileCodeSender sender) =>
+    Results.Ok(new { enabled = sender.IsEnabled, channel = sender.Channel }))
+    .AllowAnonymous().RequireRateLimiting("public-lookup");
+
+authApi.MapPost("/mobile-code", async (AppDbContext db, HttpContext http, Pos.Api.Services.IMobileCodeSender sender, MobileCodeRequestDto dto) =>
+{
+    if (!sender.IsEnabled) return Results.BadRequest(new { message = "Mobile codes are not set up on this server." });
+    var phoneCode = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)?.PhoneCode ?? "+92";
+    var mobile = NormalizeMobile(dto.Mobile, phoneCode);
+    if (mobile == null) return Results.BadRequest(new { message = "Enter your mobile number, for example 0300 1234567." });
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.ContactMobile == mobile))
+        return Results.BadRequest(new { message = "This mobile number is already registered with a Cashly business. Sign in to that account, or contact Cashly support to open another business." });
+
+    // One code a minute, five an hour, per number: enough for a slow network, too few to spam someone.
+    var now = DateTime.UtcNow;
+    var recent = await db.MobileVerifications.Where(m => m.Mobile == mobile && m.CreatedAt > now.AddHours(-1)).ToListAsync();
+    if (recent.Any(m => m.CreatedAt > now.AddMinutes(-1)))
+        return Results.Json(new { message = "A code was sent a moment ago. Wait a minute before asking for another." }, statusCode: StatusCodes.Status429TooManyRequests);
+    if (recent.Count >= 5)
+        return Results.Json(new { message = "Too many codes for this number. Try again in an hour." }, statusCode: StatusCodes.Status429TooManyRequests);
+    foreach (var older in recent.Where(m => m.VerifiedAt == null && m.ExpiresAt > now)) older.ExpiresAt = now;
+
+    var code = System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+    var (sent, error) = await sender.SendAsync(mobile, code);
+    if (!sent) return Results.Json(new { message = $"Could not send the code: {error}" }, statusCode: StatusCodes.Status502BadGateway);
+
+    db.MobileVerifications.Add(new MobileVerification
+    {
+        Mobile = mobile,
+        CodeHash = MobileCodeHash(mobile, code),
+        ExpiresAt = now.AddMinutes(10),
+        CreatedByIp = http.Connection.RemoteIpAddress?.ToString()
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { sent = true, channel = sender.Channel, expiresInMinutes = 10 });
+});
+
+authApi.MapPost("/mobile-code/verify", async (AppDbContext db, MobileCodeVerifyDto dto) =>
+{
+    var phoneCode = Pos.Api.Data.CountryTaxProfiles.FindByName(dto.Country)?.PhoneCode ?? "+92";
+    var mobile = NormalizeMobile(dto.Mobile, phoneCode);
+    if (mobile == null || string.IsNullOrWhiteSpace(dto.Code)) return Results.BadRequest(new { message = "Type the 6-digit code." });
+
+    var now = DateTime.UtcNow;
+    var pending = await db.MobileVerifications
+        .Where(m => m.Mobile == mobile && m.VerifiedAt == null && m.ExpiresAt > now)
+        .OrderByDescending(m => m.CreatedAt).FirstOrDefaultAsync();
+    if (pending == null) return Results.BadRequest(new { message = "This code has expired. Ask for a new one." });
+
+    pending.Attempts++;
+    if (pending.Attempts > 5)
+    {
+        pending.ExpiresAt = now;
+        await db.SaveChangesAsync();
+        return Results.BadRequest(new { message = "Too many wrong tries. Ask for a new code." });
+    }
+    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(pending.CodeHash), Encoding.UTF8.GetBytes(MobileCodeHash(mobile, dto.Code.Trim()))))
+    {
+        await db.SaveChangesAsync();
+        return Results.BadRequest(new { message = "That code is not right." });
+    }
+
+    // The right code: hand back a one-time proof for the registration to present.
+    var proof = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+        .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    pending.VerifiedAt = now;
+    pending.ProofHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(proof)));
+    pending.ExpiresAt = now.AddMinutes(30);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { verified = true, proof });
+});
+
 authApi.MapPost("/login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
 {
     const int MaxFailedAttempts = 5;
@@ -4399,7 +4784,7 @@ api.MapPost("/auth/verify-pin", async (AppDbContext db, HttpContext http, Pos.Ap
     if (!BCrypt.Net.BCrypt.Verify(dto.PinCode, approver.PinCodeHash))
         return Results.Ok(new { authorized = false, message = "Incorrect PIN." });
 
-    var isOwner = approver.Role == UserRole.OwnerAdmin || approver.Role == UserRole.SuperAdmin;
+    var isOwner = UserRoles.RunsBusiness(approver.Role) || approver.Role == UserRole.SuperAdmin;
     bool permitted;
     if (string.IsNullOrWhiteSpace(dto.RequiredPermission))
     {
@@ -4531,23 +4916,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
 
     if (dto.SeedStarterMenu)
     {
-        var catBurgers = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Burgers & Sandwiches", Icon = "sandwich", SortOrder = 1 };
-        var catPizza = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Pizzas & Platters", Icon = "pizza", SortOrder = 2 };
-        var catBeverages = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Beverages & Drinks", Icon = "coffee", SortOrder = 3 };
-        var catSides = new Category { Id = Guid.NewGuid(), TenantId = tenant.Id, Name = "Sides & Desserts", Icon = "cake", SortOrder = 4 };
-        db.Categories.AddRange(catBurgers, catPizza, catBeverages, catSides);
-
-        var p1 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBurgers.Id, SKU = "B-01", Barcode = "1000000001", Name = "Classic Smash Burger", UrduName = "کلاسک سمیش برگر", CostPricePKR = 380, SellingPricePKR = 750, Unit = "Piece", Station = KitchenStation.Grill, IsActive = true };
-        var p2 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBurgers.Id, SKU = "B-02", Barcode = "1000000002", Name = "Crispy Zinger Crunch", UrduName = "کرسپی زنگر برگر", CostPricePKR = 320, SellingPricePKR = 620, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true };
-        var p3 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catPizza.Id, SKU = "P-01", Barcode = "1000000003", Name = "Royal Chicken Tikka Pizza", UrduName = "چکن تکہ پیزا", CostPricePKR = 650, SellingPricePKR = 1350, Unit = "Piece", Station = KitchenStation.MainKitchen, IsActive = true };
-        var p4 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catBeverages.Id, SKU = "D-01", Barcode = "1000000004", Name = "Fresh Mint Margarita", UrduName = "منٹ مارگریٹا", CostPricePKR = 90, SellingPricePKR = 290, Unit = "Glass", Station = KitchenStation.BeverageBar, IsActive = true };
-        var p5 = new Product { Id = Guid.NewGuid(), TenantId = tenant.Id, CategoryId = catSides.Id, SKU = "S-01", Barcode = "1000000005", Name = "Loaded Gourmet Fries", UrduName = "لوڈڈ فرائز", CostPricePKR = 160, SellingPricePKR = 390, Unit = "Portion", Station = KitchenStation.MainKitchen, IsActive = true };
-
-        p1.Modifiers.Add(new ProductModifier { Name = "Extra Cheese Slice", PricePKR = 90 });
-        p1.Modifiers.Add(new ProductModifier { Name = "Double Patty Upgrade", PricePKR = 250 });
-        p2.Modifiers.Add(new ProductModifier { Name = "Spicy Chipotle Dip", PricePKR = 60 });
-
-        db.Products.AddRange(p1, p2, p3, p4, p5);
+        SeedSampleMenu(db, tenant.Id);
 
         foreach (var branch in createdBranches.Where(b => b.CanSell))
         {
@@ -4883,7 +5252,7 @@ api.MapPost("/devices/pairing-codes", async (
     if (actingUser == null) return Results.Unauthorized();
 
     // Minting a device licence is an owner/manager act, not something a cashier can do from a till.
-    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
         return Results.Json(new { message = "Only an owner or branch manager can activate a device." }, statusCode: 403);
 
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
@@ -5263,6 +5632,14 @@ api.MapPut("/branches/{id:guid}", async (AppDbContext db, HttpContext http, Pos.
             && (t.TerminalType == TerminalType.Counter || t.TerminalType == TerminalType.OrderTab));
         if (activeTills > 0)
             return Results.BadRequest(new { message = $"{branch.Name} still has {activeTills} till(s) or tablet(s). Retire them before it stops selling." });
+    }
+    // What a branch pays for is the owner's decision: an HQ admin runs the business, not its bill.
+    if ((editionChanges || (!branch.CanSell && willSell)) && !http.IsSuperAdmin())
+    {
+        var actor = await http.RequestServices.GetRequiredService<Pos.Api.Middlewares.ICurrentUserAccessor>().GetCurrentUserAsync(http);
+        if (actor?.Role != UserRole.OwnerAdmin)
+            return Results.Json(new { message = "Only the owner can change a branch's POS version or start selling at a location, because both change what the business pays." },
+                statusCode: StatusCodes.Status403Forbidden);
     }
     if (!branch.CanSell && willSell)
     {
@@ -5699,6 +6076,97 @@ api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http
     db.Products.Remove(product);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Product deleted successfully" });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// --- Getting started: the checklist a new business sees in its first days ---
+
+api.MapGet("/onboarding/status", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var userId = http.GetUserId();
+    var me = userId == null ? null : await db.Users.IgnoreQueryFilters()
+        .Where(u => u.Id == userId.Value)
+        .Select(u => new { u.Email, u.EmailConfirmedAt })
+        .FirstOrDefaultAsync();
+    var tenant = await db.Tenants.IgnoreQueryFilters()
+        .Where(t => t.Id == tenantId.Value)
+        .Select(t => new { t.Status, t.TrialEndsAt, t.DeploymentMode })
+        .FirstOrDefaultAsync();
+    if (tenant == null) return Results.NotFound();
+
+    var ownMenuItems = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId && p.IsActive && !p.IsSample);
+    var sampleMenuItems = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId && p.IsActive && p.IsSample);
+    // Everyone but the owner: the checklist asks for the people who will actually use the tills.
+    var staff = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == tenantId && u.IsActive
+        && u.Role != UserRole.OwnerAdmin && u.Role != UserRole.SuperAdmin);
+    var devices = await db.Terminals.IgnoreQueryFilters().CountAsync(t => t.TenantId == tenantId && t.IsActive && t.RevokedAt == null);
+    var hasSale = await db.Orders.IgnoreQueryFilters().AnyAsync(o => o.TenantId == tenantId);
+
+    return Results.Ok(new
+    {
+        email = me?.Email,
+        emailConfirmed = me?.EmailConfirmedAt != null,
+        emailEnabled = emailSender.IsConfigured,
+        ownMenuItems,
+        sampleMenuItems,
+        staff,
+        devices,
+        hasSale,
+        status = tenant.Status.ToString(),
+        trialEndsAt = tenant.TrialEndsAt,
+        hasHeadOffice = tenant.DeploymentMode == DeploymentMode.HeadOffice
+    });
+});
+
+// Takes the sample menu away. An item that has been sold, stocked or used anywhere is hidden rather
+// than deleted, so no sale, stock record or report ever points at nothing.
+api.MapDelete("/onboarding/sample-menu", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+
+    var samples = await db.Products.IgnoreQueryFilters().Where(p => p.TenantId == tenantId && p.IsSample).ToListAsync();
+    if (samples.Count == 0) return Results.Ok(new { removed = 0, hidden = 0, message = "There is no sample menu to remove." });
+    var ids = samples.Select(p => p.Id).ToList();
+
+    var used = new HashSet<Guid>();
+    used.UnionWith(await db.OrderItems.IgnoreQueryFilters().Where(i => ids.Contains(i.ProductId)).Select(i => i.ProductId).Distinct().ToListAsync());
+    used.UnionWith(await db.OrderReturnLines.IgnoreQueryFilters().Where(i => ids.Contains(i.ProductId)).Select(i => i.ProductId).Distinct().ToListAsync());
+    used.UnionWith(await db.BranchStocks.IgnoreQueryFilters().Where(s => ids.Contains(s.ProductId)).Select(s => s.ProductId).Distinct().ToListAsync());
+    used.UnionWith(await db.BranchProductPrices.IgnoreQueryFilters().Where(s => ids.Contains(s.ProductId)).Select(s => s.ProductId).Distinct().ToListAsync());
+    used.UnionWith(await db.ProductRecipeItems.IgnoreQueryFilters().Where(r => ids.Contains(r.ProductId)).Select(r => r.ProductId).Distinct().ToListAsync());
+    used.UnionWith(await db.StockLedgerEntries.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
+    used.UnionWith(await db.StockTransferItems.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
+    used.UnionWith(await db.PurchaseOrderItems.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
+
+    var toDelete = samples.Where(p => !used.Contains(p.Id)).ToList();
+    var toHide = samples.Where(p => used.Contains(p.Id)).ToList();
+    foreach (var product in toHide) product.IsActive = false;
+    db.Products.RemoveRange(toDelete);
+
+    // A sample category goes once nothing else is filed under it.
+    var deletedIds = toDelete.Select(p => p.Id).ToHashSet();
+    var sampleCategories = await db.Categories.IgnoreQueryFilters().Where(c => c.TenantId == tenantId && c.IsSample).ToListAsync();
+    foreach (var category in sampleCategories)
+    {
+        var stillUsed = await db.Products.IgnoreQueryFilters().AnyAsync(p => p.CategoryId == category.Id && !deletedIds.Contains(p.Id));
+        if (!stillUsed) db.Categories.Remove(category);
+    }
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, tenantId.Value, currentUser, "SampleMenuRemoved", "Product", null, null,
+        $"{toDelete.Count} deleted, {toHide.Count} hidden (already used)");
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        removed = toDelete.Count,
+        hidden = toHide.Count,
+        message = toHide.Count == 0
+            ? "The sample menu is gone. Add your own items in Menu."
+            : $"The sample menu is gone. {toHide.Count} item(s) already used in a sale are hidden rather than deleted, so past receipts still show them."
+    });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
@@ -8262,6 +8730,8 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     // Nobody may mint a SuperAdmin except a SuperAdmin.
     if (dto.Role == UserRole.SuperAdmin && !http.IsSuperAdmin())
         return Results.Json(new { message = "You cannot create a platform SuperAdmin." }, statusCode: 403);
+    var staffProblem = StaffChangeProblem(http, await accessor.GetCurrentUserAsync(http), null, dto.Role);
+    if (staffProblem != null) return staffProblem;
 
     if (await db.Users.AnyAsync(u => u.TenantId == scopedTenantId.Value && u.Username == dto.Username.ToLower().Trim()))
         return Results.BadRequest(new { message = "That username is already taken in this restaurant." });
@@ -8307,7 +8777,8 @@ api.MapPost("/users", async (AppDbContext db, HttpContext http, Pos.Api.Middlewa
     // outcome these roles exist to avoid. Explicitly passing the flag still wins.
     var user = new AppUser
     {
-        TenantId = scopedTenantId.Value, BranchId = dto.BranchId, FullName = dto.FullName,
+        // An owner or HQ admin covers every location, so has no home branch.
+        TenantId = scopedTenantId.Value, BranchId = UserRoles.IsOwnerLevel(dto.Role) ? null : dto.BranchId, FullName = dto.FullName,
         Username = dto.Username.ToLower().Trim(),
         PinCodeHash = BCrypt.Net.BCrypt.HashPassword(newPin),
         PinLookup = newPinLookup,
@@ -8335,6 +8806,8 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
 
     if (dto.Role == UserRole.SuperAdmin && !http.IsSuperAdmin())
         return Results.Json(new { message = "You cannot promote anyone to platform SuperAdmin." }, statusCode: 403);
+    var staffProblem = StaffChangeProblem(http, await accessor.GetCurrentUserAsync(http), user, dto.Role);
+    if (staffProblem != null) return staffProblem;
 
     // Promoting a cashier to manager, or reactivating a manager, adds a back-office login — the
     // one kind the plan meters. Checked before anything on the user changes.
@@ -8378,7 +8851,12 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     var before = $"role={user.Role}; reports={user.CanViewFinancialReports}; inventory={user.CanManageInventory}; menu={user.CanManageMenuAndTax}; discounts={user.CanGiveDiscounts}; voids={user.CanVoidOrders}; active={user.IsActive}";
 
     if (!string.IsNullOrEmpty(dto.FullName)) user.FullName = dto.FullName;
-    if (dto.Role.HasValue) user.Role = dto.Role.Value;
+    if (dto.Role.HasValue)
+    {
+        user.Role = dto.Role.Value;
+        // An owner or HQ admin covers every location, so has no home branch.
+        if (UserRoles.IsOwnerLevel(user.Role)) user.BranchId = null;
+    }
     if (!string.IsNullOrEmpty(dto.PinCode))
     {
         user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.PinCode.Trim());
@@ -8386,6 +8864,8 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
     }
     if (dto.Email != null)
     {
+        // A different address has not been confirmed yet.
+        if (changedEmail != user.Email) user.EmailConfirmedAt = null;
         user.Email = changedEmail;
         if (changedEmail == null) user.PasswordHash = null;
     }
@@ -8482,6 +8962,8 @@ api.MapDelete("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.M
     if (http.GetUserId() == user.Id) return Results.BadRequest(new { message = "You cannot delete your own account." });
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
+    var staffProblem = StaffChangeProblem(http, currentUser, user, null);
+    if (staffProblem != null) return staffProblem;
     await WriteAuditAsync(db, user.TenantId, currentUser, "UserDeleted", "AppUser", user.Id, $"{user.Username} ({user.Role})", null);
     db.Users.Remove(user);
     await db.SaveChangesAsync();
@@ -8854,6 +9336,18 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
     order.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
     await db.SaveChangesAsync();
+
+    // Between two of the business's companies the books record it too. The goods have arrived
+    // whatever happens here.
+    try
+    {
+        await PostIntercompanyTransferAsync(db, order, receivedBy);
+        await db.SaveChangesAsync();
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Accounting] Intercompany posting for transfer {order.TransferNumber} failed: {ex.Message}");
+    }
     return Results.Ok(order);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock transfers."));
@@ -9309,7 +9803,8 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, 
 // SAAS ENDPOINTS — SIGNUP + TENANT MANAGEMENT
 // ============================================================
 
-authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto dto) =>
+authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender,
+    Pos.Api.Services.IMobileCodeSender mobileCodes, SignupDto dto) =>
 {
     // The restaurant's web name is its sign-in address: /r/<name> now, <name>.yourdomain.com once
     // there is a domain. The owner picks it; an older client that sends none gets one made from
@@ -9371,6 +9866,25 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
     var matchedState = countryProfile.States?.FirstOrDefault(s =>
         s.Code == dto.StateCode || (dto.StateName != null && s.Name.Equals(dto.StateName, StringComparison.OrdinalIgnoreCase)));
 
+    // One free trial per mobile number. With mobile codes on (Services/MobileCodeSender.cs) the
+    // number must also be proven with the code sent to it; without, it is only checked for being new.
+    var ownerMobile = NormalizeMobile(dto.OwnerMobile, countryProfile.PhoneCode);
+    if (ownerMobile == null)
+        return Results.BadRequest(new { error = "Enter your mobile number, for example 0300 1234567." });
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.ContactMobile == ownerMobile))
+        return Results.BadRequest(new { error = "This mobile number is already registered with a Cashly business. Sign in to that account, or contact Cashly support to open another business." });
+    MobileVerification? mobileProof = null;
+    if (mobileCodes.IsEnabled)
+    {
+        var proofHash = string.IsNullOrWhiteSpace(dto.MobileProof) ? "-"
+            : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.MobileProof.Trim())));
+        var nowUtc = DateTime.UtcNow;
+        mobileProof = await db.MobileVerifications.FirstOrDefaultAsync(m => m.Mobile == ownerMobile && m.ProofHash == proofHash
+            && m.VerifiedAt != null && m.ConsumedAt == null && m.ExpiresAt > nowUtc);
+        if (mobileProof == null)
+            return Results.BadRequest(new { error = "Verify your mobile number first: press Send code and type the code we send you." });
+    }
+
     // ------------------------------------------------------------------
     // How this business is SHAPED — standalone shop, or a head office with branches under it.
     //
@@ -9401,6 +9915,8 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             ContactName = dto.ContactName.Trim(),
             ContactEmail = dto.Email.Trim().ToLower(),
             ContactPhone = dto.Phone.Trim(),
+            ContactMobile = ownerMobile,
+            ContactMobileVerifiedAt = mobileProof?.VerifiedAt,
             City = dto.City?.Trim(),
             Country = countryProfile.Name,
             State = matchedState?.Name ?? dto.StateName?.Trim(),
@@ -9498,6 +10014,12 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             IsPrimary = true
         });
 
+        // A few items to ring up a test sale with straight away; removed with one click later.
+        if (dto.SeedSampleMenu) SeedSampleMenu(db, tenant.Id);
+
+        // The mobile proof is used once.
+        if (mobileProof != null) mobileProof.ConsumedAt = DateTime.UtcNow;
+
         await db.SaveChangesAsync();
 
         // The books, from day one, when the owner asked for them — so every sale is posted rather
@@ -9513,9 +10035,18 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, SignupDto d
             .GetRequiredService<Pos.Api.Services.IEntitlementService>()
             .RecomputeAsync(tenant.Id);
 
+        // Ask the owner to confirm their email. Never a reason for signup to fail.
+        var confirmationSent = false;
+        if (emailSender.IsConfigured)
+        {
+            try { await SendEmailConfirmationAsync(db, emailSender, adminUser); confirmationSent = true; }
+            catch (Exception ex) { Console.WriteLine($"[Email] Could not queue the confirmation for {ownerEmail}: {ex.Message}"); }
+        }
+
         return Results.Ok(new
         {
             message = "Business created successfully!",
+            confirmationEmailSent = confirmationSent,
             verticalPack = packKey,
             businessStructure = structure,
             deploymentMode = structure == BusinessStructures.SingleShop ? "Standalone" : "MultiBranch",
@@ -11146,7 +11677,7 @@ app.MapPut("/api/tenant/vertical-packs", async (
 
     var actingUser = await accessor.GetCurrentUserAsync(http);
     if (actingUser == null) return Results.Unauthorized();
-    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.SuperAdmin))
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.SuperAdmin))
         return Results.Json(new { message = "Only an owner can change which sectors this business runs." }, statusCode: 403);
 
     var requested = (dto.PackKeys ?? new List<string>())
@@ -11389,6 +11920,7 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-passwo
     } while (!temporary.Any(char.IsLetter) || !temporary.Any(char.IsDigit));
 
     var hadEmail = user.Email;
+    if (email != user.Email) user.EmailConfirmedAt = null;
     user.Email = email;
     user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(temporary);
     user.FailedLoginAttempts = 0;
@@ -11536,8 +12068,8 @@ app.MapGet("/api/permissions/my", async (AppDbContext db, HttpContext http) =>
     if (userId == null) return Results.Unauthorized();
     var role = http.GetUserRole();
     
-    // SuperAdmin and OwnerAdmin get full access
-    if (role == "SuperAdmin" || role == "OwnerAdmin")
+    // SuperAdmin, the owner and an HQ admin get full access
+    if (role == "SuperAdmin" || role == "OwnerAdmin" || role == "HqAdmin")
     {
         return Results.Ok(new { fullAccess = true, role });
     }
@@ -11876,7 +12408,7 @@ api.MapPut("/settings/tax-jurisdictions/{id:guid}", async (AppDbContext db, Http
 {
     var currentUser = await accessor.GetCurrentUserAsync(http);
     if (currentUser == null) return Results.Unauthorized();
-    if (!(http.IsSuperAdmin() || currentUser.Role == UserRole.OwnerAdmin || currentUser.Role == UserRole.SuperAdmin))
+    if (!(http.IsSuperAdmin() || UserRoles.RunsBusiness(currentUser.Role) || currentUser.Role == UserRole.SuperAdmin))
         return Results.Json(new { message = "Only the restaurant owner can change tax jurisdiction rates." }, statusCode: 403);
 
     var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j => j.Id == id);
@@ -11911,7 +12443,7 @@ app.MapGet("/api/admin/audit-log", async (AppDbContext db, HttpContext http, Pos
 {
     var currentUser = await accessor.GetCurrentUserAsync(http);
     if (currentUser == null) return Results.Unauthorized();
-    if (!(http.IsSuperAdmin() || currentUser.Role == UserRole.OwnerAdmin || currentUser.Role == UserRole.SuperAdmin))
+    if (!(http.IsSuperAdmin() || UserRoles.RunsBusiness(currentUser.Role) || currentUser.Role == UserRole.SuperAdmin))
         return Results.Json(new { message = "Only the restaurant owner can view the audit log." }, statusCode: 403);
 
     var scopedTenantId = ResolveTenantScope(http, tenantId);
@@ -13199,19 +13731,20 @@ api.MapPut("/accounting/chart-of-accounts/{id:guid}", async (AppDbContext db, Ht
     return Results.Ok(account);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => false, "Only the restaurant owner can manage the chart of accounts."));
 
-api.MapGet("/accounting/journal-entries", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to, string? referenceType) =>
+api.MapGet("/accounting/journal-entries", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to, string? referenceType, Guid? companyId) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
     var query = db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
         .Where(j => j.TenantId == scopedTenantId.Value).AsQueryable();
+    if (companyId.HasValue) query = query.Where(j => j.CompanyId == companyId.Value);
     if (from.HasValue) query = query.Where(j => j.EntryDate >= from.Value);
     if (to.HasValue) query = query.Where(j => j.EntryDate <= to.Value);
     if (!string.IsNullOrEmpty(referenceType)) query = query.Where(j => j.ReferenceType == referenceType);
     var rows = await query.OrderByDescending(j => j.EntryDate).ThenByDescending(j => j.EntryNumber).Take(500).ToListAsync();
     return Results.Ok(rows.Select(j => new
     {
-        j.Id, j.EntryNumber, j.EntryDate, j.Description, j.ReferenceType, j.ReferenceId,
+        j.Id, j.EntryNumber, j.EntryDate, j.Description, j.ReferenceType, j.ReferenceId, j.CompanyId,
         status = j.Status.ToString(), j.ReversalOfEntryId, j.CreatedBy, j.CreatedAt,
         lines = j.Lines.Select(l => new { l.Id, accountCode = l.Account?.Code, accountName = l.Account?.Name, l.DebitPKR, l.CreditPKR, l.Description })
     }));
@@ -13224,12 +13757,15 @@ api.MapPost("/accounting/journal-entries", async (AppDbContext db, HttpContext h
     if (dto.Lines == null || dto.Lines.Count < 2)
         return Results.BadRequest(new { message = "A journal entry needs at least two lines." });
 
+    if (dto.CompanyId.HasValue && !await db.Companies.AnyAsync(c => c.Id == dto.CompanyId.Value && c.TenantId == scopedTenantId.Value))
+        return Results.BadRequest(new { message = "That company does not belong to this business." });
+
     var currentUser = await accessor.GetCurrentUserAsync(http);
     try
     {
         var entry = await PostJournalEntryAsync(db, scopedTenantId.Value, dto.BranchId, dto.EntryDate ?? DateTime.UtcNow,
             dto.Description, "Manual", null, currentUser?.FullName ?? "System",
-            dto.Lines.Select(l => (l.AccountCode, l.DebitPKR, l.CreditPKR)).ToList());
+            dto.Lines.Select(l => (l.AccountCode, l.DebitPKR, l.CreditPKR)).ToList(), dto.CompanyId);
         await db.SaveChangesAsync();
         return Results.Ok(entry);
     }
@@ -13253,7 +13789,7 @@ api.MapPost("/accounting/journal-entries/{id:guid}/reverse", async (AppDbContext
     var reversalLines = original.Lines.Select(l => (l.Account!.Code, l.CreditPKR, l.DebitPKR)).ToList();
     var reversal = await PostJournalEntryAsync(db, scopedTenantId.Value, original.BranchId, DateTime.UtcNow,
         $"Reversal of {original.EntryNumber} — {dto.Reason ?? original.Description}", original.ReferenceType, original.ReferenceId,
-        currentUser?.FullName ?? "System", reversalLines);
+        currentUser?.FullName ?? "System", reversalLines, original.CompanyId);
     reversal.ReversalOfEntryId = original.Id;
     original.Status = JournalEntryStatus.Reversed;
 
@@ -13383,14 +13919,14 @@ api.MapGet("/accounting/reconciliation/history", async (AppDbContext db, HttpCon
     return Results.Ok(history);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view accounting."));
 
-api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf) =>
+api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf, Guid? companyId) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
     var cutoff = asOf ?? DateTime.UtcNow;
     var accounts = await db.Accounts.Where(a => a.TenantId == scopedTenantId.Value).OrderBy(a => a.Code).ToListAsync();
-    var lines = await db.JournalLines.Include(l => l.JournalEntry)
-        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted && l.JournalEntry!.EntryDate <= cutoff)
+    var lines = await StatementLines(db, scopedTenantId.Value, companyId)
+        .Where(l => l.JournalEntry!.EntryDate <= cutoff)
         .ToListAsync();
     var byAccount = lines.GroupBy(l => l.AccountId).ToDictionary(g => g.Key, g => (Debit: g.Sum(l => l.DebitPKR), Credit: g.Sum(l => l.CreditPKR)));
 
@@ -13408,21 +13944,22 @@ api.MapGet("/accounting/trial-balance", async (AppDbContext db, HttpContext http
     return Results.Ok(new
     {
         asOf = cutoff,
+        companyId,
+        intercompanyEliminated = companyId == null,
         totalDebits = rows.Sum(r => r.debitBalance),
         totalCredits = rows.Sum(r => r.creditBalance),
         accounts = rows
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
 
-api.MapGet("/accounting/profit-loss", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to) =>
+api.MapGet("/accounting/profit-loss", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to, Guid? companyId) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
     var start = from ?? DateTime.UtcNow.AddMonths(-1);
     var end = to ?? DateTime.UtcNow;
-    var lines = await db.JournalLines.Include(l => l.Account).Include(l => l.JournalEntry)
-        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted
-            && l.JournalEntry!.EntryDate >= start && l.JournalEntry!.EntryDate <= end
+    var lines = await StatementLines(db, scopedTenantId.Value, companyId)
+        .Where(l => l.JournalEntry!.EntryDate >= start && l.JournalEntry!.EntryDate <= end
             && (l.Account!.Type == AccountType.Revenue || l.Account!.Type == AccountType.Expense))
         .ToListAsync();
 
@@ -13439,20 +13976,20 @@ api.MapGet("/accounting/profit-loss", async (AppDbContext db, HttpContext http, 
     var totalExpense = expenseRows.Sum(r => r.amountPKR);
     return Results.Ok(new
     {
-        periodStart = start, periodEnd = end,
+        periodStart = start, periodEnd = end, companyId,
         revenue = revenueRows, totalRevenuePKR = totalRevenue,
         expenses = expenseRows, totalExpensesPKR = totalExpense,
         netProfitPKR = totalRevenue - totalExpense
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
 
-api.MapGet("/accounting/balance-sheet", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf) =>
+api.MapGet("/accounting/balance-sheet", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? asOf, Guid? companyId) =>
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
     var cutoff = asOf ?? DateTime.UtcNow;
-    var lines = await db.JournalLines.Include(l => l.Account).Include(l => l.JournalEntry)
-        .Where(l => l.JournalEntry!.TenantId == scopedTenantId.Value && l.JournalEntry!.Status == JournalEntryStatus.Posted && l.JournalEntry!.EntryDate <= cutoff)
+    var lines = await StatementLines(db, scopedTenantId.Value, companyId)
+        .Where(l => l.JournalEntry!.EntryDate <= cutoff)
         .ToListAsync();
 
     // Retained earnings (P&L to date) rolls into Equity so Assets == Liabilities + Equity holds,
@@ -13477,6 +14014,8 @@ api.MapGet("/accounting/balance-sheet", async (AppDbContext db, HttpContext http
     return Results.Ok(new
     {
         asOf = cutoff,
+        companyId,
+        intercompanyEliminated = companyId == null,
         assets = assetRows, totalAssetsPKR = totalAssets,
         liabilities = liabilityRows, totalLiabilitiesPKR = totalLiabilities,
         equity = equityRows, retainedEarningsPKR = netProfitToDate, totalEquityPKR = totalEquity,
@@ -13636,7 +14175,7 @@ app.MapPost("/api/host/register", async (
 
     var actingUser = await accessor.GetCurrentUserAsync(http);
     if (actingUser == null) return Results.Unauthorized();
-    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
+    if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
         return Results.Json(new { message = "Only an owner or branch manager can register a business host." }, statusCode: 403);
 
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == dto.BranchId && b.TenantId == tenantId.Value);
@@ -14325,6 +14864,11 @@ public record TwoFactorCodeDto(string? Code);
 public record ChangePasswordDto(string? CurrentPassword, string? NewPassword, string? RefreshToken);
 public record ForgotPasswordDto(string? Email);
 public record ResetPasswordWithTokenDto(string? Token, string? NewPassword);
+public record ConfirmEmailDto(string? Token);
+/// <summary>Country is the country's name as the signup wizard sends it; it decides how a number
+/// typed without its country code is read.</summary>
+public record MobileCodeRequestDto(string? Mobile, string? Country);
+public record MobileCodeVerifyDto(string? Mobile, string? Country, string? Code);
 /// <summary>Restaurant is the web name when signing in at a restaurant's own address.</summary>
 public record EmailLoginDto(string? Email, string? Password, string? Restaurant = null);
 public record ChangeWebNameDto(string? WebName);
@@ -14422,7 +14966,11 @@ public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, str
 /// </summary>
 public record SignupDto(string RestaurantName, string ContactName, string Email, string Phone, string? City, string? Address, string AdminUsername, string AdminPin, BusinessType? BusinessType, string? PackageKey, string? Country, string? StateCode, string? StateName, string? VerticalPack = null, string? DeploymentMode = null, List<SignupBranchDto>? Branches = null,
     string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null,
-    string? AdminPassword = null, string? WebName = null);
+    string? AdminPassword = null, string? WebName = null,
+    // The owner's mobile: one free trial per number. And whether to start with the sample menu.
+    string? OwnerMobile = null, bool SeedSampleMenu = false,
+    // From /auth/mobile-code/verify, when mobile codes are on.
+    string? MobileProof = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only
@@ -14551,7 +15099,10 @@ public record MarkPayslipPaidDto(string? PaymentMethod);
 public record CreateAccountDto(Guid? TenantId, string Code, string Name, AccountType Type, string? SubType, Guid? ParentAccountId);
 public record UpdateAccountDto(string? Name, string? SubType, bool? IsActive);
 public record JournalLineInputDto(string AccountCode, decimal DebitPKR, decimal CreditPKR);
-public record CreateJournalEntryDto(Guid? TenantId, Guid? BranchId, DateTime? EntryDate, string Description, List<JournalLineInputDto> Lines);
+/// <summary>CompanyId puts a manual entry in one company's books when it is not about a location
+/// (left out: the location's company, or the default company).</summary>
+public record CreateJournalEntryDto(Guid? TenantId, Guid? BranchId, DateTime? EntryDate, string Description, List<JournalLineInputDto> Lines,
+    Guid? CompanyId = null);
 public record ReverseJournalEntryDto(string? Reason);
 public record CreateAccountingPeriodDto(Guid? TenantId, DateTime PeriodStart, DateTime PeriodEnd);
 public record CreateBankReconciliationDto(Guid? TenantId, string AccountCode, DateTime StatementDate, decimal StatementBalancePKR, List<Guid> LineIds);

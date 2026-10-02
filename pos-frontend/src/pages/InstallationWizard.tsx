@@ -30,6 +30,7 @@ import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { usePosStore } from '../store/posStore';
 import { activate as activateDevice, getStoredTerminal } from '../services/deviceLicense';
+import { tierLabel } from '../utils/tierLabel';
 import type { 
   BusinessType, 
   DeploymentMode, 
@@ -46,8 +47,9 @@ import type {
 
 const CHAIN_HQ_NAME = 'Head Office & Central Commissary';
 
-// Both paths have five steps. Step 2 is where they differ: POS Only picks its POS version, while
-// POS + ERP picks what this PC is (the head office ERP, or a till connecting to one). The ERP is
+// Step 2 is where the paths differ: POS Only picks its POS version, while POS + ERP picks what this
+// PC is (the head office ERP, or a till connecting to one). A cloud registration skips that
+// question: registering always creates the business, and a till joins one at /connect. The ERP is
 // the same for everyone; POS versions are chosen per branch by head office.
 const PROFILE_STEP = 3;
 const SECURITY_STEP = 4;
@@ -86,13 +88,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     erpRole?: ErpDeploymentRole;
     /** The restaurant's own sign-in address name (registration only). */
     webName?: string;
+    /** A "confirm your email" link went out (registration, when email is set up). */
+    confirmationEmailSent?: boolean;
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
   // 1. Primary System Choice: POS Only vs POS + ERP
   const [systemType, setSystemType] = useState<InstallationSystemType>('POS_ERP');
 
-  // 2. Selected Plan: Starter, Standard, Professional
+  // 2. Selected Plan: Starter, Standard, Professional (shown as Enterprise)
   const [selectedPlan, setSelectedPlan] = useState<'Starter' | 'Standard' | 'Professional'>('Standard');
 
   // 3. For POS + ERP: Install ERP Server (HQ) vs Install POS Terminal (Connect)
@@ -150,6 +154,29 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Back-office sign-in for a new registration (email + password); the PIN is for the tills.
   const [adminPassword, setAdminPassword] = useState('');
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
+  // The owner's own mobile (registration only): one free trial per number. When the server sends
+  // mobile codes (WhatsApp or SMS), the number is proven with one before the business is created.
+  const [ownerMobile, setOwnerMobile] = useState('');
+  const [mobileCodes, setMobileCodes] = useState<{ enabled: boolean; channel: string } | null>(null);
+  const [mobileCode, setMobileCode] = useState('');
+  const [mobileCodeSent, setMobileCodeSent] = useState(false);
+  const [mobileBusy, setMobileBusy] = useState(false);
+  const [mobileNote, setMobileNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
+  const [mobileProof, setMobileProof] = useState<{ mobile: string; proof: string } | null>(null);
+  const needsMobileCode = signupMode && !!mobileCodes?.enabled;
+  // A proof is for the number it was made for; editing the number needs a new code.
+  const mobileVerified = !!mobileProof && mobileProof.mobile === ownerMobile.trim();
+  useEffect(() => {
+    if (!signupMode) return;
+    let cancelled = false;
+    posApi.getMobileVerification()
+      .then(r => { if (!cancelled) setMobileCodes(r); })
+      .catch(() => { /* no codes: the number is only checked for being new */ });
+    return () => { cancelled = true; };
+  }, [signupMode]);
+  // Start with the sample menu? Null until the owner decides: then food businesses get it.
+  const [sampleMenuChoice, setSampleMenuChoice] = useState<boolean | null>(null);
+  const wantsSampleMenu = sampleMenuChoice ?? (businessType === 'Restaurant' || businessType === 'Hybrid');
 
   // The restaurant's own sign-in address (/r/<name> now, <name>.<domain> later): suggested from the
   // restaurant's name until the owner edits it, and checked with the server as they type.
@@ -217,6 +244,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       .then((status) => {
         if (!cancelled && status?.isConfigured) {
           setSignupMode(true);
+          // Registering always creates a business; a till joins one at /connect instead.
+          setErpRole('ERP_SERVER');
           setAdminUsername('');
           setAdminPin('');
         }
@@ -238,7 +267,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     // Blank name so the owner types the real one; the code is generated if left empty.
     setBranches([
       ...branches,
-      { name: '', code: '', city: city || '', address: '', phone: '', allowedCounters: 3, allowedOrderTabs: 10, posEdition: 'Standard' }
+      { name: '', code: '', city: city || '', address: '', phone: '', allowedCounters: 3, allowedOrderTabs: 10, posEdition: 'Standard', sameAddressAsHq: false }
     ]);
   };
 
@@ -274,7 +303,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     },
     {
       key: 'Professional' as const,
-      label: 'Professional',
+      label: tierLabel('Professional'),
       counters: 5,
       tablets: 25,
       badge: 'High Volume',
@@ -369,6 +398,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       if (signupMode && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
         return 'A valid email address is required to register the business.';
       }
+      if (signupMode && ownerMobile.replace(/\D/g, '').length < 10) {
+        return 'Enter your mobile number, for example 0300 1234567.';
+      }
+      if (needsMobileCode && !mobileVerified) {
+        return 'Verify your mobile number: press Send code, then type the code we send you.';
+      }
       if (signupMode) {
         if (adminPassword.length < 8 || !/[A-Za-z]/.test(adminPassword) || !/\d/.test(adminPassword)) {
           return 'Choose a password of at least 8 characters, with letters and numbers.';
@@ -382,6 +417,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   const maxSteps = REVIEW_STEP;
 
+  // The steps this path walks through, in order. A cloud registration with a head office has no
+  // "what is this PC" step (see the note on PROFILE_STEP).
+  const stepOrder = systemType === 'POS_ERP' && signupMode
+    ? [1, PROFILE_STEP, SECURITY_STEP, REVIEW_STEP]
+    : [1, 2, PROFILE_STEP, SECURITY_STEP, REVIEW_STEP];
+  const nextStepAfter = (s: number) => stepOrder.find(n => n > s) ?? s;
+  const previousStepBefore = (s: number) => [...stepOrder].reverse().find(n => n < s) ?? 1;
+
   const handleNext = () => {
     const err = validateStep(step);
     if (err) {
@@ -389,8 +432,47 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       return;
     }
     setErrorMessage(null);
-    setStep(step + 1);
+    setStep(nextStepAfter(step));
   };
+
+  const sendMobileCode = async () => {
+    setMobileBusy(true);
+    setMobileNote(null);
+    try {
+      const res = await posApi.sendMobileCode(ownerMobile.trim(), getCountryByCode(countryCode)?.name);
+      setMobileCodeSent(true);
+      setMobileNote({
+        tone: 'ok',
+        text: res.channel === 'Console'
+          ? 'Development mode: the code is printed in the backend window.'
+          : `We sent a 6-digit code by ${res.channel}. It works for ${res.expiresInMinutes} minutes.`
+      });
+    } catch (err) {
+      setMobileNote({ tone: 'err', text: getApiErrorMessage(err, 'Could not send the code. Try again in a moment.') });
+    } finally {
+      setMobileBusy(false);
+    }
+  };
+
+  const verifyMobileCode = async () => {
+    setMobileBusy(true);
+    setMobileNote(null);
+    try {
+      const res = await posApi.verifyMobileCode(ownerMobile.trim(), mobileCode.trim(), getCountryByCode(countryCode)?.name);
+      setMobileProof({ mobile: ownerMobile.trim(), proof: res.proof });
+      setMobileNote({ tone: 'ok', text: 'Mobile number verified.' });
+    } catch (err) {
+      setMobileNote({ tone: 'err', text: getApiErrorMessage(err, 'That code is not right.') });
+    } finally {
+      setMobileBusy(false);
+    }
+  };
+
+  /** A shop marked "same building as head office" takes the head office's city and address. */
+  const branchAddress = (b: BranchInitPayload) => ({
+    city: (b.sameAddressAsHq ? hqCity : b.city)?.trim() || undefined,
+    address: (b.sameAddressAsHq ? hqAddress : b.address)?.trim() || undefined
+  });
 
   /** The final button: check the step, then ask before anything is created. */
   const requestCompleteSetup = () => {
@@ -430,6 +512,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           name: hqName.trim() || undefined,
           city: hqCity.trim() || undefined,
           address: hqAddress.trim() || undefined,
+          phone: phone.trim() || undefined,
           holdsStock: hqHoldsStock
         }
       : undefined;
@@ -442,7 +525,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       // Signup Mode (Cloud / Multi-Tenant)
       if (signupMode) {
         const country = getCountryByCode(countryCode);
-        await posApi.signup({
+        const created = await posApi.signup({
           restaurantName: restaurantName.trim(),
           contactName: adminFullName.trim(),
           email: adminEmail.trim(),
@@ -464,8 +547,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             ? branches.filter(b => b.name.trim()).map(b => ({
                 name: b.name.trim(),
                 code: b.code?.trim() || undefined,
-                city: b.city?.trim() || undefined,
-                address: b.address?.trim() || undefined,
+                ...branchAddress(b),
                 phone: b.phone?.trim() || undefined,
                 posEdition: b.posEdition ?? 'Standard'
               }))
@@ -480,7 +562,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           policies,
           setUpAccounting: bookAccounts,
           installationType: systemType,
-          appSurface: isChain && erpRole === 'ERP_SERVER' ? 'Erp' : 'Pos'
+          // A registration is never a till joining a head office (that is /connect).
+          appSurface: isChain ? 'Erp' : 'Pos',
+          ownerMobile: ownerMobile.trim(),
+          seedSampleMenu: wantsSampleMenu,
+          mobileProof: mobileVerified ? mobileProof?.proof : undefined
         });
 
         setSignupSuccess({
@@ -489,8 +575,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           pin: adminPin.trim(),
           serverUrl: apiUrl || 'http://localhost:5288',
           systemType,
-          erpRole,
-          webName
+          erpRole: 'ERP_SERVER',
+          webName,
+          confirmationEmailSent: (created as { confirmationEmailSent?: boolean } | undefined)?.confirmationEmailSent === true
         });
         // The sign-in screen on this device fills in the new owner's email (and the restaurant, for
         // the username fallback).
@@ -527,7 +614,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         adminUsername,
         adminPin,
         seedStarterMenu,
-        branches: isChain ? branches.map(b => ({ ...b, posEdition: b.posEdition ?? 'Standard' })) : undefined,
+        // sameAddressAsHq is the wizard's own; undefined is left out of the request.
+        branches: isChain
+          ? branches.map(b => ({ ...b, ...branchAddress(b), sameAddressAsHq: undefined, posEdition: b.posEdition ?? 'Standard' }))
+          : undefined,
         businessStructure: structure,
         company,
         headOffice,
@@ -589,7 +679,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     const allowance = connectedInfo.posAllowance;
     const unlimited = (n: number | null | undefined) => (n == null ? 'Unlimited' : String(n));
     return (
-      <div className="h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 overflow-y-auto">
+      <div className="h-screen bg-white text-slate-900 flex items-center justify-center p-4 overflow-y-auto">
         <div className="w-full max-w-lg text-center space-y-6">
           <div className="w-16 h-16 rounded-2xl bg-sky-100 flex items-center justify-center mx-auto">
             <Monitor className="w-8 h-8 text-sky-600" />
@@ -606,7 +696,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             <div className="p-4 rounded-xl bg-white border border-slate-200 text-left space-y-3 shadow-sm">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">POS version</span>
-                <span className="text-sm font-extrabold text-teal-700">{connectedInfo.posEdition}</span>
+                <span className="text-sm font-extrabold text-teal-700">{tierLabel(connectedInfo.posEdition)}</span>
               </div>
               {allowance && (
                 <div className="grid grid-cols-3 gap-2 text-center">
@@ -647,7 +737,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     const isErp = signupSuccess.systemType === 'POS_ERP' && signupSuccess.erpRole === 'ERP_SERVER';
 
     return (
-      <div className="h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-4 overflow-y-auto selection:bg-teal-500 selection:text-white">
+      <div className="h-screen bg-white text-slate-900 flex items-center justify-center p-4 overflow-y-auto selection:bg-teal-500 selection:text-white">
         <div className="w-full max-w-xl text-center space-y-6">
           <div className="w-16 h-16 rounded-2xl bg-teal-100 flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-8 h-8 text-teal-600" />
@@ -663,7 +753,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               {isErp ? (
                 <>Full ERP included · <span className="font-semibold text-teal-600">each shop has its own POS version</span></>
               ) : (
-                <>POS version: <span className="font-semibold text-teal-600">{selectedPlan}</span></>
+                <>POS version: <span className="font-semibold text-teal-600">{tierLabel(selectedPlan)}</span></>
               )}
             </p>
           </div>
@@ -697,6 +787,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 ? <>Back office: sign in with your <strong>email and password</strong>. On a till or tablet: just your <strong>PIN</strong>.</>
                 : 'Sign in with your restaurant name, username and the PIN you chose during setup.'}
             </p>
+            {signupSuccess.confirmationEmailSent && (
+              <p className="text-[11px] text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-2.5 py-1.5">
+                We sent a link to <strong>{adminEmail.trim().toLowerCase()}</strong>. Open it to confirm your email.
+              </p>
+            )}
           </div>
 
           {/* The restaurant's own sign-in address: staff sign in there with just username + PIN, and
@@ -794,24 +889,24 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   }
 
   // WIZARD STEPS DEFINITION
-  const wizardSteps = systemType === 'POS_ERP'
+  const wizardSteps = (systemType === 'POS_ERP'
     ? [
-        { num: 1, label: 'System Mode' },
+        { num: 1, label: 'Your Business' },
         { num: 2, label: 'Install ERP or POS' },
         { num: PROFILE_STEP, label: 'HQ & Branches' },
         { num: SECURITY_STEP, label: 'Admin Security' },
         { num: REVIEW_STEP, label: signupMode ? 'Create' : 'Deploy' }
       ]
     : [
-        { num: 1, label: 'System Mode' },
+        { num: 1, label: 'Your Business' },
         { num: 2, label: 'POS Version' },
         { num: PROFILE_STEP, label: 'Shop Profile' },
         { num: SECURITY_STEP, label: 'Admin Security' },
         { num: REVIEW_STEP, label: signupMode ? 'Create' : 'Deploy' }
-      ];
+      ]).filter(s => stepOrder.includes(s.num));
 
   return (
-    <div className="h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-teal-500 selection:text-white overflow-hidden">
+    <div className="h-screen bg-white text-slate-900 flex flex-col selection:bg-teal-500 selection:text-white overflow-hidden">
       {/* Top Banner */}
       <div className="shrink-0 border-b border-slate-200 bg-white backdrop-blur px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -825,7 +920,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
         {/* Step indicators */}
         <div className="hidden md:flex items-center gap-1.5 text-xs">
-          {wizardSteps.map((s) => (
+          {wizardSteps.map((s, position) => (
             <div
               key={s.num}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border transition-all ${
@@ -839,7 +934,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${
                 step === s.num ? 'bg-white text-teal-600' : step > s.num ? 'bg-teal-500/30 text-teal-700' : 'bg-slate-200 text-slate-500'
               }`}>
-                {step > s.num ? '✓' : s.num}
+                {step > s.num ? '✓' : position + 1}
               </span>
               <span>{s.label}</span>
             </div>
@@ -862,9 +957,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           {step === 1 && (
             <div className="space-y-6">
               <div className="text-center md:text-left space-y-1">
-                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">How will you run Cashly?</h2>
+                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">How is your business set up?</h2>
                 <p className="text-sm text-slate-500">
-                  Select whether you need a standalone point-of-sale register or a complete multi-station Head Office ERP network.
+                  Pick what fits today. A single outlet can open a head office later without starting again.
                 </p>
               </div>
 
@@ -889,33 +984,34 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         )}
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-slate-900">POS Only</h3>
-                        <p className="text-xs text-teal-600 font-semibold">Standalone Single-Store Counter</p>
+                        <h3 className="text-lg font-bold text-slate-900">Single Outlet</h3>
+                        <p className="text-xs text-teal-600 font-semibold">Cashly POS</p>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      For cafes, restaurants, takeaway counters, and food trucks that do not require a separate head office.
+                      One restaurant, café or store, with the back office included. An office in another room or
+                      building is fine.
                     </p>
 
                     <ul className="space-y-2 text-xs text-slate-700 pt-3 border-t border-slate-200">
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Direct Counter POS & Instant Bill Printing
+                        <span className="text-teal-600 font-bold">✓</span> Tills & instant bill printing
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Table Floor Management & Waiter Tablets
+                        <span className="text-teal-600 font-bold">✓</span> Tables & waiter tablets
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Kitchen Display System (KDS)
+                        <span className="text-teal-600 font-bold">✓</span> Kitchen screens
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Local Stock & Cash Shift Register
+                        <span className="text-teal-600 font-bold">✓</span> Stock, cash shifts & reports
                       </li>
                     </ul>
                   </div>
 
                   <div className="mt-4 pt-3 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5" /> Instant Setup • No Central HQ Needed
+                    <Sparkles className="w-3.5 h-3.5" /> Quick setup · back office included
                   </div>
                 </div>
 
@@ -939,33 +1035,34 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         )}
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-slate-900">POS + ERP</h3>
-                        <p className="text-xs text-teal-600 font-semibold">Head Office & Multi-Station / Chain</p>
+                        <h3 className="text-lg font-bold text-slate-900">Multi-Outlet & Chains</h3>
+                        <p className="text-xs text-teal-600 font-semibold">Cashly POS + ERP</p>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      For businesses with an HQ/Back Office, central commissary, multiple branches, or separate billing stations.
+                      A head office that runs the menu, buying and reports for all your branches, or a central kitchen.
+                      Each branch has its own tills.
                     </p>
 
                     <ul className="space-y-2 text-xs text-slate-700 pt-3 border-t border-slate-200">
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Central Head Office & Multi-Branch Network
+                        <span className="text-teal-600 font-bold">✓</span> One head office for all your branches
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Centralized Supply Chain & Inter-Branch Transfers
+                        <span className="text-teal-600 font-bold">✓</span> Central buying & stock transfers
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> Director Analytics & Enterprise Accounting
+                        <span className="text-teal-600 font-bold">✓</span> Group reports & accounting
                       </li>
                       <li className="flex items-center gap-2">
-                        <span className="text-teal-600 font-bold">✓</span> 1-Click Connection for Branch POS Terminals
+                        <span className="text-teal-600 font-bold">✓</span> Connect each branch's tills with a code
                       </li>
                     </ul>
                   </div>
 
                   <div className="mt-4 pt-3 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
-                    <Network className="w-3.5 h-3.5" /> Multi-Station & Enterprise Ready
+                    <Network className="w-3.5 h-3.5" /> Head office & branches
                   </div>
                 </div>
               </div>
@@ -980,7 +1077,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="flex items-center gap-2">
                   <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your POS Version</h2>
                   <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-800">
-                    POS Only
+                    Single Outlet
                   </span>
                 </div>
                 <p className="text-sm text-slate-500">
@@ -1058,7 +1155,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <h2 className="text-2xl font-bold text-slate-900 tracking-tight">What are you setting up on this PC?</h2>
                 <p className="text-sm text-slate-500">
                   The ERP is the same for every business. Each branch's POS version (Starter, Standard or
-                  Professional) is chosen by head office when the branch is added.
+                  Enterprise) is chosen by head office when the branch is added.
                 </p>
               </div>
 
@@ -1374,7 +1471,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> Primary City
+                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> {systemType === 'POS_ERP' ? 'Head Office City' : 'City'}
                     </label>
                     <input 
                       type="text" 
@@ -1387,7 +1484,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> Address / Main Area
+                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> {systemType === 'POS_ERP' ? 'Head Office Address' : 'Shop Address'}
                     </label>
                     <input 
                       type="text" 
@@ -1435,6 +1532,28 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       <strong>The full ERP is included</strong>: accounts, purchasing, stock transfers, reports and every branch.
                       You only choose a <strong>POS version for each shop</strong>, which decides its tills, tablets and kitchen screens.
                     </div>
+                    {/* A head office earns its keep with two or more outlets, or a central store. A single
+                        outlet with an office does not need one: its back office is already included. */}
+                    {branches.length <= 1 && (
+                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex flex-wrap items-center gap-x-3 gap-y-2">
+                        <span className="flex-1 min-w-60">
+                          <strong>Only one outlet, and no central kitchen or warehouse?</strong> Then you don't need a head office:
+                          <strong> Single Outlet</strong> already includes the back office (menu, stock, reports), even from an office in another building.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (branches[0]?.name.trim()) setMainBranchName(branches[0].name.trim());
+                            setSystemType('POS_ONLY');
+                            setErrorMessage(null);
+                            setStep(2);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer"
+                        >
+                          Switch to Single Outlet
+                        </button>
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                         <Building2 className="w-3.5 h-3.5 text-teal-600" /> Central Head Office / Back Office Name*
@@ -1465,7 +1584,13 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             <Store className="w-3.5 h-3.5 text-teal-600" /> Selling Branch Outlets <span className="normal-case font-normal text-slate-400">(optional)</span>
                           </h4>
                           <p className="text-[11px] text-slate-500">
-                            These are your shops. Each shop's counter PC is connected later with <strong>Install POS</strong> and a pairing code.
+                            {signupMode
+                              ? <>These are your shops. Each shop's tills are connected later with <strong>Connect a till or tablet</strong> and a pairing code.</>
+                              : <>These are your shops. Each shop's counter PC is connected later with <strong>Install POS</strong> and a pairing code.</>}
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            Head office in the same building as a shop? Tick <strong>Same building as head office</strong> on that shop.
+                            They stay separate locations, so the shop's stock, cash and reports never mix with the office's.
                           </p>
                         </div>
                         <button 
@@ -1486,8 +1611,17 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         )}
                         {branches.map((b, idx) => (
                           <div key={idx} className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2">
-                            <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                            <div className="flex items-center justify-between gap-3 pb-1 border-b border-slate-200/60">
                               <span className="text-xs font-bold text-teal-700">Branch #{idx + 1}</span>
+                              <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!b.sameAddressAsHq}
+                                  onChange={(e) => updateBranchField(idx, 'sameAddressAsHq', e.target.checked)}
+                                  className="w-3.5 h-3.5 accent-teal-500"
+                                />
+                                Same building as head office
+                              </label>
                               <button
                                 type="button"
                                 onClick={() => removeBranchRow(idx)}
@@ -1522,20 +1656,22 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                                 <label className="text-[10px] text-slate-500 font-semibold">City</label>
                                 <input
                                   type="text"
-                                  value={b.city}
+                                  value={b.sameAddressAsHq ? hqCity : b.city}
                                   onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
+                                  disabled={!!b.sameAddressAsHq}
                                   placeholder="e.g. Islamabad"
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900"
+                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
                                 />
                               </div>
                               <div>
                                 <label className="text-[10px] text-slate-500 font-semibold">Address</label>
                                 <input
                                   type="text"
-                                  value={b.address}
+                                  value={b.sameAddressAsHq ? hqAddress : b.address}
                                   onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
-                                  placeholder="e.g. Main Blvd"
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900"
+                                  disabled={!!b.sameAddressAsHq}
+                                  placeholder={b.sameAddressAsHq ? 'Same as head office' : 'e.g. Main Blvd'}
+                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
                                 />
                               </div>
                             </div>
@@ -1553,7 +1689,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                                       active ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                                     }`}
                                   >
-                                    {edition} <span className="font-normal text-slate-400">({allowanceLine(edition)})</span>
+                                    {tierLabel(edition)} <span className="font-normal text-slate-400">({allowanceLine(edition)})</span>
                                   </button>
                                 );
                               })}
@@ -1660,6 +1796,71 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
                         />
                       </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                          <Phone className="w-3.5 h-3.5 text-teal-600" /> Your Mobile Number*
+                        </label>
+                        <div className="flex gap-1.5">
+                          <input
+                            type="tel"
+                            value={ownerMobile}
+                            onChange={(e) => {
+                              setOwnerMobile(e.target.value);
+                              // A different number needs its own code.
+                              setMobileCodeSent(false);
+                              setMobileCode('');
+                              setMobileNote(null);
+                            }}
+                            autoComplete="tel"
+                            placeholder="e.g. 0300 1234567"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                          />
+                          {needsMobileCode && !mobileVerified && (
+                            <button
+                              type="button"
+                              onClick={sendMobileCode}
+                              disabled={mobileBusy || ownerMobile.replace(/\D/g, '').length < 10}
+                              className="px-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold shrink-0 transition cursor-pointer"
+                            >
+                              {mobileCodeSent ? 'Resend' : 'Send code'}
+                            </button>
+                          )}
+                          {needsMobileCode && mobileVerified && (
+                            <span className="px-2.5 flex items-center gap-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-700 text-xs font-bold shrink-0">
+                              <Check className="w-3.5 h-3.5" /> Verified
+                            </span>
+                          )}
+                        </div>
+                        {needsMobileCode && mobileCodeSent && !mobileVerified && (
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              maxLength={6}
+                              value={mobileCode}
+                              onChange={(e) => setMobileCode(e.target.value.replace(/\D/g, ''))}
+                              autoComplete="one-time-code"
+                              placeholder="6-digit code"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm font-mono font-bold tracking-widest text-slate-900 focus:outline-none focus:border-teal-500"
+                            />
+                            <button
+                              type="button"
+                              onClick={verifyMobileCode}
+                              disabled={mobileBusy || mobileCode.length !== 6}
+                              className="px-3 rounded-xl bg-white border border-teal-300 text-teal-700 hover:bg-teal-50 disabled:opacity-40 text-xs font-bold shrink-0 transition cursor-pointer"
+                            >
+                              Verify
+                            </button>
+                          </div>
+                        )}
+                        {mobileNote ? (
+                          <p className={`text-[11px] ${mobileNote.tone === 'ok' ? 'text-teal-700' : 'text-rose-600'}`}>{mobileNote.text}</p>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">
+                            One free trial per mobile number{needsMobileCode ? `. We send a code by ${mobileCodes?.channel === 'Console' ? 'text' : mobileCodes?.channel} to check it is yours.` : '.'}
+                          </p>
+                        )}
+                      </div>
                       <p className="md:col-span-3 text-[11px] text-slate-500 -mt-1">
                         <strong>Back office</strong> (reports, menu, settings): sign in with your email and password.{' '}
                         <strong>Tills and tablets</strong>: just your PIN.
@@ -1700,11 +1901,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <div className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                       {systemType === 'POS_ERP' ? (
                         <span className="text-teal-700 flex items-center gap-1.5">
-                          <Building2 className="w-4 h-4" /> POS + ERP (Head Office Server)
+                          <Building2 className="w-4 h-4" /> Multi-Outlet & Chains · Cashly POS + ERP
                         </span>
                       ) : (
                         <span className="text-teal-700 flex items-center gap-1.5">
-                          <Store className="w-4 h-4" /> POS Only (Standalone Counter)
+                          <Store className="w-4 h-4" /> Single Outlet · Cashly POS
                         </span>
                       )}
                     </div>
@@ -1718,7 +1919,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       {systemType === 'POS_ERP' ? (
                         <span className="text-teal-700">Full ERP included · POS version per shop</span>
                       ) : (
-                        <span className="text-teal-700">{selectedPlan} ({allowanceLine(selectedPlan)})</span>
+                        <span className="text-teal-700">{tierLabel(selectedPlan)} ({allowanceLine(selectedPlan)})</span>
                       )}
                     </div>
                   </div>
@@ -1733,7 +1934,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             HQ: {hqName}
                             {branches.length === 0
                               ? ' (no shops yet; add them later from Locations)'
-                              : ` + ${branches.length} outlet${branches.length === 1 ? '' : 's'} (${branches.map(b => `${b.name}: ${b.posEdition ?? 'Standard'}`).join(', ')})`}
+                              : ` + ${branches.length} outlet${branches.length === 1 ? '' : 's'} (${branches.map(b => `${b.name}: ${tierLabel(b.posEdition ?? 'Standard')}${b.sameAddressAsHq ? ', same building as HQ' : ''}`).join('; ')})`}
                           </span>
                         ) : (
                           <span>1 Outlet: {mainBranchName} ({city})</span>
@@ -1747,9 +1948,26 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <div className="text-xs text-slate-700">
                       Username: <span className="text-teal-700 font-mono font-bold">{adminUsername}</span> ({adminFullName})
                       {signupMode && adminEmail && <div className="text-slate-500">{adminEmail}</div>}
+                      {signupMode && ownerMobile && <div className="text-slate-500">{ownerMobile}</div>}
                     </div>
                   </div>
                 </div>
+
+                {/* A few items to try a sale with straight away; one click removes them later. */}
+                {signupMode && (
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-slate-200 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={wantsSampleMenu}
+                      onChange={(e) => setSampleMenuChoice(e.target.checked)}
+                      className="w-4 h-4 mt-0.5 accent-teal-500"
+                    />
+                    <span>
+                      <strong>Start with a sample menu</strong> (5 food items) so you can try a sale straight away.
+                      Remove it with one click from <strong>Getting started</strong> once your own menu is in.
+                    </span>
+                  </label>
+                )}
 
                 <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-teal-700 text-xs flex items-center gap-3">
                   <CheckCircle2 className="w-5 h-5 shrink-0" />
@@ -1769,7 +1987,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           {step > 1 ? (
             <button
               type="button"
-              onClick={() => setStep(step - 1)}
+              onClick={() => setStep(previousStepBefore(step))}
               className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs flex items-center gap-2 transition cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" /> Back
@@ -1839,8 +2057,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div>
                 <span className="text-slate-400">Setup:</span>{' '}
                 {systemType === 'POS_ERP'
-                  ? 'POS + ERP (Head Office) · full ERP, POS version per shop'
-                  : `POS Only (single outlet) · ${selectedPlan} POS version`}
+                  ? 'Multi-Outlet & Chains (Cashly POS + ERP) · full ERP, POS version per outlet'
+                  : `Single Outlet (Cashly POS) · ${tierLabel(selectedPlan)} POS version`}
               </div>
               <div>
                 <span className="text-slate-400">Locations:</span>{' '}

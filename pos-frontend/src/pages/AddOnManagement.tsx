@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, CheckCircle2, Ban, Edit, Save, X, ExternalLink, Plus } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { AddOnCatalogItem, AddOnSubscriptionRow, Branch } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 interface TenantOption {
   id: string;
@@ -197,7 +198,7 @@ export const AddOnManagement: React.FC = () => {
             className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
           >
             <option value="">— Select a tenant to grant/revoke add-ons —</option>
-            {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({t.tier})</option>)}
+            {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({tierLabel(t.tier)})</option>)}
           </select>
           <button
             onClick={loadCatalog}

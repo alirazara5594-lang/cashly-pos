@@ -495,12 +495,13 @@ public class SubscriptionService : ISubscriptionService
         FeatureCodes.Recipes, FeatureCodes.FoodCost, FeatureCodes.Loyalty, FeatureCodes.Accounting, FeatureCodes.Payroll
     };
 
+    /// <summary>The plan name to show, for a message. Professional is sold as "Enterprise".</summary>
     private static string? UnlockedBy(string featureCode)
     {
         if (FeatureCatalog.Booleans.TryGetValue(featureCode, out var b))
-            return b.Standard ? "Standard" : b.Professional ? "Professional" : null;
+            return b.Standard ? "Standard" : b.Professional ? "Enterprise" : null;
         if (FeatureCatalog.Levels.TryGetValue(featureCode, out var l))
-            return l.Standard != FeatureLevel.None ? "Standard" : l.Professional != FeatureLevel.None ? "Professional" : null;
-        return "Standard or Professional";
+            return l.Standard != FeatureLevel.None ? "Standard" : l.Professional != FeatureLevel.None ? "Enterprise" : null;
+        return "Standard or Enterprise";
     }
 }

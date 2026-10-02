@@ -26,6 +26,7 @@ import { posApi } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
 import { RestaurantAddressCard } from '../components/RestaurantAddressCard';
 import type { PendingPairingCode, PairingCodeResponse, DeviceCapacity, DepartmentRole, ModuleKey } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 import { useNavigate, useLocation } from 'react-router-dom';
 
 /**
@@ -666,7 +667,7 @@ export const SettingsManagement: React.FC = () => {
                     <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-white border border-sky-200 text-[11px] text-slate-600">
                       <span>
                         <strong className="text-slate-900">{pairingBranch.name}</strong> runs the{' '}
-                        <strong className="text-sky-700">{pairingBranch.posEdition ?? selectedTenant?.tier ?? 'Standard'}</strong> POS version:
+                        <strong className="text-sky-700">{tierLabel(pairingBranch.posEdition ?? selectedTenant?.tier ?? 'Standard')}</strong> POS version:
                         tills {show(tills)} · tablets {show(tablets)} · kitchen screens {kitchen && kitchen.limit === 0 ? 'not included' : 'included'}
                       </span>
                       {!currentUser?.branchId && (

@@ -5,6 +5,7 @@ import { activate, type DeviceStatus } from '../services/deviceLicense';
 import { getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { TerminalOperatingMode } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 /** What the device opens as, from the kind of device the pairing code was made for. */
 const modeFor = (terminalType?: string): TerminalOperatingMode =>
@@ -65,7 +66,7 @@ export const ConnectDevice: React.FC = () => {
               <p className="text-xs text-slate-600 mt-1">
                 {connected.terminalName ? <><strong>{connected.terminalName}</strong> at </> : 'Connected to '}
                 <strong>{connected.branchName ?? 'your branch'}</strong>
-                {connected.posEdition && <> · POS version <strong>{connected.posEdition}</strong></>}
+                {connected.posEdition && <> · POS version <strong>{tierLabel(connected.posEdition)}</strong></>}
               </p>
             </div>
             <p className="text-[11px] text-slate-500">

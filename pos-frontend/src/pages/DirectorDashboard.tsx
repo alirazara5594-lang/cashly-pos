@@ -15,6 +15,7 @@ import {
 import { posApi } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import type { DirectorKPIs } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 export const DirectorDashboard: React.FC = () => {
   const { selectedTenant, selectedBranch, activePackage } = usePosStore();
@@ -53,7 +54,7 @@ export const DirectorDashboard: React.FC = () => {
               Director & Executive Portal
             </h1>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-purple-50 text-purple-600 border border-purple-200 font-bold uppercase">
-              {activePackage} Tier
+              {tierLabel(activePackage)} Tier
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">

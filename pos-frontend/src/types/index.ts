@@ -775,7 +775,9 @@ export interface ProductRecipeItem {
   };
 }
 
-export type UserRole = 'OwnerAdmin' | 'SuperAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter';
+/** HqAdmin runs the whole business like the owner, but cannot change what it pays or who owns it. */
+export type UserRole = 'OwnerAdmin' | 'SuperAdmin' | 'BranchManager' | 'Cashier' | 'KitchenChef' | 'Waiter'
+  | 'Accountant' | 'InventoryUser' | 'HqAdmin';
 
 /**
  * Module keys actually enforced by the backend permission layer.
@@ -850,6 +852,25 @@ export interface SupportSessionStart {
   userId: string;
   role: UserRole;
   warning: string;
+}
+
+/** What a new business has done so far, for the Getting started checklist. */
+export interface OnboardingStatus {
+  email: string | null;
+  emailConfirmed: boolean;
+  /** False until the server can send email (SMTP + App:PublicUrl). */
+  emailEnabled: boolean;
+  /** The business's own active menu items, not counting the sample menu. */
+  ownMenuItems: number;
+  sampleMenuItems: number;
+  /** Active staff other than the owner. */
+  staff: number;
+  /** Tills, tablets and screens connected and not revoked. */
+  devices: number;
+  hasSale: boolean;
+  status: string;
+  trialEndsAt: string | null;
+  hasHeadOffice: boolean;
 }
 
 /** The signed-in person's own sign-in settings. */
@@ -1109,6 +1130,9 @@ export interface BranchInitPayload {
   allowedOrderTabs?: number;
   /** The branch's POS version, chosen by head office. */
   posEdition?: SubscriptionTier;
+  /** Setup wizard only: the shop is in the head office's building, so it takes the head office's
+   *  city and address. It is still its own location (its own stock, cash and reports). */
+  sameAddressAsHq?: boolean;
 }
 
 /** The legal entity as entered at setup; everything optional. */
@@ -1658,6 +1682,8 @@ export interface JournalEntry {
   description: string;
   referenceType: string;
   referenceId?: string;
+  /** Whose books the entry is in (a business can trade as several companies). */
+  companyId?: string | null;
   status: JournalEntryStatus;
   reversalOfEntryId?: string;
   createdBy: string;

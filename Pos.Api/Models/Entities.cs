@@ -92,6 +92,15 @@ public class Tenant
     public string ContactName { get; set; } = string.Empty;
     public string ContactEmail { get; set; } = string.Empty;
     public string ContactPhone { get; set; } = string.Empty;
+
+    /// <summary>The owner's mobile number given at registration, digits only with the country code
+    /// (923001234567). One free trial per mobile number: signup refuses a number already used.</summary>
+    public string? ContactMobile { get; set; }
+
+    /// <summary>When the owner proved the mobile is theirs with a code sent to it. Null when codes
+    /// were not switched on at registration (the number was then only checked for being new).</summary>
+    public DateTime? ContactMobileVerifiedAt { get; set; }
+
     public string? City { get; set; }
     public string? Address { get; set; }
     public string Country { get; set; } = "Pakistan";
@@ -386,6 +395,8 @@ public class Category
     public string? LocalName { get; set; }
     public string Icon { get; set; } = "utensils";
     public int SortOrder { get; set; }
+    /// <summary>Part of the sample menu a new business can start with; removed together with it.</summary>
+    public bool IsSample { get; set; }
     public ICollection<Product> Products { get; set; } = new List<Product>();
 }
 
@@ -406,6 +417,9 @@ public class Product
     public string? ImageUrl { get; set; }
     public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
     public bool IsActive { get; set; } = true;
+    /// <summary>Part of the sample menu a new business can start with, so a trial can ring up a test
+    /// sale straight away. "Remove sample menu" deletes these (or hides one that has been sold).</summary>
+    public bool IsSample { get; set; }
 
     public ICollection<ProductModifier> Modifiers { get; set; } = new List<ProductModifier>();
     public ICollection<ProductRecipeItem> RecipeItems { get; set; } = new List<ProductRecipeItem>();
@@ -822,7 +836,25 @@ public enum UserRole
 
     /// <summary>Stock and supply: inventory, stock counts, transfers, purchase orders, suppliers.
     /// No financial reports, no POS.</summary>
-    InventoryUser = 7
+    InventoryUser = 7,
+
+    /// <summary>
+    /// Runs the whole business day to day, like the owner: every location, every module. What it
+    /// cannot do is what the business PAYS or who OWNS it: change the plan or a branch's POS version,
+    /// add a selling location, open a head office, or create, change or remove an owner or another
+    /// HQ admin. So an owner never has to share their own login with the office.
+    /// </summary>
+    HqAdmin = 8
+}
+
+public static class UserRoles
+{
+    /// <summary>The owner or an HQ admin: passes every module and permission check, at every
+    /// location. Commercial and ownership decisions still check for the owner alone.</summary>
+    public static bool RunsBusiness(UserRole role) => role is UserRole.OwnerAdmin or UserRole.HqAdmin;
+
+    /// <summary>Roles only the owner may hand out, and whose accounts only the owner may change.</summary>
+    public static bool IsOwnerLevel(UserRole role) => role is UserRole.OwnerAdmin or UserRole.HqAdmin;
 }
 
 public class AppUser
@@ -855,6 +887,10 @@ public class AppUser
     public string? TwoFactorRecoveryCodes { get; set; }
     /// <summary>The time step of the last code accepted, so a code cannot be used twice.</summary>
     public long TwoFactorLastStep { get; set; }
+
+    /// <summary>When the person proved they own <see cref="Email"/> by opening the link sent to it.
+    /// Null until then; changing the email clears it.</summary>
+    public DateTime? EmailConfirmedAt { get; set; }
 
     public UserRole Role { get; set; } = UserRole.Cashier;
     public bool IsActive { get; set; } = true;
@@ -1411,6 +1447,13 @@ public class JournalEntry
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid? BranchId { get; set; }
+    /// <summary>
+    /// The legal entity whose books this entry is in (see <see cref="Company"/>). Set by the posting
+    /// helper from the branch's company, or the default company for an entry with no branch, so a
+    /// business trading as several companies gets a separate set of books for each. Null only on
+    /// entries made before this existed and not yet backfilled.
+    /// </summary>
+    public Guid? CompanyId { get; set; }
     public string EntryNumber { get; set; } = string.Empty; // e.g. "JE-1001"
     public DateTime EntryDate { get; set; } = DateTime.UtcNow;
     public string Description { get; set; } = string.Empty;
@@ -1681,6 +1724,45 @@ public class PasswordResetToken
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime ExpiresAt { get; set; }
     public DateTime? UsedAt { get; set; }
+    public string? CreatedByIp { get; set; }
+}
+
+/// <summary>
+/// A "confirm your email" link. Same rules as a password reset link: only a hash is kept, it works
+/// once, and only the newest one works. Lasts longer (3 days), because confirming is not urgent.
+/// </summary>
+public class EmailConfirmationToken
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public string TokenHash { get; set; } = string.Empty;
+    /// <summary>The address the link was sent to. The link confirms this address only, so a link
+    /// sent before the email was changed cannot confirm the new one.</summary>
+    public string Email { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime ExpiresAt { get; set; }
+    public DateTime? UsedAt { get; set; }
+}
+
+/// <summary>
+/// A code sent to a mobile number at registration, and — once the right code is typed — the proof
+/// that signup then presents. Only hashes are kept. A code lasts 10 minutes and allows 5 tries;
+/// the proof lasts 30 minutes and is used once.
+/// </summary>
+public class MobileVerification
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    /// <summary>Digits with the country code (923001234567).</summary>
+    public string Mobile { get; set; } = string.Empty;
+    public string CodeHash { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>When the code stops working; once verified, when the proof does.</summary>
+    public DateTime ExpiresAt { get; set; }
+    public int Attempts { get; set; }
+    public DateTime? VerifiedAt { get; set; }
+    public string? ProofHash { get; set; }
+    /// <summary>Set when a registration used the proof.</summary>
+    public DateTime? ConsumedAt { get; set; }
     public string? CreatedByIp { get; set; }
 }
 

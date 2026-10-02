@@ -18,6 +18,7 @@ import {
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { usePosStore, normalizeRole } from '../store/posStore';
 import type { AdminTenantRow } from '../types';
+import { tierLabel } from '../utils/tierLabel';
 
 interface WhatsAppConfigData {
   provider: string;
@@ -242,7 +243,7 @@ export const WhatsAppConfig: React.FC = () => {
                 <option value="" disabled>Select tenant...</option>
                 {tenants.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.name} · {t.tier}
+                    {t.name} · {tierLabel(t.tier)}
                     {!t.isActive && ' (inactive)'}
                   </option>
                 ))}

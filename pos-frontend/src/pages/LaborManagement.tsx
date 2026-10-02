@@ -18,7 +18,7 @@ import {
   Banknote
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { usePosStore, hasModuleAccess, runsBusiness } from '../store/posStore';
 import type { AppUser, StaffShiftSchedule, TimeClockEntry, PayrollPeriod, Payslip, PayslipLineType, LeaveRequest, LeaveType } from '../types';
 
 type TabKey = 'schedule' | 'timeclock' | 'payroll' | 'leave';
@@ -59,7 +59,7 @@ export const LaborManagement: React.FC = () => {
   // Payroll exposes wages, so it's gated separately from the rest of "labor" (scheduling):
   // viewing needs CanViewFinancialReports (or Owner/SuperAdmin); generating/adjusting/paying
   // is Owner/SuperAdmin only, matching the backend's RequirePermissionFilter(u => false, ...).
-  const isOwner = currentUser?.role === 'OwnerAdmin' || currentUser?.role === 'SuperAdmin';
+  const isOwner = runsBusiness(currentUser?.role) || currentUser?.role === 'SuperAdmin';
   const canViewPayroll = isOwner || !!permissions?.canViewFinancialReports;
 
   // The sidebar deep-links to a tab via router state, matching the convention

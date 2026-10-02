@@ -20,7 +20,7 @@ export default defineConfig({
         name: 'Cashly POS - Restaurant Point of Sale',
         short_name: 'Cashly POS',
         description: 'Offline-first restaurant POS system with multi-branch support',
-        theme_color: '#863bff',
+        theme_color: '#1f5f6d',
         background_color: '#0f172a',
         display: 'standalone',
         orientation: 'any',

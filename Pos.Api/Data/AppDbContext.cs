@@ -54,6 +54,8 @@ public class AppDbContext : DbContext
     public DbSet<CashEntry> CashEntries => Set<CashEntry>();
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
+    public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
+    public DbSet<MobileVerification> MobileVerifications => Set<MobileVerification>();
     public DbSet<StockTransferOrder> StockTransferOrders => Set<StockTransferOrder>();
     public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
     public DbSet<Supplier> Suppliers => Set<Supplier>();
@@ -156,6 +158,11 @@ public class AppDbContext : DbContext
             .HasFilter("\"PinLookup\" IS NOT NULL");
         modelBuilder.Entity<PasswordResetToken>().HasIndex(t => t.TokenHash).IsUnique();
         modelBuilder.Entity<PasswordResetToken>().HasIndex(t => t.UserId);
+        modelBuilder.Entity<EmailConfirmationToken>().HasIndex(t => t.TokenHash).IsUnique();
+        modelBuilder.Entity<EmailConfirmationToken>().HasIndex(t => t.UserId);
+        modelBuilder.Entity<Tenant>().HasIndex(t => t.ContactMobile).HasFilter("\"ContactMobile\" IS NOT NULL");
+        modelBuilder.Entity<JournalEntry>().HasIndex(j => j.CompanyId);
+        modelBuilder.Entity<MobileVerification>().HasIndex(m => m.Mobile);
 
         modelBuilder.Entity<Company>()
             .HasIndex(c => c.TenantId);
