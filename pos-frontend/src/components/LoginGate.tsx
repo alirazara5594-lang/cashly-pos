@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor } from 'lucide-react';
+import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor, Building2, Warehouse } from 'lucide-react';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { currentRestaurantAddress, forgetRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
@@ -59,6 +59,19 @@ const labelClass = 'block text-[10px] font-bold text-slate-500 uppercase trackin
  * After an email or username sign-in, someone who works at more than one location chooses the
  * branch, from the locations they are allowed at. A till always signs in at its own branch.
  */
+/** Head office first, then the outlets, then any warehouse. */
+const locationRank = (b: MyBranch) =>
+  b.isHeadOffice || b.locationType === 'HeadOffice' ? 0 : b.locationType === 'Warehouse' ? 2 : 1;
+
+/** What choosing a location opens, in the words used at registration (Cashly POS + ERP). */
+const locationKind = (b: MyBranch) => {
+  if (b.isHeadOffice || b.locationType === 'HeadOffice')
+    return { icon: Building2, label: 'Head Office', opens: b.canSell ? 'ERP + POS' : 'ERP', hint: 'menu, buying, stock, accounts, reports' };
+  if (b.locationType === 'Warehouse')
+    return { icon: Warehouse, label: 'Warehouse', opens: 'Stock', hint: 'receive, count and transfer stock' };
+  return { icon: Store, label: 'Outlet', opens: 'POS', hint: 'till, orders and the outlet back office' };
+};
+
 export const LoginGate: React.FC = () => {
   const login = usePosStore(s => s.login);
   const loadMyModulePermissions = usePosStore(s => s.loadMyModulePermissions);
@@ -73,12 +86,12 @@ export const LoginGate: React.FC = () => {
   // A restaurant's own sign-in address: its subdomain, or the /r/<name> link this device opened.
   // The restaurant is known there, so its staff give just username + PIN.
   const [address, setAddress] = useState(() => currentRestaurantAddress());
-  const [addressInfo, setAddressInfo] = useState<{ webName: string; name: string | null; missing?: boolean } | null>(null);
+  const [addressInfo, setAddressInfo] = useState<{ webName: string; name: string | null; product?: string; missing?: boolean } | null>(null);
   useEffect(() => {
     if (!address) return;
     let cancelled = false;
     posApi.getRestaurantByWebName(address.webName)
-      .then(r => { if (!cancelled) setAddressInfo({ webName: address.webName, name: r.name }); })
+      .then(r => { if (!cancelled) setAddressInfo({ webName: address.webName, name: r.name, product: r.product }); })
       .catch(err => { if (!cancelled) setAddressInfo({ webName: address.webName, name: null, missing: getApiErrorStatus(err) === 404 }); });
     return () => { cancelled = true; };
   }, [address]);
@@ -142,7 +155,9 @@ export const LoginGate: React.FC = () => {
   /** Email and username sign-ins: straight in, or choose a branch first if they work at several. */
   const continueAfterSignIn = async (result: LoginResponse) => {
     const user = result.user as SignedInUser;
-    const branches = await posApi.getMyBranches().catch(() => [] as MyBranch[]);
+    const branches = (await posApi.getMyBranches().catch(() => [] as MyBranch[]))
+      // Head office first, then the outlets, then any warehouse (the server sorts too; an older one did not).
+      .sort((a, b) => locationRank(a) - locationRank(b));
     if (branches.length > 1) {
       setPending({ user, token: result.token, branches });
       return;
@@ -363,11 +378,11 @@ export const LoginGate: React.FC = () => {
       : 'Platform Admin Sign In';
 
   return (
-    <div className="min-h-screen w-full bg-slate-100 flex items-center justify-center p-4">
+    <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-5">
         {/* Brand */}
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-500 to-purple-600 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-500/25">
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">
             C
           </div>
           <div>
@@ -381,6 +396,11 @@ export const LoginGate: React.FC = () => {
                   <Store className="w-4 h-4 text-teal-600" />
                   {restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')}
                 </p>
+                {restaurantHere?.product && (
+                  <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                    {restaurantHere.product}
+                  </span>
+                )}
                 {restaurantHere?.missing && (
                   <p className="text-[11px] text-rose-600">No restaurant uses this address. Check the link you were given.</p>
                 )}
@@ -440,37 +460,42 @@ export const LoginGate: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
             <div className="flex items-center gap-2">
               <MapPin className="w-4 h-4 text-teal-600" />
-              <span className="text-xs font-bold text-slate-900">Choose your branch</span>
+              <span className="text-xs font-bold text-slate-900">Where are you working today?</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Signed in as <strong className="text-slate-700">{pending.user.fullName}</strong>. Where are you working today?
+              Signed in as <strong className="text-slate-700">{pending.user.fullName}</strong>. The head office opens the ERP;
+              an outlet opens its POS.
             </p>
             <div className="space-y-2 max-h-80 overflow-y-auto">
               {pending.branches.map(b => {
                 const suggested = b.id === rememberedBranchId || (!rememberedBranchId && b.isHome);
+                const kind = locationKind(b);
+                const KindIcon = kind.icon;
                 return (
                   <button
                     key={b.id}
                     type="button"
                     disabled={loading}
                     onClick={() => chooseBranch(b)}
-                    className={`w-full text-left px-3.5 py-3 rounded-xl border transition flex items-center justify-between gap-2 disabled:opacity-50 cursor-pointer ${
+                    className={`w-full text-left px-3.5 py-3 rounded-xl border transition flex items-center gap-3 disabled:opacity-50 cursor-pointer ${
                       suggested ? 'border-teal-400 bg-teal-50 hover:bg-teal-100' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
                     }`}
                   >
-                    <span className="min-w-0">
-                      <span className="block text-sm font-bold text-slate-900 truncate">{b.name}</span>
-                      {b.city && <span className="block text-[11px] text-slate-500">{b.city}</span>}
+                    <span className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
+                      <KindIcon className="w-4.5 h-4.5 text-teal-600" />
                     </span>
-                    <span className="flex items-center gap-1 shrink-0">
-                      {/* The head office's name usually says so already. */}
-                      {b.isHeadOffice && !/head office/i.test(b.name) && (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200">Head Office</span>
-                      )}
-                      {b.isHome && (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">Your branch</span>
-                      )}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-sm font-bold text-slate-900 truncate">{b.name}</span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-600 text-white shrink-0">{kind.opens}</span>
+                      </span>
+                      <span className="block text-[11px] text-slate-500 truncate">
+                        {kind.label}{b.city ? ` · ${b.city}` : ''} · {kind.hint}
+                      </span>
                     </span>
+                    {b.isHome && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">Your branch</span>
+                    )}
                   </button>
                 );
               })}
@@ -493,7 +518,7 @@ export const LoginGate: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => switchMode(mode === 'platform' ? (tillBranchId ? 'till' : 'email') : 'platform')}
-                  className="text-[10px] text-blue-600 hover:text-blue-500 font-bold transition cursor-pointer"
+                  className="text-[10px] text-teal-600 hover:text-teal-800 font-bold transition cursor-pointer"
                 >
                   {mode === 'platform' ? '← Back' : 'Platform Admin →'}
                 </button>
@@ -559,7 +584,7 @@ export const LoginGate: React.FC = () => {
                             type="button"
                             onClick={sendResetLink}
                             disabled={!email.trim() || forgotState.sending}
-                            className="w-full py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-bold transition"
+                            className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-bold transition"
                           >
                             {forgotState.sending ? 'Sending…' : 'Email me a reset link'}
                           </button>

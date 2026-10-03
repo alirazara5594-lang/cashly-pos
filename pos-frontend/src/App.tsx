@@ -291,9 +291,9 @@ function MainLayoutInner() {
   // user never sees application screens flash before the gate.
   if (isCheckingSetup) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+      <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-teal-500 to-purple-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-teal-500/25 animate-pulse">
+          <div className="w-12 h-12 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-teal-700/25 animate-pulse">
             C
           </div>
           <p className="text-xs text-slate-500 font-semibold">Starting Cashly POS…</p>

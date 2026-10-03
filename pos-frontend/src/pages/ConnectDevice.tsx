@@ -47,10 +47,10 @@ export const ConnectDevice: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-slate-100 flex items-center justify-center p-4">
+    <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-5">
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-500 to-purple-600 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-500/25">
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">
             C
           </div>
           <h1 className="text-xl font-black text-slate-900 tracking-tight">

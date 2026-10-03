@@ -45,15 +45,18 @@ import type {
   SubscriptionTier
 } from '../types';
 
-const CHAIN_HQ_NAME = 'Head Office & Central Commissary';
-
 // Step 2 is where the paths differ: POS Only picks its POS version, while POS + ERP picks what this
 // PC is (the head office ERP, or a till connecting to one). A cloud registration skips that
 // question: registering always creates the business, and a till joins one at /connect. The ERP is
 // the same for everyone; POS versions are chosen per branch by head office.
-const PROFILE_STEP = 3;
-const SECURITY_STEP = 4;
-const REVIEW_STEP = 5;
+//
+// The business itself and its locations are two short steps rather than one long one: who the
+// business is (name, type, country, web address), then where it is (the outlet, or the head
+// office and its outlets).
+const BUSINESS_STEP = 3;
+const LOCATIONS_STEP = 4;
+const SECURITY_STEP = 5;
+const REVIEW_STEP = 6;
 
 const POS_EDITIONS: SubscriptionTier[] = ['Starter', 'Standard', 'Professional'];
 
@@ -119,13 +122,28 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const [phone, setPhone] = useState(forceSignup ? '' : '051-1234567');
 
   // Single Branch Settings (POS Only)
-  const [mainBranchName, setMainBranchName] = useState('Main Dining Branch');
+  // Named after the business until the owner types their own.
+  const [mainBranchInput, setMainBranchInput] = useState('');
+  const [mainBranchEdited, setMainBranchEdited] = useState(false);
+  const mainBranchName = mainBranchEdited
+    ? mainBranchInput
+    : (restaurantName.trim() ? `${restaurantName.trim()} — Main Branch` : '');
   const [allowedCounters, setAllowedCounters] = useState<number>(2);
   const [allowedOrderTabs, setAllowedOrderTabs] = useState<number>(10);
 
   // HQ & Branches (POS + ERP)
-  const [hqName, setHqName] = useState(CHAIN_HQ_NAME);
+  // Named after the business ("Royal Grill Head Office") until the owner types their own.
+  const [hqNameInput, setHqNameInput] = useState('');
+  const [hqNameEdited, setHqNameEdited] = useState(false);
+  const hqName = hqNameEdited
+    ? hqNameInput
+    : (restaurantName.trim() ? `${restaurantName.trim()} Head Office` : '');
   const [hqHoldsStock, setHqHoldsStock] = useState(true);
+  // Rarely-changed head office settings stay out of the way until asked for.
+  const [showHqOptions, setShowHqOptions] = useState(false);
+  // A head office with no outlets yet is allowed, but worth one question before going on.
+  const [noOutletHint, setNoOutletHint] = useState(false);
+  const [outletsSkipped, setOutletsSkipped] = useState(false);
   const hqCity = city;
   const hqAddress = address;
 
@@ -265,6 +283,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   const addBranchRow = () => {
     // Blank name so the owner types the real one; the code is generated if left empty.
+    setNoOutletHint(false);
     setBranches([
       ...branches,
       { name: '', code: '', city: city || '', address: '', phone: '', allowedCounters: 3, allowedOrderTabs: 10, posEdition: 'Standard', sameAddressAsHq: false }
@@ -371,19 +390,23 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       return null;
     }
 
-    // Business Profile Step
-    if (s === PROFILE_STEP) {
-      if (!restaurantName.trim()) return 'Restaurant / Brand name is required.';
+    // The business: name and web address
+    if (s === BUSINESS_STEP) {
+      if (!restaurantName.trim()) return 'Enter your business name.';
       if (signupMode) {
         if (webNameLocalProblem) return `Web address: ${webNameLocalProblem}`;
         if (!webCheckNow) return 'Still checking your web address — try again in a moment.';
         if (!webCheckNow.available) return `Web address: ${webCheckNow.problem ?? 'already taken.'}`;
       }
+    }
+
+    // Its locations: the outlet, or the head office and its outlets
+    if (s === LOCATIONS_STEP) {
       if (systemType === 'POS_ERP' && erpRole === 'ERP_SERVER') {
-        if (!hqName.trim()) return 'Head Office Name is required.';
-        if (branches.some(b => !b.name.trim())) return 'All branch outlets must have a name.';
+        if (!hqName.trim()) return 'Enter a name for the head office.';
+        if (branches.some(b => !b.name.trim())) return 'Give every outlet a name, or remove the empty one.';
       } else if (systemType === 'POS_ONLY') {
-        if (!mainBranchName.trim()) return 'Outlet branch name is required.';
+        if (!mainBranchName.trim()) return 'Enter a name for your outlet.';
       }
     }
 
@@ -418,10 +441,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const maxSteps = REVIEW_STEP;
 
   // The steps this path walks through, in order. A cloud registration with a head office has no
-  // "what is this PC" step (see the note on PROFILE_STEP).
+  // "what is this PC" step (see the note on BUSINESS_STEP).
   const stepOrder = systemType === 'POS_ERP' && signupMode
-    ? [1, PROFILE_STEP, SECURITY_STEP, REVIEW_STEP]
-    : [1, 2, PROFILE_STEP, SECURITY_STEP, REVIEW_STEP];
+    ? [1, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP]
+    : [1, 2, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP];
   const nextStepAfter = (s: number) => stepOrder.find(n => n > s) ?? s;
   const previousStepBefore = (s: number) => [...stepOrder].reverse().find(n => n < s) ?? 1;
 
@@ -432,6 +455,19 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       return;
     }
     setErrorMessage(null);
+    // A head office with no outlets yet: ask once, rather than warn before they have started.
+    if (step === LOCATIONS_STEP && systemType === 'POS_ERP' && !outletsSkipped && branches.every(b => !b.name.trim())) {
+      setNoOutletHint(true);
+      return;
+    }
+    setStep(nextStepAfter(step));
+  };
+
+  /** "Continue without outlets": a head office alone is fine; outlets can be added later. */
+  const continueWithoutOutlets = () => {
+    setOutletsSkipped(true);
+    setNoOutletHint(false);
+    setBranches(branches.filter(b => b.name.trim()));
     setStep(nextStepAfter(step));
   };
 
@@ -891,16 +927,18 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // WIZARD STEPS DEFINITION
   const wizardSteps = (systemType === 'POS_ERP'
     ? [
-        { num: 1, label: 'Your Business' },
+        { num: 1, label: 'Setup Type' },
         { num: 2, label: 'Install ERP or POS' },
-        { num: PROFILE_STEP, label: 'HQ & Branches' },
+        { num: BUSINESS_STEP, label: 'Business Details' },
+        { num: LOCATIONS_STEP, label: 'HQ & Outlets' },
         { num: SECURITY_STEP, label: 'Admin Security' },
         { num: REVIEW_STEP, label: signupMode ? 'Create' : 'Deploy' }
       ]
     : [
-        { num: 1, label: 'Your Business' },
+        { num: 1, label: 'Setup Type' },
         { num: 2, label: 'POS Version' },
-        { num: PROFILE_STEP, label: 'Shop Profile' },
+        { num: BUSINESS_STEP, label: 'Business Details' },
+        { num: LOCATIONS_STEP, label: 'Your Outlet' },
         { num: SECURITY_STEP, label: 'Admin Security' },
         { num: REVIEW_STEP, label: signupMode ? 'Create' : 'Deploy' }
       ]).filter(s => stepOrder.includes(s.num));
@@ -918,29 +956,50 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           </h1>
         </div>
 
-        {/* Step indicators */}
-        <div className="hidden md:flex items-center gap-1.5 text-xs">
-          {wizardSteps.map((s, position) => (
-            <div
-              key={s.num}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border transition-all ${
-                step === s.num
-                  ? 'bg-teal-500 border-teal-500 text-white font-semibold'
-                  : step > s.num
-                  ? 'bg-slate-100 border-slate-200 text-slate-700'
-                  : 'border-transparent text-slate-400'
-              }`}
-            >
-              <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${
-                step === s.num ? 'bg-white text-teal-600' : step > s.num ? 'bg-teal-500/30 text-teal-700' : 'bg-slate-200 text-slate-500'
-              }`}>
-                {step > s.num ? '✓' : position + 1}
-              </span>
-              <span>{s.label}</span>
-            </div>
-          ))}
-        </div>
+        {/* On a phone the step bar below is hidden; this says where they are instead. */}
+        <span className="md:hidden text-[11px] font-semibold text-slate-500">
+          Step {Math.max(1, wizardSteps.findIndex(s => s.num === step) + 1)} of {wizardSteps.length}
+          {' · '}
+          <span className="text-teal-700">{wizardSteps.find(s => s.num === step)?.label}</span>
+        </span>
       </div>
+
+      {/* Step bar: its own row, so every step is named in full. A finished step can be clicked to go back to it. */}
+      <nav aria-label="Registration steps" className="hidden md:block shrink-0 border-b border-slate-200 bg-white px-6 py-3">
+        <ol className="max-w-4xl mx-auto flex items-center">
+          {wizardSteps.map((s, position) => {
+            const done = step > s.num;
+            const current = step === s.num;
+            return (
+              <li key={s.num} className={`flex items-center ${position < wizardSteps.length - 1 ? 'flex-1' : ''}`}>
+                <button
+                  type="button"
+                  disabled={!done}
+                  onClick={() => { setErrorMessage(null); setStep(s.num); }}
+                  aria-current={current ? 'step' : undefined}
+                  className={`flex items-center gap-2 shrink-0 ${done ? 'cursor-pointer group' : 'cursor-default'}`}
+                >
+                  <span className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 transition ${
+                    current ? 'bg-teal-600 border-teal-600 text-white shadow-md shadow-teal-600/20'
+                      : done ? 'bg-teal-50 border-teal-500 text-teal-700 group-hover:bg-teal-100'
+                      : 'bg-white border-slate-300 text-slate-400'
+                  }`}>
+                    {done ? <Check className="w-3.5 h-3.5" /> : position + 1}
+                  </span>
+                  <span className={`text-xs whitespace-nowrap ${
+                    current ? 'font-bold text-teal-700' : done ? 'font-semibold text-slate-700 group-hover:text-teal-700' : 'font-medium text-slate-400'
+                  }`}>
+                    {s.label}
+                  </span>
+                </button>
+                {position < wizardSteps.length - 1 && (
+                  <span className={`flex-1 h-0.5 mx-3 rounded-full ${done ? 'bg-teal-500' : 'bg-slate-200'}`} />
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto">
@@ -1353,30 +1412,25 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             </div>
           )}
 
-          {/* STEP 3: Business Profile (& Branches for POS + ERP) */}
-          {step === PROFILE_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
+          {/* STEP 3: The business — who it is, and where its staff sign in. */}
+          {step === BUSINESS_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
             <div className="space-y-4">
               <div className="space-y-1">
-                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-                  {systemType === 'POS_ERP' ? 'Head Office & Outlets Setup' : 'Restaurant & Store Profile'}
-                </h2>
-                <p className="text-sm text-slate-500">
-                  {systemType === 'POS_ERP'
-                    ? 'Set up your Head Office. Add your shops now, or later from Locations & Head Office.'
-                    : 'Enter your restaurant details, currency, and single store location.'}
-                </p>
+                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Your business</h2>
+                <p className="text-sm text-slate-500">The name your customers know, and the address your staff sign in at.</p>
               </div>
 
               <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="space-y-1.5 md:col-span-2">
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <Store className="w-3.5 h-3.5 text-teal-600" /> Restaurant / Brand Name*
+                      <Store className="w-3.5 h-3.5 text-teal-600" /> Business Name*
                     </label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={restaurantName}
                       onChange={(e) => setRestaurantName(e.target.value)}
+                      autoFocus
                       placeholder="e.g. Royal Grill & Kitchen"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                     />
@@ -1386,7 +1440,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                       <UtensilsCrossed className="w-3.5 h-3.5 text-teal-600" /> Business Type
                     </label>
-                    <select 
+                    <select
                       value={businessType}
                       onChange={(e) => setBusinessType(e.target.value as BusinessType)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
@@ -1402,7 +1456,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                       <DollarSign className="w-3.5 h-3.5 text-teal-600" /> Country & Currency
                     </label>
-                    <select 
+                    <select
                       value={countryCode}
                       onChange={(e) => handleCountryChange(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
@@ -1414,14 +1468,17 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 </div>
 
-                {/* The restaurant's own sign-in address — where its staff sign in with just username + PIN. */}
+                {/* The business's own sign-in address — where its staff sign in with just username + PIN.
+                    Filled in from the business name, so it is never empty-and-red before they have typed. */}
                 {signupMode && (
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                       <Globe className="w-3.5 h-3.5 text-teal-600" /> Your sign-in web address*
                     </label>
                     <div className={`flex items-stretch rounded-xl border overflow-hidden bg-slate-50 ${
-                      webNameLocalProblem || (webCheckNow && !webCheckNow.available) ? 'border-rose-300' : webCheckNow?.available ? 'border-teal-400' : 'border-slate-200'
+                      !webName ? 'border-slate-200'
+                        : webNameLocalProblem || (webCheckNow && !webCheckNow.available) ? 'border-rose-300'
+                        : webCheckNow?.available ? 'border-teal-400' : 'border-slate-200'
                     }`}>
                       <span className="px-3 flex items-center text-xs text-slate-500 bg-slate-100 border-r border-slate-200 shrink-0">{webLinkParts.prefix}</span>
                       <input
@@ -1433,20 +1490,22 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         }}
                         spellCheck={false}
                         autoComplete="off"
-                        placeholder="royalgrill"
-                        className="flex-1 min-w-0 bg-transparent px-2 py-2 text-sm font-bold text-slate-900 focus:outline-none"
+                        placeholder="filled in from your business name"
+                        className="flex-1 min-w-0 bg-transparent px-2 py-2 text-sm font-bold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none"
                       />
                       {webLinkParts.suffix && (
                         <span className="px-3 flex items-center text-xs text-slate-500 bg-slate-100 border-l border-slate-200 shrink-0">{webLinkParts.suffix}</span>
                       )}
                     </div>
                     <p className="text-[11px]">
-                      {webNameLocalProblem ? (
+                      {!webName ? (
+                        <span className="text-slate-400">Your staff open this address to sign in with their username and PIN.</span>
+                      ) : webNameLocalProblem ? (
                         <span className="text-rose-600">{webNameLocalProblem}</span>
                       ) : !webCheckNow ? (
                         <span className="text-slate-400">Checking…</span>
                       ) : webCheckNow.available ? (
-                        <span className="text-teal-700 font-semibold">✓ Available</span>
+                        <span className="text-teal-700 font-semibold">✓ Available. Your staff sign in here; it cannot be changed later without Cashly support.</span>
                       ) : (
                         <span className="text-rose-600">
                           {webCheckNow.problem}
@@ -1462,242 +1521,239 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         </span>
                       )}
                     </p>
-                    <p className="text-[11px] text-slate-400">
-                      Your staff open this address to sign in with just their username and PIN. It cannot be changed later without Cashly support.
-                    </p>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> {systemType === 'POS_ERP' ? 'Head Office City' : 'City'}
-                    </label>
-                    <input 
-                      type="text" 
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      placeholder="e.g. Islamabad"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-                    />
-                  </div>
+          {/* STEP 4: Where the business is — its one outlet, or the head office and its outlets. */}
+          {step === LOCATIONS_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
+                  {systemType === 'POS_ERP' ? 'Head office & outlets' : 'Your outlet'}
+                </h2>
+                <p className="text-sm text-slate-500">
+                  {systemType === 'POS_ERP'
+                    ? 'The head office runs the ERP; each outlet runs a POS. Tick Same building as head office when they share an address.'
+                    : 'Where your outlet is. Its tills and tablets connect later with a pairing code.'}
+                </p>
+              </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-teal-600" /> {systemType === 'POS_ERP' ? 'Head Office Address' : 'Shop Address'}
-                    </label>
-                    <input 
-                      type="text" 
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      placeholder="e.g. Sector F-7 Markaz"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <Phone className="w-3.5 h-3.5 text-teal-600" /> Official Phone / UAN
-                    </label>
-                    <input 
-                      type="text" 
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="e.g. 051-111-443-443"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-                    />
-                  </div>
-                </div>
-
-                {/* If POS Only: Single Outlet Name */}
-                {systemType === 'POS_ONLY' && (
-                  <div className="pt-3 border-t border-slate-200 space-y-2">
-                    <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                      <Store className="w-3.5 h-3.5 text-teal-600" /> Outlet Branch Name
-                    </label>
-                    <input
-                      type="text"
-                      value={mainBranchName}
-                      onChange={(e) => setMainBranchName(e.target.value)}
-                      placeholder="e.g. Main Dining Branch"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
-                    />
-                  </div>
-                )}
-
-                {/* If POS + ERP: Head Office + Initial Outlets */}
-                {systemType === 'POS_ERP' && (
-                  <div className="pt-3 border-t border-slate-200 space-y-4">
-                    <div className="p-3 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-800">
-                      <strong>The full ERP is included</strong>: accounts, purchasing, stock transfers, reports and every branch.
-                      You only choose a <strong>POS version for each shop</strong>, which decides its tills, tablets and kitchen screens.
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 shadow-sm">
+                {/* The outlet (Cashly POS), or the head office (Cashly POS + ERP): name, then where it is. */}
+                <div className="space-y-3">
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    {systemType === 'POS_ERP'
+                      ? <><Building2 className="w-3.5 h-3.5 text-teal-600" /> Head office</>
+                      : <><Store className="w-3.5 h-3.5 text-teal-600" /> Outlet</>}
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600">Name*</label>
+                      <input
+                        type="text"
+                        value={systemType === 'POS_ERP' ? hqName : mainBranchName}
+                        onChange={(e) => {
+                          if (systemType === 'POS_ERP') { setHqNameEdited(true); setHqNameInput(e.target.value); }
+                          else { setMainBranchEdited(true); setMainBranchInput(e.target.value); }
+                        }}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
                     </div>
-                    {/* A head office earns its keep with two or more outlets, or a central store. A single
-                        outlet with an office does not need one: its back office is already included. */}
-                    {branches.length <= 1 && (
-                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex flex-wrap items-center gap-x-3 gap-y-2">
-                        <span className="flex-1 min-w-60">
-                          <strong>No separate head office?</strong> <strong>Cashly POS</strong> already includes the back office
-                          (menu, stock, reports), even from an office in another room. Keep this choice if you want a head office ERP for your outlet.
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (branches[0]?.name.trim()) setMainBranchName(branches[0].name.trim());
-                            setSystemType('POS_ONLY');
-                            setErrorMessage(null);
-                            setStep(2);
-                          }}
-                          className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer"
-                        >
-                          Switch to Cashly POS
-                        </button>
-                      </div>
-                    )}
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                        <Building2 className="w-3.5 h-3.5 text-teal-600" /> Central Head Office / Back Office Name*
+                        <MapPin className="w-3.5 h-3.5 text-teal-600" /> City
                       </label>
                       <input
                         type="text"
-                        value={hqName}
-                        onChange={(e) => setHqName(e.target.value)}
-                        placeholder="e.g. Royal Grill Head Office & Central Commissary"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        value={city}
+                        onChange={(e) => setCity(e.target.value)}
+                        placeholder="e.g. Lahore"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                       />
-                      <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer pt-1">
-                        <input
-                          type="checkbox"
-                          checked={hqHoldsStock}
-                          onChange={(e) => setHqHoldsStock(e.target.checked)}
-                          className="w-4 h-4 accent-teal-500"
-                        />
-                        The head office keeps central stock (a central warehouse or kitchen that supplies the branches)
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-teal-600" /> Address
                       </label>
+                      <input
+                        type="text"
+                        value={address}
+                        onChange={(e) => setAddress(e.target.value)}
+                        placeholder="e.g. MM Alam Road"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5 text-teal-600" /> Phone
+                      </label>
+                      <input
+                        type="text"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="e.g. 042-111-443-443"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Rarely changed, so out of the way until asked for. */}
+                  {systemType === 'POS_ERP' && (
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setShowHqOptions(v => !v)}
+                        className="text-[11px] font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer"
+                      >
+                        {showHqOptions ? '▾' : '▸'} More options
+                      </button>
+                      {showHqOptions && (
+                        <label className="mt-2 flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={hqHoldsStock}
+                            onChange={(e) => setHqHoldsStock(e.target.checked)}
+                            className="w-4 h-4 accent-teal-500"
+                          />
+                          The head office keeps stock (a central store or kitchen that supplies the outlets)
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Cashly POS + ERP: the outlets under the head office. */}
+                {systemType === 'POS_ERP' && (
+                  <div className="space-y-2 pt-4 border-t border-slate-200">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Store className="w-3.5 h-3.5 text-teal-600" /> Outlets
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={addBranchRow}
+                        className="px-3 py-1.5 rounded-lg bg-teal-50 text-teal-700 hover:bg-teal-100 border border-teal-200 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add outlet
+                      </button>
                     </div>
 
-                    {/* Initial Outlets Table */}
-                    <div className="space-y-2 pt-2">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                            <Store className="w-3.5 h-3.5 text-teal-600" /> Selling Branch Outlets <span className="normal-case font-normal text-slate-400">(optional)</span>
-                          </h4>
-                          <p className="text-[11px] text-slate-500">
-                            {signupMode
-                              ? <>These are your shops. Each shop's tills are connected later with <strong>Connect a till or tablet</strong> and a pairing code.</>
-                              : <>These are your shops. Each shop's counter PC is connected later with <strong>Install POS</strong> and a pairing code.</>}
-                          </p>
-                          <p className="text-[11px] text-slate-500">
-                            Head office in the same building as a shop? Tick <strong>Same building as head office</strong> on that shop.
-                            They stay separate locations, so the shop's stock, cash and reports never mix with the office's.
-                          </p>
+                    {branches.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={addBranchRow}
+                        className="w-full p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 hover:bg-teal-50 hover:border-teal-300 text-xs text-slate-500 text-center transition cursor-pointer"
+                      >
+                        No outlets yet. <strong className="text-teal-700">Add your first outlet</strong>
+                      </button>
+                    )}
+
+                    <div className="space-y-2 max-h-[34vh] overflow-y-auto pr-1">
+                      {branches.map((b, idx) => (
+                        <div key={idx} className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-500 font-semibold">Outlet name</label>
+                              <input
+                                type="text"
+                                value={b.name}
+                                onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
+                                autoFocus={idx === branches.length - 1 && !b.name}
+                                placeholder="e.g. Gulberg"
+                                className="w-full bg-white border border-slate-200 rounded-md px-2 py-1.5 text-xs text-slate-900"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-500 font-semibold">City</label>
+                              <input
+                                type="text"
+                                value={b.sameAddressAsHq ? hqCity : b.city}
+                                onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
+                                disabled={!!b.sameAddressAsHq}
+                                placeholder="e.g. Lahore"
+                                className="w-full bg-white border border-slate-200 rounded-md px-2 py-1.5 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-500 font-semibold">Address</label>
+                              <input
+                                type="text"
+                                value={b.sameAddressAsHq ? hqAddress : b.address}
+                                onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
+                                disabled={!!b.sameAddressAsHq}
+                                placeholder={b.sameAddressAsHq ? 'Same as head office' : 'e.g. Main Boulevard'}
+                                className="w-full bg-white border border-slate-200 rounded-md px-2 py-1.5 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                            {/* This outlet's POS version: what its tills can do, and what it is billed for. */}
+                            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">POS version</span>
+                            {POS_EDITIONS.map(edition => {
+                              const active = (b.posEdition ?? 'Standard') === edition;
+                              return (
+                                <button
+                                  key={edition}
+                                  type="button"
+                                  onClick={() => updateBranchField(idx, 'posEdition', edition)}
+                                  title={allowanceLine(edition)}
+                                  className={`px-2.5 py-1 rounded-md border text-[11px] font-semibold transition cursor-pointer ${
+                                    active ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {tierLabel(edition)}
+                                </button>
+                              );
+                            })}
+                            <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={!!b.sameAddressAsHq}
+                                onChange={(e) => updateBranchField(idx, 'sameAddressAsHq', e.target.checked)}
+                                className="w-3.5 h-3.5 accent-teal-500"
+                              />
+                              Same building as head office
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => removeBranchRow(idx)}
+                              className="text-slate-400 hover:text-rose-500 transition"
+                              title="Remove this outlet"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                        <button 
-                          type="button"
-                          onClick={addBranchRow}
-                          className="px-3 py-1.5 rounded-lg bg-teal-50 text-teal-600 hover:bg-teal-100 border border-teal-200 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" /> Add Another Branch
-                        </button>
-                      </div>
-
-                      <div className="space-y-2 max-h-[30vh] overflow-y-auto pr-1">
-                        {branches.length === 0 && (
-                          <div className="p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-500 text-center">
-                            No shops added yet. That's fine: only the head office is created now, and you can add
-                            shops at any time from <strong>Locations & Head Office</strong>.
-                          </div>
-                        )}
-                        {branches.map((b, idx) => (
-                          <div key={idx} className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2">
-                            <div className="flex items-center justify-between gap-3 pb-1 border-b border-slate-200/60">
-                              <span className="text-xs font-bold text-teal-700">Branch #{idx + 1}</span>
-                              <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={!!b.sameAddressAsHq}
-                                  onChange={(e) => updateBranchField(idx, 'sameAddressAsHq', e.target.checked)}
-                                  className="w-3.5 h-3.5 accent-teal-500"
-                                />
-                                Same building as head office
-                              </label>
-                              <button
-                                type="button"
-                                onClick={() => removeBranchRow(idx)}
-                                className="text-slate-400 hover:text-rose-500 transition"
-                                title="Remove this shop"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                              <div>
-                                <label className="text-[10px] text-slate-500 font-semibold">Name</label>
-                                <input
-                                  type="text"
-                                  value={b.name}
-                                  onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
-                                  placeholder="e.g. Downtown Outlet"
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-slate-500 font-semibold">Code</label>
-                                <input
-                                  type="text"
-                                  value={b.code}
-                                  onChange={(e) => updateBranchField(idx, 'code', e.target.value)}
-                                  placeholder="BR-01"
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 uppercase"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-slate-500 font-semibold">City</label>
-                                <input
-                                  type="text"
-                                  value={b.sameAddressAsHq ? hqCity : b.city}
-                                  onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
-                                  disabled={!!b.sameAddressAsHq}
-                                  placeholder="e.g. Islamabad"
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[10px] text-slate-500 font-semibold">Address</label>
-                                <input
-                                  type="text"
-                                  value={b.sameAddressAsHq ? hqAddress : b.address}
-                                  onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
-                                  disabled={!!b.sameAddressAsHq}
-                                  placeholder={b.sameAddressAsHq ? 'Same as head office' : 'e.g. Main Blvd'}
-                                  className="w-full bg-white border border-slate-200 rounded-md px-2 py-1 text-xs text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
-                                />
-                              </div>
-                            </div>
-                            {/* This shop's POS version: what its tills can do, and what it is billed for. */}
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
-                              <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">POS version</span>
-                              {POS_EDITIONS.map(edition => {
-                                const active = (b.posEdition ?? 'Standard') === edition;
-                                return (
-                                  <button
-                                    key={edition}
-                                    type="button"
-                                    onClick={() => updateBranchField(idx, 'posEdition', edition)}
-                                    className={`px-2.5 py-1 rounded-md border text-[11px] font-semibold transition cursor-pointer ${
-                                      active ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                                    }`}
-                                  >
-                                    {tierLabel(edition)} <span className="font-normal text-slate-400">({allowanceLine(edition)})</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      ))}
                     </div>
+
+                    {/* Asked only when they try to go on with no outlets, never before they start. */}
+                    {noOutletHint && (
+                      <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-2">
+                        <p>
+                          <strong>No outlets yet.</strong> That's fine: you can add them later from Locations & Head Office.
+                          If you have no separate head office, <strong>Cashly POS</strong> already includes the back office.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" onClick={addBranchRow}
+                            className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold transition cursor-pointer">
+                            Add an outlet
+                          </button>
+                          <button type="button" onClick={continueWithoutOutlets}
+                            className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer">
+                            Continue without outlets
+                          </button>
+                          <button type="button"
+                            onClick={() => { setNoOutletHint(false); setSystemType('POS_ONLY'); setErrorMessage(null); setStep(2); }}
+                            className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer">
+                            Switch to Cashly POS
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

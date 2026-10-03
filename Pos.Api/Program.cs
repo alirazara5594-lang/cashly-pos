@@ -3810,7 +3810,13 @@ app.MapGet("/api/public/restaurants/{webName}", async (AppDbContext db, string w
     var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Slug == normalized);
     return tenant == null
         ? Results.NotFound(new { message = "No restaurant uses this address." })
-        : Results.Ok(new { webName = tenant.Slug, name = tenant.Name });
+        // Which product it runs, named as at registration.
+        : Results.Ok(new
+        {
+            webName = tenant.Slug,
+            name = tenant.Name,
+            product = tenant.DeploymentMode == DeploymentMode.HeadOffice ? "Cashly POS + ERP" : "Cashly POS"
+        });
 }).AllowAnonymous().RequireRateLimiting("public-lookup");
 
 // The platform admin changing a restaurant's web name. Staff bookmarks of the old address stop
@@ -4726,7 +4732,10 @@ app.MapGet("/api/auth/my-branches", async (AppDbContext db, HttpContext http) =>
     }
 
     var current = http.GetBranchId();
-    var rows = await query.OrderBy(b => b.Name)
+    // Head office first, then the outlets, then any warehouse: the order people think in.
+    var rows = await query
+        .OrderBy(b => b.LocationType == LocationType.HeadOffice ? 0 : b.LocationType == LocationType.Branch ? 1 : 2)
+        .ThenBy(b => b.Name)
         .Select(b => new { b.Id, b.Name, b.Code, b.City, locationType = b.LocationType.ToString(), b.CanSell, b.IsHeadOffice })
         .ToListAsync();
     return Results.Ok(rows.Select(b => new

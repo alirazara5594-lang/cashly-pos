@@ -337,7 +337,7 @@ export const posApi = {
   },
   /** Whose sign-in address this is — the restaurant's name for the page heading. */
   getRestaurantByWebName: async (webName: string) => {
-    const res = await api.get<{ webName: string; name: string }>(`/api/public/restaurants/${encodeURIComponent(webName)}`);
+    const res = await api.get<{ webName: string; name: string; product?: string }>(`/api/public/restaurants/${encodeURIComponent(webName)}`);
     return res.data;
   },
   /** The second step: a code from the authenticator app, or a recovery code. */
