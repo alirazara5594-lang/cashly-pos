@@ -20,9 +20,11 @@ import type {
   MyPackageInfo
 } from '../types';
 
-import { offlineDb } from '../services/offlineDb';
+import { offlineDb, saveSetting, getSetting } from '../services/offlineDb';
 import { posApi } from '../services/api';
 import { getStoredTerminal, isActivated } from '../services/deviceLicense';
+// The signed-in session: one tab's in the back office, the device's on a connected till.
+import { authStorage } from '../services/authStorage';
 
 export const AUTH_USER_STORAGE_KEY = 'cashly_pos_user';
 export const AUTH_TOKEN_STORAGE_KEY = 'cashly_pos_token';
@@ -125,9 +127,9 @@ export function hasModuleAccess(
   return false;
 }
 
-function readStoredJson<T>(key: string, fallback: T): T {
+function readStoredJson<T>(key: string, fallback: T, storage: Pick<Storage, 'getItem'> = localStorage): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = storage.getItem(key);
     if (!raw) return fallback;
     return JSON.parse(raw) as T;
   } catch {
@@ -136,7 +138,7 @@ function readStoredJson<T>(key: string, fallback: T): T {
 }
 
 function readStoredUser(): CurrentUser | null {
-  const raw = readStoredJson<any>(AUTH_USER_STORAGE_KEY, null);
+  const raw = readStoredJson<any>(AUTH_USER_STORAGE_KEY, null, authStorage);
   if (!raw || !raw.id) return null;
   return { ...raw, role: normalizeRole(raw.role) ?? 'Cashier' } as CurrentUser;
 }
@@ -333,9 +335,9 @@ export const usePosStore = create<PosState>((set, get) => ({
   activeDepartment: (localStorage.getItem('cashly_active_department') as DepartmentRole) || 'Owner',
 
   currentUser: readStoredUser(),
-  token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
-  permissions: readStoredJson<AuthPermissions | null>(AUTH_PERMISSIONS_STORAGE_KEY, null),
-  modulePermissions: readStoredJson<ModulePermission[]>(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, []),
+  token: authStorage.getItem(AUTH_TOKEN_STORAGE_KEY),
+  permissions: readStoredJson<AuthPermissions | null>(AUTH_PERMISSIONS_STORAGE_KEY, null, authStorage),
+  modulePermissions: readStoredJson<ModulePermission[]>(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, [], authStorage),
   packageFeatures: null,
   packageInfo: null,
 
@@ -373,24 +375,24 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   login: (user, token, permissions) => {
     const normalized: CurrentUser = { ...user, role: normalizeRole(user.role) ?? 'Cashier' };
-    // The axios request interceptor reads the token straight out of localStorage,
+    // The axios request interceptor reads the token straight out of the session store,
     // so these two keys must stay in sync with the store.
-    localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(normalized));
-    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    authStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(normalized));
+    authStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
     if (permissions) {
-      localStorage.setItem(AUTH_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
+      authStorage.setItem(AUTH_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
     } else {
-      localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+      authStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
     }
     set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [], packageFeatures: null, packageInfo: null });
   },
 
   logout: () => {
     posApi.logout(); // clears the refresh-token key and best-effort revokes it server-side
-    localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-    localStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
-    localStorage.removeItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY);
+    authStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    authStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    authStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+    authStorage.removeItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY);
     set({
       currentUser: null,
       token: null,
@@ -403,11 +405,8 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   setModulePermissions: (list) => {
     const safe = Array.isArray(list) ? list : [];
-    try {
-      localStorage.setItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, JSON.stringify(safe));
-    } catch {
-      // storage full / unavailable — in-memory copy is still fine
-    }
+    // authStorage swallows a full or blocked store; the in-memory copy is still fine.
+    authStorage.setItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY, JSON.stringify(safe));
     set({ modulePermissions: safe });
   },
 
@@ -485,11 +484,16 @@ export const usePosStore = create<PosState>((set, get) => ({
   loadTenantSettings: async () => {
     const { selectedTenant } = get();
     if (!selectedTenant?.id) return;
+    const cacheKey = `tenantSettings:${selectedTenant.id}`;
     try {
       const settings = await posApi.getTenantSettings(selectedTenant.id);
       set({ tenantSettings: settings });
+      // Kept on the device, so a till opened offline still charges the right tax.
+      saveSetting(cacheKey, settings).catch(() => { /* optional */ });
     } catch (err) {
       console.error('Failed to load tenant settings:', err);
+      const cached = await getSetting(cacheKey).catch(() => null);
+      if (cached) set({ tenantSettings: cached });
     }
   },
 

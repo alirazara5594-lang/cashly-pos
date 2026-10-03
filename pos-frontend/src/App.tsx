@@ -13,6 +13,8 @@ import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { GettingStarted } from './components/GettingStarted';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { webNameFromPath } from './services/restaurantAddress';
+import { OFFLINE_SESSION_TOKEN } from './services/offlineStaff';
+import { offlineDb } from './services/offlineDb';
 import { endSupportSession, getSupportSession } from './services/supportSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
@@ -165,13 +167,16 @@ function MainLayoutInner() {
   }, [isAuthenticated]);
 
   // Refresh module permissions whenever a session becomes active (e.g. after a
-  // reload that restored the token from localStorage).
+  // reload that restored the token from the session store). Sales made while the till was
+  // offline go up too: a till signed in offline is asked for its PIN again once the internet
+  // is back, and this is the moment they can be sent.
   useEffect(() => {
     if (isAuthenticated) {
       loadMyModulePermissions();
       loadMyPackageFeatures();
+      if (token !== OFFLINE_SESSION_TOKEN) autoSyncOnReconnect();
     }
-  }, [isAuthenticated, currentUser?.id, loadMyModulePermissions, loadMyPackageFeatures]);
+  }, [isAuthenticated, currentUser?.id, token, loadMyModulePermissions, loadMyPackageFeatures, autoSyncOnReconnect]);
 
   // Tenants / branches now require a bearer token, so they load only once a
   // session exists — not during the pre-login setup check.
@@ -181,10 +186,17 @@ function MainLayoutInner() {
       try {
         const tenants = await posApi.getTenants();
         setTenants(tenants);
-        await usePosStore.getState().loadTenantSettings();
+        // Kept on the device, so a till opened while the internet is down still knows its
+        // restaurant and branch (and so its cached menu) — see offlineStaff.ts.
+        offlineDb.tenants.clear().then(() => offlineDb.tenants.bulkPut(tenants)).catch(() => { /* optional */ });
       } catch (err) {
         console.error('Failed to load tenant data:', err);
+        // Offline: the copy kept last time, and only this person's own business.
+        const tenantId = usePosStore.getState().currentUser?.tenantId;
+        const cached = tenantId ? await offlineDb.tenants.where('id').equals(tenantId).toArray().catch(() => []) : [];
+        if (cached.length > 0) setTenants(cached);
       }
+      await usePosStore.getState().loadTenantSettings();
     };
     loadTenantData();
   }, [isAuthenticated, currentUser?.id, setTenants]);

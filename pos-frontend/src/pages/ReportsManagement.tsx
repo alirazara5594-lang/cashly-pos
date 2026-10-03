@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { posApi } from '../services/api';
+import { authStorage } from '../services/authStorage';
 import { usePosStore } from '../store/posStore';
 import type { 
   ZReportSummary, 
@@ -135,7 +136,7 @@ export const ReportsManagement: React.FC = () => {
 
   const handleAddCashEntry = async () => {
     if (!cashTally || !entryAmount || !entryDesc) return;
-    const user = JSON.parse(localStorage.getItem('cashly_pos_user') || '{}');
+    const user = JSON.parse(authStorage.getItem('cashly_pos_user') || '{}');
     try {
       await posApi.addCashEntry(cashTally.shiftId, {
         entryType,

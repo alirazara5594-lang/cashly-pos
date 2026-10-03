@@ -202,18 +202,21 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const [webNameEdited, setWebNameEdited] = useState(false);
   const webName = webNameEdited ? webNameInput : suggestWebName(restaurantName);
   const [webCheck, setWebCheck] = useState<{ name: string; available: boolean; problem: string | null; alternative: string | null } | null>(null);
+  // The name whose check got no answer from the server, so the page says so instead of "Checking…" forever.
+  const [webCheckFailedFor, setWebCheckFailedFor] = useState<string | null>(null);
+  const checkWebNameNow = (name: string, isCancelled: () => boolean = () => false) =>
+    posApi.checkWebName(name)
+      .then(r => { if (!isCancelled()) { setWebCheck(r); setWebCheckFailedFor(null); } })
+      .catch(() => { if (!isCancelled()) setWebCheckFailedFor(name); });
   useEffect(() => {
     if (!signupMode || webNameProblem(webName)) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
-      posApi.checkWebName(webName)
-        .then(r => { if (!cancelled) setWebCheck(r); })
-        .catch(() => { /* checked again when they press Next */ });
-    }, 400);
+    const timer = setTimeout(() => { checkWebNameNow(webName, () => cancelled); }, 400);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [webName, signupMode]);
   const webNameLocalProblem = webNameProblem(webName);
   const webCheckNow = webCheck && webCheck.name === webName ? webCheck : null;
+  const webCheckFailed = !webCheckNow && webCheckFailedFor === webName;
   const webLinkParts = restaurantLinkParts();
 
   // Offline & Server Settings
@@ -395,7 +398,13 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       if (!restaurantName.trim()) return 'Enter your business name.';
       if (signupMode) {
         if (webNameLocalProblem) return `Web address: ${webNameLocalProblem}`;
-        if (!webCheckNow) return 'Still checking your web address — try again in a moment.';
+        if (!webCheckNow) {
+          // Ask again now, so pressing Next a moment later can go through.
+          checkWebNameNow(webName);
+          return webCheckFailed
+            ? 'Could not check your web address: the Cashly server did not answer. Make sure it is running, then press Next again.'
+            : 'Still checking your web address — try again in a moment.';
+        }
         if (!webCheckNow.available) return `Web address: ${webCheckNow.problem ?? 'already taken.'}`;
       }
     }
@@ -1502,6 +1511,13 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <span className="text-slate-400">Your staff open this address to sign in with their username and PIN.</span>
                       ) : webNameLocalProblem ? (
                         <span className="text-rose-600">{webNameLocalProblem}</span>
+                      ) : webCheckFailed ? (
+                        <span className="text-rose-600">
+                          Could not check this address: the Cashly server did not answer.{' '}
+                          <button type="button" className="underline font-semibold" onClick={() => checkWebNameNow(webName)}>
+                            Try again
+                          </button>
+                        </span>
                       ) : !webCheckNow ? (
                         <span className="text-slate-400">Checking…</span>
                       ) : webCheckNow.available ? (

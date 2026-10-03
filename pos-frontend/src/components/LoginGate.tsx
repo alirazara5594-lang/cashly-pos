@@ -3,6 +3,7 @@ import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, 
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { useNavigate } from 'react-router-dom';
+import { OFFLINE_SESSION_TOKEN, forgetOfflineStaff, rememberForOffline, signInOffline } from '../services/offlineStaff';
 import { currentRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
 import { usePosStore, LOGIN_BRANCH_KEY } from '../store/posStore';
 import type { AuthPermissions, CurrentUser, LoginResponse, MyBranch } from '../types';
@@ -188,8 +189,26 @@ export const LoginGate: React.FC = () => {
           setError('This device is not connected to a branch any more.');
           return;
         }
-        const result = await posApi.pinLogin(pinCode.trim(), license, getDeviceFingerprint());
-        await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions, tillBranchId);
+        let result: LoginResponse;
+        try {
+          result = await posApi.pinLogin(pinCode.trim(), license, getDeviceFingerprint());
+        } catch (err) {
+          // The server answered (wrong PIN, device revoked…): handled below as usual.
+          if ((err as { response?: unknown }).response) throw err;
+          // No answer at all — the internet is down. Staff who signed in on this till in the last
+          // 7 days can still get in; their sales sync once it is back.
+          const offline = tillBranchId ? await signInOffline(pinCode.trim(), tillBranchId) : null;
+          if (!offline?.ok) {
+            setError(offline && !offline.ok ? offline.message : 'Sign-in failed — check your connection');
+            setPinCode('');
+            return;
+          }
+          await finish({ ...offline.user, branchId: tillBranchId }, OFFLINE_SESSION_TOKEN, offline.permissions ?? undefined, tillBranchId);
+          return;
+        }
+        const tillUser = result.user as SignedInUser;
+        if (tillBranchId) void rememberForOffline(tillUser, pinCode.trim(), tillBranchId);
+        await finish(tillUser, result.token, tillUser.permissions, tillBranchId);
         return;
       }
       if (mode === 'email') {
@@ -229,7 +248,11 @@ export const LoginGate: React.FC = () => {
     } catch (err) {
       const status = getApiErrorStatus(err);
       const data = (err as { response?: { data?: { deviceNotConnected?: boolean; requiresTenantSlug?: boolean; webName?: string } } }).response?.data;
-      if (mode === 'till' && data?.deviceNotConnected) setDeviceNotConnected(true);
+      if (mode === 'till' && data?.deviceNotConnected) {
+        setDeviceNotConnected(true);
+        // A disconnected or revoked till must not let anyone in offline either.
+        forgetOfflineStaff();
+      }
       if (mode === 'username' && data?.requiresTenantSlug) {
         // That username exists at more than one restaurant: ask which one, and keep the PIN typed.
         setRestaurantNeeded(true);

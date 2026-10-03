@@ -1,4 +1,5 @@
 import { usePosStore } from '../store/posStore';
+import { authStorage } from './authStorage';
 import type { AuthPermissions, CurrentUser, SupportSessionStart } from '../types';
 
 /**
@@ -30,7 +31,7 @@ interface PlatformSession {
 
 export function getSupportSession(): SupportSessionInfo | null {
   try {
-    const raw = localStorage.getItem(SUPPORT_SESSION_KEY);
+    const raw = authStorage.getItem(SUPPORT_SESSION_KEY);
     return raw ? JSON.parse(raw) as SupportSessionInfo : null;
   } catch {
     return null;
@@ -44,13 +45,13 @@ export function beginSupportSession(session: SupportSessionStart) {
     user: state.currentUser,
     token: state.token,
     permissions: state.permissions,
-    refreshToken: localStorage.getItem(REFRESH_TOKEN_KEY)
+    refreshToken: authStorage.getItem(REFRESH_TOKEN_KEY)
   };
-  localStorage.setItem(PLATFORM_SESSION_KEY, JSON.stringify(platform));
+  authStorage.setItem(PLATFORM_SESSION_KEY, JSON.stringify(platform));
   // A support session has no refresh token: when its time is up it ends, rather than quietly
   // turning back into the platform admin's session behind the screen.
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
-  localStorage.setItem(SUPPORT_SESSION_KEY, JSON.stringify({
+  authStorage.removeItem(REFRESH_TOKEN_KEY);
+  authStorage.setItem(SUPPORT_SESSION_KEY, JSON.stringify({
     tenantName: session.tenantName,
     readOnly: session.readOnly,
     expiresAt: new Date(Date.now() + session.expiresInMinutes * 60_000).toISOString()
@@ -82,7 +83,7 @@ export function beginSupportSession(session: SupportSessionStart) {
 /** Close the support session and return to the platform admin's own session. */
 function readPlatformSession(): PlatformSession | null {
   try {
-    const raw = localStorage.getItem(PLATFORM_SESSION_KEY);
+    const raw = authStorage.getItem(PLATFORM_SESSION_KEY);
     return raw ? JSON.parse(raw) as PlatformSession : null;
   } catch {
     return null;
@@ -91,8 +92,8 @@ function readPlatformSession(): PlatformSession | null {
 
 export function endSupportSession() {
   const platform = readPlatformSession();
-  localStorage.removeItem(SUPPORT_SESSION_KEY);
-  localStorage.removeItem(PLATFORM_SESSION_KEY);
+  authStorage.removeItem(SUPPORT_SESSION_KEY);
+  authStorage.removeItem(PLATFORM_SESSION_KEY);
 
   const state = usePosStore.getState();
   if (!platform?.user || !platform.token) {
@@ -100,7 +101,7 @@ export function endSupportSession() {
     window.location.assign('/');
     return;
   }
-  if (platform.refreshToken) localStorage.setItem(REFRESH_TOKEN_KEY, platform.refreshToken);
+  if (platform.refreshToken) authStorage.setItem(REFRESH_TOKEN_KEY, platform.refreshToken);
   state.login(platform.user, platform.token, platform.permissions);
   window.location.assign('/super-admin');
 }

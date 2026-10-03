@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { authStorage } from './authStorage';
 import type { 
   Tenant, 
   Branch, 
@@ -144,7 +145,7 @@ export function setApiBaseUrl(url: string) {
 
 // JWT Auth interceptor
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('cashly_pos_token');
+  const token = authStorage.getItem('cashly_pos_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -211,15 +212,15 @@ export function registerAuthRedirect(fn: UnauthorizedHandler | null) {
 /** Keeps a fresh sign-in where the request interceptor and the refresh logic look for it. */
 function storeSession(data: LoginResponse) {
   if (!data.token) return;
-  localStorage.setItem('cashly_pos_token', data.token);
-  if (data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', data.refreshToken);
-  localStorage.setItem('cashly_pos_user', JSON.stringify(data.user));
+  authStorage.setItem('cashly_pos_token', data.token);
+  if (data.refreshToken) authStorage.setItem('cashly_pos_refresh_token', data.refreshToken);
+  authStorage.setItem('cashly_pos_user', JSON.stringify(data.user));
 }
 
 function clearSession() {
-  localStorage.removeItem('cashly_pos_token');
-  localStorage.removeItem('cashly_pos_refresh_token');
-  localStorage.removeItem('cashly_pos_user');
+  authStorage.removeItem('cashly_pos_token');
+  authStorage.removeItem('cashly_pos_refresh_token');
+  authStorage.removeItem('cashly_pos_user');
 }
 
 // The access token is short-lived (2h) on purpose — this is what keeps a shift-long
@@ -228,16 +229,16 @@ function clearSession() {
 let refreshInFlight: Promise<string | null> | null = null;
 
 async function tryRefreshToken(): Promise<string | null> {
-  const storedRefreshToken = localStorage.getItem('cashly_pos_refresh_token');
+  const storedRefreshToken = authStorage.getItem('cashly_pos_refresh_token');
   if (!storedRefreshToken) return null;
   if (!refreshInFlight) {
     refreshInFlight = api
       .post<LoginResponse>('/api/auth/refresh', { refreshToken: storedRefreshToken })
       .then((res) => {
         if (!res.data.token) return null;
-        localStorage.setItem('cashly_pos_token', res.data.token);
-        if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
-        localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+        authStorage.setItem('cashly_pos_token', res.data.token);
+        if (res.data.refreshToken) authStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+        authStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
         return res.data.token;
       })
       .catch(() => null)
@@ -396,7 +397,7 @@ export const posApi = {
     return res.data;
   },
   changeMyPassword: async (currentPassword: string, newPassword: string) => {
-    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    const refreshToken = authStorage.getItem('cashly_pos_refresh_token');
     const res = await api.post<{ message: string; signedOutSessions: number }>('/api/auth/security/password', { currentPassword, newPassword, refreshToken });
     return res.data;
   },
@@ -418,12 +419,12 @@ export const posApi = {
   },
   /** Move this session to another branch the user covers, without signing out. */
   switchBranch: async (branchId: string) => {
-    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    const refreshToken = authStorage.getItem('cashly_pos_refresh_token');
     const res = await api.post<LoginResponse>('/api/auth/switch-branch', { branchId, refreshToken });
     if (res.data.token) {
-      localStorage.setItem('cashly_pos_token', res.data.token);
-      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
-      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+      authStorage.setItem('cashly_pos_token', res.data.token);
+      if (res.data.refreshToken) authStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+      authStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
     }
     return res.data;
   },
@@ -433,7 +434,7 @@ export const posApi = {
     return res.data;
   },
   logout: () => {
-    const refreshToken = localStorage.getItem('cashly_pos_refresh_token');
+    const refreshToken = authStorage.getItem('cashly_pos_refresh_token');
     clearSession();
     if (refreshToken) {
       // Best-effort — revokes the refresh token server-side so a copy of it left in an
@@ -1513,9 +1514,9 @@ export const posApi = {
   superAdminLogin: async (username: string, pinCode: string) => {
     const res = await api.post<LoginResponse>('/api/auth/super-admin-login', { username, pinCode });
     if (res.data.token) {
-      localStorage.setItem('cashly_pos_token', res.data.token);
-      if (res.data.refreshToken) localStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
-      localStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
+      authStorage.setItem('cashly_pos_token', res.data.token);
+      if (res.data.refreshToken) authStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+      authStorage.setItem('cashly_pos_user', JSON.stringify(res.data.user));
     }
     return res.data;
   },

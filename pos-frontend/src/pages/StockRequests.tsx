@@ -9,6 +9,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { posApi } from '../services/api';
+import { authStorage } from '../services/authStorage';
 import { usePosStore } from '../store/posStore';
 import type { StockRequest, StockRequestItem, RawIngredient } from '../types';
 
@@ -16,7 +17,7 @@ export const StockRequests: React.FC = () => {
   const { selectedBranch } = usePosStore();
   
   // Get current user from localStorage
-  const currentUser = JSON.parse(localStorage.getItem('cashly_pos_user') || '{}');
+  const currentUser = JSON.parse(authStorage.getItem('cashly_pos_user') || '{}');
   
   const [requests, setRequests] = useState<StockRequest[]>([]);
   const [ingredients, setIngredients] = useState<RawIngredient[]>([]);
