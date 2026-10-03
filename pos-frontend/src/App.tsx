@@ -12,7 +12,7 @@ import { posApi, registerAuthRedirect, registerBillingHandler } from './services
 import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { GettingStarted } from './components/GettingStarted';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
-import { rememberRestaurantAddress, webNameFromPath } from './services/restaurantAddress';
+import { webNameFromPath } from './services/restaurantAddress';
 import { endSupportSession, getSupportSession } from './services/supportSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
@@ -237,11 +237,12 @@ function MainLayoutInner() {
     );
   }
 
-  // A restaurant's own sign-in link (<site>/r/<webName>): this device remembers the restaurant and
-  // opens its sign-in, which then asks only username + PIN. (With a domain, the subdomain says it.)
+  // A restaurant's own sign-in link (<site>/r/<webName>): signed out, the link stays in the address
+  // bar and the sign-in below is that restaurant's (username + PIN). Nothing is remembered, so
+  // opening Cashly without the link always shows the main sign-in. Once signed in, on to the app.
+  // (With a domain, the subdomain says which restaurant.)
   const linkWebName = webNameFromPath(location.pathname);
-  if (linkWebName) {
-    rememberRestaurantAddress(linkWebName);
+  if (linkWebName && isAuthenticated) {
     return <Navigate to="/" replace />;
   }
 

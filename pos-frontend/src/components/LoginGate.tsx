@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor, Building2, Warehouse } from 'lucide-react';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
-import { currentRestaurantAddress, forgetRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
+import { useNavigate } from 'react-router-dom';
+import { currentRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
 import { usePosStore, LOGIN_BRANCH_KEY } from '../store/posStore';
 import type { AuthPermissions, CurrentUser, LoginResponse, MyBranch } from '../types';
 
@@ -73,6 +74,7 @@ const locationKind = (b: MyBranch) => {
 };
 
 export const LoginGate: React.FC = () => {
+  const navigate = useNavigate();
   const login = usePosStore(s => s.login);
   const loadMyModulePermissions = usePosStore(s => s.loadMyModulePermissions);
   const selectedTenant = usePosStore(s => s.selectedTenant);
@@ -127,10 +129,10 @@ export const LoginGate: React.FC = () => {
     setShowForgot(false);
   };
 
-  // "Not Royal Grill?" — this device stops opening that restaurant's sign-in (an /r/ link only;
-  // a subdomain always means its own restaurant).
+  // "Not Royal Grill?" — off that restaurant's /r/ link, back to the main sign-in (a subdomain
+  // always means its own restaurant, so it has no such link).
   const leaveRestaurantAddress = () => {
-    forgetRestaurantAddress();
+    navigate('/', { replace: true });
     setAddress(null);
     setAddressInfo(null);
     switchMode(tillBranchId ? 'till' : 'email');

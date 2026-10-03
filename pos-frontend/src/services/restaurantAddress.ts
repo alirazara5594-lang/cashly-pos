@@ -9,8 +9,10 @@
 
 const BASE_DOMAIN = (import.meta.env.VITE_BASE_DOMAIN as string | undefined)?.trim().replace(/^\./, '').toLowerCase() || null;
 
-/** The restaurant an /r/<name> link pointed at, kept for when the address itself no longer says. */
-const SAVED_ADDRESS_KEY = 'cashly_restaurant_address';
+/** Where older versions remembered the last /r/<name> link. No longer used: the main sign-in is
+ *  what opens unless the address itself names a restaurant. Cleared so it never comes back. */
+const LEGACY_SAVED_ADDRESS_KEY = 'cashly_restaurant_address';
+try { localStorage.removeItem(LEGACY_SAVED_ADDRESS_KEY); } catch { /* optional */ }
 
 /** Cashly's own subdomains — never a restaurant. */
 const CASHLY_SUBDOMAINS = new Set(['www', 'app', 'admin', 'api']);
@@ -34,27 +36,16 @@ export function webNameFromPath(pathname = window.location.pathname): string | n
   return name && WEB_NAME.test(name) ? name : null;
 }
 
-/** Remember the restaurant an /r/ link named, so this device keeps opening its sign-in. */
-export function rememberRestaurantAddress(webName: string) {
-  try { localStorage.setItem(SAVED_ADDRESS_KEY, webName); } catch { /* optional */ }
-}
-
-export function forgetRestaurantAddress() {
-  try { localStorage.removeItem(SAVED_ADDRESS_KEY); } catch { /* optional */ }
-}
-
 /**
- * Which restaurant's sign-in this is: the subdomain first (it cannot be changed from the page), else
- * the restaurant this device last opened through its /r/ link.
+ * Which restaurant's sign-in this is: the subdomain (it cannot be changed from the page), else the
+ * /r/<name> link open right now. Nothing is remembered: opening Cashly without a restaurant's
+ * address always shows the main sign-in, with New Registration.
  */
 export function currentRestaurantAddress(): { webName: string; fromSubdomain: boolean } | null {
   const sub = webNameFromSubdomain();
   if (sub) return { webName: sub, fromSubdomain: true };
-  try {
-    const saved = localStorage.getItem(SAVED_ADDRESS_KEY);
-    if (saved && WEB_NAME.test(saved)) return { webName: saved, fromSubdomain: false };
-  } catch { /* optional */ }
-  return null;
+  const linked = webNameFromPath();
+  return linked ? { webName: linked, fromSubdomain: false } : null;
 }
 
 /** The address to share with a restaurant's staff. */

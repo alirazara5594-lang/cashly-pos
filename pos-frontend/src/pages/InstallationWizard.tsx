@@ -898,9 +898,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           <button
             type="button"
             onClick={() => {
-              // A new registration goes to its own restaurant's sign-in address.
-              if (signupMode && signupSuccess.webName) window.location.assign(restaurantSignInLink(signupSuccess.webName));
-              else navigate(signupMode ? '/' : isErp ? '/director' : '/');
+              // A new owner signs in at the main sign-in, with the email they just registered (it is
+              // filled in). The restaurant's own address above is for their staff.
+              navigate(signupMode ? '/' : isErp ? '/director' : '/', { replace: true });
             }}
             className="w-full py-3.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm transition shadow-lg shadow-teal-500/25 cursor-pointer flex items-center justify-center gap-2"
           >
