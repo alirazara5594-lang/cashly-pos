@@ -984,14 +984,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         )}
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-slate-900">Single Outlet</h3>
-                        <p className="text-xs text-teal-600 font-semibold">Cashly POS</p>
+                        <h3 className="text-lg font-bold text-slate-900">Cashly POS</h3>
+                        <p className="text-xs text-teal-600 font-semibold">For a single outlet</p>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      One restaurant, café or store, with the back office included. An office in another room or
-                      building is fine.
+                      One restaurant, café or store with no separate head office. Tills, kitchen, stock and reports
+                      all run from the outlet, with the back office included.
                     </p>
 
                     <ul className="space-y-2 text-xs text-slate-700 pt-3 border-t border-slate-200">
@@ -1035,14 +1035,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         )}
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-slate-900">Multi-Outlet & Chains</h3>
-                        <p className="text-xs text-teal-600 font-semibold">Cashly POS + ERP</p>
+                        <h3 className="text-lg font-bold text-slate-900">Cashly POS + ERP</h3>
+                        <p className="text-xs text-teal-600 font-semibold">Head office + one or more outlets</p>
                       </div>
                     </div>
 
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      A head office that runs the menu, buying and reports for all your branches, or a central kitchen.
-                      Each branch has its own tills.
+                      The head office runs the ERP (menu, buying, stock, accounts and reports) and each outlet runs
+                      the POS. For one outlet with a head office, a chain, or a central kitchen.
                     </p>
 
                     <ul className="space-y-2 text-xs text-slate-700 pt-3 border-t border-slate-200">
@@ -1062,7 +1062,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
 
                   <div className="mt-4 pt-3 text-xs font-semibold text-teal-700 flex items-center gap-1.5">
-                    <Network className="w-3.5 h-3.5" /> Head office & branches
+                    <Network className="w-3.5 h-3.5" /> ERP at head office · POS at every outlet
                   </div>
                 </div>
               </div>
@@ -1077,7 +1077,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <div className="flex items-center gap-2">
                   <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your POS Version</h2>
                   <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-800">
-                    Single Outlet
+                    Cashly POS
                   </span>
                 </div>
                 <p className="text-sm text-slate-500">
@@ -1537,8 +1537,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     {branches.length <= 1 && (
                       <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex flex-wrap items-center gap-x-3 gap-y-2">
                         <span className="flex-1 min-w-60">
-                          <strong>Only one outlet, and no central kitchen or warehouse?</strong> Then you don't need a head office:
-                          <strong> Single Outlet</strong> already includes the back office (menu, stock, reports), even from an office in another building.
+                          <strong>No separate head office?</strong> <strong>Cashly POS</strong> already includes the back office
+                          (menu, stock, reports), even from an office in another room. Keep this choice if you want a head office ERP for your outlet.
                         </span>
                         <button
                           type="button"
@@ -1550,7 +1550,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                           }}
                           className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer"
                         >
-                          Switch to Single Outlet
+                          Switch to Cashly POS
                         </button>
                       </div>
                     )}
@@ -1901,11 +1901,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     <div className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                       {systemType === 'POS_ERP' ? (
                         <span className="text-teal-700 flex items-center gap-1.5">
-                          <Building2 className="w-4 h-4" /> Multi-Outlet & Chains · Cashly POS + ERP
+                          <Building2 className="w-4 h-4" /> Cashly POS + ERP · head office & outlets
                         </span>
                       ) : (
                         <span className="text-teal-700 flex items-center gap-1.5">
-                          <Store className="w-4 h-4" /> Single Outlet · Cashly POS
+                          <Store className="w-4 h-4" /> Cashly POS · single outlet
                         </span>
                       )}
                     </div>
@@ -2057,8 +2057,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div>
                 <span className="text-slate-400">Setup:</span>{' '}
                 {systemType === 'POS_ERP'
-                  ? 'Multi-Outlet & Chains (Cashly POS + ERP) · full ERP, POS version per outlet'
-                  : `Single Outlet (Cashly POS) · ${tierLabel(selectedPlan)} POS version`}
+                  ? 'Cashly POS + ERP · head office ERP, POS version per outlet'
+                  : `Cashly POS · single outlet · ${tierLabel(selectedPlan)} POS version`}
               </div>
               <div>
                 <span className="text-slate-400">Locations:</span>{' '}
