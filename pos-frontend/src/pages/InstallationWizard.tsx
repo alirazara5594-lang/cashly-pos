@@ -486,9 +486,14 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     try {
       const res = await posApi.sendMobileCode(ownerMobile.trim(), getCountryByCode(countryCode)?.name);
       setMobileCodeSent(true);
+      // Development machine with no WhatsApp/SMS set up: the server hands the code back, so it is
+      // filled in for the tester. Real customers always get it on their phone.
+      if (res.devCode) setMobileCode(res.devCode);
       setMobileNote({
         tone: 'ok',
-        text: res.channel === 'Console'
+        text: res.devCode
+          ? `Development mode: your code is ${res.devCode} (filled in). Press Verify. Real customers get it by WhatsApp or SMS.`
+          : res.channel === 'Console'
           ? 'Development mode: the code is printed in the backend window.'
           : `We sent a 6-digit code by ${res.channel}. It works for ${res.expiresInMinutes} minutes.`
       });

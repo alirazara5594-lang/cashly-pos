@@ -4490,7 +4490,15 @@ authApi.MapPost("/mobile-code", async (AppDbContext db, HttpContext http, Pos.Ap
         CreatedByIp = http.Connection.RemoteIpAddress?.ToString()
     });
     await db.SaveChangesAsync();
-    return Results.Ok(new { sent = true, channel = sender.Channel, expiresInMinutes = 10 });
+    return Results.Ok(new
+    {
+        sent = true,
+        channel = sender.Channel,
+        expiresInMinutes = 10,
+        // Only on a development machine with no WhatsApp or SMS set up (the "Console" channel
+        // exists nowhere else), so a tester sees the code on the page. Never in production.
+        devCode = sender.Channel == "Console" ? code : null
+    });
 });
 
 authApi.MapPost("/mobile-code/verify", async (AppDbContext db, MobileCodeVerifyDto dto) =>

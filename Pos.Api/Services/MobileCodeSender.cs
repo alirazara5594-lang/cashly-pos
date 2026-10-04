@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -143,8 +144,33 @@ public class MobileCodeSender : IMobileCodeSender
         using var response = await client.PostAsync(url, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), ct);
         if (response.IsSuccessStatusCode) return (true, null);
 
+        // Meta's headline message is often vague ("Invalid parameter"); the detail under
+        // error_data says which part it rejected. Both go to the console (never the token or code)
+        // and the detail goes to the screen.
         var body = await response.Content.ReadAsStringAsync(ct);
-        return (false, ErrorMessage(body, "error", "message") ?? $"WhatsApp returned HTTP {(int)response.StatusCode}.");
+        Console.WriteLine($"[Mobile codes] WhatsApp refused the code message (template \"{_waTemplate}\", language \"{_waLanguage}\", " +
+                          $"copy-code button {(_waCopyButton ? "on" : "off")}): HTTP {(int)response.StatusCode} {body}");
+        return (false, WhatsAppError(body) ?? $"WhatsApp returned HTTP {(int)response.StatusCode}.");
+    }
+
+    /// <summary>Meta's message plus its error_data detail and code, e.g. "(#132000) Number of
+    /// parameters does not match… — body: expected 1, received 2".</summary>
+    private static string? WhatsAppError(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("error", out var error)) return null;
+            var message = error.TryGetProperty("message", out var m) ? m.GetString() : null;
+            var code = error.TryGetProperty("code", out var c) ? c.ToString() : null;
+            string? details = null;
+            if (error.TryGetProperty("error_data", out var data) && data.ValueKind == JsonValueKind.Object
+                && data.TryGetProperty("details", out var d))
+                details = d.GetString();
+            var text = string.Join(" — ", new[] { message, details }.Where(s => !string.IsNullOrWhiteSpace(s)));
+            return string.IsNullOrWhiteSpace(text) ? null : code != null ? $"{text} (code {code})" : text;
+        }
+        catch (JsonException) { return null; }
     }
 
     private async Task<(bool, string?)> SendSmsAsync(string mobileDigits, string code, CancellationToken ct)

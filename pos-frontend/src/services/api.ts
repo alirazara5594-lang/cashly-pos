@@ -373,7 +373,8 @@ export const posApi = {
   },
   /** Sends a 6-digit code to the mobile. Country (by name) decides how a local number is read. */
   sendMobileCode: async (mobile: string, country?: string) => {
-    const res = await api.post<{ sent: boolean; channel: string; expiresInMinutes: number }>('/api/auth/mobile-code', { mobile, country });
+    // devCode: only on a development machine with no WhatsApp or SMS set up.
+    const res = await api.post<{ sent: boolean; channel: string; expiresInMinutes: number; devCode?: string | null }>('/api/auth/mobile-code', { mobile, country });
     return res.data;
   },
   /** Checks the code; the proof it returns goes with the registration. */
