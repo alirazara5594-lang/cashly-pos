@@ -172,41 +172,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Back-office sign-in for a new registration (email + password); the PIN is for the tills.
   const [adminPassword, setAdminPassword] = useState('');
   const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('');
-  // The owner's own mobile (registration only): one free trial per number. When the server sends
-  // mobile codes (WhatsApp or SMS), the number is proven with one before the business is created.
+  // The owner's own mobile (registration only): one free trial per number, checked for
+  // uniqueness by the server — no code to type.
   const [ownerMobile, setOwnerMobile] = useState('');
-  const [mobileCodes, setMobileCodes] = useState<{ enabled: boolean; channel: string } | null>(null);
-  const [mobileCode, setMobileCode] = useState('');
-  const [mobileCodeSent, setMobileCodeSent] = useState(false);
-  const [mobileBusy, setMobileBusy] = useState(false);
-  const [mobileNote, setMobileNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
-  const [mobileProof, setMobileProof] = useState<{ mobile: string; proof: string } | null>(null);
-  const needsMobileCode = signupMode && !!mobileCodes?.enabled;
-  // A proof is for the number it was made for; editing the number needs a new code.
-  const mobileVerified = !!mobileProof && mobileProof.mobile === ownerMobile.trim();
-  // Email codes: the free, permanent gate — SMTP sends them, and an owner changing phone
-  // numbers cannot break them. When the server can send them this replaces the mobile-code
-  // step entirely; the mobile number is still collected, just not code-gated.
-  const [emailCodes, setEmailCodes] = useState<{ enabled: boolean; channel: string } | null>(null);
-  const [emailCode, setEmailCode] = useState('');
-  const [emailCodeSent, setEmailCodeSent] = useState(false);
-  const [emailBusy, setEmailBusy] = useState(false);
-  const [emailNote, setEmailNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
-  const [emailProof, setEmailProof] = useState<{ email: string; proof: string } | null>(null);
-  const needsEmailCode = signupMode && !!emailCodes?.enabled;
-  const emailVerified = !!emailProof && emailProof.email === adminEmail.trim();
-  const showMobileCode = needsMobileCode && !needsEmailCode;
-  useEffect(() => {
-    if (!signupMode) return;
-    let cancelled = false;
-    posApi.getMobileVerification()
-      .then(r => { if (!cancelled) setMobileCodes(r); })
-      .catch(() => { /* no codes: the number is only checked for being new */ });
-    posApi.getEmailVerification()
-      .then(r => { if (!cancelled) setEmailCodes(r); })
-      .catch(() => { /* no email codes: the mobile step stays the gate */ });
-    return () => { cancelled = true; };
-  }, [signupMode]);
   // Start with the sample menu? Null until the owner decides: then food businesses get it.
   const [sampleMenuChoice, setSampleMenuChoice] = useState<boolean | null>(null);
   const wantsSampleMenu = sampleMenuChoice ?? (businessType === 'Restaurant' || businessType === 'Hybrid');
@@ -448,12 +416,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       if (signupMode && ownerMobile.replace(/\D/g, '').length < 10) {
         return 'Enter your mobile number, for example 0300 1234567.';
       }
-      if (needsEmailCode && !emailVerified) {
-        return 'Verify your email address: press Send code, then type the code we send you.';
-      }
-      if (showMobileCode && !mobileVerified) {
-        return 'Verify your mobile number: press Send code, then type the code we send you.';
-      }
       if (signupMode) {
         if (adminPassword.length < 8 || !/[A-Za-z]/.test(adminPassword) || !/\d/.test(adminPassword)) {
           return 'Choose a password of at least 8 characters, with letters and numbers.';
@@ -498,79 +460,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     setStep(nextStepAfter(step));
   };
 
-  const sendMobileCode = async () => {
-    setMobileBusy(true);
-    setMobileNote(null);
-    try {
-      const res = await posApi.sendMobileCode(ownerMobile.trim(), getCountryByCode(countryCode)?.name);
-      setMobileCodeSent(true);
-      // Development machine with no WhatsApp/SMS set up: the server hands the code back, so it is
-      // filled in for the tester. Real customers always get it on their phone.
-      if (res.devCode) setMobileCode(res.devCode);
-      setMobileNote({
-        tone: 'ok',
-        text: res.devCode
-          ? `Development mode: your code is ${res.devCode} (filled in). Press Verify. Real customers get it by WhatsApp or SMS.`
-          : res.channel === 'Console'
-          ? 'Development mode: the code is printed in the backend window.'
-          : `We sent a 6-digit code by ${res.channel}. It works for ${res.expiresInMinutes} minutes.`
-      });
-    } catch (err) {
-      setMobileNote({ tone: 'err', text: getApiErrorMessage(err, 'Could not send the code. Try again in a moment.') });
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const verifyMobileCode = async () => {
-    setMobileBusy(true);
-    setMobileNote(null);
-    try {
-      const res = await posApi.verifyMobileCode(ownerMobile.trim(), mobileCode.trim(), getCountryByCode(countryCode)?.name);
-      setMobileProof({ mobile: ownerMobile.trim(), proof: res.proof });
-      setMobileNote({ tone: 'ok', text: 'Mobile number verified.' });
-    } catch (err) {
-      setMobileNote({ tone: 'err', text: getApiErrorMessage(err, 'That code is not right.') });
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const sendEmailCode = async () => {
-    setEmailBusy(true);
-    setEmailNote(null);
-    try {
-      const res = await posApi.sendEmailCode(adminEmail.trim());
-      setEmailCodeSent(true);
-      // Development machine with no SMTP: the server hands the code back so it is filled in.
-      if (res.devCode) setEmailCode(res.devCode);
-      setEmailNote({
-        tone: 'ok',
-        text: res.devCode
-          ? `Development mode: your code is ${res.devCode} (filled in). Press Verify. Real customers get it by email.`
-          : `We sent a 6-digit code to ${adminEmail.trim()}. It works for ${res.expiresInMinutes} minutes.`
-      });
-    } catch (err) {
-      setEmailNote({ tone: 'err', text: getApiErrorMessage(err, 'Could not send the code. Try again in a moment.') });
-    } finally {
-      setEmailBusy(false);
-    }
-  };
-
-  const verifyEmailCode = async () => {
-    setEmailBusy(true);
-    setEmailNote(null);
-    try {
-      const res = await posApi.verifyEmailCode(adminEmail.trim(), emailCode.trim());
-      setEmailProof({ email: adminEmail.trim(), proof: res.proof });
-      setEmailNote({ tone: 'ok', text: 'Email verified.' });
-    } catch (err) {
-      setEmailNote({ tone: 'err', text: getApiErrorMessage(err, 'That code is not right.') });
-    } finally {
-      setEmailBusy(false);
-    }
-  };
-
   /** A shop marked "same building as head office" takes the head office's city and address. */
   const branchAddress = (b: BranchInitPayload) => ({
     city: (b.sameAddressAsHq ? hqCity : b.city)?.trim() || undefined,
@@ -579,7 +468,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   /** The final button: check the step, then ask before anything is created. */
   const requestCompleteSetup = () => {
-    const stepError = validateStep(step);
+    // The stepper lets you jump between steps without validating, so re-check the Admin
+    // Security step here too — a cleared verification must not reach Create.
+    const stepError = signupMode ? (validateStep(SECURITY_STEP) ?? validateStep(step)) : validateStep(step);
     if (stepError) {
       setErrorMessage(stepError);
       return;
@@ -590,7 +481,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   const handleCompleteSetup = async () => {
     setConfirmOpen(false);
-    const stepError = validateStep(step);
+    const stepError = signupMode ? (validateStep(SECURITY_STEP) ?? validateStep(step)) : validateStep(step);
     if (stepError) {
       setErrorMessage(stepError);
       return;
@@ -668,9 +559,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           // A registration is never a till joining a head office (that is /connect).
           appSurface: isChain ? 'Erp' : 'Pos',
           ownerMobile: ownerMobile.trim(),
-          seedSampleMenu: wantsSampleMenu,
-          mobileProof: showMobileCode && mobileVerified ? mobileProof?.proof : undefined,
-          emailProof: emailVerified ? emailProof?.proof : undefined
+          seedSampleMenu: wantsSampleMenu
         });
 
         setSignupSuccess({
@@ -1893,67 +1782,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                           <Mail className="w-3.5 h-3.5 text-teal-600" /> Email Address*
                         </label>
-                        <div className="flex gap-1.5">
-                          <input
-                            type="email"
-                            value={adminEmail}
-                            onChange={(e) => {
-                              setAdminEmail(e.target.value);
-                              // A different address needs its own code, and the old proof no longer applies.
-                              setEmailCodeSent(false);
-                              setEmailCode('');
-                              setEmailNote(null);
-                              setEmailProof(null);
-                            }}
-                            autoComplete="email"
-                            placeholder="owner@example.com"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
-                          />
-                          {needsEmailCode && !emailVerified && (
-                            <button
-                              type="button"
-                              onClick={sendEmailCode}
-                              disabled={emailBusy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())}
-                              className="px-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold shrink-0 transition cursor-pointer"
-                            >
-                              {emailCodeSent ? 'Resend' : 'Send code'}
-                            </button>
-                          )}
-                          {needsEmailCode && emailVerified && (
-                            <span className="px-2.5 flex items-center gap-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-700 text-xs font-bold shrink-0">
-                              <Check className="w-3.5 h-3.5" /> Verified
-                            </span>
-                          )}
-                        </div>
-                        {needsEmailCode && emailCodeSent && !emailVerified && (
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              maxLength={6}
-                              value={emailCode}
-                              onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, ''))}
-                              autoComplete="one-time-code"
-                              placeholder="6-digit code"
-                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm font-mono font-bold tracking-widest text-slate-900 focus:outline-none focus:border-teal-500"
-                            />
-                            <button
-                              type="button"
-                              onClick={verifyEmailCode}
-                              disabled={emailBusy || emailCode.length !== 6}
-                              className="px-3 rounded-xl bg-white border border-teal-300 text-teal-700 hover:bg-teal-50 disabled:opacity-40 text-xs font-bold shrink-0 transition cursor-pointer"
-                            >
-                              Verify
-                            </button>
-                          </div>
-                        )}
-                        {emailNote ? (
-                          <p className={`text-[11px] ${emailNote.tone === 'ok' ? 'text-teal-700' : 'text-rose-600'}`}>{emailNote.text}</p>
-                        ) : (
-                          <p className="text-[11px] text-slate-400">
-                            One business per email{needsEmailCode ? '. We send a 6-digit code to this address to check it is yours.' : '.'}
-                          </p>
-                        )}
+                        <input
+                          type="email"
+                          value={adminEmail}
+                          onChange={(e) => setAdminEmail(e.target.value)}
+                          autoComplete="email"
+                          placeholder="owner@example.com"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        />
+                        <p className="text-[11px] text-slate-400">One business per email.</p>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
@@ -1984,66 +1821,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                           <Phone className="w-3.5 h-3.5 text-teal-600" /> Your Mobile Number*
                         </label>
-                        <div className="flex gap-1.5">
-                          <input
-                            type="tel"
-                            value={ownerMobile}
-                            onChange={(e) => {
-                              setOwnerMobile(e.target.value);
-                              // A different number needs its own code.
-                              setMobileCodeSent(false);
-                              setMobileCode('');
-                              setMobileNote(null);
-                            }}
-                            autoComplete="tel"
-                            placeholder="e.g. 0300 1234567"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
-                          />
-                          {showMobileCode && !mobileVerified && (
-                            <button
-                              type="button"
-                              onClick={sendMobileCode}
-                              disabled={mobileBusy || ownerMobile.replace(/\D/g, '').length < 10}
-                              className="px-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold shrink-0 transition cursor-pointer"
-                            >
-                              {mobileCodeSent ? 'Resend' : 'Send code'}
-                            </button>
-                          )}
-                          {showMobileCode && mobileVerified && (
-                            <span className="px-2.5 flex items-center gap-1 rounded-xl bg-teal-50 border border-teal-200 text-teal-700 text-xs font-bold shrink-0">
-                              <Check className="w-3.5 h-3.5" /> Verified
-                            </span>
-                          )}
-                        </div>
-                        {showMobileCode && mobileCodeSent && !mobileVerified && (
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              maxLength={6}
-                              value={mobileCode}
-                              onChange={(e) => setMobileCode(e.target.value.replace(/\D/g, ''))}
-                              autoComplete="one-time-code"
-                              placeholder="6-digit code"
-                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm font-mono font-bold tracking-widest text-slate-900 focus:outline-none focus:border-teal-500"
-                            />
-                            <button
-                              type="button"
-                              onClick={verifyMobileCode}
-                              disabled={mobileBusy || mobileCode.length !== 6}
-                              className="px-3 rounded-xl bg-white border border-teal-300 text-teal-700 hover:bg-teal-50 disabled:opacity-40 text-xs font-bold shrink-0 transition cursor-pointer"
-                            >
-                              Verify
-                            </button>
-                          </div>
-                        )}
-                        {mobileNote ? (
-                          <p className={`text-[11px] ${mobileNote.tone === 'ok' ? 'text-teal-700' : 'text-rose-600'}`}>{mobileNote.text}</p>
-                        ) : (
-                          <p className="text-[11px] text-slate-400">
-                            One free trial per mobile number{showMobileCode ? `. We send a code by ${mobileCodes?.channel === 'Console' ? 'text' : mobileCodes?.channel} to check it is yours.` : '.'}
-                          </p>
-                        )}
+                        <input
+                          type="tel"
+                          value={ownerMobile}
+                          onChange={(e) => setOwnerMobile(e.target.value)}
+                          autoComplete="tel"
+                          placeholder="e.g. 0300 1234567"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-sm text-slate-900 focus:outline-none focus:border-teal-500"
+                        />
+                        <p className="text-[11px] text-slate-400">One free trial per mobile number.</p>
                       </div>
                       <p className="md:col-span-3 text-[11px] text-slate-500 -mt-1">
                         <strong>Back office</strong> (reports, menu, settings): sign in with your email and password.{' '}

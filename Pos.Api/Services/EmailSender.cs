@@ -66,9 +66,13 @@ public class SmtpEmailSender : IEmailSender
     public bool CanSend => !string.IsNullOrWhiteSpace(_host) && !string.IsNullOrWhiteSpace(_from);
     public bool IsConfigured => CanSend && !string.IsNullOrWhiteSpace(PublicUrl);
 
+    // Sendable means the mailbox itself (host + from) — every caller already chose its own gate
+    // (links check IsConfigured so a reset link never points at the wrong site; codes check
+    // CanSend). Guarding here on IsConfigured would make plain codes wait for App:PublicUrl
+    // even though they carry no link at all.
     public async Task SendAsync(string to, string subject, string htmlBody, string textBody)
     {
-        if (!IsConfigured) throw new InvalidOperationException("Email is not configured.");
+        if (!CanSend) throw new InvalidOperationException("Email is not configured.");
 
         using var message = new MailMessage
         {
