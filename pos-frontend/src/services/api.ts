@@ -166,6 +166,7 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/reset-password',
   '/api/auth/confirm-email',
   '/api/auth/mobile-code',
+  '/api/auth/email-code',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
   '/api/auth/refresh',
@@ -380,6 +381,21 @@ export const posApi = {
   /** Checks the code; the proof it returns goes with the registration. */
   verifyMobileCode: async (mobile: string, code: string, country?: string) => {
     const res = await api.post<{ verified: boolean; proof: string }>('/api/auth/mobile-code/verify', { mobile, country, code });
+    return res.data;
+  },
+  /** Whether registration asks for a code sent to the owner's email (the free, permanent gate). */
+  getEmailVerification: async () => {
+    const res = await api.get<{ enabled: boolean; channel: string }>('/api/public/email-verification');
+    return res.data;
+  },
+  /** Sends a 6-digit code to the email. devCode only on a development machine with no SMTP. */
+  sendEmailCode: async (email: string) => {
+    const res = await api.post<{ sent: boolean; channel: string; expiresInMinutes: number; devCode?: string | null }>('/api/auth/email-code', { email });
+    return res.data;
+  },
+  /** Checks the email code; the proof it returns goes with the registration. */
+  verifyEmailCode: async (email: string, code: string) => {
+    const res = await api.post<{ verified: boolean; proof: string }>('/api/auth/email-code/verify', { email, code });
     return res.data;
   },
   /** What a new business has done so far, for the Getting started checklist. */
@@ -1500,6 +1516,8 @@ export const posApi = {
     seedSampleMenu?: boolean;
     /** From verifyMobileCode, when the server asks for mobile codes. */
     mobileProof?: string;
+    /** From verifyEmailCode, when email codes are the signup gate. */
+    emailProof?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;

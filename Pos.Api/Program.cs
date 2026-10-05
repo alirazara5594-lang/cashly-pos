@@ -3889,6 +3889,23 @@ static Task<bool> PinTakenAsync(AppDbContext db, Guid tenantId, string lookup, G
 static string? NormalizeEmail(string? email) =>
     string.IsNullOrWhiteSpace(email) ? null : email.Trim().ToLowerInvariant();
 
+// Throwaway inboxes are how "one business per owner" gets gamed: they mint addresses at will.
+// Signup verification refuses their domains outright (a blocklist, not a service lookup, so it
+// works offline and can never leak the address to a third party).
+static bool IsDisposableEmail(string email)
+{
+    var at = email.LastIndexOf('@');
+    if (at < 0) return false;
+    return email[(at + 1)..] is "mailinator.com" or "yopmail.com" or "yopmail.fr" or "grr.la"
+        or "guerrillamail.com" or "guerrillamail.info" or "sharklasers.com" or "spam4.me"
+        or "trashmail.com" or "trashmail.me" or "discard.email" or "10minutemail.com"
+        or "10minutemail.net" or "tempmail.com" or "temp-mail.org" or "fakeinbox.com"
+        or "throwawaymail.com" or "maildrop.cc" or "getnada.com" or "dispostable.com"
+        or "mailnesia.com" or "33mail.com" or "mohmal.com" or "inboxbear.com"
+        or "mytemp.email" or "tmpmail.net" or "tmpmail.org" or "emailondeck.com"
+        or "tempr.email" or "linshiyouxiang.net";
+}
+
 // What is kept of a mobile code: a hash, bound to the number it was sent to.
 static string MobileCodeHash(string mobileDigits, string code) =>
     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes($"mobile-code:{mobileDigits}:{code}")));
@@ -4460,6 +4477,14 @@ app.MapGet("/api/public/mobile-verification", (Pos.Api.Services.IMobileCodeSende
     Results.Ok(new { enabled = sender.IsEnabled, channel = sender.Channel }))
     .AllowAnonymous().RequireRateLimiting("public-lookup");
 
+// Email verification codes: the permanent channel — any mailbox sends it for free, and an owner
+// changing phone numbers cannot break it. In development with no SMTP, the "Console" channel
+// hands the code back on the page (same as mobile), so the flow is testable before any account
+// exists. In production this is off until SMTP is configured — never a silent no-op.
+app.MapGet("/api/public/email-verification", (Pos.Api.Services.IEmailSender email, IHostEnvironment env) =>
+    Results.Ok(new { enabled = email.CanSend || env.IsDevelopment(), channel = email.CanSend ? "Email" : "Console" }))
+    .AllowAnonymous().RequireRateLimiting("public-lookup");
+
 authApi.MapPost("/mobile-code", async (AppDbContext db, HttpContext http, Pos.Api.Services.IMobileCodeSender sender, MobileCodeRequestDto dto) =>
 {
     if (!sender.IsEnabled) return Results.BadRequest(new { message = "Mobile codes are not set up on this server." });
@@ -4522,6 +4547,109 @@ authApi.MapPost("/mobile-code/verify", async (AppDbContext db, MobileCodeVerifyD
     }
     if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(pending.CodeHash), Encoding.UTF8.GetBytes(MobileCodeHash(mobile, dto.Code.Trim()))))
+    {
+        await db.SaveChangesAsync();
+        return Results.BadRequest(new { message = "That code is not right." });
+    }
+
+    // The right code: hand back a one-time proof for the registration to present.
+    var proof = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+        .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    pending.VerifiedAt = now;
+    pending.ProofHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(proof)));
+    pending.ExpiresAt = now.AddMinutes(30);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { verified = true, proof });
+});
+
+// ------------------------------------------------------------
+// EMAIL VERIFICATION CODES — the signup gate that costs nothing
+// and survives phone-number changes. Rows live in MobileVerifications
+// keyed by "address" (an email can never collide with phone digits).
+// ------------------------------------------------------------
+authApi.MapPost("/email-code", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender email, IHostEnvironment env, EmailCodeRequestDto dto) =>
+{
+    var address = NormalizeEmail(dto.Email);
+    if (address == null || !address.Contains('@') || address.Length > 254)
+        return Results.BadRequest(new { message = "Enter a valid email address." });
+    if (IsDisposableEmail(address))
+        return Results.BadRequest(new { message = "That email provider is not accepted for signups. Use your own mailbox." });
+    if (!email.CanSend && !env.IsDevelopment())
+        return Results.BadRequest(new { message = "Email verification is not set up on this server." });
+    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == address))
+        return Results.BadRequest(new { message = "An account with this email already exists. Sign in to it instead." });
+
+    // One code a minute, five an hour, per address — the same discipline as mobile codes.
+    var now = DateTime.UtcNow;
+    var recent = await db.MobileVerifications.Where(m => m.Mobile == address && m.CreatedAt > now.AddHours(-1)).ToListAsync();
+    if (recent.Any(m => m.CreatedAt > now.AddMinutes(-1)))
+        return Results.Json(new { message = "A code was sent a moment ago. Wait a minute before asking for another." }, statusCode: StatusCodes.Status429TooManyRequests);
+    if (recent.Count >= 5)
+        return Results.Json(new { message = "Too many codes for this address. Try again in an hour." }, statusCode: StatusCodes.Status429TooManyRequests);
+    foreach (var older in recent.Where(m => m.VerifiedAt == null && m.ExpiresAt > now)) older.ExpiresAt = now;
+
+    var code = System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+    string? devCode = null;
+    if (email.CanSend)
+    {
+        try
+        {
+            await email.SendAsync(address, "Your Cashly POS verification code",
+                $"<p>Your Cashly POS verification code is:</p>" +
+                $"<p style=\"font-size:24px;font-weight:bold;letter-spacing:6px\">{code}</p>" +
+                "<p>It works for 10 minutes. Do not share it with anyone. If you did not ask for it, you can ignore this email.</p>",
+                $"Your Cashly POS code is {code}. It works for 10 minutes. Do not share it with anyone.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Email codes] SMTP refused the code for {address}: {ex.Message}");
+            return Results.Json(new { message = $"Could not send the code: {ex.Message}" }, statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+    else
+    {
+        // Development machine with no SMTP: hand the code back so the page can fill it in —
+        // exactly what the mobile Console channel does, and never reachable in production.
+        devCode = code;
+    }
+
+    db.MobileVerifications.Add(new MobileVerification
+    {
+        Mobile = address,
+        CodeHash = MobileCodeHash(address, code),
+        ExpiresAt = now.AddMinutes(10),
+        CreatedByIp = http.Connection.RemoteIpAddress?.ToString()
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        sent = true,
+        channel = email.CanSend ? "Email" : "Console",
+        expiresInMinutes = 10,
+        devCode
+    });
+});
+
+authApi.MapPost("/email-code/verify", async (AppDbContext db, EmailCodeVerifyDto dto) =>
+{
+    var address = NormalizeEmail(dto.Email);
+    if (address == null || string.IsNullOrWhiteSpace(dto.Code)) return Results.BadRequest(new { message = "Type the 6-digit code." });
+
+    var now = DateTime.UtcNow;
+    var pending = await db.MobileVerifications
+        .Where(m => m.Mobile == address && m.VerifiedAt == null && m.ExpiresAt > now)
+        .OrderByDescending(m => m.CreatedAt).FirstOrDefaultAsync();
+    if (pending == null) return Results.BadRequest(new { message = "This code has expired. Ask for a new one." });
+
+    pending.Attempts++;
+    if (pending.Attempts > 5)
+    {
+        pending.ExpiresAt = now;
+        await db.SaveChangesAsync();
+        return Results.BadRequest(new { message = "Too many wrong tries. Ask for a new code." });
+    }
+    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(pending.CodeHash), Encoding.UTF8.GetBytes(MobileCodeHash(address, dto.Code.Trim()))))
     {
         await db.SaveChangesAsync();
         return Results.BadRequest(new { message = "That code is not right." });
@@ -9821,7 +9949,7 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, 
 // ============================================================
 
 authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender,
-    Pos.Api.Services.IMobileCodeSender mobileCodes, SignupDto dto) =>
+    Pos.Api.Services.IMobileCodeSender mobileCodes, IHostEnvironment env, SignupDto dto) =>
 {
     // The restaurant's web name is its sign-in address: /r/<name> now, <name>.yourdomain.com once
     // there is a domain. The owner picks it; an older client that sends none gets one made from
@@ -9890,12 +10018,25 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
         return Results.BadRequest(new { error = "Enter your mobile number, for example 0300 1234567." });
     if (await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.ContactMobile == ownerMobile))
         return Results.BadRequest(new { error = "This mobile number is already registered with a Cashly business. Sign in to that account, or contact Cashly support to open another business." });
+    // Which code proves the owner is real. Email codes win whenever they are on (SMTP configured,
+    // or a development machine handing the code back) — mobile codes are the gate only when email
+    // is off, so the wizard and this check can never demand both from the same registration.
     MobileVerification? mobileProof = null;
-    if (mobileCodes.IsEnabled)
+    MobileVerification? emailProof = null;
+    var nowUtc = DateTime.UtcNow;
+    if (emailSender.CanSend || env.IsDevelopment())
+    {
+        var emailProofHash = string.IsNullOrWhiteSpace(dto.EmailProof) ? "-"
+            : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.EmailProof.Trim())));
+        emailProof = await db.MobileVerifications.FirstOrDefaultAsync(m => m.Mobile == ownerEmail && m.ProofHash == emailProofHash
+            && m.VerifiedAt != null && m.ConsumedAt == null && m.ExpiresAt > nowUtc);
+        if (emailProof == null)
+            return Results.BadRequest(new { error = "Verify your email address first: press Send code and type the code we send you." });
+    }
+    else if (mobileCodes.IsEnabled)
     {
         var proofHash = string.IsNullOrWhiteSpace(dto.MobileProof) ? "-"
             : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.MobileProof.Trim())));
-        var nowUtc = DateTime.UtcNow;
         mobileProof = await db.MobileVerifications.FirstOrDefaultAsync(m => m.Mobile == ownerMobile && m.ProofHash == proofHash
             && m.VerifiedAt != null && m.ConsumedAt == null && m.ExpiresAt > nowUtc);
         if (mobileProof == null)
@@ -10036,6 +10177,7 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
 
         // The mobile proof is used once.
         if (mobileProof != null) mobileProof.ConsumedAt = DateTime.UtcNow;
+    if (emailProof != null) emailProof.ConsumedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
 
@@ -14886,6 +15028,8 @@ public record ConfirmEmailDto(string? Token);
 /// typed without its country code is read.</summary>
 public record MobileCodeRequestDto(string? Mobile, string? Country);
 public record MobileCodeVerifyDto(string? Mobile, string? Country, string? Code);
+public record EmailCodeRequestDto(string? Email);
+public record EmailCodeVerifyDto(string? Email, string? Code);
 /// <summary>Restaurant is the web name when signing in at a restaurant's own address.</summary>
 public record EmailLoginDto(string? Email, string? Password, string? Restaurant = null);
 public record ChangeWebNameDto(string? WebName);
@@ -14987,7 +15131,9 @@ public record SignupDto(string RestaurantName, string ContactName, string Email,
     // The owner's mobile: one free trial per number. And whether to start with the sample menu.
     string? OwnerMobile = null, bool SeedSampleMenu = false,
     // From /auth/mobile-code/verify, when mobile codes are on.
-    string? MobileProof = null);
+    string? MobileProof = null,
+    // From /auth/email-code/verify, when email codes are the signup gate (SMTP configured, or dev).
+    string? EmailProof = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only

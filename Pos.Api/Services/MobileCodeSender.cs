@@ -28,10 +28,13 @@ namespace Pos.Api.Services;
 //   Otp:WhatsAppLanguage         template language, default "en"              (OTP_WHATSAPP_LANGUAGE)
 //   Otp:WhatsAppCopyCodeButton   "false" if the template has no copy-code button (OTP_WHATSAPP_COPY_BUTTON)
 //
-//   SMS — Twilio:
+//   SMS — your own Android phone as the gateway (free forever), with Twilio as fallback:
+//   Otp:GatewayApiKey            API key from the textbee dashboard (or your instance) (OTP_GATEWAY_API_KEY)
+//   Otp:GatewayUrl               base URL, default https://api.textbee.dev           (OTP_GATEWAY_URL)
+//   With Otp:Channel "Sms": the phone gateway is used when its key is set, otherwise Twilio:
 //   Otp:TwilioAccountSid                                                      (OTP_TWILIO_ACCOUNT_SID)
 //   Otp:TwilioAuthToken                                                       (OTP_TWILIO_AUTH_TOKEN)
-//   Otp:TwilioFrom               the sending number or sender ID              (OTP_TWILIO_FROM)
+//   Otp:TwilioFrom                the sending number or sender ID              (OTP_TWILIO_FROM)
 //
 // With no channel configured, a development machine writes the code to the backend console so the
 // whole flow can be tried; anywhere else codes are off, and registration checks only that the
@@ -65,6 +68,10 @@ public class MobileCodeSender : IMobileCodeSender
     private readonly string? _twilioToken;
     private readonly string? _twilioFrom;
 
+    private readonly string _gwUrl;
+    private readonly string? _gwKey;
+    private readonly bool _smsViaGateway;
+
     public MobileCodeSender(IConfiguration config, IHostEnvironment env, IHttpClientFactory httpFactory)
     {
         _httpFactory = httpFactory;
@@ -81,12 +88,18 @@ public class MobileCodeSender : IMobileCodeSender
         _twilioToken = Read("Otp:TwilioAuthToken", "OTP_TWILIO_AUTH_TOKEN");
         _twilioFrom = Read("Otp:TwilioFrom", "OTP_TWILIO_FROM");
 
+        _gwUrl = Read("Otp:GatewayUrl", "OTP_GATEWAY_URL") ?? "https://api.textbee.dev";
+        _gwKey = Read("Otp:GatewayApiKey", "OTP_GATEWAY_API_KEY");
+
         var wanted = Read("Otp:Channel", "OTP_CHANNEL")?.Trim();
         var whatsAppReady = !string.IsNullOrWhiteSpace(_waToken) && !string.IsNullOrWhiteSpace(_waPhoneNumberId);
         var smsReady = !string.IsNullOrWhiteSpace(_twilioSid) && !string.IsNullOrWhiteSpace(_twilioToken) && !string.IsNullOrWhiteSpace(_twilioFrom);
+        // The phone gateway is free, so when both SMS transports are configured it wins.
+        var gatewayReady = !string.IsNullOrWhiteSpace(_gwKey);
+        _smsViaGateway = string.Equals(wanted, "Sms", StringComparison.OrdinalIgnoreCase) && gatewayReady;
 
         _channel = string.Equals(wanted, "WhatsApp", StringComparison.OrdinalIgnoreCase) && whatsAppReady ? "WhatsApp"
-                 : string.Equals(wanted, "Sms", StringComparison.OrdinalIgnoreCase) && smsReady ? "SMS"
+                 : string.Equals(wanted, "Sms", StringComparison.OrdinalIgnoreCase) && (gatewayReady || smsReady) ? "SMS"
                  : env.IsDevelopment() ? "Console"
                  : "";
         if (!string.IsNullOrEmpty(wanted) && _channel is "" or "Console")
@@ -103,7 +116,9 @@ public class MobileCodeSender : IMobileCodeSender
             return _channel switch
             {
                 "WhatsApp" => await SendWhatsAppAsync(mobileDigits, code, ct),
-                "SMS" => await SendSmsAsync(mobileDigits, code, ct),
+                "SMS" => _smsViaGateway
+                    ? await SendGatewayAsync(mobileDigits, code, ct)
+                    : await SendSmsAsync(mobileDigits, code, ct),
                 "Console" => WriteToConsole(mobileDigits, code),
                 _ => (false, "Mobile codes are not set up on this server.")
             };
@@ -171,6 +186,27 @@ public class MobileCodeSender : IMobileCodeSender
             return string.IsNullOrWhiteSpace(text) ? null : code != null ? $"{text} (code {code})" : text;
         }
         catch (JsonException) { return null; }
+    }
+
+    /// <summary>The phone-gateway route (textbee-compatible): your own Android phone sends the
+    /// SMS, so the per-message cost is whatever your SIM plan already includes — free forever.</summary>
+    private async Task<(bool, string?)> SendGatewayAsync(string mobileDigits, string code, CancellationToken ct)
+    {
+        var client = _httpFactory.CreateClient();
+        client.DefaultRequestHeaders.Add("x-api-key", _gwKey!);
+
+        var payload = new
+        {
+            recipients = new[] { "+" + mobileDigits },
+            message = $"Your Cashly POS code is {code}. It works for 10 minutes. Do not share it with anyone."
+        };
+        var url = $"{_gwUrl.TrimEnd('/')}/api/v1/gateway/send-sms";
+        using var response = await client.PostAsync(url, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), ct);
+        if (response.IsSuccessStatusCode) return (true, null);
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        Console.WriteLine($"[Mobile codes] SMS gateway refused the code message ({_gwUrl}): HTTP {(int)response.StatusCode} {body}");
+        return (false, ErrorMessage(body, "message", null) ?? ErrorMessage(body, "error", null) ?? $"SMS gateway returned HTTP {(int)response.StatusCode}.");
     }
 
     private async Task<(bool, string?)> SendSmsAsync(string mobileDigits, string code, CancellationToken ct)

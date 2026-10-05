@@ -27,6 +27,9 @@ namespace Pos.Api.Services;
 public interface IEmailSender
 {
     bool IsConfigured { get; }
+    /// <summary>Mail can actually go out (host + from set). Verification codes need only this;
+    /// links (forgot-password) also need <see cref="PublicUrl"/> to point at the real site.</summary>
+    bool CanSend { get; }
     /// <summary>Where people open Cashly, for links in emails. Null when not configured.</summary>
     string? PublicUrl { get; }
     Task SendAsync(string to, string subject, string htmlBody, string textBody);
@@ -58,8 +61,10 @@ public class SmtpEmailSender : IEmailSender
     public string? PublicUrl { get; }
 
     // The link in a reset email must point at the real site, never at whatever address the request
-    // claimed to come from — so without App:PublicUrl nothing is sent.
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(_host) && !string.IsNullOrWhiteSpace(_from) && !string.IsNullOrWhiteSpace(PublicUrl);
+    // claimed to come from — so without App:PublicUrl link emails are not sent. Codes don't carry
+    // links, so they only need the mailbox itself (CanSend).
+    public bool CanSend => !string.IsNullOrWhiteSpace(_host) && !string.IsNullOrWhiteSpace(_from);
+    public bool IsConfigured => CanSend && !string.IsNullOrWhiteSpace(PublicUrl);
 
     public async Task SendAsync(string to, string subject, string htmlBody, string textBody)
     {
