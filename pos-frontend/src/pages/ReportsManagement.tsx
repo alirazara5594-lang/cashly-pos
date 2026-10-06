@@ -14,9 +14,11 @@ import {
   Search
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import { posApi } from '../services/api';
+import { posApi, ALL_LOCATIONS } from '../services/api';
 import { authStorage } from '../services/authStorage';
 import { usePosStore } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
+import { LocationPicker } from '../components/LocationPicker';
 import type { 
   ZReportSummary, 
   CategorySalesReport, 
@@ -27,8 +29,25 @@ import type {
 } from '../types';
 
 export const ReportsManagement: React.FC = () => {
-  const { selectedBranch, selectedTenant } = usePosStore();
+  const { selectedBranch, selectedTenant, currentUser } = usePosStore();
   const location = useLocation();
+
+  // Which location the reports read. Head office sells nothing itself, so it starts on all its
+  // outlets together and can pick one; an owner with several locations can do the same. Staff
+  // pinned to a branch only ever get their own (the server enforces it).
+  const { atHeadOffice, severalLocations, outlets, locations } = useBusinessShape();
+  const isPinned = !!currentUser?.branchId;
+  const [chosenLocation, setChosenLocation] = useState<string | null>(null);
+  const reportLocationId = chosenLocation ?? (atHeadOffice ? ALL_LOCATIONS : selectedBranch?.id ?? '');
+  const allLocations = reportLocationId === ALL_LOCATIONS;
+  const pickableLocations = atHeadOffice ? outlets : locations;
+  const showLocationPicker = !isPinned && severalLocations && pickableLocations.length > 0;
+  const reportLocationName = allLocations
+    ? (atHeadOffice ? 'All outlets' : 'Whole business')
+    : locations.find(b => b.id === reportLocationId)?.name ?? selectedBranch?.name ?? '';
+  // The drawer is counted at the outlet's own till. Head office and an all-locations view read the
+  // closings; they never count or change them.
+  const canCountCash = !atHeadOffice && !allLocations;
   // Active submodule tab
   const [activeTab, setActiveTab] = useState<'zreport' | 'tax' | 'categories' | 'products' | 'payments' | 'multibranch' | 'cashSales' | 'cardSales' | 'cashTally'>(
     location.state?.tab || 'zreport'
@@ -41,10 +60,12 @@ export const ReportsManagement: React.FC = () => {
   }, [location.state]);
 
   // Filtering Controls
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  // Today where the business is ("en-CA" is YYYY-MM-DD), not in UTC — after midnight in Pakistan,
+  // UTC is still on yesterday until 5 AM.
+  const [selectedDate, setSelectedDate] = useState<string>(new Date().toLocaleDateString('en-CA'));
   const [selectedDaysRange, setSelectedDaysRange] = useState<number>(7);
   const [taxSearchQuery, setTaxSearchQuery] = useState('');
-  const [taxFilterRate, setTaxFilterRate] = useState<'all' | '16' | '8'>('all');
+  const [taxFilterRate, setTaxFilterRate] = useState<'all' | 'cash' | 'card'>('all');
   const [loading, setLoading] = useState(false);
 
   // Interactive Cash Count in Z-Report
@@ -72,42 +93,42 @@ export const ReportsManagement: React.FC = () => {
   const [cardSalesReport, setCardSalesReport] = useState<any>(null);
 
   const loadReportData = async () => {
-    if (!selectedBranch?.id) return;
+    if (!reportLocationId) return;
     setLoading(true);
     try {
       if (activeTab === 'zreport' || activeTab === 'cashTally') {
-        const data = await posApi.getZReport(selectedBranch.id, selectedDate);
+        const data = await posApi.getZReport(reportLocationId, selectedDate);
         setZReport(data);
         if (data) {
           setActualCashCounted(data.actualCashInDrawerPKR || data.expectedCashInDrawerPKR);
         }
         // Auto-open Cash Tally modal when cashTally tab is selected
-        if (activeTab === 'cashTally' && data?.shiftId) {
+        if (activeTab === 'cashTally' && canCountCash && data?.shiftId) {
           setTimeout(() => {
             setIsCashTallyOpen(true);
             loadCashTally(data.shiftId!);
           }, 300);
         }
       } else if (activeTab === 'tax') {
-        const data = await posApi.getTaxAuditReport(selectedBranch.id, selectedDaysRange);
+        const data = await posApi.getTaxAuditReport(reportLocationId, selectedDaysRange);
         setTaxAudit(data);
       } else if (activeTab === 'categories') {
-        const data = await posApi.getCategorySalesReport(selectedBranch.id, selectedDaysRange);
+        const data = await posApi.getCategorySalesReport(reportLocationId, selectedDaysRange);
         setCategorySales(data);
       } else if (activeTab === 'products') {
-        const data = await posApi.getItemPerformanceReport(selectedBranch.id, selectedDaysRange);
+        const data = await posApi.getItemPerformanceReport(reportLocationId, selectedDaysRange);
         setProductPerformance(data);
       } else if (activeTab === 'payments') {
-        const data = await posApi.getPaymentMethodsReport(selectedBranch.id, selectedDaysRange);
+        const data = await posApi.getPaymentMethodsReport(reportLocationId, selectedDaysRange);
         setPaymentMethods(data);
       } else if (activeTab === 'multibranch' && selectedTenant?.id) {
         const data = await posApi.getConsolidatedFinancials(selectedTenant.id, selectedDaysRange);
         setConsolidated(data);
       } else if (activeTab === 'cashSales') {
-        const data = await posApi.getCashSalesReport(selectedBranch.id, selectedDate);
+        const data = await posApi.getCashSalesReport(reportLocationId, selectedDate);
         setCashSalesReport(data);
       } else if (activeTab === 'cardSales') {
-        const data = await posApi.getCardSalesReport(selectedBranch.id, selectedDate);
+        const data = await posApi.getCardSalesReport(reportLocationId, selectedDate);
         setCardSalesReport(data);
       }
     } catch (err) {
@@ -119,7 +140,8 @@ export const ReportsManagement: React.FC = () => {
 
   useEffect(() => {
     loadReportData();
-  }, [selectedBranch?.id, selectedTenant?.id, activeTab, selectedDate, selectedDaysRange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportLocationId, selectedTenant?.id, activeTab, selectedDate, selectedDaysRange]);
 
   // Cash Tally functions
   const loadCashTally = async (shiftId: string) => {
@@ -184,12 +206,15 @@ export const ReportsManagement: React.FC = () => {
 
   // Filtered Tax Invoices
   const filteredTaxInvoices = (taxAudit?.invoices || []).filter(inv => {
-    const matchesSearch = !taxSearchQuery || 
-      inv.orderNumber.toLowerCase().includes(taxSearchQuery.toLowerCase()) ||
-      inv.cashierName.toLowerCase().includes(taxSearchQuery.toLowerCase());
-    const matchesRate = taxFilterRate === 'all' || 
-      (taxFilterRate === '16' && inv.taxRatePercent === 16) ||
-      (taxFilterRate === '8' && inv.taxRatePercent === 8);
+    const query = taxSearchQuery.toLowerCase();
+    const matchesSearch = !query ||
+      inv.orderNumber.toLowerCase().includes(query) ||
+      inv.cashierName.toLowerCase().includes(query) ||
+      (inv.branchName ?? '').toLowerCase().includes(query);
+    // Cash is taxed at the cash rate, everything else at the card/digital rate — whatever those
+    // rates are for the business, not fixed numbers.
+    const matchesRate = taxFilterRate === 'all' ||
+      (taxFilterRate === 'cash' ? inv.paymentMethod === 'Cash' : inv.paymentMethod !== 'Cash');
     return matchesSearch && matchesRate;
   });
 
@@ -219,15 +244,21 @@ export const ReportsManagement: React.FC = () => {
           </div>
           <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
             <Building2 className="w-3.5 h-3.5 text-teal-500" />
-            Auditing Branch: <span className="text-teal-600 font-semibold">{selectedBranch?.name || 'Default Branch'}</span>
-            <span className="text-slate-400 mx-1">•</span>
-            <span className="text-slate-500">Tax Authority Compliance Mode</span>
+            Showing: <span className="text-teal-600 font-semibold">{activeTab === 'multibranch' ? 'Every location, side by side' : reportLocationName}</span>
           </p>
         </div>
 
         {/* Date / Time Window Filter Strip */}
         <div className="bg-white border border-slate-200 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-md">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {showLocationPicker && activeTab !== 'multibranch' && (
+              <LocationPicker
+                value={reportLocationId}
+                onChange={setChosenLocation}
+                locations={pickableLocations}
+                allLabel={atHeadOffice ? 'All outlets' : 'Whole business'}
+              />
+            )}
             {activeTab === 'zreport' ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500 font-semibold">Shift Date:</span>
@@ -339,7 +370,9 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-wider">Total Tax Collected</div>
                     <div>
                       <div className="text-xl font-black text-amber-600 leading-tight">{zReport.totalTaxPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-amber-600 mt-0.5">Cash (16%) &amp; Card (8%) Split</div>
+                      <div className="text-[10px] text-amber-600 mt-0.5">
+                        Cash {zReport.cashTaxPKR.toLocaleString()} · Card &amp; digital {zReport.cardTaxPKR.toLocaleString()}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -394,20 +427,77 @@ export const ReportsManagement: React.FC = () => {
 
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">4. Physical Cash Counted</span>
-                      <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-sm font-bold text-slate-500">PKR</span>
-                        <input
-                          type="number"
-                          value={actualCashCounted}
-                          onChange={(e) => setActualCashCounted(e.target.value === '' ? '' : Number(e.target.value))}
-                          placeholder="Counted cash..."
-                          className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-sm font-mono font-black text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
-                        />
-                      </div>
-                      <span className="text-[10px] text-slate-500">Input by cashier/manager</span>
+                      {canCountCash ? (
+                        <>
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              value={actualCashCounted}
+                              onChange={(e) => setActualCashCounted(e.target.value === '' ? '' : Number(e.target.value))}
+                              placeholder="Counted cash..."
+                              className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-sm font-mono font-black text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                            />
+                          </div>
+                          <span className="text-[10px] text-slate-500">Input by cashier/manager</span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-base font-mono font-black text-slate-900 mt-1">{zReport.actualCashInDrawerPKR.toLocaleString()}</div>
+                          <span className="text-[10px] text-slate-500">Counted at the outlets' tills</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
+
+                {/* Each till's close, read from the outlets — head office sees who closed short or over. */}
+                {(zReport.closings?.length ?? 0) > 0 && (
+                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+                    <div className="p-4 border-b border-slate-200">
+                      <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                        <Wallet className="w-4 h-4 text-amber-500" />
+                        Till Closings
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">Every till session on {zReport.period}, as counted at the till.</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                            {(allLocations || atHeadOffice) && <th className="py-3 px-4">Outlet</th>}
+                            <th className="py-3 px-4">Till / Cashier</th>
+                            <th className="py-3 px-4">Opened – Closed</th>
+                            <th className="py-3 px-4 text-right">Expected</th>
+                            <th className="py-3 px-4 text-right">Counted</th>
+                            <th className="py-3 px-4 text-right">Short / Over</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {zReport.closings!.map(c => (
+                            <tr key={c.shiftId} className="hover:bg-slate-50 transition">
+                              {(allLocations || atHeadOffice) && <td className="py-3 px-4 font-bold text-slate-900">{c.branchName ?? '—'}</td>}
+                              <td className="py-3 px-4 text-slate-700">{[c.terminalName, c.cashierName].filter(Boolean).join(' · ') || '—'}</td>
+                              <td className="py-3 px-4 text-slate-500">
+                                {new Date(c.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {' – '}
+                                {c.isClosed && c.closedAt
+                                  ? new Date(c.closedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : <span className="text-amber-600 font-semibold">still open</span>}
+                              </td>
+                              <td className="py-3 px-4 text-right font-mono text-slate-700">{c.expectedCashPKR.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right font-mono text-slate-700">{c.isClosed ? c.actualCashCountedPKR.toLocaleString() : '—'}</td>
+                              <td className={`py-3 px-4 text-right font-mono font-bold ${
+                                !c.isClosed ? 'text-slate-400' : c.variancePKR < 0 ? 'text-rose-600' : c.variancePKR > 0 ? 'text-blue-600' : 'text-teal-600'
+                              }`}>
+                                {!c.isClosed ? '—' : c.variancePKR === 0 ? 'Balanced' : `${c.variancePKR > 0 ? '+' : ''}${c.variancePKR.toLocaleString()}`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Sales Channels Split */}
                 <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xl">
@@ -445,24 +535,26 @@ export const ReportsManagement: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Cash Tally Button */}
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => {
-                      setIsCashTallyOpen(true);
-                      // Load tally for today's shift
-                      if (zReport.shiftId) loadCashTally(zReport.shiftId);
-                    }}
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs transition"
-                  >
-                    <Wallet className="w-4 h-4" />
-                    Cash Tally & Closing
-                  </button>
-                </div>
+                {/* Cash Tally Button — at the outlet's own till only */}
+                {canCountCash && (
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => {
+                        setIsCashTallyOpen(true);
+                        // Load tally for today's shift
+                        if (zReport.shiftId) loadCashTally(zReport.shiftId);
+                      }}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs transition"
+                    >
+                      <Wallet className="w-4 h-4" />
+                      Cash Tally & Closing
+                    </button>
+                  </div>
+                )}
               </>
             ) : (
               <div className="p-12 text-center text-slate-500 bg-white rounded-2xl border border-slate-200">
-                No closed register shifts or orders found for {selectedDate}.
+                No sales or till sessions for {reportLocationName || 'this location'} on {selectedDate}.
               </div>
             )}
           </div>
@@ -488,7 +580,7 @@ export const ReportsManagement: React.FC = () => {
                         </div>
                       </div>
                       <span className="px-2.5 py-1 rounded-lg bg-teal-50 text-teal-600 font-mono text-xs font-black border border-teal-200">
-                        16% Rate
+                        {taxAudit.cashSegment.taxRatePercent}% Rate
                       </span>
                     </div>
 
@@ -519,7 +611,7 @@ export const ReportsManagement: React.FC = () => {
                         </div>
                       </div>
                       <span className="px-2.5 py-1 rounded-lg bg-sky-50 text-sky-600 font-mono text-xs font-black border border-sky-200">
-                        8% Rate
+                        {taxAudit.cardSegment.taxRatePercent}% Rate
                       </span>
                     </div>
 
@@ -568,8 +660,8 @@ export const ReportsManagement: React.FC = () => {
                         className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                       >
                         <option value="all">All Tax Rates</option>
-                        <option value="16">16% Standard (Cash)</option>
-                        <option value="8">8% Reduced (Card)</option>
+                        <option value="cash">{taxAudit.cashSegment.taxRatePercent}% (Cash)</option>
+                        <option value="card">{taxAudit.cardSegment.taxRatePercent}% (Card &amp; digital)</option>
                       </select>
                     </div>
                   </div>
@@ -596,7 +688,10 @@ export const ReportsManagement: React.FC = () => {
                         ) : (
                           filteredTaxInvoices.map(inv => (
                             <tr key={inv.orderId} className="hover:bg-slate-50 transition">
-                              <td className="py-3 px-4 font-mono font-bold text-slate-900">{inv.orderNumber}</td>
+                              <td className="py-3 px-4 font-mono font-bold text-slate-900">
+                                {inv.orderNumber}
+                                {allLocations && inv.branchName && <span className="block font-sans font-normal text-[10px] text-slate-500">{inv.branchName}</span>}
+                              </td>
                               <td className="py-3 px-4 text-slate-500">{new Date(inv.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
                               <td className="py-3 px-4 text-slate-700">{inv.orderType}</td>
                               <td className="py-3 px-4">
@@ -611,7 +706,7 @@ export const ReportsManagement: React.FC = () => {
                               <td className="py-3 px-4 text-right font-mono text-slate-700">{inv.netAmountPKR.toLocaleString()}</td>
                               <td className="py-3 px-4 text-center">
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${
-                                  inv.taxRatePercent === 16 ? 'text-teal-600 bg-teal-50' : 'text-sky-600 bg-sky-50'
+                                  inv.paymentMethod === 'Cash' ? 'text-teal-600 bg-teal-50' : 'text-sky-600 bg-sky-50'
                                 }`}>
                                   {inv.taxRatePercent}%
                                 </span>
@@ -909,7 +1004,10 @@ export const ReportsManagement: React.FC = () => {
                           <tr key={o.id} className="hover:bg-slate-50 transition">
                             <td className="p-3 font-mono font-bold text-slate-900">{o.orderNumber}</td>
                             <td className="p-3 text-slate-700">{o.tableNumber || '—'}</td>
-                            <td className="p-3 text-slate-700">{o.cashierName}</td>
+                            <td className="p-3 text-slate-700">
+                              {o.cashierName}
+                              {allLocations && o.branchName && <span className="block text-[10px] text-slate-500">{o.branchName}</span>}
+                            </td>
                             <td className="p-3 text-right font-mono font-bold text-teal-600">{o.totalPKR.toLocaleString()}</td>
                             <td className="p-3 text-right font-mono text-slate-700">{o.amountPaidPKR.toLocaleString()}</td>
                             <td className="p-3 text-right font-mono text-amber-600">{o.changeDuePKR.toLocaleString()}</td>
@@ -998,7 +1096,10 @@ export const ReportsManagement: React.FC = () => {
                               </span>
                             </td>
                             <td className="p-3 text-slate-700">{o.tableNumber || '—'}</td>
-                            <td className="p-3 text-slate-700">{o.cashierName}</td>
+                            <td className="p-3 text-slate-700">
+                              {o.cashierName}
+                              {allLocations && o.branchName && <span className="block text-[10px] text-slate-500">{o.branchName}</span>}
+                            </td>
                             <td className="p-3 text-right font-mono font-bold text-blue-600">{o.totalPKR.toLocaleString()}</td>
                             <td className="p-3 text-slate-500">{new Date(o.createdAt).toLocaleTimeString()}</td>
                           </tr>

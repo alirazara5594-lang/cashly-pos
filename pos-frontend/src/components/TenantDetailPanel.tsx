@@ -710,7 +710,7 @@ const WebAddressSection: React.FC<{ webName: string; busy: boolean; onChange: (n
 /**
  * An owner who forgot their back-office password calls support (Cashly sends no email yet). This
  * sets a temporary password to read out to them — shown once — unlocks the account and signs it
- * out everywhere. They change it in Staff & Pin Access after signing in.
+ * out everywhere. They change it in People → Staff & PINs after signing in.
  */
 const OwnerSignIn: React.FC<{ tenantId: string }> = ({ tenantId }) => {
   const [owners, setOwners] = useState<TenantOwnerAccount[] | null>(null);

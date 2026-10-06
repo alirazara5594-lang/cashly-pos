@@ -19,6 +19,7 @@ import {
 import { useLocation } from 'react-router-dom';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
 import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse, Product, Branch } from '../types';
 
 /**
@@ -45,10 +46,13 @@ const locationTag = (b: Branch) => {
 };
 
 export const SupplyChainManagement: React.FC = () => {
-  const { selectedTenant, selectedBranch } = usePosStore();
+  const { selectedTenant, selectedBranch, currentUser } = usePosStore();
   const location = useLocation();
+  // Who is doing it, for "dispatched by" and "received by" — the real person, never a made-up title.
+  const me = currentUser?.fullName || currentUser?.username || '';
 
-  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
+  // Somewhere to transfer to: a head office (even before its first outlet) or several locations.
+  const { severalLocations: isMultiBranchChain } = useBusinessShape();
   const [activeTab, setActiveTab] = useState<'transfers' | 'procurement' | 'suppliers' | 'ledger' | 'warehouses'>(
     location.state?.tab || (isMultiBranchChain ? 'transfers' : 'procurement')
   );
@@ -95,7 +99,7 @@ export const SupplyChainManagement: React.FC = () => {
   const [dispatchOrder, setDispatchOrder] = useState<StockTransferOrder | null>(null);
   const [dispatchDriver, setDispatchDriver] = useState('');
   const [receiveOrder, setReceiveOrder] = useState<StockTransferOrder | null>(null);
-  const [receiverName, setReceiverName] = useState('Store Receiving Officer');
+  const [receiverName, setReceiverName] = useState(me);
 
   // New PO Modal
   const [isNewPOOpen, setIsNewPOOpen] = useState(false);
@@ -228,10 +232,11 @@ export const SupplyChainManagement: React.FC = () => {
 
     setTransferSourceBranchId(comm?.id || '');
     setTransferDestBranchId(dest?.id || '');
-    setTransferVehicle('Cold-Chain Refrigerated Van #04');
-    setTransferNotes('Emergency/Daily stock replenishment requisition to HQ Commissary');
+    // A blank form: the quantity, vehicle and note are the person's to fill in.
+    setTransferVehicle('');
+    setTransferNotes('');
     const first = firstItem();
-    setTransferLines(first ? [{ ...first, quantityRequested: 50 }] : []);
+    setTransferLines(first ? [{ ...first, quantityRequested: 0 }] : []);
     setIsNewTransferOpen(true);
   };
 
@@ -244,7 +249,7 @@ export const SupplyChainManagement: React.FC = () => {
   const handleAddTransferLine = () => {
     const first = firstItem();
     if (!first) return;
-    setTransferLines([...transferLines, { ...first, quantityRequested: 20 }]);
+    setTransferLines([...transferLines, { ...first, quantityRequested: 0 }]);
   };
 
   const handleCreateTransfer = async () => {
@@ -254,6 +259,10 @@ export const SupplyChainManagement: React.FC = () => {
     }
     if (transferSourceBranchId === transferDestBranchId) {
       alert('Stock has to move between two different locations.');
+      return;
+    }
+    if (transferLines.some(l => !(l.quantityRequested > 0))) {
+      alert('Enter a quantity for every line.');
       return;
     }
     try {
@@ -285,7 +294,7 @@ export const SupplyChainManagement: React.FC = () => {
     if (!dispatchOrder) return;
     try {
       await posApi.dispatchTransferOrder(dispatchOrder.id, {
-        dispatchedBy: 'Commissary Warehouse Supervisor',
+        dispatchedBy: me || undefined,
         vehicleOrDriver: dispatchDriver || dispatchOrder.vehicleOrDriver,
         notes: 'Dispatched in refrigerated logistics van'
       });
@@ -303,8 +312,7 @@ export const SupplyChainManagement: React.FC = () => {
     if (!receiveOrder) return;
     try {
       await posApi.receiveTransferOrder(receiveOrder.id, {
-        receivedBy: receiverName,
-        notes: 'Quality and temperature inspection verified. Stock-in credited.'
+        receivedBy: receiverName.trim() || me || undefined
       });
       setReceiveOrder(null);
       setStatusMsg(`Transfer #${receiveOrder.transferNumber} RECEIVED! Raw ingredients updated at branch kitchen inventory.`);
@@ -319,22 +327,30 @@ export const SupplyChainManagement: React.FC = () => {
   const handleOpenNewPO = () => {
     const firstSupplier = suppliers.find(s => s.isActive);
     setPoSupplierId(firstSupplier?.id || '');
-    setPoSupplier(firstSupplier?.name || 'National Poultry Farms Ltd');
-    setPoNotes('Fresh morning delivery batch');
+    setPoSupplier(firstSupplier?.name || '');
+    setPoNotes('');
     const first = firstItem();
-    setPoLines(first ? [{ ...first, quantity: 100 }] : []);
+    setPoLines(first ? [{ ...first, quantity: 0 }] : []);
     setIsNewPOOpen(true);
   };
 
   const handleAddPOLine = () => {
     const first = firstItem();
     if (!first) return;
-    setPoLines([...poLines, { ...first, quantity: 50 }]);
+    setPoLines([...poLines, { ...first, quantity: 0 }]);
   };
 
   const handleCreatePO = async () => {
     if (!selectedTenant?.id || !selectedBranch?.id || poLines.length === 0) {
       alert('Please fill out PO items');
+      return;
+    }
+    if (!poSupplier.trim()) {
+      alert('Enter the supplier.');
+      return;
+    }
+    if (poLines.some(l => !(l.quantity > 0))) {
+      alert('Enter a quantity for every line.');
       return;
     }
     try {
@@ -369,8 +385,7 @@ export const SupplyChainManagement: React.FC = () => {
     }
     try {
       await posApi.receivePurchaseOrder(po.id, {
-        receivedBy: 'Branch Kitchen Receiving Manager',
-        notes: 'Vendor Goods Received Note (GRN) verified.'
+        receivedBy: me || undefined
       });
       setStatusMsg(`PO #${po.poNumber} marked as RECEIVED! Raw ingredients updated.`);
       setTimeout(() => setStatusMsg(null), 4000);
@@ -465,15 +480,12 @@ export const SupplyChainManagement: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <Truck className="w-6 h-6 text-teal-500" />
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Supply Chain & Procurement</h1>
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">
-              Enterprise Logistics
-            </span>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Transfers & Purchasing</h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            {isMultiBranchChain 
-              ? 'Multi-Branch Hub: Central Commissary Stock Transfers, Dispatch Van Logistics & Vendor Procurement'
-              : 'Single Restaurant: Direct Vendor Purchase Orders (PO), Inward Stock GRN & Food Supplies'}
+            {isMultiBranchChain
+              ? 'Move stock between your locations, and buy from your suppliers.'
+              : 'Purchase orders to your suppliers, and goods received into stock.'}
           </p>
         </div>
 
@@ -575,7 +587,7 @@ export const SupplyChainManagement: React.FC = () => {
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
             >
               <Plus className="w-4 h-4" />
-              <span>Create Store Requisition</span>
+              <span>New Transfer</span>
             </button>
           </div>
 
@@ -587,7 +599,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             {transfers.length === 0 ? (
               <div className="p-8 text-center text-slate-500 text-xs">
-                No transfer orders found. Click "Create Store Requisition" to initiate commissary stock movement.
+                No transfers yet. Approving an outlet's stock request creates one, or press "New Transfer" to send stock yourself.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -669,7 +681,7 @@ export const SupplyChainManagement: React.FC = () => {
                               <button
                                 onClick={() => {
                                   setDispatchOrder(tr);
-                                  setDispatchDriver(tr.vehicleOrDriver || 'Van #04 - Driver Ali');
+                                  setDispatchDriver(tr.vehicleOrDriver || '');
                                 }}
                                 className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-md transition"
                               >
@@ -1218,7 +1230,7 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="flex justify-between items-center border-b border-slate-200 pb-2">
               <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">
                 <ArrowRightLeft className="w-5 h-5" />
-                <span>Create Store Stock Requisition</span>
+                <span>New Stock Transfer</span>
               </div>
               <button onClick={() => setIsNewTransferOpen(false)} className="text-slate-400 hover:text-slate-900">
                 <X className="w-4 h-4" />
@@ -1305,7 +1317,8 @@ export const SupplyChainManagement: React.FC = () => {
 
                     <input
                       type="number"
-                      value={line.quantityRequested}
+                      min={0}
+                      value={line.quantityRequested || ''}
                       onChange={(e) => {
                         const updated = [...transferLines];
                         updated[idx].quantityRequested = Number(e.target.value) || 0;
@@ -1343,7 +1356,7 @@ export const SupplyChainManagement: React.FC = () => {
               onClick={handleCreateTransfer}
               className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
             >
-              Submit Transfer Requisition
+              Create Transfer
             </button>
           </div>
         </div>
@@ -1517,7 +1530,8 @@ export const SupplyChainManagement: React.FC = () => {
 
                     <input
                       type="number"
-                      value={line.quantity}
+                      min={0}
+                      value={line.quantity || ''}
                       onChange={(e) => {
                         const updated = [...poLines];
                         updated[idx].quantity = Number(e.target.value) || 0;

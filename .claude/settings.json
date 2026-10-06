@@ -3,7 +3,8 @@
     "allow": [
       "Bash(netstat -ano)",
       "PowerShell(node --version)",
-      "PowerShell(npm --version)"
+      "PowerShell(npm --version)",
+      "PowerShell(npx tsc -b --noEmit 2>&1 | Select-Object -First 30; \"TSC EXIT: $LASTEXITCODE\")"
     ]
   }
 }

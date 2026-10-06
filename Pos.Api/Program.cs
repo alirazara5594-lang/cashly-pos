@@ -1525,7 +1525,8 @@ using (var scope = app.Services.CreateScope())
         ("Enterprise version name", ApplyEnterpriseNameAsync),
         ("PIN and email sign-in", EnsureSignInSchemaAsync),
         ("Onboarding", EnsureOnboardingSchemaAsync),
-        ("Books per company", EnsureCompanyBooksSchemaAsync)
+        ("Books per company", EnsureCompanyBooksSchemaAsync),
+        ("Stock requests answered by transfers", EnsureStockRequestTransferSchemaAsync)
     })
     {
         try
@@ -1615,6 +1616,11 @@ static Task EnsureCompanyBooksSchemaAsync(AppDbContext db) => db.Database.Execut
                 WHERE je.""CompanyId"" IS NULL AND c.""TenantId"" = je.""TenantId"" AND c.""IsDefault"";
         END IF;
     END $$;
+");
+
+/// <summary>Links an outlet's stock request to the transfer head office sent for it. Idempotent.</summary>
+static Task EnsureStockRequestTransferSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""StockRequests"" ADD COLUMN IF NOT EXISTS ""TransferOrderId"" uuid NULL;
 ");
 
 /// <summary>Columns for a new business's first days: email confirmation, the owner's mobile (one
@@ -1819,6 +1825,64 @@ static async Task<string> GenerateReturnNumberAsync(AppDbContext db, Guid tenant
 /// </summary>
 static void RecalculateExpectedCash(CashShift shift) =>
     shift.ExpectedCashPKR = shift.OpeningFloatPKR + shift.CashSalesPKR + shift.CashReceivedPKR - shift.CashPaidOutPKR;
+
+// --- The business's own calendar ---
+// Sales are stored in UTC, but "today" and a report's date mean the shop's local day: counted in
+// UTC, a café in Lahore would lose everything it rang up between midnight and 5 AM to the day before.
+static TimeZoneInfo BusinessTimeZone(string? countryCode)
+{
+    var ids = (countryCode ?? "PK").Trim().ToUpperInvariant() switch
+    {
+        "AE" => new[] { "Asia/Dubai", "Arabian Standard Time" },
+        "SA" => new[] { "Asia/Riyadh", "Arab Standard Time" },
+        "GB" => new[] { "Europe/London", "GMT Standard Time" },
+        // The US spans several zones; Eastern until a business can choose its own.
+        "US" => new[] { "America/New_York", "Eastern Standard Time" },
+        _ => new[] { "Asia/Karachi", "Pakistan Standard Time" }
+    };
+    foreach (var id in ids)
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+        catch (TimeZoneNotFoundException) { }
+        catch (InvalidTimeZoneException) { }
+    }
+    return TimeZoneInfo.CreateCustomTimeZone("Pakistan", TimeSpan.FromHours(5), "Pakistan", "Pakistan"); // no daylight saving
+}
+
+static async Task<TimeZoneInfo> TenantTimeZoneAsync(AppDbContext db, Guid tenantId) =>
+    BusinessTimeZone(await db.TenantSettings.IgnoreQueryFilters()
+        .Where(s => s.TenantId == tenantId).Select(s => s.CountryCode).FirstOrDefaultAsync());
+
+/// <summary>Today's date where the business is.</summary>
+static DateTime BusinessToday(TimeZoneInfo zone) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date;
+
+/// <summary>A local calendar day as the UTC instants it runs between.</summary>
+static (DateTime StartUtc, DateTime EndUtc) BusinessDayUtc(DateTime localDate, TimeZoneInfo zone)
+{
+    var start = DateTime.SpecifyKind(localDate.Date, DateTimeKind.Unspecified);
+    return (TimeZoneInfo.ConvertTimeToUtc(start, zone), TimeZoneInfo.ConvertTimeToUtc(start.AddDays(1), zone));
+}
+
+/// <summary>
+/// The locations a report reads. Staff pinned to a branch always get their own. Someone who sees
+/// the whole business gets the location they name or, asking for allLocations as head office does,
+/// every location of the business — head office does not sell, so its own figures are empty.
+/// </summary>
+static async Task<(Guid TenantId, List<Guid> BranchIds, IResult? Error)> ReportLocationsAsync(
+    HttpContext http, AppDbContext db, Guid? branchId, bool allLocations)
+{
+    var tenantScope = ResolveTenantScope(http, null);
+    if (tenantScope == null) return (Guid.Empty, new List<Guid>(), Results.Unauthorized());
+    var pinned = http.GetBranchId();
+    if (allLocations && pinned == null)
+        return (tenantScope.Value, await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).ToListAsync(), null);
+
+    var target = pinned ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
+    if (target == Guid.Empty)
+        target = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
+    var (_, _, error) = await ResolveScopeAsync(http, db, null, target);
+    return (tenantScope.Value, new List<Guid> { target }, error);
+}
 
 // --- Helper: Generate unique stock request number ---
 static async Task<string> GenerateStockRequestNumberAsync(AppDbContext db, Guid tenantId)
@@ -6032,6 +6096,8 @@ api.MapGet("/onboarding/status", async (AppDbContext db, HttpContext http, Pos.A
         && u.Role != UserRole.OwnerAdmin && u.Role != UserRole.SuperAdmin);
     var devices = await db.Terminals.IgnoreQueryFilters().CountAsync(t => t.TenantId == tenantId && t.IsActive && t.RevokedAt == null);
     var hasSale = await db.Orders.IgnoreQueryFilters().AnyAsync(o => o.TenantId == tenantId);
+    // The places that sell. A head office registered without any has to add one before a till or a sale.
+    var outlets = await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == tenantId && b.CanSell);
 
     return Results.Ok(new
     {
@@ -6043,6 +6109,7 @@ api.MapGet("/onboarding/status", async (AppDbContext db, HttpContext http, Pos.A
         staff,
         devices,
         hasSale,
+        outlets,
         status = tenant.Status.ToString(),
         trialEndsAt = tenant.TrialEndsAt,
         hasHeadOffice = tenant.DeploymentMode == DeploymentMode.HeadOffice
@@ -7267,22 +7334,56 @@ api.MapGet("/director/kpis", async (AppDbContext db, HttpContext http, Guid? ten
     if (scopedTenantId == null) return Results.Unauthorized();
     // Branch-pinned staff are forced to their own branch regardless of what they asked for.
     var userBranchId = http.GetBranchId();
-    var effectiveBranchId = userBranchId ?? branchId;
+    var effectiveBranchId = userBranchId ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId : null);
 
-    var today = DateTime.UtcNow.Date;
-    var ordersQuery = db.Orders.Where(o => o.CreatedAt >= today && o.TenantId == scopedTenantId.Value);
-    if (effectiveBranchId.HasValue && effectiveBranchId.Value != Guid.Empty)
+    // The business's own day, and yesterday up to this same time so the comparison is like for like.
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == scopedTenantId.Value);
+    var zone = BusinessTimeZone(settings?.CountryCode);
+    var localToday = BusinessToday(zone);
+    var today = BusinessDayUtc(localToday, zone).StartUtc;
+    var yesterday = BusinessDayUtc(localToday.AddDays(-1), zone).StartUtc;
+    var sameTimeYesterday = DateTime.UtcNow.AddDays(-1);
+
+    // Cancelled orders are not sales.
+    var ordersQuery = db.Orders.Where(o => o.CreatedAt >= yesterday && o.TenantId == scopedTenantId.Value && o.Status != OrderStatus.Cancelled);
+    if (effectiveBranchId.HasValue)
         ordersQuery = ordersQuery.Where(o => o.BranchId == effectiveBranchId.Value);
+    var recentOrders = await ordersQuery
+        .Select(o => new { o.Id, o.BranchId, o.CreatedAt, o.TotalPKR, o.Status })
+        .ToListAsync();
+    var todayOrders = recentOrders.Where(o => o.CreatedAt >= today).ToList();
+    var yesterdaySoFarPKR = recentOrders.Where(o => o.CreatedAt < today && o.CreatedAt <= sameTimeYesterday).Sum(o => o.TotalPKR);
 
-    var todayOrders = await ordersQuery.ToListAsync();
-    var branchesQuery = db.Branches.Where(b => !b.IsHeadOffice && b.TenantId == scopedTenantId.Value);
+    // What sold best today, from the real tickets.
+    var todayOrderIds = todayOrders.Select(o => o.Id).ToList();
+    var soldLines = await db.Orders.Where(o => todayOrderIds.Contains(o.Id))
+        .SelectMany(o => o.Items)
+        .Select(i => new { i.ProductName, i.Quantity, i.TotalPricePKR })
+        .ToListAsync();
+    var topItems = soldLines.GroupBy(i => i.ProductName)
+        .Select(g => new { name = g.Key, quantity = g.Sum(x => x.Quantity), revenuePKR = g.Sum(x => x.TotalPricePKR) })
+        .OrderByDescending(x => x.revenuePKR).Take(5).ToList();
+
+    // The places that sell. A head office that does not sell has nothing to compare.
+    var branchesQuery = db.Branches.Where(b => b.CanSell && b.TenantId == scopedTenantId.Value);
     if (userBranchId != null) branchesQuery = branchesQuery.Where(b => b.Id == userBranchId.Value);
-    var branches = await branchesQuery.ToListAsync();
+    var branches = await branchesQuery.OrderBy(b => b.Name).ToListAsync();
     var branchIds = branches.Select(b => b.Id).ToList();
+
+    // Tills open right now, with the cash each should be holding.
+    var shiftBranchIds = effectiveBranchId.HasValue ? new List<Guid> { effectiveBranchId.Value } : branchIds;
+    var branchNames = branches.ToDictionary(b => b.Id, b => b.Name);
+    var openShifts = (await db.CashShifts.Where(s => !s.IsClosed && shiftBranchIds.Contains(s.BranchId))
+            .OrderBy(s => s.OpenedAt).ToListAsync())
+        .Select(s => new
+        {
+            shiftId = s.Id, branchId = s.BranchId, branchName = branchNames.GetValueOrDefault(s.BranchId),
+            s.CashierName, s.TerminalName, s.OpenedAt, openingFloatPKR = s.OpeningFloatPKR, expectedCashPKR = s.ExpectedCashPKR
+        }).ToList();
 
     // Batch load branch data to avoid N+1
     var branchOrderData = await db.Orders
-        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= today)
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= today && o.Status != OrderStatus.Cancelled)
         .GroupBy(o => o.BranchId)
         .Select(g => new { branchId = g.Key, sales = g.Sum(o => o.TotalPKR), count = g.Count() })
         .ToDictionaryAsync(x => x.branchId);
@@ -7307,13 +7408,17 @@ api.MapGet("/director/kpis", async (AppDbContext db, HttpContext http, Guid? ten
 
     return Results.Ok(new
     {
-        currency = "PKR",
+        currency = settings?.CurrencyCode ?? "PKR",
         todaySalesPKR = todayOrders.Sum(o => o.TotalPKR),
+        yesterdaySameTimeSalesPKR = yesterdaySoFarPKR,
         totalOrders = todayOrders.Count,
         avgBasketPKR = todayOrders.Count > 0 ? Math.Round(todayOrders.Sum(o => o.TotalPKR) / todayOrders.Count, 0) : 0,
-        activeOrders = todayOrders.Count(o => o.Status != OrderStatus.Completed && o.Status != OrderStatus.Cancelled),
+        activeOrders = todayOrders.Count(o => o.Status != OrderStatus.Completed),
         completedOrders = todayOrders.Count(o => o.Status == OrderStatus.Completed),
-        branchComparison = branchSales
+        branchComparison = branchSales,
+        topItems,
+        openShifts,
+        cashInOpenTillsPKR = openShifts.Sum(s => s.expectedCashPKR)
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDirectorDashboard)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view the director dashboard."));
@@ -8163,22 +8268,20 @@ api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db
 });
 
 // --- Cash Sale Report ---
-api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid branchId, string date) =>
+api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid? branchId, string? date, bool? allLocations) =>
 {
-    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
     if (scopeError != null) return scopeError;
-    branchId = scopedBranchId!.Value;
 
-    if (!DateTime.TryParse(date, out var reportDate))
-        reportDate = DateTime.UtcNow.Date;
-
-    var startOfDay = reportDate.Date;
-    var endOfDay = startOfDay.AddDays(1);
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var reportDate = DateTime.TryParse(date, out var parsed) ? parsed.Date : BusinessToday(zone);
+    var (startOfDay, endOfDay) = BusinessDayUtc(reportDate, zone);
 
     var orders = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay && o.PaymentMethod == PaymentMethod.Cash)
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay && o.PaymentMethod == PaymentMethod.Cash)
         .OrderBy(o => o.CreatedAt)
         .ToListAsync();
+    var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
 
     return Results.Ok(new
     {
@@ -8188,29 +8291,27 @@ api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid
         orders = orders.Select(o => new
         {
             o.Id, o.OrderNumber, o.TotalPKR, o.AmountPaidPKR, o.ChangeDuePKR,
-            o.TableNumber, o.CashierName, o.CreatedAt
+            o.TableNumber, o.CashierName, o.CreatedAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
         })
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
 
 // --- Card / Digital Sale Report ---
-api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid branchId, string date) =>
+api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid? branchId, string? date, bool? allLocations) =>
 {
-    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
     if (scopeError != null) return scopeError;
-    branchId = scopedBranchId!.Value;
 
-    if (!DateTime.TryParse(date, out var reportDate))
-        reportDate = DateTime.UtcNow.Date;
-
-    var startOfDay = reportDate.Date;
-    var endOfDay = startOfDay.AddDays(1);
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var reportDate = DateTime.TryParse(date, out var parsed) ? parsed.Date : BusinessToday(zone);
+    var (startOfDay, endOfDay) = BusinessDayUtc(reportDate, zone);
 
     var orders = await db.Orders
-        .Where(o => o.BranchId == branchId && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay 
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay
             && o.PaymentMethod != PaymentMethod.Cash)
         .OrderBy(o => o.CreatedAt)
         .ToListAsync();
+    var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
 
     return Results.Ok(new
     {
@@ -8226,7 +8327,7 @@ api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid
         orders = orders.Select(o => new
         {
             o.Id, o.OrderNumber, o.TotalPKR, o.PaymentMethod, o.AmountPaidPKR,
-            o.TableNumber, o.CashierName, o.CreatedAt
+            o.TableNumber, o.CashierName, o.CreatedAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
         })
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
@@ -8900,33 +9001,50 @@ api.MapDelete("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.M
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("users", "delete"));
 
 // --- Reports ---
-api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? date) =>
+api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? date, bool? allLocations) =>
 {
-    var tenantScope = ResolveTenantScope(http, null);
-    if (tenantScope == null) return Results.Unauthorized();
-    var targetBranchId = http.GetBranchId()
-        ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
-    if (targetBranchId == Guid.Empty)
-        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
-    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
-    if (branchError != null) return branchError;
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
 
-    var targetDate = (date ?? DateTime.UtcNow).Date;
-    var nextDate = targetDate.AddDays(1);
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var targetDate = (date ?? BusinessToday(zone)).Date;
+    var (dayStart, dayEnd) = BusinessDayUtc(targetDate, zone);
     var orders = await db.Orders.Include(o => o.Items)
-        .Where(o => o.BranchId == targetBranchId && o.CreatedAt >= targetDate && o.CreatedAt < nextDate && o.IsPaid).ToListAsync();
+        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= dayStart && o.CreatedAt < dayEnd && o.IsPaid).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Card).ToList();
     var digitalOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).ToList();
-    var shift = await db.CashShifts.Where(s => s.BranchId == targetBranchId && s.OpenedAt >= targetDate && s.OpenedAt < nextDate)
-        .OrderByDescending(s => s.OpenedAt).FirstOrDefaultAsync();
-    var openingFloat = shift?.OpeningFloatPKR ?? 10000;
+
+    // Every till session opened that day; each location's latest one is its closing. A location
+    // that opened no till has no float — never an invented one.
+    var shifts = await db.CashShifts.Where(s => branchIds.Contains(s.BranchId) && s.OpenedAt >= dayStart && s.OpenedAt < dayEnd)
+        .OrderByDescending(s => s.OpenedAt).ToListAsync();
+    var closingShifts = shifts.GroupBy(s => s.BranchId).ToDictionary(g => g.Key, g => g.First());
+    var openingFloat = closingShifts.Values.Sum(s => s.OpeningFloatPKR);
     var cashSales = cashOrders.Sum(o => o.TotalPKR);
     var expectedCash = openingFloat + cashSales;
-    var actualCash = shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : expectedCash;
+    // A location that has not counted its drawer yet counts as expected, so it shows no variance.
+    var actualCash = branchIds.Sum(id =>
+    {
+        var shift = closingShifts.GetValueOrDefault(id);
+        var branchExpected = (shift?.OpeningFloatPKR ?? 0) + cashOrders.Where(o => o.BranchId == id).Sum(o => o.TotalPKR);
+        return shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : branchExpected;
+    });
+    var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
+    // The drawer is counted at one till, so only a one-location report can open the cash tally.
+    var tallyShift = branchIds.Count == 1 ? closingShifts.GetValueOrDefault(branchIds[0]) : null;
     return Results.Ok(new
     {
-        period = targetDate.ToString("yyyy-MM-dd"), shiftId = shift != null ? shift.Id.ToString() : null,
+        period = targetDate.ToString("yyyy-MM-dd"), shiftId = tallyShift?.Id.ToString(),
+        locations = branchIds.Count,
+        // Each till session's close, for head office to read — counted at the outlet, never here.
+        closings = shifts.Select(s => new
+        {
+            shiftId = s.Id, branchId = s.BranchId, branchName = branchNames.GetValueOrDefault(s.BranchId),
+            s.TerminalName, s.CashierName, s.OpenedAt, s.ClosedAt, s.IsClosed,
+            openingFloatPKR = s.OpeningFloatPKR, expectedCashPKR = s.ExpectedCashPKR,
+            actualCashCountedPKR = s.ActualCashCountedPKR, variancePKR = s.VariancePKR
+        }),
         totalSalesPKR = orders.Sum(o => o.TotalPKR), totalOrders = orders.Count,
         cashSalesPKR = cashSales, cardSalesPKR = cardOrders.Sum(o => o.TotalPKR), digitalSalesPKR = digitalOrders.Sum(o => o.TotalPKR),
         cashTaxPKR = cashOrders.Sum(o => o.TaxPKR), cardTaxPKR = cardOrders.Sum(o => o.TaxPKR), totalTaxPKR = orders.Sum(o => o.TaxPKR),
@@ -8938,21 +9056,16 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
 
-api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
+api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, bool? allLocations) =>
 {
-    var tenantScope = ResolveTenantScope(http, null);
-    if (tenantScope == null) return Results.Unauthorized();
-    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
-    if (targetBranchId == Guid.Empty)
-        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
-    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
-    if (branchError != null) return branchError;
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
 
-    var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
     var taxDivisor = settings != null ? (1 + settings.DefaultTaxRate / 100m) : 1.16m;
-    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
-    var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
+    var zone = BusinessTimeZone(settings?.CountryCode);
+    var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
+    var items = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     var totalRevenue = items.Sum(i => i.TotalPricePKR);
     return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
@@ -8960,49 +9073,42 @@ api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext htt
         .OrderByDescending(x => x.grossSalesPKR).ToList());
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
-api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
+api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, bool? allLocations) =>
 {
-    var tenantScope = ResolveTenantScope(http, null);
-    if (tenantScope == null) return Results.Unauthorized();
-    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
-    if (targetBranchId == Guid.Empty)
-        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
-    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
-    if (branchError != null) return branchError;
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
 
-    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
-    var items = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid)
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
+    var items = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", CostPrice = i.Product?.CostPricePKR ?? 0 })
         .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.CostPrice * qty; var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.revenuePKR).Take(25).ToList());
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
-api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate) =>
+api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate, bool? allLocations) =>
 {
-    var tenantScope = ResolveTenantScope(http, null);
-    if (tenantScope == null) return Results.Unauthorized();
-    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
-    if (targetBranchId == Guid.Empty)
-        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
-    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
-    if (branchError != null) return branchError;
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
 
-    var tenantId = await db.Branches.Where(b => b.Id == targetBranchId).Select(b => b.TenantId).FirstOrDefaultAsync();
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
-    var branchEntity = await db.Branches.FirstOrDefaultAsync(b => b.Id == targetBranchId);
     var primaryTaxRate = settings?.DefaultTaxRate ?? 16;
     var secondaryTaxRate = settings?.DigitalTaxRate ?? 8;
-    if (branchEntity != null)
+    // One location's own (provincial) rates; across locations, the business's default.
+    if (branchIds.Count == 1 && await db.Branches.FirstOrDefaultAsync(b => b.Id == branchIds[0]) is { } branchEntity)
     {
         var (cashRate, digitalRate, _) = await ResolveTaxRatesAsync(db, branchEntity);
         primaryTaxRate = cashRate;
         secondaryTaxRate = digitalRate;
     }
-    var start = startDate ?? (days.HasValue ? DateTime.UtcNow.Date.AddDays(-days.Value) : DateTime.UtcNow.Date.AddDays(-7));
-    var end = endDate?.AddDays(1) ?? DateTime.UtcNow;
-    var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= start && o.CreatedAt <= end && o.IsPaid)
+    var zone = BusinessTimeZone(settings?.CountryCode);
+    var today = BusinessToday(zone);
+    var start = BusinessDayUtc(startDate?.Date ?? today.AddDays(-(days ?? 7)), zone).StartUtc;
+    var end = endDate.HasValue ? BusinessDayUtc(endDate.Value.Date, zone).EndUtc : DateTime.UtcNow;
+    var orders = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= start && o.CreatedAt < end && o.IsPaid)
         .OrderByDescending(o => o.CreatedAt).ToListAsync();
+    var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod != PaymentMethod.Cash).ToList();
     static object BuildSegment(List<Order> segOrders, decimal ratePercent) => new
@@ -9015,7 +9121,10 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
     };
     return Results.Ok(new
     {
-        startDate = start.ToString("yyyy-MM-dd"), endDate = end.ToString("yyyy-MM-dd"), totalInvoices = orders.Count,
+        // The business's own dates, not the UTC instants the range runs between.
+        startDate = TimeZoneInfo.ConvertTimeFromUtc(start, zone).ToString("yyyy-MM-dd"),
+        endDate = (endDate?.Date ?? today).ToString("yyyy-MM-dd"),
+        totalInvoices = orders.Count,
         totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR), totalNetSalesPKR = (cashOrders.Sum(o => o.TotalPKR) - cashOrders.Sum(o => o.TaxPKR)) + (cardOrders.Sum(o => o.TotalPKR) - cardOrders.Sum(o => o.TaxPKR)),
         totalTaxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) + cardOrders.Sum(o => o.TaxPKR),
         cashSegment = BuildSegment(cashOrders, primaryTaxRate),
@@ -9025,6 +9134,7 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
             orderId = o.Id,
             orderNumber = o.OrderNumber,
             createdAt = o.CreatedAt,
+            branchName = branchNames.GetValueOrDefault(o.BranchId),
             orderType = o.OrderType.ToString(),
             paymentMethod = o.PaymentMethod.ToString(),
             cashierName = o.CashierName ?? "—",
@@ -9037,18 +9147,14 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view tax reports."));
 
-api.MapGet("/reports/payment-methods", async (AppDbContext db, HttpContext http, Guid? branchId, int? days) =>
+api.MapGet("/reports/payment-methods", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, bool? allLocations) =>
 {
-    var tenantScope = ResolveTenantScope(http, null);
-    if (tenantScope == null) return Results.Unauthorized();
-    var targetBranchId = http.GetBranchId() ?? (branchId.HasValue && branchId.Value != Guid.Empty ? branchId.Value : Guid.Empty);
-    if (targetBranchId == Guid.Empty)
-        targetBranchId = await db.Branches.Where(b => b.TenantId == tenantScope.Value).Select(b => b.Id).FirstOrDefaultAsync();
-    var (_, _, branchError) = await ResolveScopeAsync(http, db, null, targetBranchId);
-    if (branchError != null) return branchError;
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
 
-    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
-    var orders = await db.Orders.Where(o => o.BranchId == targetBranchId && o.CreatedAt >= since && o.IsPaid).ToListAsync();
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
+    var orders = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid).ToListAsync();
     var grandTotal = orders.Sum(o => o.TotalPKR);
     return Results.Ok(new
     {
@@ -9062,7 +9168,8 @@ api.MapGet("/reports/consolidated", async (AppDbContext db, HttpContext http, Gu
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
     var targetTenantId = scopedTenantId.Value;
-    var since = DateTime.UtcNow.Date.AddDays(-(days ?? 7));
+    var zone = await TenantTimeZoneAsync(db, targetTenantId);
+    var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
     var branches = await db.Branches.Where(b => b.TenantId == targetTenantId).ToListAsync();
     var branchIds = branches.Select(b => b.Id).ToList();
     var orders = await db.Orders.Include(o => o.Items).ThenInclude(i => i.Product)
@@ -9264,6 +9371,9 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
     order.ReceivedAt = DateTime.UtcNow;
     order.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
+    // The outlet's request this transfer answered is now met.
+    foreach (var answered in await db.StockRequests.Where(r => r.TransferOrderId == order.Id).ToListAsync())
+        answered.Status = StockRequestStatus.Fulfilled;
     await db.SaveChangesAsync();
 
     // Between two of the business's companies the books record it too. The goods have arrived
@@ -9310,6 +9420,14 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
         }
     }
     order.Status = TransferStatus.Cancelled;
+    // An outlet's request this transfer was answering goes back to waiting, rather than showing
+    // stock on its way that never will be.
+    foreach (var answered in await db.StockRequests.Where(r => r.TransferOrderId == order.Id).ToListAsync())
+    {
+        answered.Status = StockRequestStatus.Pending;
+        answered.TransferOrderId = null;
+        answered.ReviewNotes = $"Transfer {order.TransferNumber} was cancelled.";
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
@@ -9630,7 +9748,10 @@ api.MapGet("/stock-requests", async (AppDbContext db, HttpContext http, Guid? br
     if (scopedTenantId == null) return Results.Unauthorized();
     var effectiveBranchId = http.GetBranchId() ?? branchId;
 
+    // Without a branch (head office, the owner) this is every outlet's requests — head office is
+    // where they are answered. BranchName needs the branch loaded to say whose request it is.
     var q = db.StockRequests
+        .Include(sr => sr.Branch)
         .Include(sr => sr.Items)
         .ThenInclude(i => i.Ingredient)
         .Where(sr => sr.TenantId == scopedTenantId.Value)
@@ -9643,7 +9764,7 @@ api.MapGet("/stock-requests", async (AppDbContext db, HttpContext http, Guid? br
     {
         sr.Id, sr.TenantId, sr.BranchId, sr.RequestNumber, sr.RequestType, sr.Status,
         sr.VendorName, sr.Notes, sr.EstimatedCostPKR, sr.CreatedBy, sr.CreatedAt,
-        sr.ReviewedBy, sr.ReviewedAt, sr.ReviewNotes,
+        sr.ReviewedBy, sr.ReviewedAt, sr.ReviewNotes, sr.TransferOrderId,
         BranchName = sr.Branch?.Name,
         Items = sr.Items.Select(i => new
         {
@@ -9714,6 +9835,68 @@ api.MapPut("/stock-requests/{id}/review", async (AppDbContext db, HttpContext ht
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Request {dto.Status}", request.Id, request.Status });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("supplychain", "edit"));
+
+// Head office answers an outlet's request by sending the stock: a transfer from the location that
+// holds it to the outlet, carrying the requested lines. The request follows the transfer — Ordered
+// now, Fulfilled when the outlet receives it — so there is one flow, not two that never meet.
+api.MapPost("/stock-requests/{id}/send", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, SendStockRequestDto dto) =>
+{
+    var scopedTenantId = ResolveTenantScope(http, null);
+    if (scopedTenantId == null) return Results.Unauthorized();
+    var request = await db.StockRequests.Include(r => r.Items)
+        .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == scopedTenantId.Value);
+    if (request == null) return Results.NotFound(new { error = "Stock request not found" });
+    if (request.Status is not (StockRequestStatus.Pending or StockRequestStatus.Approved))
+        return Results.BadRequest(new { error = $"This request is already {request.Status.ToString().ToLowerInvariant()}." });
+    if (request.Items.Count == 0) return Results.BadRequest(new { error = "This request has no items to send." });
+    if (dto.SourceBranchId == request.BranchId) return Results.BadRequest(new { error = "Send it from another location, not the one asking." });
+
+    var userBranchId = http.GetBranchId();
+    if (userBranchId != null && userBranchId != dto.SourceBranchId)
+        return Results.Json(new { error = "You can only send stock from your own location." }, statusCode: 403);
+
+    var source = await db.Branches.FirstOrDefaultAsync(b => b.Id == dto.SourceBranchId && b.TenantId == scopedTenantId.Value);
+    var destination = await db.Branches.FirstOrDefaultAsync(b => b.Id == request.BranchId && b.TenantId == scopedTenantId.Value);
+    if (source == null || destination == null) return Results.BadRequest(new { error = "Location not found." });
+    if (!source.HoldsStock)
+        return Results.BadRequest(new { error = $"{source.Name} does not keep stock, so it cannot send any. Pick the location that holds it." });
+    if (!destination.HoldsStock)
+        return Results.BadRequest(new { error = $"{destination.Name} does not keep stock, so it cannot receive any." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var transfer = new StockTransferOrder
+    {
+        TenantId = scopedTenantId.Value,
+        TransferNumber = await GenerateTransferNumberAsync(db, scopedTenantId.Value),
+        SourceBranchId = source.Id,
+        DestinationBranchId = destination.Id,
+        Status = TransferStatus.Requested,
+        RequestedAt = DateTime.UtcNow,
+        Notes = string.IsNullOrWhiteSpace(dto.Notes)
+            ? $"For stock request {request.RequestNumber}"
+            : $"For stock request {request.RequestNumber} • {dto.Notes.Trim()}"
+    };
+    foreach (var line in request.Items)
+    {
+        transfer.Items.Add(new StockTransferItem
+        {
+            TransferOrderId = transfer.Id, IngredientId = line.IngredientId, IngredientName = line.IngredientName,
+            Unit = line.Unit, QuantityRequested = line.QuantityRequested, UnitCostPKR = line.UnitCostPKR
+        });
+    }
+    transfer.TotalEstimatedCostPKR = request.Items.Sum(i => i.QuantityRequested * i.UnitCostPKR);
+    db.StockTransferOrders.Add(transfer);
+
+    request.Status = StockRequestStatus.Ordered;
+    request.TransferOrderId = transfer.Id;
+    request.ReviewedBy = currentUser?.FullName ?? "Head office";
+    request.ReviewedAt = DateTime.UtcNow;
+    request.ReviewNotes = $"Sending from {source.Name} on transfer {transfer.TransferNumber}.";
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "StockRequestSent", "StockRequest", request.Id, null, transfer.TransferNumber);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = $"Transfer {transfer.TransferNumber} created", request.Id, request.Status, transferId = transfer.Id, transfer.TransferNumber });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to send stock."));
 
 api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
@@ -14866,6 +15049,7 @@ public record TerminalHeartbeatDto(string? License, string? DeviceFingerprint, s
 public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType, string? VendorName, string? Notes, string CreatedBy, Guid? CreatedByUserId, List<CreateStockRequestItemDto> Items);
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
+public record SendStockRequestDto(Guid SourceBranchId, string? Notes);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
 /// <summary>
 /// DeploymentMode is "Standalone" (one shop) or "MultiBranch" (a head office with outlets under

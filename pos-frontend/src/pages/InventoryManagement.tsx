@@ -17,13 +17,15 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
 import type { BranchStockItem, RawIngredient, IngredientMasterRow } from '../types';
 
 export const InventoryManagement: React.FC = () => {
   const { selectedBranch, selectedTenant } = usePosStore();
   const location = useLocation();
   const navigate = useNavigate();
-  const isMultiBranchChain = (selectedTenant?.branches?.length || 0) > 1;
+  // Several locations share one ingredient list; an outlet under a head office asks it for stock.
+  const { severalLocations: isMultiBranchChain, hasHeadOffice, atHeadOffice } = useBusinessShape();
 
   const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>(
     location.state?.tab || 'ingredients'
@@ -408,15 +410,15 @@ export const InventoryManagement: React.FC = () => {
               </button>
             )}
 
-            {/* Request Stock from HQ Button (for multi-branch chain branch managers) */}
-            {isMultiBranchChain && (
+            {/* An outlet asks its head office for stock; head office answers those requests. */}
+            {hasHeadOffice && !atHeadOffice && (
               <button
-                onClick={() => navigate('/transfers', { state: { tab: 'transfers', openRequisition: true } })}
+                onClick={() => navigate('/stock-requests', { state: { newRequest: 'ToHQ' } })}
                 className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-teal-500/25"
-                title="Send Stock Requisition to Central Commissary"
+                title="Ask head office to send stock"
               >
                 <Truck className="w-3.5 h-3.5" />
-                <span>Request Stock from HQ</span>
+                <span>Request from Head Office</span>
               </button>
             )}
 

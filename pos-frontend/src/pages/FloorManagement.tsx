@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
+import { LocationPicker } from '../components/LocationPicker';
 import { QrCodeModal } from '../components/QrCodeModal';
 import type { DiningTable } from '../types';
 
@@ -24,7 +26,13 @@ import type { DiningTable } from '../types';
 const orderUrl = (token: string) => `${window.location.origin}/order/${token}`;
 
 export const FloorManagement: React.FC = () => {
-  const { selectedBranch } = usePosStore();
+  const { selectedBranch: currentBranch } = usePosStore();
+  // Head office has no dining room: there it sets up one of its outlets' floors, picked here.
+  const { atHeadOffice, outlets } = useBusinessShape();
+  const [outletId, setOutletId] = useState<string | null>(null);
+  const selectedBranch = atHeadOffice
+    ? (outlets.find(b => b.id === outletId) ?? outlets[0] ?? null)
+    : currentBranch;
 
   // QR & online ordering: whether this shop has the add-on, and the code on screen.
   const [ordering, setOrdering] = useState<{ hasAddOn: boolean; pickupToken: string | null } | null>(null);
@@ -193,15 +201,23 @@ export const FloorManagement: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <Building2 className="w-6 h-6 text-teal-500" />
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Floor & Dining Table Setup</h1>
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold border border-slate-200">
-              {selectedBranch?.name || 'Branch'}
-            </span>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Floors & Tables</h1>
+            {!atHeadOffice && selectedBranch && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold border border-slate-200">
+                {selectedBranch.name}
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Organize multiple restaurant floors (Ground, Family, Rooftop, Terrace) and manage table capacities &amp; status
+            {atHeadOffice
+              ? 'Set up each outlet\'s floors, tables and QR ordering codes.'
+              : 'Your floors (ground, family, rooftop…) and the tables on each.'}
           </p>
         </div>
+
+        {atHeadOffice && outlets.length > 0 && (
+          <LocationPicker value={selectedBranch?.id ?? ''} onChange={setOutletId} locations={outlets} label="Outlet" />
+        )}
 
         {statusMsg && (
           <div className="px-4 py-2 bg-teal-50 border border-teal-200 rounded-xl text-teal-600 text-xs font-bold flex items-center gap-2 animate-fadeIn">
@@ -235,6 +251,13 @@ export const FloorManagement: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {atHeadOffice && outlets.length === 0 && (
+        <div className="p-5 rounded-2xl bg-teal-50 border border-teal-200 text-xs text-teal-900">
+          <div className="font-bold text-sm">Add an outlet first</div>
+          <div className="mt-0.5">Floors and tables belong to the outlets that serve guests. Add one in Locations, then set up its floor here.</div>
+        </div>
+      )}
 
       {/* Floor Filter Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">

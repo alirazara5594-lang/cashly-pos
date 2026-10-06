@@ -667,6 +667,8 @@ export interface Tenant {
 export interface DirectorKPIs {
   currency: string;
   todaySalesPKR: number;
+  /** Yesterday's sales up to this same time of day, for a like-for-like comparison. */
+  yesterdaySameTimeSalesPKR?: number;
   totalOrders: number;
   avgBasketPKR: number;
   activeOrders: number;
@@ -679,6 +681,36 @@ export interface DirectorKPIs {
     ordersCount: number;
     activeCounters: number;
   }[];
+  /** Today's best sellers by revenue. */
+  topItems?: { name: string; quantity: number; revenuePKR: number }[];
+  /** Tills open right now. */
+  openShifts?: {
+    shiftId: string;
+    branchId: string;
+    branchName?: string;
+    cashierName: string;
+    terminalName: string;
+    openedAt: string;
+    openingFloatPKR: number;
+    expectedCashPKR: number;
+  }[];
+  cashInOpenTillsPKR?: number;
+}
+
+/** One till session's close, as head office reads it. */
+export interface TillClosing {
+  shiftId: string;
+  branchId: string;
+  branchName?: string;
+  terminalName: string;
+  cashierName: string;
+  openedAt: string;
+  closedAt?: string | null;
+  isClosed: boolean;
+  openingFloatPKR: number;
+  expectedCashPKR: number;
+  actualCashCountedPKR: number;
+  variancePKR: number;
 }
 
 export interface BranchStockItem {
@@ -705,6 +737,10 @@ export interface BranchStockItem {
 export interface ZReportSummary {
   period: string;
   shiftId?: string;
+  /** How many locations the figures cover. */
+  locations?: number;
+  /** Every till session's close that day. */
+  closings?: TillClosing[];
   totalSalesPKR: number;
   totalOrders: number;
   cashSalesPKR: number;
@@ -868,6 +904,8 @@ export interface OnboardingStatus {
   /** Tills, tablets and screens connected and not revoked. */
   devices: number;
   hasSale: boolean;
+  /** Locations that sell. A head office registered alone has none yet. */
+  outlets?: number;
   status: string;
   trialEndsAt: string | null;
   hasHeadOffice: boolean;
@@ -1048,11 +1086,14 @@ export interface TaxAuditInvoice {
   orderId: string;
   orderNumber: string;
   createdAt: string;
+  /** The location it was sold at, for an all-outlets report. */
+  branchName?: string;
   orderType: string;
   paymentMethod: string;
   cashierName: string;
   netAmountPKR: number;
-  taxRatePercent: number; // 16 or 8
+  /** The location's cash or card/digital rate. */
+  taxRatePercent: number;
   taxAmountPKR: number;
   totalAmountPKR: number;
 }
@@ -1266,6 +1307,8 @@ export interface StockRequest {
   reviewedBy?: string;
   reviewedAt?: string;
   reviewNotes?: string;
+  /** The transfer head office sent in answer. */
+  transferOrderId?: string | null;
   items: StockRequestItem[];
 }
 

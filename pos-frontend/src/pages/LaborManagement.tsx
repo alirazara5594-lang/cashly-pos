@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess, runsBusiness } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
+import { LocationPicker } from '../components/LocationPicker';
 import type { AppUser, StaffShiftSchedule, TimeClockEntry, PayrollPeriod, Payslip, PayslipLineType, LeaveRequest, LeaveType } from '../types';
 
 type TabKey = 'schedule' | 'timeclock' | 'payroll' | 'leave';
@@ -51,7 +53,13 @@ const emptyShift = () => ({
 });
 
 export const LaborManagement: React.FC = () => {
-  const { selectedTenant, selectedBranch, currentUser, modulePermissions, permissions } = usePosStore();
+  const { selectedTenant, selectedBranch: currentBranch, currentUser, modulePermissions, permissions } = usePosStore();
+  // Whose rota: the owner and head office pick any location, head office's own staff included;
+  // staff pinned to a branch see their branch.
+  const { severalLocations, locations } = useBusinessShape();
+  const canPickLocation = !currentUser?.branchId && severalLocations && locations.length > 0;
+  const [locationId, setLocationId] = useState<string | null>(null);
+  const selectedBranch = (canPickLocation && locations.find(b => b.id === locationId)) || currentBranch;
   const canEdit = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'edit');
   const canDelete = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'delete');
   const canExport = hasModuleAccess(currentUser?.role, modulePermissions, 'labor', 'export') || canEdit;
@@ -442,12 +450,16 @@ export const LaborManagement: React.FC = () => {
             <CalendarClock className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Labor & Scheduling</h1>
+            <h1 className="text-lg font-black text-slate-900 leading-none">Shifts & Time Clock</h1>
             <p className="text-[11px] text-slate-500 mt-1">
               Shift rota and time clock for {selectedBranch?.name || 'this branch'}
             </p>
           </div>
         </div>
+
+        {canPickLocation && (
+          <LocationPicker value={selectedBranch?.id ?? ''} onChange={setLocationId} locations={locations} />
+        )}
 
         <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl p-1">
           {([

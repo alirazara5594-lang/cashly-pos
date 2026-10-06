@@ -22,6 +22,7 @@ import {
   Truck
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
 import { posApi } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
 import { RestaurantAddressCard } from '../components/RestaurantAddressCard';
@@ -115,7 +116,11 @@ export const SettingsManagement: React.FC = () => {
   /** Department profiles this user is actually allowed to switch into. */
   const availableDepartments = DEPARTMENT_PROFILES.filter(d => can(d.module));
 
-  const [activeTab, setActiveTab] = useState<'provisioning' | 'terminal' | 'departments' | 'sync' | 'devices'>('terminal');
+  const [chosenTab, setActiveTab] = useState<'provisioning' | 'terminal' | 'departments' | 'sync' | 'devices'>('terminal');
+  // Head office has no till: this PC's till role and the waiter-tablet setup belong to an outlet.
+  // There it opens on connecting devices, the outlets' tills included.
+  const { atHeadOffice } = useBusinessShape();
+  const activeTab = atHeadOffice && (chosenTab === 'terminal' || chosenTab === 'devices') ? 'provisioning' : chosenTab;
 
   const location = useLocation();
   useEffect(() => {
@@ -389,6 +394,7 @@ export const SettingsManagement: React.FC = () => {
 
         {/* Tab Navigation */}
         <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-200 pb-2 text-xs font-semibold">
+          {!atHeadOffice && (
           <button
             onClick={() => setActiveTab('terminal')}
             className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${
@@ -400,6 +406,7 @@ export const SettingsManagement: React.FC = () => {
             <Monitor className="w-4 h-4" />
             Terminal Role & Kiosk Lock
           </button>
+          )}
 
           <button
             onClick={() => setActiveTab('provisioning')}
@@ -425,6 +432,7 @@ export const SettingsManagement: React.FC = () => {
             Department Roles & Module Access
           </button>
 
+          {!atHeadOffice && (
           <button
             onClick={() => setActiveTab('devices')}
             className={`px-4 py-2 rounded-lg flex items-center gap-2 transition ${
@@ -436,6 +444,7 @@ export const SettingsManagement: React.FC = () => {
             <Tablet className="w-4 h-4" />
             Device & Tab Config
           </button>
+          )}
 
           <button
             onClick={() => setActiveTab('sync')}

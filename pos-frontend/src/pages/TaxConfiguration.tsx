@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { MapPin, Percent, AlertTriangle, Save, Landmark } from 'lucide-react';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
+import { LocationPicker } from '../components/LocationPicker';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { FiscalInvoicingSection } from '../components/FiscalInvoicingSection';
 import type { TaxJurisdiction, ModuleKey } from '../types';
@@ -13,7 +15,6 @@ export const TaxConfiguration: React.FC = () => {
   const {
     selectedTenant,
     selectedBranch,
-    deploymentMode,
     cashTaxRatePercent,
     cardTaxRatePercent,
     taxMode,
@@ -26,6 +27,17 @@ export const TaxConfiguration: React.FC = () => {
 
   const can = (moduleKey: ModuleKey, action: 'view' | 'edit' = 'view') =>
     hasModuleAccess(currentUser?.role, modulePermissions, moduleKey, action);
+
+  // Tax is charged where things are sold, so head office sets each outlet's tax region (picked
+  // here) rather than its own.
+  const { atHeadOffice, hasHeadOffice, outlets, locations } = useBusinessShape();
+  const [taxBranchId, setTaxBranchId] = useState<string | null>(null);
+  const taxBranch = atHeadOffice
+    ? (outlets.find(b => b.id === taxBranchId) ?? outlets[0] ?? null)
+    : selectedBranch;
+  const businessShapeLabel = hasHeadOffice
+    ? `Head office + ${outlets.length} outlet${outlets.length === 1 ? '' : 's'}`
+    : locations.length > 1 ? `${locations.length} locations` : 'Single location';
 
   // Only Owner / SuperAdmin may change the provincial tax rates themselves.
   const canEditTaxJurisdictions = can('admin', 'edit');
@@ -59,7 +71,7 @@ export const TaxConfiguration: React.FC = () => {
 
   // Mirror persisted values into the local drafts when they change. Adjusting
   // during render (instead of in an effect) avoids a cascading re-render.
-  const persistedRegionCode = selectedBranch?.regionCode || '';
+  const persistedRegionCode = taxBranch?.regionCode || '';
   const [lastPersistedRegion, setLastPersistedRegion] = useState(persistedRegionCode);
   if (persistedRegionCode !== lastPersistedRegion) {
     setLastPersistedRegion(persistedRegionCode);
@@ -75,18 +87,29 @@ export const TaxConfiguration: React.FC = () => {
 
   // The jurisdiction actually applied at checkout for this branch right now — matches the
   // server's ResolveTaxRatesAsync (branch's *saved* region, not an unsaved dropdown pick).
-  const activeJurisdiction = selectedBranch?.regionCode
-    ? jurisdictions.find(j => j.regionCode === selectedBranch.regionCode && j.isActive) || null
+  const activeJurisdiction = taxBranch?.regionCode
+    ? jurisdictions.find(j => j.regionCode === taxBranch.regionCode && j.isActive) || null
     : null;
 
   const handleSaveRegion = async () => {
-    if (!selectedBranch?.id) return;
+    if (!taxBranch?.id) return;
     setSavingRegion(true);
     setTaxMessage(null);
     try {
-      const updated = await posApi.updateBranch(selectedBranch.id, { regionCode: regionCode || null });
-      selectBranch({ ...selectedBranch, ...updated, regionCode: regionCode || null });
-      setTaxMessage({ type: 'success', text: 'Branch tax region updated' });
+      const updated = await posApi.updateBranch(taxBranch.id, { regionCode: regionCode || null });
+      const saved = { ...taxBranch, ...updated, regionCode: regionCode || null };
+      if (taxBranch.id === selectedBranch?.id) {
+        selectBranch(saved);
+      } else {
+        // An outlet set from head office: refresh its copy without moving head office onto it.
+        usePosStore.setState(s => ({
+          branches: s.branches.map(b => (b.id === saved.id ? saved : b)),
+          selectedTenant: s.selectedTenant
+            ? { ...s.selectedTenant, branches: s.selectedTenant.branches?.map(b => (b.id === saved.id ? saved : b)) }
+            : s.selectedTenant
+        }));
+      }
+      setTaxMessage({ type: 'success', text: `${taxBranch.name}: tax region updated` });
     } catch (err) {
       setTaxMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to update branch tax region') });
     } finally {
@@ -153,30 +176,33 @@ export const TaxConfiguration: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-600">Restaurant / Brand Name</label>
+            <label className="text-xs font-semibold text-slate-600">Business</label>
             <input
               type="text"
-              defaultValue={selectedTenant?.name || 'Cashly Restaurant'}
+              value={selectedTenant?.name ?? ''}
+              readOnly
               disabled
               className="w-full bg-slate-100 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-700"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-600">Deployment Architecture</label>
+            <label className="text-xs font-semibold text-slate-600">Set up as</label>
             <input
               type="text"
-              value={deploymentMode === 'MultiBranch' ? '🏢 Multi-Branch Enterprise Chain' : '🏪 Single Restaurant Location'}
+              value={businessShapeLabel}
+              readOnly
               disabled
               className="w-full bg-slate-100 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-700 font-semibold"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-600">Current Outlet Name</label>
+            <label className="text-xs font-semibold text-slate-600">Signed in at</label>
             <input
               type="text"
-              defaultValue={selectedBranch?.name || 'Main Dining Branch'}
+              value={selectedBranch ? `${selectedBranch.name}${atHeadOffice ? ' (head office)' : ''}` : ''}
+              readOnly
               disabled
               className="w-full bg-slate-100 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-700"
             />
@@ -194,15 +220,22 @@ export const TaxConfiguration: React.FC = () => {
             cash / digital rate at checkout when provincial tax is enabled.
           </p>
 
+          {atHeadOffice && outlets.length > 0 && (
+            <LocationPicker value={taxBranch?.id ?? ''} onChange={setTaxBranchId} locations={outlets} label="Outlet" />
+          )}
+          {atHeadOffice && outlets.length === 0 && (
+            <p className="text-xs text-amber-700">Add an outlet first. Head office sells nothing itself, so it has no tax region of its own.</p>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1.5 md:col-span-2">
               <label className="text-xs font-semibold text-slate-600">
-                Tax Jurisdiction for {selectedBranch?.name || 'this branch'}
+                Tax Jurisdiction for {taxBranch?.name || 'this branch'}
               </label>
               <select
                 value={regionCode}
                 onChange={(e) => setRegionCode(e.target.value)}
-                disabled={!selectedBranch?.id}
+                disabled={!taxBranch?.id}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 disabled:opacity-60"
               >
                 <option value="">— Not assigned —</option>
@@ -230,7 +263,7 @@ export const TaxConfiguration: React.FC = () => {
 
             <button
               onClick={handleSaveRegion}
-              disabled={savingRegion || !selectedBranch?.id || regionCode === (selectedBranch?.regionCode || '')}
+              disabled={savingRegion || !taxBranch?.id || regionCode === (taxBranch?.regionCode || '')}
               className="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white font-bold text-xs transition flex items-center justify-center gap-2 cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
@@ -299,7 +332,7 @@ export const TaxConfiguration: React.FC = () => {
               <div className="p-3.5 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-800 flex items-start gap-2.5">
                 <Landmark className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
                 <span>
-                  <strong>Active rate for {selectedBranch?.name || 'this branch'}:</strong>{' '}
+                  <strong>Active rate for {taxBranch?.name || 'this branch'}:</strong>{' '}
                   {activeJurisdiction.cashTaxRate}% cash / {activeJurisdiction.digitalTaxRate}% digital
                   (via {activeJurisdiction.authorityName}). This overrides the flat rates below —
                   edit it in the jurisdiction table further down.
@@ -309,7 +342,7 @@ export const TaxConfiguration: React.FC = () => {
               <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                 <span>
-                  No tax region is assigned to {selectedBranch?.name || 'this branch'} yet (or its
+                  No tax region is assigned to {taxBranch?.name || 'this branch'} yet (or its
                   region has no active jurisdiction) — checkout is falling back to the flat rate below.
                   Assign a region above to use provincial rates.
                 </span>
@@ -384,10 +417,10 @@ export const TaxConfiguration: React.FC = () => {
                     const isDirty =
                       draft.cashTaxRate !== j.cashTaxRate || draft.digitalTaxRate !== j.digitalTaxRate;
                     return (
-                      <tr key={j.id} className={selectedBranch?.regionCode === j.regionCode ? 'bg-teal-50/40' : ''}>
+                      <tr key={j.id} className={taxBranch?.regionCode === j.regionCode ? 'bg-teal-50/40' : ''}>
                         <td className="py-2.5">
                           <span className="font-mono font-bold text-slate-900">{j.regionCode}</span>
-                          {selectedBranch?.regionCode === j.regionCode && (
+                          {taxBranch?.regionCode === j.regionCode && (
                             <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold">
                               THIS BRANCH
                             </span>

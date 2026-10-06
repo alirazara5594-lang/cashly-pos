@@ -152,6 +152,11 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/** A report's location: every location of the business, as head office reads it. */
+export const ALL_LOCATIONS = 'all';
+const reportLocation = (branchId: string) =>
+  branchId === ALL_LOCATIONS ? { allLocations: true } : { branchId };
+
 /**
  * Endpoints the backend leaves open (no bearer token required). A 401 from any
  * of these is a credential/setup problem, not an expired session, so it must NOT
@@ -958,6 +963,11 @@ export const posApi = {
     const res = await api.put(`/api/stock-requests/${id}/review`, data);
     return res.data;
   },
+  /** Head office answers an outlet's request: a transfer from sourceBranchId to that outlet. */
+  sendStockRequest: async (id: string, sourceBranchId: string, notes?: string) => {
+    const res = await api.post<{ transferId: string; transferNumber: string }>(`/api/stock-requests/${id}/send`, { sourceBranchId, notes });
+    return res.data;
+  },
   deleteStockRequest: async (id: string) => {
     const res = await api.delete(`/api/stock-requests/${id}`);
     return res.data;
@@ -1009,11 +1019,11 @@ export const posApi = {
 
   // Reports - Cash & Card Sales
   getCashSalesReport: async (branchId: string, date: string) => {
-    const res = await api.get('/api/reports/cash-sales', { params: { branchId, date } });
+    const res = await api.get('/api/reports/cash-sales', { params: { ...reportLocation(branchId), date } });
     return res.data;
   },
   getCardSalesReport: async (branchId: string, date: string) => {
-    const res = await api.get('/api/reports/card-sales', { params: { branchId, date } });
+    const res = await api.get('/api/reports/card-sales', { params: { ...reportLocation(branchId), date } });
     return res.data;
   },
 
@@ -1045,24 +1055,25 @@ export const posApi = {
   },
 
   // Reports Engine
+  // Reports Engine. branchId is one location, or ALL_LOCATIONS for the whole business.
   getZReport: async (branchId: string, date?: string) => {
-    const res = await api.get<ZReportSummary>('/api/reports/daily-z', { params: { branchId, date } });
+    const res = await api.get<ZReportSummary>('/api/reports/daily-z', { params: { ...reportLocation(branchId), date } });
     return res.data;
   },
   getCategorySalesReport: async (branchId: string, days?: number) => {
-    const res = await api.get<CategorySalesReport[]>('/api/reports/sales-by-category', { params: { branchId, days } });
+    const res = await api.get<CategorySalesReport[]>('/api/reports/sales-by-category', { params: { ...reportLocation(branchId), days } });
     return res.data;
   },
   getItemPerformanceReport: async (branchId: string, days?: number) => {
-    const res = await api.get<ItemPerformanceReport[]>('/api/reports/item-performance', { params: { branchId, days } });
+    const res = await api.get<ItemPerformanceReport[]>('/api/reports/item-performance', { params: { ...reportLocation(branchId), days } });
     return res.data;
   },
   getTaxAuditReport: async (branchId: string, days?: number, startDate?: string, endDate?: string) => {
-    const res = await api.get<TaxAuditReport>('/api/reports/tax-audit', { params: { branchId, days, startDate, endDate } });
+    const res = await api.get<TaxAuditReport>('/api/reports/tax-audit', { params: { ...reportLocation(branchId), days, startDate, endDate } });
     return res.data;
   },
   getPaymentMethodsReport: async (branchId: string, days?: number) => {
-    const res = await api.get<PaymentMethodsReport>('/api/reports/payment-methods', { params: { branchId, days } });
+    const res = await api.get<PaymentMethodsReport>('/api/reports/payment-methods', { params: { ...reportLocation(branchId), days } });
     return res.data;
   },
   getConsolidatedFinancials: async (tenantId: string, days?: number) => {

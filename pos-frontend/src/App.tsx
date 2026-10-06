@@ -421,10 +421,14 @@ function MainLayoutInner() {
             {/* Finding a sale is open to the counter; recording the refund needs the void
                 permission, which the server checks. */}
             <Route path="/returns" element={
-              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace /> : <ReturnsManagement />} />
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <ReturnsManagement />} />
             {/* Unpaid orders (waiter tablets, QR codes, pickup links) waiting for payment. */}
             <Route path="/open-orders" element={
-              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace /> : <OpenOrders />} />
+              isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
+                : isErpOnly ? <Navigate to="/director" replace />
+                : <OpenOrders />} />
 
             {/* Menu / catalog / pricing → `menu` module */}
             <Route path="/menu" element={<RequireModule module="menu"><MenuManagement /></RequireModule>} />

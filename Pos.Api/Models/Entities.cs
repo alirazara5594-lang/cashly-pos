@@ -1082,6 +1082,8 @@ public class StockRequest
     public string? ReviewedBy { get; set; } // Owner/HQ name
     public DateTime? ReviewedAt { get; set; }
     public string? ReviewNotes { get; set; }
+    /// <summary>The transfer head office sent in answer. The request is Fulfilled when it is received.</summary>
+    public Guid? TransferOrderId { get; set; }
 
     public ICollection<StockRequestItem> Items { get; set; } = new List<StockRequestItem>();
 }

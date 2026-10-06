@@ -19,7 +19,8 @@ import {
   LogOut,
   ShieldCheck
 } from 'lucide-react';
-import { usePosStore } from '../store/posStore';
+import { usePosStore, normalizeRole } from '../store/posStore';
+import { useBusinessShape } from '../hooks/useBusinessShape';
 import { AlertsBell } from './AlertsBell';
 import { AccountSecurityModal } from './AccountSecurityModal';
 import { getSupportSession } from '../services/supportSession';
@@ -33,6 +34,19 @@ function locationTag(b: { locationType?: string; isHeadOffice?: boolean }): stri
   const type = b.locationType ?? (b.isHeadOffice ? 'HeadOffice' : 'Branch');
   return type === 'HeadOffice' ? 'Head office' : type === 'Warehouse' ? 'Warehouse' : '';
 }
+
+/** A role as people say it, not as the system stores it ("OwnerAdmin" → "Owner"). */
+const ROLE_LABELS: Record<string, string> = {
+  SuperAdmin: 'Platform admin',
+  OwnerAdmin: 'Owner',
+  HqAdmin: 'HQ admin',
+  BranchManager: 'Branch manager',
+  Cashier: 'Cashier',
+  KitchenChef: 'Kitchen',
+  Waiter: 'Waiter',
+  Accountant: 'Accountant',
+  InventoryUser: 'Inventory'
+};
 
 interface TopHeaderProps {
   onOpenCallOrder: () => void;
@@ -67,8 +81,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     toggleTheme,
     terminalMode,
     setTerminalMode,
-    cart
+    cart,
+    tenantSettings
   } = usePosStore();
+  // Head office runs the ERP and sells nothing: no till profiles, no phone orders to ring up.
+  const { atHeadOffice, outlets, locations } = useBusinessShape();
 
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
@@ -136,10 +153,14 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     setIsSyncing(false);
   };
 
+  // Somewhere else to switch to.
   const isMultiBranchChain = isPinned
     ? myBranches.length > 1
-    : (selectedTenant?.branches?.length || 0) > 1;
+    : locations.length > 1;
   const branchTag = selectedBranch ? locationTag(selectedBranch) : '';
+  const outletCount = atHeadOffice
+    ? (outlets.length === 0 ? 'no outlets yet' : `${outlets.length} outlet${outlets.length === 1 ? '' : 's'}`)
+    : '';
 
   return (
     <>
@@ -161,7 +182,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-medium transition ${
                 isMultiBranchChain ? 'hover:bg-slate-50 cursor-pointer' : 'cursor-default'
               }`}
-              title={isMultiBranchChain ? 'Click to switch restaurant branch' : 'Single Restaurant Location'}
+              title={isMultiBranchChain ? 'Switch location' : undefined}
             >
               <Layers className="w-3.5 h-3.5 text-teal-600" />
               <div className="text-left">
@@ -176,9 +197,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                   </span>
                 </div>
                 <div className="text-slate-500 text-[10px]">
-                  {selectedBranch?.name || 'Main Hall'}
+                  {selectedBranch?.name || selectedTenant?.name || ''}
                   {branchTag && ` · ${branchTag}`}
-                  {!isMultiBranchChain && !isPinned && ' (Single Location)'}
+                  {outletCount && ` · ${outletCount}`}
                 </div>
               </div>
               {isMultiBranchChain && <ChevronDown className="w-3 h-3 text-slate-500 ml-1" />}
@@ -258,6 +279,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {!atHeadOffice && (
           <div className="relative" ref={modeMenuRef}>
             <button
               onClick={() => setShowModeDropdown(!showModeDropdown)}
@@ -310,6 +332,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               </div>
             )}
           </div>
+          )}
 
           {currentUser && (
             <div className="flex items-center gap-1.5">
@@ -321,7 +344,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 <User className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{currentUser.fullName || currentUser.username}</span>
                 <span className="hidden lg:inline text-[9px] px-1.5 py-0.5 rounded bg-white text-teal-600 border border-slate-200 font-bold uppercase tracking-wider">
-                  {currentUser.role || 'Staff'}
+                  {ROLE_LABELS[normalizeRole(currentUser.role) ?? ''] ?? 'Staff'}
                 </span>
               </button>
               {canManageOwnSignIn && (
@@ -344,25 +367,33 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           )}
           {isSecurityOpen && <AccountSecurityModal onClose={() => setIsSecurityOpen(false)} />}
 
-          <button
-            onClick={onOpenCallOrder}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg btn-gradient text-xs font-semibold transition cursor-pointer"
-            title="Open Phone Call Order Intake"
-          >
-            <PhoneCall className="w-3.5 h-3.5 animate-pulse" />
-            <span className="hidden sm:inline">Call Order</span>
-          </button>
+          {!atHeadOffice && (
+            <button
+              onClick={onOpenCallOrder}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg btn-gradient text-xs font-semibold transition cursor-pointer"
+              title="Take a phone order"
+            >
+              <PhoneCall className="w-3.5 h-3.5 animate-pulse" />
+              <span className="hidden sm:inline">Call Order</span>
+            </button>
+          )}
 
           <AlertsBell />
 
+          {/* The real connection, which the app follows on its own. Only a developer's machine can
+              pretend to go offline, to try the offline till. */}
           <button
-            onClick={() => setIsOnline(!isOnline)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition cursor-pointer ${
+            onClick={import.meta.env.DEV ? () => setIsOnline(!isOnline) : undefined}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition ${
+              import.meta.env.DEV ? 'cursor-pointer' : 'cursor-default'
+            } ${
               isOnline
-                ? 'bg-teal-50 border-teal-200 text-teal-600 hover:bg-teal-100'
-                : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100 animate-pulse'
+                ? 'bg-teal-50 border-teal-200 text-teal-600'
+                : 'bg-rose-50 border-rose-200 text-rose-600 animate-pulse'
             }`}
-            title="Click to toggle simulated offline/online state"
+            title={isOnline
+              ? 'Connected. Sales sync to the cloud as they happen.'
+              : 'No connection. Sales are kept on this device and sync when it is back.'}
           >
             {isOnline ? (
               <>
@@ -406,8 +437,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             )}
           </button>
 
-          <div className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-bold text-teal-600">
-            PKR
+          <div className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-bold text-teal-600" title="Currency">
+            {tenantSettings?.currencyCode || 'PKR'}
           </div>
         </div>
       </header>

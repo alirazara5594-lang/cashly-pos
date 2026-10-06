@@ -109,6 +109,16 @@ export const GettingStarted: React.FC<{ tenantId: string }> = ({ tenantId }) => 
         </button>
       ) : undefined
     },
+    // A head office sells nothing itself: tills, staff and sales all need an outlet first.
+    ...(status.hasHeadOffice ? [{
+      key: 'outlet',
+      label: 'Add your first outlet',
+      hint: (status.outlets ?? 0) > 0
+        ? `${status.outlets} outlet${status.outlets === 1 ? '' : 's'} set up.`
+        : 'The restaurant, café or shop that sells. Each one gets its own tills and stock.',
+      done: (status.outlets ?? 0) > 0,
+      to: '/locations'
+    }] : []),
     {
       key: 'menu',
       label: 'Add your menu items',
@@ -145,10 +155,12 @@ export const GettingStarted: React.FC<{ tenantId: string }> = ({ tenantId }) => 
     },
     {
       key: 'device',
-      label: 'Connect your first till or tablet',
+      label: status.hasHeadOffice ? 'Connect your first outlet\'s till' : 'Connect your first till or tablet',
       hint: status.devices > 0
         ? `${status.devices} device${status.devices === 1 ? '' : 's'} connected.`
-        : 'Make a pairing code here, then open Connect a till or tablet on that device.',
+        : status.hasHeadOffice
+          ? 'Pick the outlet, make a pairing code, then open Connect a till or tablet on that device.'
+          : 'Make a pairing code here, then open Connect a till or tablet on that device.',
       done: status.devices > 0,
       to: '/settings',
       state: { tab: 'provisioning' }
