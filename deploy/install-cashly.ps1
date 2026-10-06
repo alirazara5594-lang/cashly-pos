@@ -145,6 +145,13 @@ if ($CloudUrl) {
     $config['Host']['SyncIntervalMinutes'] = $SyncIntervalMinutes
     if ($BusinessId) { $config['Host']['BusinessId'] = $BusinessId }
     if ($SyncKey)    { $config['Host']['SyncKey']    = $SyncKey }
+    elseif ($BusinessId) {
+        # The cloud stores only a hash, so the key can only come back once — from the head-office
+        # registration that issues it. Without it every push and pull is refused, by design.
+        Write-Warn2 "No -SyncKey supplied. Sync will be refused until one is issued."
+        Write-Warn2 "Register this host in head office, then put the returned syncKey into"
+        Write-Warn2 "Host.SyncKey in $configPath."
+    }
 }
 
 if ($InstallType -eq 'POS') {

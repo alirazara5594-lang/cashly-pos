@@ -1264,6 +1264,15 @@ public class PaymentTransaction
     public Guid TenantId { get; set; }
     public Guid BranchId { get; set; }
     public Guid OrderId { get; set; }
+
+    /// <summary>
+    /// Set instead of <see cref="OrderId"/> when the money is for the business's subscription
+    /// rather than for a sale. Exactly one of the two is meaningful on any row; both are
+    /// non-nullable only because they always have been, and a subscription payment simply has no
+    /// order and no shop to point at.
+    /// </summary>
+    public Guid? SubscriptionInvoiceId { get; set; }
+
     public PaymentProvider Provider { get; set; } = PaymentProvider.Cash;
     public string? ProviderTransactionId { get; set; }
     public PaymentTransactionStatus Status { get; set; } = PaymentTransactionStatus.Pending;
@@ -1563,6 +1572,16 @@ public class SubscriptionInvoice
     /// later price change never rewrites an invoice already sent.
     /// </summary>
     public string? LinesJson { get; set; }
+
+    /// <summary>
+    /// What a paid invoice *buys*, as `{ kind: "plan"|"addon", ... }`.
+    ///
+    /// Held on the invoice rather than applied at purchase, so "paid" and "in effect" stay two
+    /// separate states that one settlement path moves between — whether a human pressed Mark Paid
+    /// or a gateway webhook arrived in the night. Null for an invoice raised by hand to bill a
+    /// period rather than to sell something.
+    /// </summary>
+    public string? EffectJson { get; set; }
 }
 
 /// <summary>

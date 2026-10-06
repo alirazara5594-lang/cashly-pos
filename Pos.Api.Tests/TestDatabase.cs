@@ -23,6 +23,12 @@ public sealed class TestDatabase : IDisposable
     public AppDbContext Db { get; }
     public SyncReceiver Receiver { get; }
     public HostEntitlementMirror Mirror { get; }
+    public CatalogBuilder Builder { get; }
+    public CatalogMirror Catalog { get; }
+    public ISyncKeyAuthenticator Auth { get; }
+    public IEntitlementService Entitlements { get; }
+    public ISubscriptionService Subscriptions { get; }
+    public ISubscriptionCheckout Checkout { get; }
 
     public TestDatabase()
     {
@@ -41,6 +47,13 @@ public sealed class TestDatabase : IDisposable
 
         Receiver = new SyncReceiver(Db);
         Mirror = new HostEntitlementMirror(Db);
+        Builder = new CatalogBuilder(Db);
+        Catalog = new CatalogMirror(Db);
+        Auth = new SyncKeyAuthenticator(Db);
+        Entitlements = new EntitlementService(Db);
+        Subscriptions = new SubscriptionService(Db, Entitlements,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SubscriptionService>.Instance);
+        Checkout = new SubscriptionCheckout(Db, Subscriptions, Entitlements);
     }
 
     public Guid TenantId { get; private set; } = Guid.NewGuid();
@@ -90,6 +103,71 @@ public sealed class TestDatabase : IDisposable
             Id = ForeignBranchId, TenantId = otherTenantId, Name = "Someone else's", Code = "OTHER"
         });
 
+        Db.SaveChanges();
+    }
+
+    /// <summary>
+    /// The sellable plans and their feature rows, built from FeatureCatalog exactly as the real
+    /// seeder builds them — a hand-written matrix in a test would prove the test, not the product.
+    /// </summary>
+    public void SeedPlans()
+    {
+        foreach (var (code, name, description, monthly, yearly, rank) in FeatureCatalog.Plans)
+        {
+            var plan = new Plan
+            {
+                Code = code, Name = name, Description = description,
+                MonthlyPricePKR = monthly, YearlyPricePKR = yearly, Rank = rank, IsActive = true
+            };
+            Db.Plans.Add(plan);
+            Db.SaveChanges();
+            Db.PlanFeatures.AddRange(FeatureCatalog.BuildFeatureRows(plan.Id, plan.Code));
+        }
+        Db.SaveChanges();
+    }
+
+    /// <summary>Something the owner can buy.</summary>
+    public void SeedAddOn(string key, string displayName, decimal monthly, decimal yearly, bool active = true)
+    {
+        Db.AddOnCatalogItems.Add(new AddOnCatalogItem
+        {
+            Key = key, DisplayName = displayName, Description = displayName,
+            MonthlyPricePKR = monthly, YearlyPricePKR = yearly, IsActive = active
+        });
+        Db.SaveChanges();
+    }
+
+    /// <summary>
+    /// A registered business host. Pass null for <paramref name="syncKey"/> to get a host that
+    /// was registered before sync keys existed — the case the gate must refuse rather than fall
+    /// back to the HostCode.
+    /// </summary>
+    public BusinessHost SeedHost(string? syncKey, bool active = true, string hostCode = "AB12CD")
+    {
+        var host = new BusinessHost
+        {
+            TenantId = TenantId,
+            BranchId = BranchId,
+            HostCode = hostCode,
+            HostName = "Test Host",
+            SyncKeyHash = syncKey == null ? null : SyncKeys.Hash(syncKey),
+            IsActive = active
+        };
+        Db.BusinessHosts.Add(host);
+        Db.SaveChanges();
+        return host;
+    }
+
+    /// <summary>The policy row the catalogue pull is measured against. Absent settings mean
+    /// "branches may edit", which is what the rest of the app already assumes.</summary>
+    public void SeedSettings(CatalogControl control, bool branchPricing = false)
+    {
+        Db.TenantSettings.Add(new TenantSettings
+        {
+            TenantId = TenantId,
+            CatalogControl = control,
+            BranchPricing = branchPricing
+        });
         Db.SaveChanges();
     }
 

@@ -1532,6 +1532,75 @@ export interface SubscriptionInvoice {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Self-serve purchase — what an owner can buy without a ticket
+// ─────────────────────────────────────────────────────────────
+
+export type CheckoutKind = 'plan' | 'addon';
+
+export interface CheckoutRequest {
+  kind: CheckoutKind;
+  planCode?: string;
+  addOnKey?: string;
+  annual?: boolean;
+  quantity?: number;
+  branchId?: string;
+}
+
+/** What it costs, before anything is written. */
+export interface CheckoutQuote {
+  kind: CheckoutKind;
+  code: string;
+  description: string;
+  quantity: number;
+  unitPricePKR: number;
+  totalPKR: number;
+}
+
+/** The invoice the checkout raised. Nothing has been granted at this point. */
+export interface CheckoutResult {
+  id: string;
+  invoiceNumber: string;
+  amountPKR: number;
+  status: SubscriptionInvoiceStatus;
+  dueAt: string;
+  billingPeriodEnd: string;
+  description: string;
+  /** True when the caller still has to take money for it. */
+  payRequired: boolean;
+}
+
+export interface PlanRow {
+  code: string;
+  name: string;
+  description: string;
+  monthlyPricePKR: number;
+  yearlyPricePKR: number;
+  rank: number;
+}
+
+export interface MySubscriptionSummary {
+  plan: { code: string; name: string };
+  status: string;
+  trialEndsAt?: string | null;
+  endDate?: string | null;
+  isOverPlanLimit: boolean;
+  overLimitReason?: string | null;
+}
+
+export interface SubscriptionPayResponse {
+  success: boolean;
+  paymentTransactionId: string;
+  provider: string;
+  amountPKR?: number;
+  invoiceNumber?: string;
+  redirectUrl?: string;
+  instructions?: string;
+  providerTransactionId?: string;
+  configured?: boolean;
+  message?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
 // HR — Departments, Designations, Leave
 // ─────────────────────────────────────────────────────────────
 

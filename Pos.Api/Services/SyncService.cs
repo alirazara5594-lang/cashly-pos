@@ -41,6 +41,9 @@ public interface ISyncService
 
     /// <summary>Pulls entitlements down so a host learns about a plan change or a suspension.</summary>
     Task<SyncOutcome> PullEntitlementsAsync(Guid tenantId, CancellationToken ct = default);
+
+    /// <summary>Pulls the head-office catalogue down, but only where head office owns it.</summary>
+    Task<SyncOutcome> PullCatalogAsync(Guid tenantId, CancellationToken ct = default);
 }
 
 public class SyncService : ISyncService
@@ -53,6 +56,7 @@ public class SyncService : ISyncService
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _config;
     private readonly HostEntitlementMirror _mirror;
+    private readonly CatalogMirror _catalog;
     private readonly ILogger<SyncService> _log;
 
     public SyncService(
@@ -60,12 +64,14 @@ public class SyncService : ISyncService
         IHttpClientFactory httpFactory,
         IConfiguration config,
         HostEntitlementMirror mirror,
+        CatalogMirror catalog,
         ILogger<SyncService> log)
     {
         _db = db;
         _httpFactory = httpFactory;
         _config = config;
         _mirror = mirror;
+        _catalog = catalog;
         _log = log;
     }
 
@@ -391,6 +397,152 @@ public class SyncService : ISyncService
             return new SyncOutcome("Entitlements", 1, 0, false, ex.Message);
         }
     }
+
+    /// <summary>
+    /// Brings head office's catalogue down onto this till.
+    ///
+    /// Decided before any network: a business that lets its branches edit the menu has nothing to
+    /// fetch, and fetching it anyway would be a request whose only possible outcome is overwriting
+    /// somebody's work. The mirror checks the same policy again at apply time, so a future caller
+    /// cannot get round it by calling the endpoint directly.
+    /// </summary>
+    public async Task<SyncOutcome> PullCatalogAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(CloudUrl)) return SyncOutcome.Nothing("Catalog");
+
+        var settings = await _db.TenantSettings.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (settings == null || settings.CatalogControl != CatalogControl.HeadOfficeOnly)
+            return SyncOutcome.Nothing("Catalog");
+
+        var cursor = await GetCursorAsync(tenantId, "Catalog");
+        if (cursor.ConsecutiveFailures > 0
+            && cursor.NextAttemptAfter(cursor.LastAttemptAt ?? DateTime.UtcNow) > DateTime.UtcNow)
+            return SyncOutcome.Nothing("Catalog");
+
+        var branchId = await ResolveBranchIdAsync(ct);
+        if (branchId == null)
+        {
+            // Without a branch there are no per-branch prices to reconcile, and a host that cannot
+            // say where it sits should not be guessing at one.
+            cursor.LastAttemptAt = DateTime.UtcNow;
+            cursor.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            return SyncOutcome.Nothing("Catalog");
+        }
+
+        var startedAt = DateTime.UtcNow;
+        var attempted = 1;
+        try
+        {
+            var client = _httpFactory.CreateClient("cloud-sync");
+            client.Timeout = TimeSpan.FromSeconds(60);
+
+            var known = string.IsNullOrEmpty(cursor.SnapshotVersion)
+                ? string.Empty
+                : $"&known={Uri.EscapeDataString(cursor.SnapshotVersion)}";
+            var request = new HttpRequestMessage(HttpMethod.Get,
+                $"{CloudUrl!.TrimEnd('/')}/api/sync/catalog?businessId={BusinessId}&tenantId={tenantId}{known}");
+            if (!string.IsNullOrWhiteSpace(SyncKey)) request.Headers.Add("X-Sync-Key", SyncKey);
+
+            var response = await client.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"Cloud returned {(int)response.StatusCode}: {Truncate(body, 300)}");
+
+            var pull = JsonSerializer.Deserialize<CatalogPullResponse>(body, JsonOptions)
+                ?? throw new JsonException("Cloud returned an empty catalogue payload.");
+
+            if (pull.Unchanged || pull.Catalog == null)
+            {
+                // The menu has not moved. Nothing to write, nothing to log — a green line every
+                // five minutes for "still the same menu" would bury the lines that matter.
+                cursor.ConsecutiveFailures = 0;
+                cursor.LastError = null;
+                cursor.LastAttemptAt = DateTime.UtcNow;
+                cursor.UpdatedAt = DateTime.UtcNow;
+                await _db.SaveChangesAsync(ct);
+                return SyncOutcome.Nothing("Catalog");
+            }
+
+            var applied = await _catalog.ApplyAsync(tenantId, branchId, pull.Catalog, ct);
+
+            var log = new SyncLog
+            {
+                TenantId = tenantId, HostIdentifier = BusinessId,
+                Direction = SyncDirection.Pull, EntityType = "Catalog",
+                BatchId = Guid.NewGuid().ToString("N"),
+                RecordsAttempted = pull.Catalog.Products.Count,
+                RecordsSucceeded = applied.Applied ? applied.ProductsWritten : 0,
+                // A refusal is reported, not swallowed: an empty head-office catalogue arriving at
+                // a till that has five hundred items is a problem somebody should see.
+                Status = applied.Applied
+                    ? (applied.Reasons.Count == 0 ? SyncStatus.Success : SyncStatus.Partial)
+                    : SyncStatus.Partial,
+                ErrorMessage = applied.Applied ? applied.ReasonSummary : applied.SkippedBecause,
+                StartedAt = startedAt, CompletedAt = DateTime.UtcNow,
+                DurationMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds
+            };
+            _db.SyncLogs.Add(log);
+
+            if (applied.Applied)
+            {
+                cursor.SnapshotVersion = pull.CatalogVersion;
+                cursor.ConsecutiveFailures = 0;
+                cursor.LastError = null;
+            }
+            // Not applied: the version is deliberately left where it was, so the next tick asks
+            // again rather than concluding the problem solved itself.
+            cursor.LastAttemptAt = DateTime.UtcNow;
+            cursor.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+            return new SyncOutcome("Catalog", attempted,
+                applied.Applied ? applied.ProductsWritten : 0, applied.Applied,
+                applied.Applied ? applied.ReasonSummary : applied.SkippedBecause);
+        }
+        catch (Exception ex)
+        {
+            _db.SyncLogs.Add(new SyncLog
+            {
+                TenantId = tenantId, HostIdentifier = BusinessId,
+                Direction = SyncDirection.Pull, EntityType = "Catalog",
+                BatchId = Guid.NewGuid().ToString("N"),
+                RecordsAttempted = attempted, RecordsSucceeded = 0, RecordsFailed = attempted,
+                Status = SyncStatus.Failed, ErrorMessage = Truncate(ex.Message, 500),
+                StartedAt = startedAt, CompletedAt = DateTime.UtcNow
+            });
+
+            cursor.ConsecutiveFailures += 1;
+            cursor.LastAttemptAt = DateTime.UtcNow;
+            cursor.LastError = Truncate(ex.Message, 500);
+            cursor.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(CancellationToken.None);
+            _log.LogWarning("Sync: catalogue pull failed ({Failures} in a row): {Error}",
+                cursor.ConsecutiveFailures, ex.Message);
+            return new SyncOutcome("Catalog", attempted, 0, false, ex.Message);
+        }
+    }
+
+    /// <summary>The branch this host sits at, which is the scope its price overrides live in.
+    /// Read from the host's own registration rather than from configuration, because that is the
+    /// row head office also used when it decided whose prices to send.</summary>
+    private async Task<Guid?> ResolveBranchIdAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(BusinessId))
+        {
+            var code = BusinessId.Trim().ToUpperInvariant();
+            var host = await _db.BusinessHosts.IgnoreQueryFilters().AsNoTracking()
+                .FirstOrDefaultAsync(h => h.HostCode == code, ct);
+            if (host != null) return host.BranchId;
+        }
+
+        var raw = _config["Host:BranchId"] ?? Environment.GetEnvironmentVariable("BRANCH_ID");
+        return Guid.TryParse(raw, out var parsed) ? parsed : null;
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private async Task<SyncCursor> GetCursorAsync(Guid tenantId, string entityType)
     {

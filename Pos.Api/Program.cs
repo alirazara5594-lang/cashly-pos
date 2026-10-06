@@ -189,12 +189,21 @@ builder.Services.AddScoped<Pos.Api.Services.IEntitlementService, Pos.Api.Service
 builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Services.DeviceLicenseService>();
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionService, Pos.Api.Services.SubscriptionService>();
 builder.Services.AddScoped<Pos.Api.Services.IBillingService, Pos.Api.Services.BillingService>();
+// The owner-facing half of billing: price it, raise the invoice, and apply what it bought once
+// it is paid — by a human or by a webhook, through the same settle path.
+builder.Services.AddScoped<Pos.Api.Services.ISubscriptionCheckout, Pos.Api.Services.SubscriptionCheckout>();
 builder.Services.AddScoped<Pos.Api.Services.ISyncService, Pos.Api.Services.SyncService>();
 // The other end of sync: writes what a business host pushes into this database.
 builder.Services.AddScoped<Pos.Api.Services.ISyncReceiver, Pos.Api.Services.SyncReceiver>();
 // Applies a pulled entitlement payload on a business host, so a plan change or a suspension made
 // at head office reaches the shop's own database instead of being fetched and then ignored.
 builder.Services.AddScoped<Pos.Api.Services.HostEntitlementMirror>();
+// The catalogue half of sync. The builder is the cloud end (what a branch is owed); the mirror is
+// the host end (writing it onto a till without overwriting a menu the branch owns).
+builder.Services.AddScoped<Pos.Api.Services.CatalogBuilder>();
+builder.Services.AddScoped<Pos.Api.Services.CatalogMirror>();
+// Every /api/sync/* call goes through this before it touches a row.
+builder.Services.AddScoped<Pos.Api.Services.ISyncKeyAuthenticator, Pos.Api.Services.SyncKeyAuthenticator>();
 // Only actually does anything when Host:Mode is BusinessHost — see SyncWorker.
 builder.Services.AddHostedService<Pos.Api.Services.SyncWorker>();
 // Reports paid sales to FBR / PRA / SRB / KPRA for shops with a fiscal connection and the add-on;
@@ -439,6 +448,23 @@ using (var scope = app.Services.CreateScope())
                 END IF;
             END $cashly$;
 
+            -- The pull side of sync remembers what it already applied as a content fingerprint,
+            -- so an unchanged menu costs a header and no bytes. Added after the first
+            -- SyncCursors rows existed, hence the guarded ALTER rather than only a model change.
+            ALTER TABLE ""SyncCursors"" ADD COLUMN IF NOT EXISTS ""SnapshotVersion"" text;
+
+            -- Sync authorisation. Hosts registered before this existed have no key on file, which
+            -- is why the column is nullable and the gate refuses rather than falls back to the
+            -- HostCode: a lock that only sometimes engages is worse than no lock at all.
+            ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""SyncKeyHash"" text;
+
+            -- Self-serve checkout: what an invoice buys (so settling it applies the purchase) and
+            -- which invoice a gateway payment was taken for (so a webhook knows what to settle).
+            -- Both were added after the tables existed, hence the guarded ALTERs.
+            ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""LinesJson"" text;
+            ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""EffectJson"" text;
+            ALTER TABLE ""PaymentTransactions"" ADD COLUMN IF NOT EXISTS ""SubscriptionInvoiceId"" uuid;
+
             -- PIN-login lockout tracking.
             ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""FailedLoginAttempts"" integer NOT NULL DEFAULT 0;
             ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""LockedUntil"" timestamp with time zone;
@@ -668,6 +694,7 @@ using (var scope = app.Services.CreateScope())
                 ""TenantId"" uuid NOT NULL,
                 ""BranchId"" uuid NOT NULL,
                 ""OrderId"" uuid NOT NULL,
+                ""SubscriptionInvoiceId"" uuid,
                 ""Provider"" integer NOT NULL DEFAULT 4,
                 ""ProviderTransactionId"" text,
                 ""Status"" integer NOT NULL DEFAULT 1,
@@ -1012,7 +1039,9 @@ using (var scope = app.Services.CreateScope())
                 ""DueAt"" timestamp with time zone NOT NULL,
                 ""PaidAt"" timestamp with time zone,
                 ""PaymentMethod"" text,
-                ""Notes"" text
+                ""Notes"" text,
+                ""LinesJson"" text,
+                ""EffectJson"" text
             );
 
             DO $$ BEGIN
@@ -1373,6 +1402,7 @@ using (var scope = app.Services.CreateScope())
                 ""MachineName"" text,
                 ""OperatingSystem"" text,
                 ""AppVersion"" text,
+                ""SyncKeyHash"" text,
                 ""RegisteredAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
                 ""LastSeenAt"" timestamp with time zone NOT NULL DEFAULT NOW(),
                 ""LastSyncedAt"" timestamp with time zone,
@@ -1389,6 +1419,7 @@ using (var scope = app.Services.CreateScope())
                 ""ConsecutiveFailures"" integer NOT NULL DEFAULT 0,
                 ""LastAttemptAt"" timestamp with time zone,
                 ""LastError"" text,
+                ""SnapshotVersion"" text,
                 ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT NOW()
             );
 
@@ -10441,23 +10472,20 @@ app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpCont
     return Results.Ok(invoice);
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/subscription-invoices/{id:guid}/mark-paid", async (AppDbContext db, HttpContext http, Guid id, MarkSubscriptionInvoicePaidDto dto) =>
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/mark-paid", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionCheckout checkout, Guid id, MarkSubscriptionInvoicePaidDto dto) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
-    var invoice = await db.SubscriptionInvoices.FirstOrDefaultAsync(i => i.Id == id);
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().FirstOrDefaultAsync(i => i.Id == id);
     if (invoice == null) return Results.NotFound();
     if (invoice.Status == SubscriptionInvoiceStatus.Paid) return Results.BadRequest(new { message = "Already paid." });
 
-    invoice.Status = SubscriptionInvoiceStatus.Paid;
-    invoice.PaidAt = DateTime.UtcNow;
-    invoice.PaymentMethod = dto.PaymentMethod;
+    // Through the same settle path a gateway webhook takes, so marking an invoice paid by hand
+    // applies what it bought — a self-serve purchase paid offline must not need a second, manual
+    // grant on top of the money.
+    var applied = await checkout.SettleAsync(invoice, dto.PaymentMethod, actingUserId: null);
+    if (!applied)
+        return Results.Ok(new { message = "Invoice paid, but the purchase could not be applied. See the invoice notes.", invoice });
 
-    // Paying an invoice extends the tenant's paid-until date to cover the billed period.
-    var tenant = await db.Tenants.FindAsync(invoice.TenantId);
-    if (tenant != null && (tenant.SubscriptionPaidUntil == null || tenant.SubscriptionPaidUntil < invoice.BillingPeriodEnd))
-        tenant.SubscriptionPaidUntil = invoice.BillingPeriodEnd;
-
-    await db.SaveChangesAsync();
     return Results.Ok(invoice);
 }).RequireAuthorization();
 
@@ -13042,6 +13070,7 @@ api.MapPost("/payments/initiate", async (
 api.MapPost("/payments/webhook/{provider}", async (
     AppDbContext db, HttpContext http,
     Pos.Api.Services.IPaymentGatewayResolver gateways,
+    Pos.Api.Services.ISubscriptionCheckout checkout,
     string provider) =>
 {
     var gateway = gateways.Resolve(provider);
@@ -13079,6 +13108,17 @@ api.MapPost("/payments/webhook/{provider}", async (
         "PaymentTransaction", txn.Id, null,
         $"{gateway.ProviderName} {txn.AmountPKR:0.##} PKR ref={txn.ProviderTransactionId}");
     await db.SaveChangesAsync();
+
+    // A subscription invoice paid through the gateway takes effect here, through exactly the path
+    // a human pressing Mark Paid takes. The endpoint that started the payment never grants
+    // anything; this is the only place money turns into a plan or an add-on.
+    if (confirmation.Success && txn.SubscriptionInvoiceId != null)
+    {
+        var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(i => i.Id == txn.SubscriptionInvoiceId);
+        if (invoice != null && invoice.Status != SubscriptionInvoiceStatus.Paid)
+            await checkout.SettleAsync(invoice, gateway.ProviderName, actingUserId: null);
+    }
 
     // An order paid through the gateway after it was rung up reaches the books here.
     if (order != null && confirmation.Success)
@@ -14338,6 +14378,24 @@ app.MapPost("/api/host/register", async (
     host.LastSeenAt = DateTime.UtcNow;
     host.IsActive = true;
 
+    // Issue or rotate the sync key this host must present on every push and pull. This endpoint
+    // already requires an owner's session, so it is the right place to hand a secret out — and the
+    // only place that can, because the cloud stores just the hash. Supplying a key rotates it; the
+    // cloud never reads it back, so re-registering is also the recovery path when the host's copy
+    // is lost.
+    string? issuedKey = null;
+    var suppliedKey = string.IsNullOrWhiteSpace(dto.SyncKey) ? null : dto.SyncKey.Trim();
+    if (suppliedKey != null)
+    {
+        host.SyncKeyHash = Pos.Api.Services.SyncKeys.Hash(suppliedKey);
+        issuedKey = suppliedKey;
+    }
+    else if (host.SyncKeyHash == null)
+    {
+        issuedKey = Pos.Api.Services.SyncKeys.NewKey();
+        host.SyncKeyHash = Pos.Api.Services.SyncKeys.Hash(issuedKey);
+    }
+
     await WriteAuditAsync(db, tenantId.Value, actingUser, "BusinessHostRegistered", "BusinessHost", host.Id,
         null, $"{host.HostName} at {host.LanAddress}:{host.Port}");
     await db.SaveChangesAsync();
@@ -14351,7 +14409,10 @@ app.MapPost("/api/host/register", async (
         host.HostName,
         connectUrl = $"http://{host.LanAddress}:{host.Port}",
         branchName = branch.Name,
-        branchCode = branch.Code
+        branchCode = branch.Code,
+        // Null when this host already has a key on file and supplied none — the caller already
+        // holds it, so echoing it back would only widen the number of places a live secret lands.
+        syncKey = issuedKey
     });
 }).RequireAuthorization();
 
@@ -14394,11 +14455,18 @@ app.MapGet("/api/host/list", async (AppDbContext db, HttpContext http) =>
 /// Host check-in. Keeps LastSeenAt fresh and lets a host report its current LAN address, so a
 /// terminal that lost its host can be told where it moved to.
 /// </summary>
-app.MapPost("/api/host/checkin", async (AppDbContext db, HostCheckinDto dto) =>
+app.MapPost("/api/host/checkin", async (
+    AppDbContext db, HttpContext http, Pos.Api.Services.ISyncKeyAuthenticator auth, HostCheckinDto dto) =>
 {
-    var host = await db.BusinessHosts.IgnoreQueryFilters()
-        .FirstOrDefaultAsync(h => h.HostCode == dto.BusinessId.Trim().ToUpperInvariant());
-    if (host == null) return Results.NotFound(new { message = "Unknown business host." });
+    // Anonymous to the internet, but not to just anybody: check-in is what rewrites the LAN
+    // address every terminal is told to connect to, so a caller who only knows the HostCode
+    // could otherwise point this shop's tills at a machine of their choosing. No tenant claim
+    // here — the key alone says who is speaking.
+    var gate = await auth.AuthenticateAsync(
+        dto.BusinessId, http.Request.Headers[Pos.Api.Services.SyncKeys.HeaderName], tenantId: null);
+    if (!gate.IsSuccess) return Pos.Api.Services.SyncGate.Failure(gate);
+
+    var host = gate.Host!;
 
     host.LastSeenAt = DateTime.UtcNow;
     if (!string.IsNullOrWhiteSpace(dto.LanAddress)) host.LanAddress = dto.LanAddress.Trim();
@@ -14555,17 +14623,17 @@ app.MapGet("/api/sync/logs", async (AppDbContext db, HttpContext http, Guid? bra
 // with nobody logged in, so a bearer token tied to a person would be exactly the wrong thing.
 // ============================================================
 
-app.MapPost("/api/sync/receive", async (AppDbContext db, Pos.Api.Services.ISyncReceiver receiver, SyncReceiveDto dto) =>
+app.MapPost("/api/sync/receive", async (
+    AppDbContext db, HttpContext http, Pos.Api.Services.ISyncKeyAuthenticator auth,
+    Pos.Api.Services.ISyncReceiver receiver, SyncReceiveDto dto) =>
 {
-    var host = await db.BusinessHosts.IgnoreQueryFilters()
-        .FirstOrDefaultAsync(h => h.HostCode == (dto.BusinessId ?? "").Trim().ToUpperInvariant() && h.IsActive);
-    if (host == null)
-        return Results.Json(new { message = "Unknown business host." }, statusCode: StatusCodes.Status401Unauthorized);
+    // The HostCode only names the business; the key is what proves the caller is its host.
+    // Everything below — the tenant it may write to, the rows it may land — rests on this gate.
+    var gate = await auth.AuthenticateAsync(
+        dto.BusinessId, http.Request.Headers[Pos.Api.Services.SyncKeys.HeaderName], dto.TenantId);
+    if (!gate.IsSuccess) return Pos.Api.Services.SyncGate.Failure(gate);
 
-    // The host may only push for the tenant it belongs to. Without this a leaked sync key would
-    // let one shop write rows into another's books.
-    if (dto.TenantId != host.TenantId)
-        return Results.Json(new { message = "Host does not belong to that business." }, statusCode: StatusCodes.Status403Forbidden);
+    var host = gate.Host!;
 
     if (dto.Records == null || dto.Records.Count == 0)
         return Results.Ok(new { accepted = 0, newRecords = 0, duplicates = 0, rejected = 0, note = "Empty batch." });
@@ -14649,13 +14717,14 @@ app.MapPost("/api/sync/receive", async (AppDbContext db, Pos.Api.Services.ISyncR
 /// itself.
 /// </summary>
 app.MapGet("/api/sync/entitlements", async (
-    AppDbContext db, Pos.Api.Services.IEntitlementService entitlements, string businessId, Guid tenantId) =>
+    AppDbContext db, HttpContext http, Pos.Api.Services.ISyncKeyAuthenticator auth,
+    Pos.Api.Services.IEntitlementService entitlements, string businessId, Guid tenantId) =>
 {
-    var host = await db.BusinessHosts.IgnoreQueryFilters()
-        .FirstOrDefaultAsync(h => h.HostCode == (businessId ?? "").Trim().ToUpperInvariant() && h.IsActive);
-    if (host == null || host.TenantId != tenantId)
-        return Results.Json(new { message = "Unknown business host." }, statusCode: StatusCodes.Status401Unauthorized);
+    var gate = await auth.AuthenticateAsync(
+        businessId, http.Request.Headers[Pos.Api.Services.SyncKeys.HeaderName], tenantId);
+    if (!gate.IsSuccess) return Pos.Api.Services.SyncGate.Failure(gate);
 
+    var host = gate.Host!;
     var ent = await entitlements.GetAsync(tenantId);
     host.LastSeenAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
@@ -14674,6 +14743,36 @@ app.MapGet("/api/sync/entitlements", async (
         // The three answers a host needs to enforce billing state with no connection.
         ent.CanSell, ent.CanUseBackOffice, ent.CanRead
     });
+}).AllowAnonymous().RequireRateLimiting("default");
+
+/// <summary>
+/// The catalogue a branch till sells: categories, items, their modifiers, and this branch's own
+/// price overrides — as head office has them.
+///
+/// <paramref name="known"/> is the fingerprint of what the host last applied. When it still
+/// matches, the answer is three short lines and no menu travels at all; that is the entire point
+/// of the version, because a shop on a phone tether would otherwise re-download its own menu every
+/// five minutes for nothing.
+/// </summary>
+app.MapGet("/api/sync/catalog", async (
+    AppDbContext db, HttpContext http, Pos.Api.Services.ISyncKeyAuthenticator auth,
+    Pos.Api.Services.CatalogBuilder builder,
+    string? businessId, Guid? tenantId, string? known, CancellationToken ct) =>
+{
+    var gate = await auth.AuthenticateAsync(
+        businessId, http.Request.Headers[Pos.Api.Services.SyncKeys.HeaderName], tenantId);
+    if (!gate.IsSuccess) return Pos.Api.Services.SyncGate.Failure(gate);
+
+    var host = gate.Host!;
+
+    // Scoped to this host's own branch: another shop's price overrides are not this shop's to see.
+    var snapshot = await builder.BuildAsync(host.TenantId, host.BranchId, ct);
+
+    var unchanged = !string.IsNullOrEmpty(known)
+        && string.Equals(known, snapshot.CatalogVersion, StringComparison.Ordinal);
+
+    return Results.Ok(new Pos.Api.Services.CatalogPullResponse(
+        snapshot.CatalogVersion, unchanged, unchanged ? null : snapshot));
 }).AllowAnonymous().RequireRateLimiting("default");
 
 
@@ -14838,9 +14937,178 @@ app.MapPost("/api/subscription/change-plan", async (
     });
 }).RequireAuthorization();
 
+// ============================================================
+// SELF-SERVE CHECKOUT
+//
+// What an owner can buy for their own business without opening a support ticket: a different
+// plan, or an add-on. Every path here raises a pending invoice; the invoice is the single thing
+// that decides when the purchase takes effect, because settling it is one code path whether a
+// human pressed Mark Paid or a gateway webhook arrived in the night.
+// ============================================================
+
+/// <summary>
+/// The plans on sale, with prices. An owner choosing what to move to needs the real list rather
+/// than a copy of it pasted into the app, which would drift the first time pricing changed.
+/// </summary>
+app.MapGet("/api/subscription/plans", async (AppDbContext db) =>
+{
+    var rows = await db.Plans.IgnoreQueryFilters()
+        .Where(p => p.IsActive)
+        .OrderBy(p => p.Rank)
+        .Select(p => new { p.Code, p.Name, p.Description, p.MonthlyPricePKR, p.YearlyPricePKR, p.Rank })
+        .ToListAsync();
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+/// <summary>What a plan or an add-on would cost this business, before anything is written.</summary>
+app.MapGet("/api/subscription/quote", async (
+    HttpContext http,
+    Pos.Api.Services.ISubscriptionCheckout checkout,
+    string kind, string? planCode, string? addOnKey,
+    bool annual = false, int quantity = 1, Guid? branchId = null) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    try
+    {
+        var quote = await checkout.QuoteAsync(tenantId.Value,
+            new Pos.Api.Services.CheckoutRequest(kind, planCode, addOnKey, annual, quantity, branchId));
+        return Results.Ok(quote);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+}).RequireAuthorization();
+
+/// <summary>
+/// Raises a pending invoice for a purchase. The plan and the add-ons do not change here — they
+/// change when the invoice is settled, so an unpaid checkout can never quietly grant a feature.
+/// </summary>
+app.MapPost("/api/subscription/checkout", async (
+    HttpContext http,
+    AppDbContext db,
+    Pos.Api.Services.ISubscriptionCheckout checkout,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    CheckoutDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    // What the business pays is an owner decision, not a manager one — same line as change-plan.
+    if (!http.IsSuperAdmin() && actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can buy for this business." }, statusCode: 403);
+
+    var outcome = await checkout.CheckoutAsync(tenantId.Value, new Pos.Api.Services.CheckoutRequest(
+        dto.Kind, dto.PlanCode, dto.AddOnKey, dto.Annual, dto.Quantity, dto.BranchId), actingUser?.Id);
+
+    if (!outcome.Ok)
+        return Results.BadRequest(new { message = outcome.Error });
+
+    var invoice = outcome.Invoice!;
+    if (actingUser != null)
+        await WriteAuditAsync(db, tenantId.Value, actingUser, "SubscriptionPurchased", "SubscriptionInvoice",
+            invoice.Id, null, $"{invoice.InvoiceNumber}: {invoice.Notes} ({invoice.AmountPKR:0.##} PKR)");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        invoice.Id, invoice.InvoiceNumber, invoice.AmountPKR, invoice.Status,
+        invoice.DueAt, invoice.BillingPeriodEnd,
+        description = invoice.Notes,
+        // The caller needs to know whether to show a Pay button or wait for head office. Nothing
+        // has been granted either way until the invoice is settled.
+        payRequired = invoice.Status == SubscriptionInvoiceStatus.Pending
+    });
+}).RequireAuthorization();
+
+/// <summary>This business's own invoices, newest first.</summary>
+app.MapGet("/api/subscription/invoices", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var rows = await db.SubscriptionInvoices.IgnoreQueryFilters()
+        .Where(i => i.TenantId == tenantId.Value)
+        .OrderByDescending(i => i.IssuedAt)
+        .Take(100)
+        .ToListAsync();
+    return Results.Ok(rows);
+}).RequireAuthorization();
+
+/// <summary>
+/// Take the money for one of this business's own invoices through a gateway.
+///
+/// The transaction is recorded before the gateway is asked, so a declined or unreachable gateway
+/// leaves a row explaining itself instead of nothing at all. Settlement still happens on the
+/// webhook: this endpoint never grants anything, it only starts a payment.
+/// </summary>
+app.MapPost("/api/subscription/invoices/{id:guid}/pay", async (
+    HttpContext http,
+    AppDbContext db,
+    Pos.Api.Services.IPaymentGatewayResolver gateways,
+    Guid id, PaySubscriptionInvoiceDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+
+    var actingUser = await http.RequestServices
+        .GetRequiredService<Pos.Api.Middlewares.ICurrentUserAccessor>().GetCurrentUserAsync(http);
+    if (!http.IsSuperAdmin() && actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can pay for this business." }, statusCode: 403);
+
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(i => i.Id == id && i.TenantId == tenantId.Value);
+    if (invoice == null) return Results.NotFound(new { message = "Invoice not found." });
+    if (invoice.Status == SubscriptionInvoiceStatus.Paid)
+        return Results.BadRequest(new { message = "This invoice is already paid." });
+
+    var gateway = gateways.Resolve(dto.Provider.ToString());
+    if (gateway == null)
+        return Results.BadRequest(new { message = $"No payment gateway is registered for {dto.Provider}." });
+
+    var txn = new PaymentTransaction
+    {
+        TenantId = invoice.TenantId,
+        // A subscription is the whole business's, not one shop's — there is no order and no
+        // branch to point at, which is what SubscriptionInvoiceId is for.
+        BranchId = Guid.Empty,
+        OrderId = Guid.Empty,
+        SubscriptionInvoiceId = invoice.Id,
+        Provider = dto.Provider,
+        Status = PaymentTransactionStatus.Pending,
+        AmountPKR = invoice.AmountPKR
+    };
+    db.PaymentTransactions.Add(txn);
+
+    var intent = await gateway.CreateIntentAsync(invoice.Id, invoice.AmountPKR, customerPhone: null);
+    if (!intent.Success)
+    {
+        txn.Status = PaymentTransactionStatus.Failed;
+        txn.FailureReason = intent.ErrorMessage;
+        await db.SaveChangesAsync();
+        return Results.Ok(new
+        {
+            success = false, paymentTransactionId = txn.Id, provider = gateway.ProviderName,
+            configured = gateway.IsConfigured, message = intent.ErrorMessage
+        });
+    }
+
+    txn.ProviderTransactionId = intent.ProviderTransactionId;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        success = true, paymentTransactionId = txn.Id, provider = gateway.ProviderName,
+        amountPKR = invoice.AmountPKR, invoiceNumber = invoice.InvoiceNumber,
+        redirectUrl = intent.RedirectUrl, instructions = intent.Instructions,
+        providerTransactionId = intent.ProviderTransactionId
+    });
+}).RequireAuthorization();
+
 /// <summary>
 /// Turning a single location into a head office with branches.
-///
 /// The spec case this exists for: a Standard customer MUST be able to do this. The check asks
 /// for the `hq` capability, not for a plan name, so Standard passes and Starter gets a message
 /// naming Standard — not Professional — as the cheapest way to get it.
@@ -15234,12 +15502,14 @@ public record UpdateExpenseDto(string? Category, string? Description, string? Pa
     Guid? ExpenseAccountId, Guid? PaidFromAccountId, string? ReceiptReference);
 public record RejectExpenseDto(string Reason);
 public record RegisterHostDto(Guid BranchId, string? HostName, string? LanAddress, int Port,
-    string? MachineName, string? OperatingSystem, string? AppVersion);
+    string? MachineName, string? OperatingSystem, string? AppVersion, string? SyncKey);
 public record HostCheckinDto(string BusinessId, string? LanAddress, int Port, string? AppVersion);
 public record CreateSyncLogDto(Guid? BranchId, Guid? DeviceId, string? HostIdentifier, SyncDirection? Direction,
     string EntityType, string? BatchId, int RecordsAttempted, int RecordsSucceeded, string? ErrorMessage, int? DurationMs);
 public record SyncReceiveDto(string? BusinessId, Guid TenantId, string? EntityType, string? BatchId,
     List<Dictionary<string, System.Text.Json.JsonElement>>? Records);
+public record CheckoutDto(string Kind, string? PlanCode, string? AddOnKey, bool Annual, int Quantity = 1, Guid? BranchId = null);
+public record PaySubscriptionInvoiceDto(PaymentProvider Provider);
 public record ChangePlanDto(string PlanCode, string? Reason);
 /// <summary>LocationType is Branch (default) or Warehouse; a head office is created through enable-hq.</summary>
 public record CreateBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode,

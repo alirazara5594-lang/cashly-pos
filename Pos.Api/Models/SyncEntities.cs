@@ -33,6 +33,16 @@ public class SyncCursor
     public DateTime? LastAttemptAt { get; set; }
     public string? LastError { get; set; }
 
+    /// <summary>
+    /// The fingerprint of the last payload this host applied, for the pull side (the catalogue).
+    ///
+    /// A push resumes by time; a pull resumes by content. Head office hashes what it is about to
+    /// send, this host sends back what it already has, and a shop on a phone tether transfers
+    /// nothing at all on the four ticks out of five when the menu has not changed.
+    /// Null before the first successful pull.
+    /// </summary>
+    public string? SnapshotVersion { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>

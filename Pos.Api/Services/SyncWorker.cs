@@ -124,6 +124,13 @@ public class SyncWorker : BackgroundService
             // would be the wrong order — get their data safe first, then apply our rules.
             await sync.PullEntitlementsAsync(tenantId, ct);
 
+            // Then the menu. After entitlements so a shop that has just been suspended is not
+            // handed a fresh catalogue it may no longer be entitled to sell from; after the
+            // pushes so a new item never delays a sale reaching head office.
+            var catalog = await sync.PullCatalogAsync(tenantId, ct);
+            if (!catalog.Ok)
+                _log.LogWarning("Sync: catalogue pull failed — {Error}", catalog.Error);
+
             await TouchHostAsync(db, tenantId, ct);
         }
     }

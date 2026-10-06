@@ -68,6 +68,12 @@ import type {
   AddOnSubscriptionRow,
   Warehouse,
   SubscriptionInvoice,
+  CheckoutRequest,
+  CheckoutQuote,
+  CheckoutResult,
+  PlanRow,
+  MySubscriptionSummary,
+  SubscriptionPayResponse,
   Department,
   Designation,
   LeaveRequest,
@@ -1968,6 +1974,52 @@ export const posApi = {
   },
   updateWarehouse: async (id: string, data: { name?: string; code?: string; isActive?: boolean }) => {
     const res = await api.put<Warehouse>(`/api/warehouses/${id}`, data);
+    return res.data;
+  },
+
+  // ── Self-serve purchase (owner-facing)
+  getSubscription: async () => {
+    const res = await api.get<MySubscriptionSummary>('/api/subscription');
+    return res.data;
+  },
+  getPlans: async () => {
+    const res = await api.get<PlanRow[]>('/api/subscription/plans');
+    return res.data;
+  },
+  getSubscriptionQuote: async (req: CheckoutRequest) => {
+    const res = await api.get<CheckoutQuote>('/api/subscription/quote', {
+      params: {
+        kind: req.kind,
+        planCode: req.planCode,
+        addOnKey: req.addOnKey,
+        annual: req.annual ?? false,
+        quantity: req.quantity ?? 1,
+        branchId: req.branchId
+      }
+    });
+    return res.data;
+  },
+  checkoutSubscription: async (req: CheckoutRequest) => {
+    const res = await api.post<CheckoutResult>('/api/subscription/checkout', {
+      kind: req.kind,
+      planCode: req.planCode ?? null,
+      addOnKey: req.addOnKey ?? null,
+      annual: req.annual ?? false,
+      quantity: req.quantity ?? 1,
+      branchId: req.branchId ?? null
+    });
+    return res.data;
+  },
+  getMySubscriptionInvoices: async () => {
+    const res = await api.get<SubscriptionInvoice[]>('/api/subscription/invoices');
+    return res.data;
+  },
+  /**
+   * Starts a gateway payment for one of this business's own invoices. It never grants anything —
+   * the webhook does that — so a response here only means "the money has started moving".
+   */
+  paySubscriptionInvoice: async (id: string, provider: PaymentProvider) => {
+    const res = await api.post<SubscriptionPayResponse>(`/api/subscription/invoices/${id}/pay`, { provider });
     return res.data;
   },
 

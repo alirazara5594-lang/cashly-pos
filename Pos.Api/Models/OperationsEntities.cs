@@ -176,6 +176,16 @@ public class BusinessHost
     public string HostCode { get; set; } = string.Empty;
     public string HostName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// SHA-256 of the key this host must present on every cloud sync call.
+    ///
+    /// The HostCode alone was never meant to authorise anything — it is six characters the
+    /// customer says out loud, so anyone who heard it could push orders into this business's
+    /// books. Only the hash is stored; the plaintext exists on the host and in the registration
+    /// response, never here.
+    /// </summary>
+    public string? SyncKeyHash { get; set; }
+
     /// <summary>Last known LAN address, reported by the host itself on check-in. Advisory only —
     /// a DHCP lease can move it, which is exactly why terminals are told to re-discover rather
     /// than trust a stored address forever.</summary>

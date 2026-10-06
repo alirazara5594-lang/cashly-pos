@@ -56,13 +56,15 @@ public class JazzCashProvider : IPaymentGatewayProvider
     private readonly string _password;
     private readonly string _integritySalt;
     private readonly string _endpoint;
+    private readonly IHttpClientFactory _httpFactory;
 
-    public JazzCashProvider(IConfiguration config)
+    public JazzCashProvider(IConfiguration config, IHttpClientFactory httpFactory)
     {
         _merchantId = config["JazzCash:MerchantId"] ?? string.Empty;
         _password = config["JazzCash:Password"] ?? string.Empty;
         _integritySalt = config["JazzCash:IntegritySalt"] ?? string.Empty;
         _endpoint = config["JazzCash:Endpoint"] ?? "https://sandbox.jazzcash.com.pk/ApplicationAPI/API/Payment/DoMWalletTransaction";
+        _httpFactory = httpFactory;
     }
 
     public string ProviderName => "JazzCash";
@@ -70,16 +72,15 @@ public class JazzCashProvider : IPaymentGatewayProvider
     public bool IsConfigured =>
         !string.IsNullOrEmpty(_merchantId) && !string.IsNullOrEmpty(_password) && !string.IsNullOrEmpty(_integritySalt);
 
-    public Task<PaymentIntentResult> CreateIntentAsync(Guid orderId, decimal amountPKR, string? customerPhone, CancellationToken ct = default)
+    public async Task<PaymentIntentResult> CreateIntentAsync(Guid orderId, decimal amountPKR, string? customerPhone, CancellationToken ct = default)
     {
         if (!IsConfigured)
         {
-            return Task.FromResult(new PaymentIntentResult(
+            return new PaymentIntentResult(
                 false, null, null, null,
-                "JazzCash is not configured. Add merchant credentials to enable mobile wallet payments."));
+                "JazzCash is not configured. Add merchant credentials to enable mobile wallet payments.");
         }
 
-        // --- Dead code until credentials exist: real request construction + signing. ---
         var now = DateTime.UtcNow;
         var txnRef = $"T{now:yyyyMMddHHmmss}{orderId.ToString("N")[..6].ToUpperInvariant()}";
         var fields = new SortedDictionary<string, string>(StringComparer.Ordinal)
@@ -96,7 +97,7 @@ public class JazzCashProvider : IPaymentGatewayProvider
             ["pp_TxnDateTime"] = now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture),
             ["pp_TxnExpiryDateTime"] = now.AddHours(1).ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture),
             ["pp_BillReference"] = orderId.ToString("N"),
-            ["pp_Description"] = $"POS order {orderId:N}",
+            ["pp_Description"] = $"Cashly invoice {orderId:N}",
             ["pp_MobileNumber"] = NormalizeMsisdn(customerPhone),
             ["pp_CNIC"] = string.Empty,
             ["ppmpf_1"] = orderId.ToString()
@@ -104,12 +105,48 @@ public class JazzCashProvider : IPaymentGatewayProvider
 
         fields["pp_SecureHash"] = ComputeSecureHash(fields);
 
-        // A live implementation would POST `fields` (form-encoded) to _endpoint via HttpClient and
-        // map the pp_ResponseCode. Until sandbox credentials exist there is nothing to call.
-        return Task.FromResult(new PaymentIntentResult(
-            true, _endpoint,
+        // The merchant posts the form to the provider and the provider answers with a response
+        // code — it is not a redirect-only integration, so returning the endpoint URL and calling
+        // it started would be a lie: nothing would have been authorised and the wallet would
+        // never have been asked. Hence the actual call.
+        string body;
+        try
+        {
+            var client = _httpFactory.CreateClient("jazzcash");
+            client.Timeout = TimeSpan.FromSeconds(30);
+            var response = await client.PostAsync(_endpoint, new FormUrlEncodedContent(fields), ct);
+            body = await response.Content.ReadAsStringAsync(ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return new PaymentIntentResult(
+                false, null, null, txnRef,
+                $"JazzCash could not be reached: {ex.Message}");
+        }
+
+        var parsed = PayloadFields.Parse(body) ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        parsed.TryGetValue("pp_ResponseCode", out var code);
+        parsed.TryGetValue("pp_ResponseMessage", out var message);
+
+        // "000" is the documented success code. Anything else — including an unreadable body —
+        // is a refusal, and saying so costs the owner a retry rather than a silent missing payment.
+        if (code != "000")
+        {
+            return new PaymentIntentResult(
+                false, null, null, txnRef,
+                string.IsNullOrWhiteSpace(message)
+                    ? $"JazzCash did not start the transaction (code {code ?? "no response code"})."
+                    : message);
+        }
+
+        parsed.TryGetValue("pp_ResponseUrl", out var redirect);
+        if (string.IsNullOrWhiteSpace(redirect)) parsed.TryGetValue("pp_RedirectUrl", out redirect);
+
+        return new PaymentIntentResult(
+            true,
+            string.IsNullOrWhiteSpace(redirect) ? null : redirect,
             "Approve the payment request on your JazzCash mobile wallet.",
-            txnRef, null));
+            txnRef, null);
     }
 
     public Task<bool> VerifyWebhookSignatureAsync(string rawBody, IHeaderDictionary headers)
@@ -150,7 +187,11 @@ public class JazzCashProvider : IPaymentGatewayProvider
         var success = code == "000";
         return Task.FromResult(new PaymentConfirmationResult(
             success,
-            !string.IsNullOrEmpty(rrn) ? rrn : txnRef,
+            // The reference WE sent, not the provider's retrieval reference: the webhook matches
+            // a transaction by what the merchant handed out, and pp_RetreivalReferenceNo is a
+            // different string. Returning that instead silently made every callback fail to find
+            // its row — which is how a paid payment ends up recorded as never arriving.
+            !string.IsNullOrEmpty(txnRef) ? txnRef : rrn,
             amount,
             success ? null : (message ?? $"JazzCash declined the transaction (code {code}).")));
     }
@@ -273,7 +314,9 @@ public class EasyPaisaProvider : IPaymentGatewayProvider
         var success = code is "0000" or "0" || string.Equals(status, "PAID", StringComparison.OrdinalIgnoreCase);
         return Task.FromResult(new PaymentConfirmationResult(
             success,
-            !string.IsNullOrEmpty(txnId) ? txnId : orderRef,
+            // Our own order reference again, for the same reason as JazzCash: it is what was
+            // stored at intent time, so it is the only string that will find the row.
+            !string.IsNullOrEmpty(orderRef) ? orderRef : txnId,
             amount,
             success ? null : (desc ?? $"EasyPaisa declined the transaction (code {code}).")));
     }
