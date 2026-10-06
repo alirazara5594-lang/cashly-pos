@@ -351,8 +351,11 @@ public class AppDbContext : DbContext
             .HasForeignKey(rs => rs.RiderId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        // CashShift.BranchId is the branch the drawer was opened at. This used to be declared as
+        // a self-reference (CashShift -> CashShift), which asked the database to reject any shift
+        // whose BranchId named a branch instead of another shift — i.e. every shift.
         modelBuilder.Entity<CashShift>()
-            .HasOne<CashShift>()
+            .HasOne<Branch>()
             .WithMany()
             .HasForeignKey(cs => cs.BranchId)
             .OnDelete(DeleteBehavior.Cascade);

@@ -52,13 +52,20 @@ public class SyncService : ISyncService
     private readonly AppDbContext _db;
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _config;
+    private readonly HostEntitlementMirror _mirror;
     private readonly ILogger<SyncService> _log;
 
-    public SyncService(AppDbContext db, IHttpClientFactory httpFactory, IConfiguration config, ILogger<SyncService> log)
+    public SyncService(
+        AppDbContext db,
+        IHttpClientFactory httpFactory,
+        IConfiguration config,
+        HostEntitlementMirror mirror,
+        ILogger<SyncService> log)
     {
         _db = db;
         _httpFactory = httpFactory;
         _config = config;
+        _mirror = mirror;
         _log = log;
     }
 
@@ -151,27 +158,40 @@ public class SyncService : ISyncService
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Cloud returned {(int)response.StatusCode}: {Truncate(body, 300)}");
 
-            // The cloud reports how many it actually accepted. Trusting our own count would let a
-            // partial accept silently advance the watermark past records that never landed.
+            // The cloud reports how many it actually accepted, and how many it rejected outright.
+            // Trusting our own count would let a partial accept silently advance the watermark
+            // past records that never landed.
             var accepted = payload.Count;
+            var rejected = 0;
             try
             {
                 using var doc = JsonDocument.Parse(body);
                 if (doc.RootElement.TryGetProperty("accepted", out var acc) && acc.TryGetInt32(out var n))
                     accepted = n;
+                if (doc.RootElement.TryGetProperty("rejected", out var rej) && rej.TryGetInt32(out var r))
+                    rejected = r;
             }
             catch (JsonException) { /* non-JSON 200 — treat as full accept */ }
 
+            // A rejected record is one the cloud cannot store however often it is sent: an unknown
+            // branch, a malformed id. Pinning the watermark at that record would wedge every later
+            // sale behind one bad row forever, so a rejection is settled rather than retried —
+            // and the loss is reported here instead of hiding behind a green tick.
+            var settled = accepted + rejected >= payload.Count;
+
             log.RecordsSucceeded = accepted;
-            log.RecordsFailed = payload.Count - accepted;
-            log.Status = log.RecordsFailed == 0 ? SyncStatus.Success : SyncStatus.Partial;
+            log.RecordsFailed = rejected;
+            log.Status = settled && rejected == 0 ? SyncStatus.Success : SyncStatus.Partial;
+            log.ErrorMessage = rejected > 0
+                ? $"{rejected} of {payload.Count} record(s) rejected at the cloud."
+                : (!settled ? $"Cloud acknowledged {accepted} of {payload.Count}." : null);
             log.CompletedAt = DateTime.UtcNow;
             log.DurationMs = (int)(log.CompletedAt.Value - startedAt).TotalMilliseconds;
 
-            // Only advance the watermark on a clean batch. A partial one is retried whole, which
-            // is safe because every receiver is idempotent — re-sending a sale the cloud already
-            // has is a no-op there, whereas skipping one loses it permanently.
-            if (log.Status == SyncStatus.Success && newWatermark.HasValue)
+            // Advance on a settled batch, not only a perfect one. Every receiver is idempotent, so
+            // re-sending is always safe — but a record that will never be acceptable must not stop
+            // the shop's later sales from reaching head office.
+            if (settled && newWatermark.HasValue)
             {
                 cursor.LastSyncedAt = newWatermark.Value;
                 cursor.LastSyncedRecordId = lastId;
@@ -270,8 +290,19 @@ public class SyncService : ISyncService
             {
                 // Only closed shifts. An open shift's numbers are still moving, and syncing a
                 // half-counted drawer would put a figure at head office that is wrong by design.
+                //
+                // CashShift carries no TenantId of its own, so the tenant reaches it through its
+                // branches. Skipping that filter would push another business's drawer counts up
+                // whenever two tenants shared a host — the one thing multi-tenant sync must never
+                // do.
+                var branchIds = await _db.Branches.IgnoreQueryFilters().AsNoTracking()
+                    .Where(b => b.TenantId == tenantId)
+                    .Select(b => b.Id)
+                    .ToListAsync(ct);
+
                 var rows = await _db.CashShifts.IgnoreQueryFilters().AsNoTracking()
-                    .Where(s => s.IsClosed && s.ClosedAt != null && s.ClosedAt > after)
+                    .Where(s => branchIds.Contains(s.BranchId)
+                                && s.IsClosed && s.ClosedAt != null && s.ClosedAt > after)
                     .OrderBy(s => s.ClosedAt).Take(BatchSize).ToListAsync(ct);
                 if (rows.Count == 0) return (new List<object>(), null, null);
 
@@ -293,7 +324,7 @@ public class SyncService : ISyncService
 
                 var records = rows.Select(s => (object)new
                 {
-                    s.Id, s.TenantId, s.BranchId, s.IngredientId,
+                    s.Id, s.TenantId, s.BranchId, s.IngredientId, s.ProductId,
                     movementType = s.MovementType.ToString(),
                     s.QuantityChange, s.UnitCostPKR, s.BalanceAfter,
                     s.ReferenceType, s.ReferenceId, s.Notes, s.CreatedBy, s.CreatedAt
@@ -324,17 +355,26 @@ public class SyncService : ISyncService
             if (!response.IsSuccessStatusCode)
                 throw new HttpRequestException($"Cloud returned {(int)response.StatusCode}");
 
+            // Fetching was never the point — applying it is. A host that pulls a suspension and
+            // then keeps selling is worse than one that never looked.
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var applied = await _mirror.ApplyAsync(tenantId, doc.RootElement, ct);
+
             _db.SyncLogs.Add(new SyncLog
             {
                 TenantId = tenantId, HostIdentifier = BusinessId,
                 Direction = SyncDirection.Pull, EntityType = "Entitlements",
                 BatchId = Guid.NewGuid().ToString("N"),
                 RecordsAttempted = 1, RecordsSucceeded = 1,
-                Status = SyncStatus.Success, StartedAt = startedAt, CompletedAt = DateTime.UtcNow,
+                // Fetched but unusable is not a successful pull: it needs a warning, not a tick.
+                Status = applied.SkippedBecause == null ? SyncStatus.Success : SyncStatus.Partial,
+                ErrorMessage = applied.SkippedBecause,
+                StartedAt = startedAt, CompletedAt = DateTime.UtcNow,
                 DurationMs = (int)(DateTime.UtcNow - startedAt).TotalMilliseconds
             });
             await _db.SaveChangesAsync(ct);
-            return new SyncOutcome("Entitlements", 1, 1, true, null);
+            return new SyncOutcome("Entitlements", 1, 1, applied.SkippedBecause == null, applied.SkippedBecause);
         }
         catch (Exception ex)
         {

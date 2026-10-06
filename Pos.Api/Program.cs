@@ -190,6 +190,11 @@ builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Servi
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionService, Pos.Api.Services.SubscriptionService>();
 builder.Services.AddScoped<Pos.Api.Services.IBillingService, Pos.Api.Services.BillingService>();
 builder.Services.AddScoped<Pos.Api.Services.ISyncService, Pos.Api.Services.SyncService>();
+// The other end of sync: writes what a business host pushes into this database.
+builder.Services.AddScoped<Pos.Api.Services.ISyncReceiver, Pos.Api.Services.SyncReceiver>();
+// Applies a pulled entitlement payload on a business host, so a plan change or a suspension made
+// at head office reaches the shop's own database instead of being fetched and then ignored.
+builder.Services.AddScoped<Pos.Api.Services.HostEntitlementMirror>();
 // Only actually does anything when Host:Mode is BusinessHost — see SyncWorker.
 builder.Services.AddHostedService<Pos.Api.Services.SyncWorker>();
 // Reports paid sales to FBR / PRA / SRB / KPRA for shops with a fiscal connection and the add-on;
@@ -410,6 +415,29 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""VariancePKR"" numeric(18,2) NOT NULL DEFAULT 0;
             ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""Notes"" text;
             ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""IsClosed"" boolean NOT NULL DEFAULT false;
+
+            -- The original model declared CashShift.BranchId as a foreign key to CashShifts.Id
+            -- rather than to Branches.Id, so the database rejected EVERY shift whose BranchId
+            -- named a branch — that is, every shift a till ever opened. Drop the self-reference
+            -- and, where no orphaned rows would break it, put the relationship that was always
+            -- meant in its place. Idempotent: both halves are guarded.
+            ALTER TABLE ""CashShifts"" DROP CONSTRAINT IF EXISTS ""FK_CashShifts_CashShifts_BranchId"";
+            DO $cashly$
+            BEGIN
+                IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = '""CashShifts""'::regclass
+                          AND conname = 'FK_CashShifts_Branches_BranchId')
+                   AND NOT EXISTS (
+                        SELECT 1 FROM ""CashShifts"" cs
+                        LEFT JOIN ""Branches"" b ON b.""Id"" = cs.""BranchId""
+                        WHERE b.""Id"" IS NULL)
+                THEN
+                    ALTER TABLE ""CashShifts""
+                        ADD CONSTRAINT ""FK_CashShifts_Branches_BranchId""
+                        FOREIGN KEY (""BranchId"") REFERENCES ""Branches""(""Id"") ON DELETE CASCADE;
+                END IF;
+            END $cashly$;
 
             -- PIN-login lockout tracking.
             ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""FailedLoginAttempts"" integer NOT NULL DEFAULT 0;
@@ -14527,7 +14555,7 @@ app.MapGet("/api/sync/logs", async (AppDbContext db, HttpContext http, Guid? bra
 // with nobody logged in, so a bearer token tied to a person would be exactly the wrong thing.
 // ============================================================
 
-app.MapPost("/api/sync/receive", async (AppDbContext db, HttpContext http, SyncReceiveDto dto) =>
+app.MapPost("/api/sync/receive", async (AppDbContext db, Pos.Api.Services.ISyncReceiver receiver, SyncReceiveDto dto) =>
 {
     var host = await db.BusinessHosts.IgnoreQueryFilters()
         .FirstOrDefaultAsync(h => h.HostCode == (dto.BusinessId ?? "").Trim().ToUpperInvariant() && h.IsActive);
@@ -14540,56 +14568,40 @@ app.MapPost("/api/sync/receive", async (AppDbContext db, HttpContext http, SyncR
         return Results.Json(new { message = "Host does not belong to that business." }, statusCode: StatusCodes.Status403Forbidden);
 
     if (dto.Records == null || dto.Records.Count == 0)
-        return Results.Ok(new { accepted = 0, duplicates = 0, note = "Empty batch." });
+        return Results.Ok(new { accepted = 0, newRecords = 0, duplicates = 0, rejected = 0, note = "Empty batch." });
 
-    var accepted = 0;
-    var duplicates = 0;
     var now = DateTime.UtcNow;
+    var attempted = dto.Records.Count;
+    var batchId = dto.BatchId ?? Guid.NewGuid().ToString("N");
+    Pos.Api.Services.SyncBatchResult result;
 
-    // Idempotency is the whole game here. A host that pushed successfully but never saw the
-    // response WILL send the same batch again, and it must be a no-op rather than a double entry.
-    switch (dto.EntityType)
+    try
     {
-        case "Order":
+        // The write itself lives in SyncReceiver: idempotent, tenant-forced, and it reports what
+        // it could not resolve rather than pretending every record landed.
+        result = await receiver.ReceiveAsync(host.TenantId, dto.EntityType, dto.Records);
+    }
+    catch (Exception ex)
+    {
+        db.SyncLogs.Add(new SyncLog
         {
-            var ids = dto.Records.Select(r => TryGuid(r, "id")).Where(g => g != null).Select(g => g!.Value).ToList();
-            var existing = await db.Orders.IgnoreQueryFilters()
-                .Where(o => ids.Contains(o.Id)).Select(o => o.Id).ToListAsync();
-
-            foreach (var rec in dto.Records)
-            {
-                var id = TryGuid(rec, "id");
-                if (id == null) continue;
-                if (existing.Contains(id.Value)) { duplicates++; continue; }
-                // The cloud stores the received payload verbatim rather than re-deriving totals.
-                // A synced sale is history: re-pricing it here would reintroduce exactly the bug
-                // that offline orders already suffered from.
-                accepted++;
-            }
-            break;
-        }
-
-        case "Expense":
-        {
-            var ids = dto.Records.Select(r => TryGuid(r, "id")).Where(g => g != null).Select(g => g!.Value).ToList();
-            var existing = await db.Expenses.IgnoreQueryFilters()
-                .Where(e => ids.Contains(e.Id)).Select(e => e.Id).ToListAsync();
-            foreach (var rec in dto.Records)
-            {
-                var id = TryGuid(rec, "id");
-                if (id == null) continue;
-                if (existing.Contains(id.Value)) { duplicates++; continue; }
-                accepted++;
-            }
-            break;
-        }
-
-        default:
-            // Unknown types are ACCEPTED, not rejected. A newer host pushing an entity this cloud
-            // build does not understand yet must not get stuck retrying forever — it is logged and
-            // the host is allowed to move on.
-            accepted = dto.Records.Count;
-            break;
+            TenantId = host.TenantId,
+            BranchId = host.BranchId,
+            HostIdentifier = host.HostCode,
+            Direction = SyncDirection.Push,
+            EntityType = dto.EntityType ?? "Unknown",
+            BatchId = batchId,
+            RecordsAttempted = attempted,
+            RecordsSucceeded = 0,
+            RecordsFailed = attempted,
+            Status = SyncStatus.Failed,
+            ErrorMessage = ex.Message.Length <= 500 ? ex.Message : ex.Message[..500],
+            StartedAt = now,
+            CompletedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync(CancellationToken.None);
+        // Non-2xx on purpose: the host keeps its watermark where it is and sends the batch again.
+        throw;
     }
 
     db.SyncLogs.Add(new SyncLog
@@ -14599,11 +14611,12 @@ app.MapPost("/api/sync/receive", async (AppDbContext db, HttpContext http, SyncR
         HostIdentifier = host.HostCode,
         Direction = SyncDirection.Push,
         EntityType = dto.EntityType ?? "Unknown",
-        BatchId = dto.BatchId ?? Guid.NewGuid().ToString("N"),
-        RecordsAttempted = dto.Records.Count,
-        RecordsSucceeded = accepted + duplicates,
-        RecordsFailed = dto.Records.Count - accepted - duplicates,
-        Status = SyncStatus.Success,
+        BatchId = batchId,
+        RecordsAttempted = attempted,
+        RecordsSucceeded = result.Accepted,
+        RecordsFailed = result.Rejected,
+        Status = result.Rejected == 0 ? SyncStatus.Success : SyncStatus.Partial,
+        ErrorMessage = result.RejectionSummary,
         StartedAt = now,
         CompletedAt = DateTime.UtcNow
     });
@@ -14612,13 +14625,28 @@ app.MapPost("/api/sync/receive", async (AppDbContext db, HttpContext http, SyncR
     host.LastSeenAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
 
-    // Duplicates count as accepted: from the host's point of view the record IS on the cloud,
-    // which is the only question its watermark needs answered.
-    return Results.Ok(new { accepted = accepted + duplicates, newRecords = accepted, duplicates });
+    // `accepted` is what the host's watermark counts on: a duplicate IS on the cloud, and so is a
+    // record that was rejected for a reason nobody can fix by retrying. `rejected` is reported
+    // separately so both sides can see the loss instead of it vanishing into a green tick.
+    return Results.Ok(new
+    {
+        accepted = result.Accepted,
+        newRecords = result.NewRecords,
+        duplicates = result.Duplicates,
+        rejected = result.Rejected,
+        reasons = result.Reasons
+    });
 }).AllowAnonymous().RequireRateLimiting("default");
 
 /// <summary>
 /// What a host pulls: the entitlements it must enforce locally while offline.
+///
+/// Two dictionaries, because the host's snapshot stores both kinds in one JSON column:
+/// `features` are the package switches (HasKitchenDisplay ...), `capabilities` are the plan
+/// feature codes (hq, accounting, stock_transfers ...). Sending only the first — as this used to
+/// — left the host without "hq", which its staleness check looks for, so the snapshot it had just
+/// pulled was judged stale and recomputed from local data on the very next read. The pull undid
+/// itself.
 /// </summary>
 app.MapGet("/api/sync/entitlements", async (
     AppDbContext db, Pos.Api.Services.IEntitlementService entitlements, string businessId, Guid tenantId) =>
@@ -14639,6 +14667,7 @@ app.MapGet("/api/sync/entitlements", async (
         planKey = ent.PlanKey,
         ent.MaxBranches, ent.MaxCounters, ent.MaxOrderTabs, ent.MaxUsers,
         features = ent.Features,
+        capabilities = ent.Capabilities,
         packs = ent.PackKeys,
         primaryPack = ent.PrimaryPackKey,
         deploymentMode = ent.DeploymentMode.ToString(),
@@ -14646,16 +14675,6 @@ app.MapGet("/api/sync/entitlements", async (
         ent.CanSell, ent.CanUseBackOffice, ent.CanRead
     });
 }).AllowAnonymous().RequireRateLimiting("default");
-
-/// <summary>Pulls a GUID out of a loosely-typed synced record, tolerating either casing.</summary>
-static Guid? TryGuid(Dictionary<string, System.Text.Json.JsonElement> rec, string key)
-{
-    foreach (var k in new[] { key, char.ToUpperInvariant(key[0]) + key[1..] })
-        if (rec.TryGetValue(k, out var el) && el.ValueKind == System.Text.Json.JsonValueKind.String
-            && Guid.TryParse(el.GetString(), out var g))
-            return g;
-    return null;
-}
 
 
 // ============================================================

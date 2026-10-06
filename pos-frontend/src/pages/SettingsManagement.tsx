@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { useBusinessShape } from '../hooks/useBusinessShape';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
 import { offlineDb } from '../services/offlineDb';
 import { RestaurantAddressCard } from '../components/RestaurantAddressCard';
 import type { PendingPairingCode, PairingCodeResponse, DeviceCapacity, DepartmentRole, ModuleKey } from '../types';
@@ -151,6 +151,14 @@ export const SettingsManagement: React.FC = () => {
   const [deviceCapacity, setDeviceCapacity] = useState<DeviceCapacity[]>([]);
   const [newDeviceName, setNewDeviceName] = useState('');
   const [newDeviceType, setNewDeviceType] = useState<number>(1);
+  // Why the last code could not be made, shown next to the button that asked for it.
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  // A location that does not sell (a back-office head office, a warehouse) connects office PCs and
+  // kitchen screens only — the server refuses a till or tablet there. The choices follow the
+  // location, so the button never asks for something that cannot be made.
+  const pairingSells = pairingBranch?.canSell !== false;
+  const deviceTypeOptions = pairingSells ? [1, 2, 3, 4] : [4, 3];
+  const pairingDeviceType = deviceTypeOptions.includes(newDeviceType) ? newDeviceType : deviceTypeOptions[0];
 
   // Sync Diagnostics state
   const [dbStats, setDbStats] = useState<{ products: number; categories: number; offlineOrders: number }>({ products: 0, categories: 0, offlineOrders: 0 });
@@ -237,25 +245,21 @@ export const SettingsManagement: React.FC = () => {
 
   const handleGeneratePairingCode = async () => {
     if (!pairingBranchKey) return;
+    setPairingError(null);
     try {
       const res = await posApi.createPairingCode({
         branchId: pairingBranchKey,
-        terminalType: newDeviceType,
+        terminalType: pairingDeviceType,
         terminalName: newDeviceName.trim() || undefined
       });
       setIssuedCode(res);
       setNewDeviceName('');
-      setTabMessage(null);
       loadPairingInfo();
       loadPairingCapacity();
       loadTerminals();
-    } catch (err: any) {
+    } catch (err) {
       setIssuedCode(null);
-      setTabMessage({
-        type: 'error',
-        text: err?.response?.data?.message || err?.response?.data?.error || 'Could not generate a pairing code.'
-      });
-      setTimeout(() => setTabMessage(null), 6000);
+      setPairingError(getApiErrorMessage(err, 'Could not generate a pairing code. Check the backend is running and try again.'));
     }
   };
 
@@ -621,7 +625,9 @@ export const SettingsManagement: React.FC = () => {
                   their limit here, rather than after walking over to the hardware. */}
               {deviceCapacity.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {deviceCapacity.map((cap) => (
+                  {deviceCapacity
+                    .filter(cap => pairingSells || cap.terminalType === 'BackOffice' || cap.terminalType === 'KitchenDisplay')
+                    .map((cap) => (
                     <div key={cap.terminalType} className="p-4 rounded-xl bg-slate-50 border border-slate-200">
                       <div className="text-[10px] uppercase font-semibold text-slate-500">
                         {cap.terminalType === 'OrderTab' ? 'Tablets'
@@ -650,7 +656,7 @@ export const SettingsManagement: React.FC = () => {
                   <label className="text-[11px] font-semibold text-slate-500 whitespace-nowrap">For location</label>
                   <select
                     value={pairingBranchKey}
-                    onChange={(e) => { setPairingBranchId(e.target.value); setIssuedCode(null); }}
+                    onChange={(e) => { setPairingBranchId(e.target.value); setIssuedCode(null); setPairingError(null); }}
                     disabled={pairableBranches.length <= 1}
                     className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-teal-500 disabled:opacity-70"
                   >
@@ -691,33 +697,49 @@ export const SettingsManagement: React.FC = () => {
                     </div>
                   );
                 })()}
+                {!pairingSells && pairingBranch && (
+                  <p className="text-[11px] text-slate-600">
+                    {pairingBranch.name} does not sell, so it connects office PCs (the ERP) and kitchen screens only.
+                    To connect an outlet's till or tablet, pick that outlet above.
+                  </p>
+                )}
                 <div className="flex flex-col sm:flex-row gap-2">
                   <select
-                    value={newDeviceType}
-                    onChange={(e) => setNewDeviceType(Number(e.target.value))}
+                    value={pairingDeviceType}
+                    onChange={(e) => { setNewDeviceType(Number(e.target.value)); setPairingError(null); }}
                     className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-500"
                   >
-                    <option value={1}>Counter — full till (uses a licence slot)</option>
-                    <option value={2}>Tablet / mPOS (uses a licence slot)</option>
-                    <option value={3}>Kitchen Display (free)</option>
-                    {/* The office machine. Same installer as the till — this choice is what makes
-                        it the ERP instead, whether the office is upstairs or across town. */}
-                    <option value={4}>Back-office workstation — ERP, no till (free)</option>
+                    {deviceTypeOptions.map(type => (
+                      <option key={type} value={type}>
+                        {type === 1 ? 'Counter — full till (uses a licence slot)'
+                          : type === 2 ? 'Tablet / mPOS (uses a licence slot)'
+                          : type === 3 ? 'Kitchen Display (free)'
+                          // The office machine. Same installer as the till — this choice is what
+                          // makes it the ERP instead, whether the office is upstairs or across town.
+                          : 'Office PC — ERP, no till (free)'}
+                      </option>
+                    ))}
                   </select>
                   <input
                     type="text"
                     value={newDeviceName}
                     onChange={(e) => setNewDeviceName(e.target.value)}
-                    placeholder="Device name, e.g. Counter 2"
+                    placeholder={pairingDeviceType === 4 ? 'Device name, e.g. Accounts PC' : pairingDeviceType === 3 ? 'Device name, e.g. Grill screen' : 'Device name, e.g. Counter 2'}
                     className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-500"
                   />
                   <button
                     onClick={handleGeneratePairingCode}
-                    className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition"
+                    disabled={!pairingBranchKey}
+                    className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold transition"
                   >
                     Generate Code
                   </button>
                 </div>
+                {pairingError && (
+                  <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold" role="alert">
+                    {pairingError}
+                  </div>
+                )}
               </div>
 
               {/* The code, shown once. There is no way to recover it afterwards — only a SHA-256
