@@ -14,14 +14,11 @@ import {
   CheckCircle2,
   Clock,
   ChevronDown,
-  CreditCard,
-  MessageSquare,
   Receipt,
   Puzzle,
   Plus,
   Copy,
   X,
-  LayoutDashboard,
   Activity
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
@@ -37,9 +34,20 @@ type SuperTab = 'dashboard' | 'tenants' | 'packages' | 'whatsapp' | 'billing' | 
 const SUPER_TABS: SuperTab[] = ['dashboard', 'tenants', 'packages', 'whatsapp', 'billing', 'addons'];
 const PANEL_TABS = ['overview', 'plan', 'addons', 'entitlements', 'deploy', 'devices', 'audit'] as const;
 
+/** Each section's heading; the sidebar is where they are picked. */
+const TAB_TITLES: Record<SuperTab, { title: string; subtitle: string }> = {
+  dashboard: { title: 'Dashboard', subtitle: 'The whole platform at a glance' },
+  tenants: { title: 'Tenants', subtitle: 'Every registered business' },
+  packages: { title: 'Packages & Pricing', subtitle: 'Plans, prices and what each includes' },
+  billing: { title: 'Subscription Billing', subtitle: 'Invoices and payments from businesses' },
+  addons: { title: 'Add-ons', subtitle: 'Extras businesses can add to their plan' },
+  whatsapp: { title: 'WhatsApp Logs', subtitle: 'Messages sent by the platform' }
+};
+
 export const SuperAdmin: React.FC = () => {
   // Shareable console state: /super-admin?tab=whatsapp&tenant=<id>&ptab=plan restores
   // exactly what the operator was looking at (dashboard rows link straight into panels).
+  // The tab lives in the address, so the sidebar's links open it directly.
   const [searchParams, setSearchParams] = useSearchParams();
   const urlTab = searchParams.get('tab') as SuperTab | null;
   const urlPanelTab = searchParams.get('ptab') as (typeof PANEL_TABS)[number] | null;
@@ -49,9 +57,7 @@ export const SuperAdmin: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive' | 'trial' | 'paid'>('all');
-  const [activeTab, setActiveTab] = useState<SuperTab>(
-    urlTab && SUPER_TABS.includes(urlTab) ? urlTab : 'dashboard'
-  );
+  const activeTab: SuperTab = urlTab && SUPER_TABS.includes(urlTab) ? urlTab : 'dashboard';
   /** Tenant whose detail panel is open — the console's main working surface. */
   const [openTenantId, setOpenTenantId] = useState<string | null>(searchParams.get('tenant'));
   const [openPanelTab, setOpenPanelTab] = useState<TenantPanelTab>(
@@ -141,18 +147,20 @@ export const SuperAdmin: React.FC = () => {
             <ShieldCheck className="w-5 h-5 text-purple-600" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900">Platform Admin</h1>
-            <p className="text-xs text-slate-500">Manage all registered restaurants</p>
+            <h1 className="text-lg font-black text-slate-900">{TAB_TITLES[activeTab].title}</h1>
+            <p className="text-xs text-slate-500">{TAB_TITLES[activeTab].subtitle}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setProvisionOpen(true)}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Provision tenant
-          </button>
+          {(activeTab === 'dashboard' || activeTab === 'tenants') && (
+            <button
+              onClick={() => setProvisionOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Provision tenant
+            </button>
+          )}
           <button
             onClick={loadData}
             className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
@@ -161,31 +169,6 @@ export const SuperAdmin: React.FC = () => {
             Refresh
           </button>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 border border-slate-200 w-fit">
-        {[
-          { key: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
-          { key: 'tenants' as const, label: 'Tenants', icon: Building2 },
-          { key: 'packages' as const, label: 'Packages & Pricing', icon: CreditCard },
-          { key: 'billing' as const, label: 'Subscription Billing', icon: Receipt },
-          { key: 'addons' as const, label: 'Add-ons', icon: Puzzle },
-          { key: 'whatsapp' as const, label: 'WhatsApp Logs', icon: MessageSquare },
-        ].map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition ${
-              activeTab === tab.key
-                ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-            }`}
-          >
-            <tab.icon className="w-3.5 h-3.5" />
-            {tab.label}
-          </button>
-        ))}
       </div>
 
       {/* Tab Content */}

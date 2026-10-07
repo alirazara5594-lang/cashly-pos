@@ -85,7 +85,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     tenantSettings
   } = usePosStore();
   // Head office runs the ERP and sells nothing: no till profiles, no phone orders to ring up.
-  const { atHeadOffice, outlets, locations } = useBusinessShape();
+  const { atHeadOffice: atHeadOfficeOnly, outlets, locations } = useBusinessShape();
+  // The platform admin's own console belongs to no restaurant, so nothing about one shows here.
+  // ("View as customer" signs in with the restaurant's role, so it is not this.)
+  const isPlatformAdmin = normalizeRole(currentUser?.role) === 'SuperAdmin';
+  const atHeadOffice = atHeadOfficeOnly || isPlatformAdmin;
 
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
@@ -158,7 +162,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     ? myBranches.length > 1
     : locations.length > 1;
   const branchTag = selectedBranch ? locationTag(selectedBranch) : '';
-  const outletCount = atHeadOffice
+  const outletCount = atHeadOfficeOnly
     ? (outlets.length === 0 ? 'no outlets yet' : `${outlets.length} outlet${outlets.length === 1 ? '' : 's'}`)
     : '';
 
@@ -176,8 +180,17 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </button>
           )}
 
+          {isPlatformAdmin ? (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs">
+              <ShieldCheck className="w-3.5 h-3.5 text-teal-600" />
+              <div className="text-left">
+                <div className="text-slate-900 font-semibold">Cashly platform</div>
+                <div className="text-slate-500 text-[10px]">Every business on Cashly</div>
+              </div>
+            </div>
+          ) : (
           <div className="relative" ref={tenantMenuRef}>
-            <button 
+            <button
               onClick={() => isMultiBranchChain && setShowTenantDropdown(!showTenantDropdown)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-medium transition ${
                 isMultiBranchChain ? 'hover:bg-slate-50 cursor-pointer' : 'cursor-default'
@@ -276,6 +289,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               </div>
             )}
           </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -437,9 +451,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             )}
           </button>
 
-          <div className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-bold text-teal-600" title="Currency">
-            {tenantSettings?.currencyCode || 'PKR'}
-          </div>
+          {!isPlatformAdmin && (
+            <div className="px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-bold text-teal-600" title="Currency">
+              {tenantSettings?.currencyCode || 'PKR'}
+            </div>
+          )}
         </div>
       </header>
     </>

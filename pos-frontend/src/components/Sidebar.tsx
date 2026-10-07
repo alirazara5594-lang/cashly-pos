@@ -70,6 +70,8 @@ interface NavItem {
   id: string;
   label: string;
   path: string;
+  /** A page whose section lives in the address ("?tab=billing"); "" is its opening section. */
+  search?: string;
   state?: { tab: string };
   isDefault?: boolean;
   icon: React.ElementType;
@@ -149,14 +151,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // server for "this restaurant", be refused, and sign them out. They get the platform screens
     // only; to look inside a restaurant: Tenant Management → Manage → View as customer (and each
     // restaurant's audit log is a tab there).
+    // Each is a section of the one console page, opened through the address.
     if (isPlatformSuperAdmin) {
-      return [{
-        title: 'Platform Administration',
-        items: [
-          { id: 'tenants', label: 'Tenant Management', path: '/super-admin', icon: Building2 },
-          { id: 'pricing', label: 'Package Pricing', path: '/pricing-admin', icon: CreditCard }
-        ]
-      }];
+      return [
+        {
+          title: '',
+          items: [{ id: 'platformDashboard', label: 'Dashboard', path: '/super-admin', search: '', icon: LayoutDashboard }]
+        },
+        {
+          title: 'Customers',
+          items: [
+            { id: 'tenants', label: 'Tenants', path: '/super-admin', search: '?tab=tenants', icon: Building2 },
+            { id: 'billing', label: 'Subscription Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt }
+          ]
+        },
+        {
+          title: 'Plans',
+          items: [
+            { id: 'packages', label: 'Packages & Pricing', path: '/super-admin', search: '?tab=packages', icon: CreditCard },
+            { id: 'addons', label: 'Add-ons', path: '/super-admin', search: '?tab=addons', icon: Puzzle }
+          ]
+        },
+        {
+          title: 'Messages',
+          items: [{ id: 'whatsappLogs', label: 'WhatsApp Logs', path: '/super-admin', search: '?tab=whatsapp', icon: MessageSquare }]
+        }
+      ];
     }
 
     const sections: NavSection[] = [];
@@ -364,8 +384,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.
   const currentTab = (location.state as { tab?: string } | null)?.tab;
-  const isHere = (link: { path: string; state?: { tab: string }; isDefault?: boolean }) => {
+  const isHere = (link: { path: string; search?: string; state?: { tab: string }; isDefault?: boolean }) => {
     if (location.pathname !== link.path) return false;
+    // A section named in the address: the same ?tab (none for the opening section).
+    if (link.search !== undefined)
+      return new URLSearchParams(location.search).get('tab') === new URLSearchParams(link.search).get('tab');
     const tab = link.state?.tab;
     if (!tab) return true;
     if (currentTab) return currentTab === tab;
@@ -408,10 +431,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="flex flex-col">
                 <span className="font-black text-base text-white tracking-tight leading-none">
                   {/* The head office runs the ERP; every outlet runs the POS. */}
-                  Cashly <span className="text-white font-semibold text-xs px-1.5 py-0.5 rounded bg-white/15 border border-white/20">{isErpOnly ? 'ERP' : 'POS'}</span>
+                  Cashly <span className="text-white font-semibold text-xs px-1.5 py-0.5 rounded bg-white/15 border border-white/20">{isPlatformSuperAdmin ? 'Admin' : isErpOnly ? 'ERP' : 'POS'}</span>
                 </span>
                 <span className="text-[10px] text-teal-200 font-bold uppercase tracking-wider mt-0.5">
-                  {atHeadOffice ? 'Head Office' : isOwnerOrUnlocked ? 'Owner' : 'Branch'}
+                  {isPlatformSuperAdmin ? 'Platform' : atHeadOffice ? 'Head Office' : isOwnerOrUnlocked ? 'Owner' : 'Branch'}
                 </span>
               </div>
             )}
@@ -473,7 +496,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       // A plain page, or a group while the sidebar is collapsed (its pages cannot
                       // unfold there, so the icon opens the group's first page).
                       <Link
-                        to={hasSub ? item.subItems![0].path : item.path}
+                        to={hasSub ? item.subItems![0].path : item.search !== undefined ? { pathname: item.path, search: item.search } : item.path}
                         state={hasSub ? item.subItems![0].state : item.state}
                         onClick={onCloseMobile}
                         className={`flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition-smooth group ${
@@ -524,7 +547,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           ))}
         </div>
 
-        {!isCollapsed && (
+        {/* The platform admin works across every business, not inside one. */}
+        {!isCollapsed && isPlatformSuperAdmin && (
+          <div className="p-3 border-t border-white/10 bg-black/10 text-[11px]">
+            <div className="flex items-center gap-2 text-teal-100">
+              <Building2 className="w-3.5 h-3.5 text-teal-200" />
+              <span className="truncate font-semibold text-white">Cashly platform</span>
+            </div>
+            <div className="text-[10px] text-teal-200 mt-0.5">Every business on Cashly</div>
+          </div>
+        )}
+        {!isCollapsed && !isPlatformSuperAdmin && (
           <div className="p-3 border-t border-white/10 bg-black/10 text-[11px]">
             <div className="flex items-center gap-2 text-teal-100">
               {atHeadOffice ? (
