@@ -13,8 +13,8 @@ import {
   X,
   Search
 } from 'lucide-react';
-import { useLocation } from 'react-router-dom';
-import { posApi, ALL_LOCATIONS } from '../services/api';
+import { useLocation, Link } from 'react-router-dom';
+import { posApi, ALL_LOCATIONS, getApiErrorMessage, isUpgradeRequired } from '../services/api';
 import { authStorage } from '../services/authStorage';
 import { usePosStore } from '../store/posStore';
 import { useBusinessShape } from '../hooks/useBusinessShape';
@@ -91,10 +91,16 @@ export const ReportsManagement: React.FC = () => {
   const [consolidated, setConsolidated] = useState<ConsolidatedFinancialReport | null>(null);
   const [cashSalesReport, setCashSalesReport] = useState<any>(null);
   const [cardSalesReport, setCardSalesReport] = useState<any>(null);
+  // Why the current tab is empty, if it is. Several tabs are gated by the plan (Advanced Reporting
+  // and Menu Engineering), and swallowing that leaves a blank screen that reads as broken data.
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportNeedsUpgrade, setReportNeedsUpgrade] = useState(false);
 
   const loadReportData = async () => {
     if (!reportLocationId) return;
     setLoading(true);
+    setReportError(null);
+    setReportNeedsUpgrade(false);
     try {
       if (activeTab === 'zreport' || activeTab === 'cashTally') {
         const data = await posApi.getZReport(reportLocationId, selectedDate);
@@ -132,6 +138,8 @@ export const ReportsManagement: React.FC = () => {
         setCardSalesReport(data);
       }
     } catch (err) {
+      setReportError(getApiErrorMessage(err, 'Failed to load this report.'));
+      setReportNeedsUpgrade(isUpgradeRequired(err));
       console.error('Failed to load reports', err);
     } finally {
       setLoading(false);
@@ -324,6 +332,33 @@ export const ReportsManagement: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {reportError && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-black text-amber-800 uppercase tracking-wider">
+                {reportNeedsUpgrade ? 'Not on your plan' : 'Report unavailable'}
+              </p>
+              <p className="text-xs text-amber-700 leading-relaxed mt-1">{reportError}</p>
+              {reportNeedsUpgrade && (
+                <Link
+                  to="/my-addons"
+                  className="inline-flex items-center gap-1.5 mt-2.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-bold transition"
+                >
+                  View Plan &amp; Add-ons
+                </Link>
+              )}
+            </div>
+            <button
+              onClick={() => setReportError(null)}
+              className="p-1 rounded-lg text-amber-500 hover:bg-amber-100 transition"
+              title="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* SUBMODULE 1: DAILY Z-REPORT (DAY CLOSE & CASH DRAWER RECONCILIATION)      */}

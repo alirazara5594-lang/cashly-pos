@@ -4900,7 +4900,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     // branch falls back to when it has none of its own.
     var chosenTier = !string.IsNullOrWhiteSpace(dto.SelectedPlan) && Enum.TryParse<SubscriptionTier>(dto.SelectedPlan, true, out var parsedTier)
         ? parsedTier
-        : SubscriptionTier.Standard;
+        : SubscriptionTier.Starter; // same fallback cloud signup and the platform console use: never grant more than was asked for
 
     var tenant = new Tenant
     {
@@ -15310,8 +15310,6 @@ public record SetupInitDto(
     string? Phone,
     string? MainBranchName,
     string? HqName,
-    int? AllowedCounters,
-    int? AllowedOrderTabs,
     string? AdminFullName,
     string? AdminUsername,
     string? AdminPin,
@@ -15328,7 +15326,8 @@ public record SetupInitDto(
     string? InstallationType = null,
     string? AppSurface = null
 );
-public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone, int AllowedCounters, int AllowedOrderTabs,
+// Ceilings come from the tenant's package, not from the wizard: see EntitlementService.
+public record BranchInitDto(string Name, string? Code, string? City, string? Address, string? Phone,
     SubscriptionTier? PosEdition = null);
 public record CreateTerminalDto(Guid BranchId, string TerminalName, TerminalType TerminalType);
 public record UpdateTerminalDto(string? TerminalName, bool? IsActive);

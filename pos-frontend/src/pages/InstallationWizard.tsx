@@ -45,10 +45,15 @@ import type {
   SubscriptionTier
 } from '../types';
 
-// Step 2 is where the paths differ: POS Only picks its POS version, while POS + ERP picks what this
-// PC is (the head office ERP, or a till connecting to one). A cloud registration skips that
-// question: registering always creates the business, and a till joins one at /connect. The ERP is
-// the same for everyone; POS versions are chosen per branch by head office.
+// Step 1 carries both choices the whole rest of the wizard hangs off: what this business is (one
+// outlet, or a head office over outlets) and which version it runs on. Version used to be asked
+// later and only for a single outlet, which left a chain with no say at all and the head office
+// silently pinned to one edition.
+//
+// Step 2 exists for one question only: what THIS PC is — the head office ERP, or a till
+// connecting to one. A cloud registration skips it, because registering always creates the
+// business and a till joins one at /connect instead. Outlets keep their own version, chosen per
+// branch by head office on the HQ & Outlets step.
 //
 // The business itself and its locations are two short steps rather than one long one: who the
 // business is (name, type, country, web address), then where it is (the outlet, or the head
@@ -128,8 +133,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const mainBranchName = mainBranchEdited
     ? mainBranchInput
     : (restaurantName.trim() ? `${restaurantName.trim()} — Main Branch` : '');
-  const [allowedCounters, setAllowedCounters] = useState<number>(2);
-  const [allowedOrderTabs, setAllowedOrderTabs] = useState<number>(10);
 
   // HQ & Branches (POS + ERP)
   // Named after the business ("Royal Grill Head Office") until the owner types their own.
@@ -222,14 +225,29 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     const value = n ?? fallback;
     return value >= 999 ? 'Unlimited' : String(value);
   };
+  /** "0" reads as a refusal, so a version that ships without something says so in words. */
+  const allowanceValue = (n: number | undefined, fallback: number) => {
+    const value = n ?? fallback;
+    return value === 0 ? 'Not included' : countText(value, fallback);
+  };
+  const money = (n: number | undefined) =>
+    n == null ? null : `PKR ${Math.round(n).toLocaleString('en-US')}`;
   /** "1 till, 3 tablets" for a POS version. */
   const allowanceLine = (key: SubscriptionTier) => {
     const pkg = packageFor(key);
-    const fallback = POS_ONLY_PLANS.find(p => p.key === key);
+    const fallback = VERSIONS.find(p => p.key === key);
     const tills = countText(pkg?.maxCounters, fallback?.counters ?? 1);
     const tablets = countText(pkg?.maxOrderTabs, fallback?.tablets ?? 0);
     const kds = pkg ? pkg.hasKitchenDisplay : key !== 'Starter';
     return `${tills} till${tills === '1' ? '' : 's'}, ${tablets} tablet${tablets === '1' ? '' : 's'}${kds ? ', kitchen screens' : ''}`;
+  };
+  /** The same, for one outlet of a head office: what it gets, and what head office pays for it. */
+  const outletLine = (edition: SubscriptionTier) => {
+    const base = allowanceLine(edition);
+    const pkg = packageFor(edition);
+    return signupMode && pkg?.branchMonthlyPricePKR
+      ? `${base} · ${money(pkg.branchMonthlyPricePKR)}/mo per outlet`
+      : base;
   };
 
   // Set when a till connects to the head office: which branch it joined and that branch's version.
@@ -268,11 +286,17 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   };
 
   const addBranchRow = () => {
-    // Blank name so the owner types the real one; the code is generated if left empty.
+    // Blank name so the owner types the real one; the code is generated if left empty. The new
+    // outlet starts on the version picked on step 1. Its till/tablet ceilings are not sent: they
+    // come from that version's package on the server, never from the wizard.
     setNoOutletHint(false);
     setBranches([
       ...branches,
-      { name: '', code: '', city: city || '', address: '', phone: '', allowedCounters: 3, allowedOrderTabs: 10, posEdition: 'Standard', sameAddressAsHq: false }
+      {
+        name: '', code: '', city: city || '', address: '', phone: '',
+        posEdition: selectedPlan,
+        sameAddressAsHq: false
+      }
     ]);
   };
 
@@ -286,13 +310,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     setBranches(next);
   };
 
-  // Plan Configurations for POS Only
-  const POS_ONLY_PLANS = [
+  // The three versions. The figures a customer is promised come from the server when it answers
+  // (packageFor); these are only what the cards fall back to, and they are kept equal to the
+  // catalogue's own ceilings so a fallback never promises more than a plan really grants.
+  const VERSIONS = [
     {
       key: 'Starter' as const,
       label: 'Starter',
       counters: 1,
-      tablets: 3,
+      tablets: 2,
+      kitchenScreens: 0,
       badge: undefined,
       description: 'Ideal for single food stalls, small cafes, and takeout joints.',
       features: ['Direct Receipt Printing', 'Daily Shift Cash Register', 'Waiter / Order Tablets']
@@ -300,8 +327,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     {
       key: 'Standard' as const,
       label: 'Standard',
-      counters: 2,
-      tablets: 10,
+      counters: 3,
+      tablets: 8,
+      kitchenScreens: 2,
       badge: 'Most Popular',
       description: 'Full-service dine-in cafes and standalone busy restaurants.',
       features: ['Kitchen Display System (KDS)', 'Waiter Tablets & QR Tables', 'Floor & Table Layout Manager']
@@ -309,8 +337,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     {
       key: 'Professional' as const,
       label: tierLabel('Professional'),
-      counters: 5,
-      tablets: 25,
+      counters: 8,
+      tablets: 20,
+      kitchenScreens: 999,
       badge: 'High Volume',
       description: 'High-speed fast food and multi-station large dining restaurants.',
       features: ['Multi-Kitchen Routing & KDS', 'Customer Khata & VIP Loyalty', 'Highest till & tablet capacity']
@@ -364,10 +393,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   // Step Validation
   const validateStep = (s: number): string | null => {
-    // Step 1: System choice is always valid
+    // Step 1: system type and version both default, so it is always valid
     if (s === 1) return null;
 
-    // Step 2: POS Only picks its POS version (always valid); POS + ERP picks what this PC is.
+    // Step 2 (local head office only): what this PC is, plus the address of the ERP it connects to
     if (s === 2) {
       if (systemType === 'POS_ERP' && erpRole === 'POS_TERMINAL'
           && serverTopology === 'DIFFERENT_SERVER' && !apiUrl.trim()) {
@@ -429,11 +458,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
   const maxSteps = REVIEW_STEP;
 
-  // The steps this path walks through, in order. A cloud registration with a head office has no
-  // "what is this PC" step (see the note on BUSINESS_STEP).
-  const stepOrder = systemType === 'POS_ERP' && signupMode
-    ? [1, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP]
-    : [1, 2, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP];
+  // The steps this path walks through, in order. Step 2 is only "what is this PC", so it exists
+  // for a local head-office install and nowhere else (see the note above BUSINESS_STEP).
+  const stepOrder = systemType === 'POS_ERP' && !signupMode
+    ? [1, 2, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP]
+    : [1, BUSINESS_STEP, LOCATIONS_STEP, SECURITY_STEP, REVIEW_STEP];
   const nextStepAfter = (s: number) => stepOrder.find(n => n > s) ?? s;
   const previousStepBefore = (s: number) => [...stepOrder].reverse().find(n => n < s) ?? 1;
 
@@ -532,9 +561,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           adminPassword,
           webName,
           businessType,
-          // POS Only: the plan is its POS version. POS + ERP: the ERP is the same for everyone and
-          // each branch carries its own version; Standard is only what a branch falls back to.
-          packageKey: isChain ? 'Standard' : selectedPlan,
+          // The version chosen on step 1 is the business's own. A head office runs the ERP on it
+          // and every outlet inherits it as a default, overridable per outlet from here.
+          packageKey: selectedPlan,
           deploymentMode: deploymentMode === 'MultiBranch' ? 'MultiBranch' : 'Standalone',
           businessStructure: structure,
           branches: isChain
@@ -543,7 +572,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 code: b.code?.trim() || undefined,
                 ...branchAddress(b),
                 phone: b.phone?.trim() || undefined,
-                posEdition: b.posEdition ?? 'Standard'
+                posEdition: b.posEdition ?? selectedPlan
               }))
             : [{
                 name: mainBranchName.trim(),
@@ -601,23 +630,21 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         phone,
         mainBranchName,
         hqName,
-        allowedCounters,
-        allowedOrderTabs: isChain ? undefined : allowedOrderTabs,
         adminFullName,
         adminUsername,
         adminPin,
         seedStarterMenu,
         // sameAddressAsHq is the wizard's own; undefined is left out of the request.
         branches: isChain
-          ? branches.map(b => ({ ...b, ...branchAddress(b), sameAddressAsHq: undefined, posEdition: b.posEdition ?? 'Standard' }))
+          ? branches.map(b => ({ ...b, ...branchAddress(b), sameAddressAsHq: undefined, posEdition: b.posEdition ?? selectedPlan }))
           : undefined,
         businessStructure: structure,
         company,
         headOffice,
         policies,
         setUpAccounting: bookAccounts,
-        // Only a single shop picks a plan here (its POS version); see the signup branch above.
-        selectedPlan: isChain ? undefined : selectedPlan,
+        // Both paths send the version chosen on step 1: it is the tier the tenant is keyed to.
+        selectedPlan,
         installationType: systemType,
         appSurface: isChain && erpRole === 'ERP_SERVER' ? 'Erp' : 'Pos'
       };
@@ -882,7 +909,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   }
 
   // WIZARD STEPS DEFINITION
-  const wizardSteps = (systemType === 'POS_ERP'
+  const wizardSteps = (systemType === 'POS_ERP' && !signupMode
     ? [
         { num: 1, label: 'Setup Type' },
         { num: 2, label: 'Install ERP or POS' },
@@ -893,9 +920,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       ]
     : [
         { num: 1, label: 'Setup Type' },
-        { num: 2, label: 'POS Version' },
         { num: BUSINESS_STEP, label: 'Business Details' },
-        { num: LOCATIONS_STEP, label: 'Your Outlet' },
+        { num: LOCATIONS_STEP, label: systemType === 'POS_ERP' ? 'HQ & Outlets' : 'Your Outlet' },
         { num: SECURITY_STEP, label: 'Admin Security' },
         { num: REVIEW_STEP, label: signupMode ? 'Create' : 'Deploy' }
       ]).filter(s => stepOrder.includes(s.num));
@@ -960,8 +986,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto">
-        {/* The plan step gets more room so its three edition cards are not cramped. */}
-        <div className={`${step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto p-6 md:p-8`}>
+        {/* Step 1 needs room for the two setup cards and the three version cards beneath them. */}
+        <div className={`${step === 1 || step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto p-6 md:p-8`}>
           {errorMessage && (
             <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-600 text-sm flex items-center gap-3">
               <div className="w-2 h-2 rounded-full bg-rose-400 animate-ping shrink-0" />
@@ -1082,84 +1108,90 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 </div>
               </div>
-            </div>
-          )}
 
-          {/* STEP 2 (POS Only): the shop's POS version. POS + ERP has no plan step: the ERP is
-              the same for everyone, and each branch's POS version is chosen by head office. */}
-          {step === 2 && systemType === 'POS_ONLY' && (
-            <div className="space-y-5">
-              <div className="text-center md:text-left space-y-1">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Choose Your POS Version</h2>
-                  <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-800">
-                    Cashly POS
-                  </span>
+              {/* The version, asked here rather than in a step of its own: it decides what the
+                  whole rest of the setup is allowed to create, and a head office business needs
+                  it asked too — not just a single outlet. */}
+              <div className="space-y-4 pt-2">
+                <div className="text-center md:text-left space-y-1">
+                  <h3 className="text-lg font-bold text-slate-900 tracking-tight">Which version do you need?</h3>
+                  <p className="text-sm text-slate-500">
+                    {systemType === 'POS_ERP'
+                      ? 'This is the version head office runs on. Every outlet can have its own, chosen when that outlet is added.'
+                      : 'The till, tablet and kitchen screen allowance this outlet runs on. You can move up or down later from Plan & Add-ons.'}
+                  </p>
                 </div>
-                <p className="text-sm text-slate-500">
-                  Select the till and tablet capacity that fits your restaurant.
-                </p>
-              </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                  {POS_ONLY_PLANS.map((plan) => {
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  {VERSIONS.map((plan) => {
                     const isActive = selectedPlan === plan.key;
                     const pkg = packageFor(plan.key);
+                    const choose = () => {
+                      setSelectedPlan(plan.key);
+                    };
                     return (
                       <div
                         key={plan.key}
-                        onClick={() => {
-                          setSelectedPlan(plan.key);
-                          setAllowedCounters(pkg?.maxCounters ?? plan.counters);
-                          setAllowedOrderTabs(pkg?.maxOrderTabs ?? plan.tablets);
-                        }}
-                        className={`relative p-6 md:p-7 min-h-[22rem] rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
+                        onClick={choose}
+                        className={`relative p-6 rounded-2xl border-2 cursor-pointer transition-all duration-150 flex flex-col justify-between ${
                           isActive
                             ? 'border-teal-500 bg-teal-50/50 shadow-md ring-1 ring-teal-500/40'
                             : 'border-slate-200 bg-white hover:border-slate-300'
                         }`}
                       >
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-xl font-extrabold text-slate-900">{plan.label}</span>
-                            {plan.badge && (
-                              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
-                                {plan.badge}
-                              </span>
-                            )}
-                            {isActive && (
-                              <CheckCircle2 className="w-5 h-5 fill-teal-500 text-white shrink-0" />
-                            )}
+                            <span className="text-lg font-extrabold text-slate-900">{plan.label}</span>
+                            <span className="flex items-center gap-2">
+                              {plan.badge && (
+                                <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-teal-100 text-teal-700 border border-teal-200">
+                                  {plan.badge}
+                                </span>
+                              )}
+                              {isActive && <CheckCircle2 className="w-5 h-5 fill-teal-500 text-white shrink-0" />}
+                            </span>
                           </div>
 
-                          <p className="text-sm text-slate-500 leading-snug">{plan.description}</p>
+                          <p className="text-xs text-slate-500 leading-snug">{plan.description}</p>
 
-                          <div className="grid grid-cols-2 gap-3 py-2">
-                            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
-                              <span className="text-[10px] uppercase font-bold text-slate-400 block">Counters</span>
-                              <span className="text-xl font-black text-slate-900">{countText(pkg?.maxCounters, plan.counters)}</span>
+                          {/* Only a registration is billed. A first-run local install buys nothing. */}
+                          {signupMode && pkg && (
+                            <div className="pt-1">
+                              <span className="text-xl font-black text-slate-900">{money(pkg.monthlyPricePKR)}</span>
+                              <span className="text-xs text-slate-500 font-semibold"> /month</span>
+                              {pkg.yearlyPricePKR > 0 && (
+                                <div className="text-[11px] text-slate-400">or {money(pkg.yearlyPricePKR)} a year</div>
+                              )}
                             </div>
-                            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                          )}
+
+                          <div className="grid grid-cols-3 gap-2 py-1">
+                            <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">Tills</span>
+                              <span className="text-sm font-black text-slate-900 leading-tight">{countText(pkg?.maxCounters, plan.counters)}</span>
+                            </div>
+                            <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
                               <span className="text-[10px] uppercase font-bold text-slate-400 block">Tablets</span>
-                              <span className="text-xl font-black text-slate-900">{countText(pkg?.maxOrderTabs, plan.tablets)}</span>
+                              <span className="text-sm font-black text-slate-900 leading-tight">{countText(pkg?.maxOrderTabs, plan.tablets)}</span>
+                            </div>
+                            <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">Kitchen</span>
+                              <span className="text-sm font-black text-slate-900 leading-tight">{allowanceValue(pkg?.maxKitchenDisplays, plan.kitchenScreens)}</span>
                             </div>
                           </div>
 
-                          <div className="pt-3 border-t border-slate-200 space-y-2.5">
+                          <div className="pt-3 border-t border-slate-200 space-y-2">
                             {plan.features.map((feat, fidx) => (
-                              <div key={fidx} className="text-sm text-slate-700 flex items-center gap-1.5">
+                              <div key={fidx} className="text-xs text-slate-700 flex items-center gap-1.5">
                                 <span className="text-teal-600 font-bold">✓</span> {feat}
                               </div>
                             ))}
                           </div>
                         </div>
-
-                        <div className="mt-5 pt-3 border-t border-slate-100 text-xs text-teal-700 font-semibold">
-                          Single Outlet • Instant Deploy
-                        </div>
                       </div>
                     );
                   })}
+                </div>
               </div>
             </div>
           )}
@@ -1564,6 +1596,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     </div>
                   </div>
 
+                  {/* What the version chosen on step 1 actually means for this outlet, so the
+                      choice is still visible where the outlet is named. */}
+                  {systemType === 'POS_ONLY' && (
+                    <p className="text-[11px] text-slate-500">
+                      Running on{' '}
+                      <span className="font-semibold text-teal-700">{tierLabel(selectedPlan)}</span>{' '}
+                      · {allowanceLine(selectedPlan)}. Change it on the first step.
+                    </p>
+                  )}
+
                   {/* Rarely changed, so out of the way until asked for. */}
                   {systemType === 'POS_ERP' && (
                     <div>
@@ -1657,7 +1699,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             {/* This outlet's POS version: what its tills can do, and what it is billed for. */}
                             <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">POS version</span>
                             {POS_EDITIONS.map(edition => {
-                              const active = (b.posEdition ?? 'Standard') === edition;
+                              const active = (b.posEdition ?? selectedPlan) === edition;
                               return (
                                 <button
                                   key={edition}
@@ -1672,6 +1714,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                                 </button>
                               );
                             })}
+                            {/* The ceiling behind those buttons, stated rather than left to a tooltip. */}
+                            <span className="w-full text-[11px] text-slate-500">
+                              {outletLine(b.posEdition ?? selectedPlan)}
+                            </span>
                             <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
                               <input
                                 type="checkbox"
@@ -1711,7 +1757,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             Continue without outlets
                           </button>
                           <button type="button"
-                            onClick={() => { setNoOutletHint(false); setSystemType('POS_ONLY'); setErrorMessage(null); setStep(2); }}
+                            onClick={() => { setNoOutletHint(false); setSystemType('POS_ONLY'); setErrorMessage(null); setStep(1); }}
                             className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 font-bold hover:bg-amber-100 transition cursor-pointer">
                             Switch to Cashly POS
                           </button>
@@ -1887,7 +1933,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     </span>
                     <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
                       {systemType === 'POS_ERP' ? (
-                        <span className="text-teal-700">Full ERP included · POS version per shop</span>
+                        <span className="text-teal-700">
+                          {tierLabel(selectedPlan)} at head office · POS version per shop
+                        </span>
                       ) : (
                         <span className="text-teal-700">{tierLabel(selectedPlan)} ({allowanceLine(selectedPlan)})</span>
                       )}
@@ -1904,7 +1952,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             HQ: {hqName}
                             {branches.length === 0
                               ? ' (no shops yet; add them later from Locations)'
-                              : ` + ${branches.length} outlet${branches.length === 1 ? '' : 's'} (${branches.map(b => `${b.name}: ${tierLabel(b.posEdition ?? 'Standard')}${b.sameAddressAsHq ? ', same building as HQ' : ''}`).join('; ')})`}
+                              : ` + ${branches.length} outlet${branches.length === 1 ? '' : 's'} (${branches.map(b => `${b.name}: ${tierLabel(b.posEdition ?? selectedPlan)}${b.sameAddressAsHq ? ', same building as HQ' : ''}`).join('; ')})`}
                           </span>
                         ) : (
                           <span>1 Outlet: {mainBranchName} ({city})</span>
@@ -1953,7 +2001,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
       {/* Bottom Navigation Bar */}
       <div className="shrink-0 border-t border-slate-200 bg-white px-6 md:px-10 py-4">
-        <div className={`${step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto flex items-center justify-between gap-4`}>
+        <div className={`${step === 1 || step === 2 ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto flex items-center justify-between gap-4`}>
           {step > 1 ? (
             <button
               type="button"
@@ -2027,7 +2075,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <div>
                 <span className="text-slate-400">Setup:</span>{' '}
                 {systemType === 'POS_ERP'
-                  ? 'Cashly POS + ERP · head office ERP, POS version per outlet'
+                  ? `Cashly POS + ERP · head office on ${tierLabel(selectedPlan)}, POS version per outlet`
                   : `Cashly POS · single outlet · ${tierLabel(selectedPlan)} POS version`}
               </div>
               <div>

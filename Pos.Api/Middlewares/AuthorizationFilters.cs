@@ -215,9 +215,12 @@ public class RequireFeatureFilter : IEndpointFilter
             return Results.Unauthorized(); // tenant no longer exists
         }
 
+        // Still 403 (not 402 like the module/limit filters): a couple of screens key off the status
+        // to decide whether the plan lacks the flag at all. The body carries upgradeRequired so a
+        // client can tell a missing plan from a missing permission either way.
         if (!ent.Has(_flagName))
             return Results.Json(
-                new { message = RefusalMessage(_flagName), feature = _flagName },
+                new { message = RefusalMessage(_flagName), featureCode = _flagName, upgradeRequired = true },
                 statusCode: StatusCodes.Status403Forbidden);
 
         return await next(context);

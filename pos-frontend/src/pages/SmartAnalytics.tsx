@@ -13,9 +13,11 @@ import {
   Award,
   RefreshCw,
   Zap,
-  Target
+  Target,
+  AlertCircle
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { Link } from 'react-router-dom';
+import { posApi, getApiErrorMessage, isUpgradeRequired } from '../services/api';
 
 interface SmartAnalyticsData {
   summary: {
@@ -38,13 +40,19 @@ export const SmartAnalytics: React.FC = () => {
   const [data, setData] = useState<SmartAnalyticsData | null>(null);
   const [days, setDays] = useState(7);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [needsUpgrade, setNeedsUpgrade] = useState(false);
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
+    setError(null);
+    setNeedsUpgrade(false);
     try {
       const result = await posApi.getSmartAnalytics(days);
       setData(result);
     } catch (err) {
+      setError(getApiErrorMessage(err, 'Could not load smart analytics.'));
+      setNeedsUpgrade(isUpgradeRequired(err));
       console.error(err);
     } finally {
       setIsLoading(false);
@@ -135,6 +143,31 @@ export const SmartAnalytics: React.FC = () => {
       {isLoading && !data ? (
         <div className="flex items-center justify-center py-20">
           <div className="w-6 h-6 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : error ? (
+        <div className="flex items-center justify-center py-14">
+          <div className="max-w-md w-full bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-3">
+            <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
+            <p className="text-xs font-black text-amber-800 uppercase tracking-wider">
+              {needsUpgrade ? 'Not on your plan' : 'Analytics unavailable'}
+            </p>
+            <p className="text-xs text-amber-700 leading-relaxed">{error}</p>
+            {needsUpgrade ? (
+              <Link
+                to="/my-addons"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition"
+              >
+                View Plan &amp; Add-ons
+              </Link>
+            ) : (
+              <button
+                onClick={fetchData}
+                className="px-4 py-2 rounded-xl bg-white border border-amber-300 text-amber-700 text-xs font-bold hover:bg-amber-100 transition"
+              >
+                Try again
+              </button>
+            )}
+          </div>
         </div>
       ) : data ? (
         <>

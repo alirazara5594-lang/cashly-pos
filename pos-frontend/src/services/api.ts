@@ -206,6 +206,17 @@ export function getApiErrorStatus(err: unknown): number | undefined {
 }
 
 /**
+ * True when the server refused because the account's plan (or an add-on) does not include the
+ * thing being asked for, rather than because the user lacks permission or the record is missing.
+ * The filters answer this in the body (`upgradeRequired`), not by status code — the feature filter
+ * says 403 and the module/limit filters say 402, so clients cannot key off the number.
+ */
+export function isUpgradeRequired(err: unknown): boolean {
+  const data = (err as { response?: { data?: { upgradeRequired?: boolean } } })?.response?.data;
+  return data?.upgradeRequired === true;
+}
+
+/**
  * Session teardown + router-aware redirect for expired tokens.
  *
  * `api.ts` is imported BY the store, so it cannot import the store back without

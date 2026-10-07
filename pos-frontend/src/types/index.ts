@@ -1167,8 +1167,6 @@ export interface BranchInitPayload {
   city?: string;
   address?: string;
   phone?: string;
-  allowedCounters?: number;
-  allowedOrderTabs?: number;
   /** The branch's POS version, chosen by head office. */
   posEdition?: SubscriptionTier;
   /** Setup wizard only: the shop is in the head office's building, so it takes the head office's
@@ -1208,7 +1206,6 @@ export interface SetupInitPayload {
   phone?: string;
   mainBranchName?: string;
   hqName?: string;
-  allowedCounters?: number;
   adminFullName?: string;
   adminUsername?: string;
   adminPin?: string;
