@@ -48,8 +48,6 @@ public static class FeatureCodes
     public const string ConsolidatedReports = "consolidated_reports";
     public const string AdvancedReports = "advanced_reports";
     public const string DirectorDashboard = "director_dashboard";
-    public const string CentralizedHqControl = "centralized_hq_control";
-    public const string Api = "api";
     public const string Integrations = "integrations";
     public const string DeliveryCod = "delivery_cod";
     public const string WhatsApp = "whatsapp";
@@ -71,7 +69,7 @@ public static class FeatureCodes
     /// </summary>
     public static readonly IReadOnlySet<string> SoldSeparately = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        FiscalInvoicing, OnlinePayments, OnlineOrdering, Integrations, Api
+        FiscalInvoicing, OnlinePayments, OnlineOrdering, Integrations
     };
 }
 
@@ -115,9 +113,7 @@ public static class FeatureCatalog
 
         new(FeatureCodes.Permissions, "Permissions", "Role and module-level access control.", FeatureLimitType.Level, "Administration"),
         new(FeatureCodes.AuditLog, "Audit Log", "Record of sensitive actions.", FeatureLimitType.Level, "Administration"),
-        new(FeatureCodes.CentralizedHqControl, "Centralized HQ Control", "Push catalogue, pricing, tax and recipes from head office.", FeatureLimitType.Level, "Administration"),
 
-        new(FeatureCodes.Api, "API Access", "Programmatic access for your own tools.", FeatureLimitType.Level, "Integrations"),
         new(FeatureCodes.Integrations, "Delivery Platform Integration", "Orders from Foodpanda-style delivery platforms straight into the till.", FeatureLimitType.Level, "Integrations"),
         new(FeatureCodes.WhatsApp, "WhatsApp Messaging", "Order updates and receipts over WhatsApp, within the monthly message allowance.", FeatureLimitType.Boolean, "Integrations"),
         new(FeatureCodes.FiscalInvoicing, "Fiscal Invoicing (FBR / PRA / SRB)", "Report every sale to the tax authority and print its fiscal invoice number and QR code.", FeatureLimitType.Boolean, "Integrations"),
@@ -233,9 +229,6 @@ public static class FeatureCatalog
         [FeatureCodes.ConsolidatedReports]  = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.Advanced),
         [FeatureCodes.Permissions]          = (FeatureLevel.Basic, FeatureLevel.Advanced, FeatureLevel.Advanced),
         [FeatureCodes.AuditLog]             = (FeatureLevel.Basic, FeatureLevel.Full,  FeatureLevel.Advanced),
-        [FeatureCodes.CentralizedHqControl] = (FeatureLevel.None,  FeatureLevel.Full,  FeatureLevel.Advanced),
-        // Add-on only (FeatureCodes.SoldSeparately).
-        [FeatureCodes.Api]                  = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.None),
         [FeatureCodes.Integrations]         = (FeatureLevel.None,  FeatureLevel.None,  FeatureLevel.None)
     };
 

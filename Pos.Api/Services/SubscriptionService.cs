@@ -83,7 +83,7 @@ public interface ISubscriptionService
 public class SubscriptionService : ISubscriptionService
 {
     private static readonly string[] LimitCodes =
-        { FeatureCodes.Locations, FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.Users };
+        { FeatureCodes.Locations, FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.KitchenDisplays, FeatureCodes.Users };
 
     private readonly AppDbContext _db;
     private readonly IEntitlementService _entitlements;
@@ -170,7 +170,7 @@ public class SubscriptionService : ISubscriptionService
     private async Task<LimitCheck> CheckLimitCoreAsync(EffectiveEntitlements ent, string featureCode)
     {
         var code = featureCode.ToLowerInvariant();
-        if (code is FeatureCodes.PosTerminals or FeatureCodes.Tablets)
+        if (code is FeatureCodes.PosTerminals or FeatureCodes.Tablets or FeatureCodes.KitchenDisplays)
             return AggregateDeviceLimit(featureCode, ent.PlanKey, await DeviceUsageAsync(ent, DeviceTypeFor(code)));
 
         var limit = ent.LimitFor(code);
@@ -212,8 +212,12 @@ public class SubscriptionService : ISubscriptionService
 
     private sealed record BranchDeviceUsage(Guid BranchId, string BranchName, int InUse, int? Limit);
 
-    private static TerminalType DeviceTypeFor(string code) =>
-        code == FeatureCodes.Tablets ? TerminalType.OrderTab : TerminalType.Counter;
+    private static TerminalType DeviceTypeFor(string code) => code switch
+    {
+        FeatureCodes.Tablets => TerminalType.OrderTab,
+        FeatureCodes.KitchenDisplays => TerminalType.KitchenDisplay,
+        _ => TerminalType.Counter
+    };
 
     /// <summary>
     /// Devices of one class at each selling location, against that location's own allowance: the
@@ -236,14 +240,27 @@ public class SubscriptionService : ISubscriptionService
             .Select(g => new { BranchId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.BranchId, x => x.Count);
 
-        var addOnKey = type == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
-        var extras = await _db.AddOnSubscriptions.IgnoreQueryFilters()
-            .Where(a => a.TenantId == ent.TenantId && a.AddOnKey == addOnKey && a.IsActive && a.BranchId != null)
-            .GroupBy(a => a.BranchId!.Value)
-            .Select(g => new { BranchId = g.Key, Quantity = g.Sum(a => a.Quantity) })
-            .ToDictionaryAsync(x => x.BranchId, x => x.Quantity);
+        // Extra-device add-ons are sold for tills and tablets only; kitchen screens have no add-on.
+        string? addOnKey = type switch
+        {
+            TerminalType.OrderTab => "EXTRA_TABLET",
+            TerminalType.KitchenDisplay => null,
+            _ => "EXTRA_COUNTER"
+        };
+        var extras = addOnKey == null
+            ? new Dictionary<Guid, int>()
+            : await _db.AddOnSubscriptions.IgnoreQueryFilters()
+                .Where(a => a.TenantId == ent.TenantId && a.AddOnKey == addOnKey && a.IsActive && a.BranchId != null)
+                .GroupBy(a => a.BranchId!.Value)
+                .Select(g => new { BranchId = g.Key, Quantity = g.Sum(a => a.Quantity) })
+                .ToDictionaryAsync(x => x.BranchId, x => x.Quantity);
 
-        var planPerLocation = ent.LimitFor(type == TerminalType.OrderTab ? FeatureCodes.Tablets : FeatureCodes.PosTerminals);
+        var planPerLocation = ent.LimitFor(type switch
+        {
+            TerminalType.OrderTab => FeatureCodes.Tablets,
+            TerminalType.KitchenDisplay => FeatureCodes.KitchenDisplays,
+            _ => FeatureCodes.PosTerminals
+        });
         return branches.Select(b =>
             {
                 var perLocation = allowances.TryGetValue(b.Id, out var allowance) ? allowance.LimitFor(type) : planPerLocation;
@@ -342,7 +359,7 @@ public class SubscriptionService : ISubscriptionService
 
         // Device allowances are per location, so an overage is reported per location: "Gulberg: 3 POS
         // terminals in use, plan allows 2" says what to retire; a business-wide total does not.
-        foreach (var code in new[] { FeatureCodes.PosTerminals, FeatureCodes.Tablets })
+        foreach (var code in new[] { FeatureCodes.PosTerminals, FeatureCodes.Tablets, FeatureCodes.KitchenDisplays })
         {
             foreach (var branch in await DeviceUsageAsync(ent, DeviceTypeFor(code)))
             {

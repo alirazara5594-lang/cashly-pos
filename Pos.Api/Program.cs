@@ -9130,7 +9130,8 @@ api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext htt
     return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
         .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / taxDivisor, 2), taxPKR = Math.Round(gross - (gross / taxDivisor), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.grossSalesPKR).ToList());
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasAdvancedReports)));
 
 api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, bool? allLocations) =>
 {
@@ -9144,7 +9145,8 @@ api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http
     return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", CostPrice = i.Product?.CostPricePKR ?? 0 })
         .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.CostPrice * qty; var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.revenuePKR).Take(25).ToList());
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasAdvancedReports)));
 
 api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid? branchId, int? days, DateTime? startDate, DateTime? endDate, bool? allLocations) =>
 {
@@ -9220,7 +9222,8 @@ api.MapGet("/reports/payment-methods", async (AppDbContext db, HttpContext http,
         totalRevenuePKR = grandTotal, totalTransactions = orders.Count,
         tenders = orders.GroupBy(o => o.PaymentMethod).Select(g => { var total = g.Sum(x => x.TotalPKR); var count = g.Count(); return new { method = g.Key.ToString(), transactionCount = count, totalAmountPKR = total, percentageOfTotal = grandTotal > 0 ? Math.Round((total / grandTotal) * 100, 1) : 0, avgTicketPKR = count > 0 ? Math.Round(total / count, 2) : 0 }; }).OrderByDescending(x => x.totalAmountPKR).ToList()
     });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasAdvancedReports)));
 
 api.MapGet("/reports/consolidated", async (AppDbContext db, HttpContext http, Guid? tenantId, int? days) =>
 {
@@ -12402,7 +12405,7 @@ app.MapPost("/api/alerts/generate", async (AppDbContext db, HttpContext http) =>
 // SMART ANALYTICS
 // ============================================================
 
-app.MapGet("/api/analytics/smart", async (AppDbContext db, HttpContext http, int? days) =>
+api.MapGet("/analytics/smart", async (AppDbContext db, HttpContext http, int? days) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null) return Results.Unauthorized();
@@ -12481,7 +12484,8 @@ app.MapGet("/api/analytics/smart", async (AppDbContext db, HttpContext http, int
             topPaymentMethod = paymentBreakdown.OrderByDescending(p => p.count).FirstOrDefault()?.method ?? "Cash"
         }
     });
-}).RequireAuthorization();
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
 
 // ── Tenant Settings CRUD ──
 app.MapGet("/api/tenant/settings", async (Guid? tenantId, AppDbContext db, HttpContext http) =>
@@ -14281,7 +14285,9 @@ api.MapGet("/analytics/menu-engineering", async (AppDbContext db, HttpContext ht
         items = classified,
         slowMovers
     });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  // Cost and margin per item is the food-cost capability, which Starter does not have.
+  .AddEndpointFilter(Pos.Api.Middlewares.RequireFeature.For(Pos.Api.Data.FeatureCodes.FoodCost));
 
 
 // ============================================================

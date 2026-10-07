@@ -217,10 +217,23 @@ public class RequireFeatureFilter : IEndpointFilter
 
         if (!ent.Has(_flagName))
             return Results.Json(
-                new { message = $"Your subscription plan does not include this feature ({_flagName}). Please upgrade your package or purchase it as an add-on.", feature = _flagName },
+                new { message = RefusalMessage(_flagName), feature = _flagName },
                 statusCode: StatusCodes.Status403Forbidden);
 
         return await next(context);
+    }
+
+    /// <summary>
+    /// The refusal a customer reads. The flag name is how the config field spells the feature and
+    /// means nothing to the person being refused, so it is translated back through the catalogue —
+    /// and no plan is named either, because which plan to move to is the upgrade screen's job.
+    /// </summary>
+    private static string RefusalMessage(string flagName)
+    {
+        var featureCode = FeatureCatalog.PackageFlagFor
+            .FirstOrDefault(kv => string.Equals(kv.Value, flagName, StringComparison.OrdinalIgnoreCase)).Key;
+        var name = (featureCode == null ? null : FeatureCatalog.Find(featureCode)?.DisplayName) ?? flagName;
+        return $"'{name}' is not included in your current plan. Upgrade your plan, or buy it as an add-on from Plan & Add-ons.";
     }
 }
 

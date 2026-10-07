@@ -126,6 +126,22 @@ public sealed class TestDatabase : IDisposable
         Db.SaveChanges();
     }
 
+    /// <summary>
+    /// The per-tier package configs the real seeder writes from the same catalogue. Kitchen screen
+    /// allowances are read from here rather than from the plan rows, so a test that is about device
+    /// ceilings has to seed them or it would be testing an empty table.
+    /// </summary>
+    public void SeedPackages()
+    {
+        foreach (var (code, _, _, _, _, _) in FeatureCatalog.Plans)
+        {
+            var packageKey = char.ToUpperInvariant(code[0]) + code[1..];
+            if (Db.SaaSPackageConfigs.Any(p => p.PackageKey == packageKey)) continue;
+            Db.SaaSPackageConfigs.Add(FeatureCatalog.BuildPackageConfig(code));
+        }
+        Db.SaveChanges();
+    }
+
     /// <summary>Something the owner can buy.</summary>
     public void SeedAddOn(string key, string displayName, decimal monthly, decimal yearly, bool active = true)
     {

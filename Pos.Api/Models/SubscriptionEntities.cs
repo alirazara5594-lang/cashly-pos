@@ -24,7 +24,7 @@ namespace Pos.Api.Models;
 /// <summary>How a feature's allowance is expressed.</summary>
 public enum FeatureLimitType
 {
-    /// <summary>On or off. "hq", "api", "stock_transfers".</summary>
+    /// <summary>On or off. "hq", "loyalty", "delivery_cod".</summary>
     Boolean = 1,
     /// <summary>A countable ceiling. "locations" = 3, "pos_terminals" = 5. Null means unlimited.</summary>
     Count = 2,
