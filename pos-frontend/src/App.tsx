@@ -467,8 +467,8 @@ function MainLayoutInner() {
 
             {/* Platform / super-admin surface → `admin` module */}
             <Route path="/super-admin" element={<RequireModule module="admin" superAdminOnly><SuperAdmin /></RequireModule>} />
-            <Route path="/pricing-admin" element={<RequireModule module="admin" superAdminOnly><PricingAdmin /></RequireModule>} />
-            <Route path="/whatsapp-config" element={<RequireModule module="admin"><WhatsAppConfig /></RequireModule>} />
+            <Route path="/pricing-admin" element={<RequireModule module="admin" superAdminOnly><div className="p-4 lg:p-6"><PricingAdmin /></div></RequireModule>} />
+            <Route path="/whatsapp-config" element={<RequireModule module="admin"><div className="p-4 lg:p-6"><WhatsAppConfig /></div></RequireModule>} />
 
             {/* CRM, loyalty and integration settings → `admin` module */}
             <Route path="/loyalty" element={<RequireModule module="admin"><LoyaltyGiftCards /></RequireModule>} />

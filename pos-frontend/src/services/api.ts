@@ -115,7 +115,9 @@ import type {
   FiscalEnvironment,
   PublicMenu,
   PublicOrderResult,
-  OnboardingStatus
+  OnboardingStatus,
+  SubscriptionPartRow,
+  RenewalsSummary
 } from '../types';
 
 /**
@@ -1553,6 +1555,34 @@ export const posApi = {
   // SAAS — Admin: Dashboard stats
   getAdminStats: async () => {
     const res = await api.get<AdminPlatformStats>('/api/admin/stats');
+    return res.data;
+  },
+
+  // Renewals per part: the ERP, each outlet's POS and each extra tablet renew on their own dates.
+  getRenewals: async () => {
+    const res = await api.get<SubscriptionPartRow[]>('/api/admin/renewals');
+    return res.data;
+  },
+  getRenewalsSummary: async () => {
+    const res = await api.get<RenewalsSummary>('/api/admin/renewals/summary');
+    return res.data;
+  },
+  getTenantSubscriptionParts: async (tenantId: string) => {
+    const res = await api.get<SubscriptionPartRow[]>(`/api/admin/tenants/${tenantId}/subscription-parts`);
+    return res.data;
+  },
+  /** A payment received for one part: renews it by whole periods from its own anniversary. */
+  markSubscriptionPartPaid: async (partId: string, annual: boolean, periods = 1) => {
+    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/mark-paid`, { annual, periods });
+    return res.data;
+  },
+  setSubscriptionPartPaidUntil: async (partId: string, paidUntil: string) => {
+    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/paid-until`, { paidUntil });
+    return res.data;
+  },
+  /** The signed-in business's own parts and when each renews. */
+  getMySubscriptions: async () => {
+    const res = await api.get<SubscriptionPartRow[]>('/api/tenant/my-subscriptions');
     return res.data;
   },
 

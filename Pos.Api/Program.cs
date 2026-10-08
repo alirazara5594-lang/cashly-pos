@@ -189,6 +189,7 @@ builder.Services.AddScoped<Pos.Api.Services.IEntitlementService, Pos.Api.Service
 builder.Services.AddScoped<Pos.Api.Services.IDeviceLicenseService, Pos.Api.Services.DeviceLicenseService>();
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionService, Pos.Api.Services.SubscriptionService>();
 builder.Services.AddScoped<Pos.Api.Services.IBillingService, Pos.Api.Services.BillingService>();
+builder.Services.AddScoped<Pos.Api.Services.ISubscriptionPartsService, Pos.Api.Services.SubscriptionPartsService>();
 // The owner-facing half of billing: price it, raise the invoice, and apply what it bought once
 // it is paid — by a human or by a webhook, through the same settle path.
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionCheckout, Pos.Api.Services.SubscriptionCheckout>();
@@ -1585,7 +1586,8 @@ using (var scope = app.Services.CreateScope())
         ("PIN and email sign-in", EnsureSignInSchemaAsync),
         ("Onboarding", EnsureOnboardingSchemaAsync),
         ("Books per company", EnsureCompanyBooksSchemaAsync),
-        ("Stock requests answered by transfers", EnsureStockRequestTransferSchemaAsync)
+        ("Stock requests answered by transfers", EnsureStockRequestTransferSchemaAsync),
+        ("Renewals per part", EnsureSubscriptionPartsSchemaAsync)
     })
     {
         try
@@ -1675,6 +1677,29 @@ static Task EnsureCompanyBooksSchemaAsync(AppDbContext db) => db.Database.Execut
                 WHERE je.""CompanyId"" IS NULL AND c.""TenantId"" = je.""TenantId"" AND c.""IsDefault"";
         END IF;
     END $$;
+");
+
+/// <summary>One row per thing a business pays for, each renewing on its own date. Idempotent.</summary>
+static Task EnsureSubscriptionPartsSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""SubscriptionParts"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""Key"" text NOT NULL,
+        ""Kind"" integer NOT NULL,
+        ""BranchId"" uuid NULL,
+        ""TerminalId"" uuid NULL,
+        ""AddOnSubscriptionId"" uuid NULL,
+        ""Name"" text NOT NULL,
+        ""InstalledAt"" timestamp with time zone NULL,
+        ""TrialEndsAt"" timestamp with time zone NULL,
+        ""PaidUntil"" timestamp with time zone NULL,
+        ""Annual"" boolean NOT NULL DEFAULT false,
+        ""PricePKR"" numeric NOT NULL DEFAULT 0,
+        ""IsActive"" boolean NOT NULL DEFAULT true,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""EndedAt"" timestamp with time zone NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_SubscriptionParts_TenantId_Key"" ON ""SubscriptionParts"" (""TenantId"", ""Key"");
 ");
 
 /// <summary>Links an outlet's stock request to the transfer head office sent for it. Idempotent.</summary>
@@ -10633,6 +10658,120 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
 }).RequireAuthorization();
 
 // ============================================================
+// RENEWALS PER PART — the ERP, each outlet's POS and each extra tablet renew on their own dates,
+// counted from when each was installed. See Services/SubscriptionPartsService.cs.
+// ============================================================
+static object SubscriptionPartView(SubscriptionPart p, string? tenantName, DateTime now)
+{
+    var state = Pos.Api.Services.SubscriptionPartsService.StateOf(p, now);
+    return new
+    {
+        p.Id, p.TenantId, tenantName, kind = p.Kind.ToString(), p.Name, p.BranchId,
+        p.InstalledAt, p.TrialEndsAt, p.PaidUntil, p.Annual, p.PricePKR, p.IsActive, p.EndedAt,
+        status = state.Status.ToString(), renewsAt = state.RenewsAt, daysLeft = state.DaysLeft, inTrial = state.InTrial
+    };
+}
+
+// Every part of every business, soonest renewal first.
+app.MapGet("/api/admin/renewals", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    await parts.SyncAllAsync();
+    var now = DateTime.UtcNow;
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.IsActive).ToListAsync();
+    return Results.Ok(rows
+        .Select(p => (part: p, state: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
+        .OrderBy(x => x.state.RenewsAt ?? DateTime.MaxValue)
+        .Select(x => SubscriptionPartView(x.part, names.GetValueOrDefault(x.part.TenantId), now)));
+}).RequireAuthorization();
+
+// How many need attention, by kind — the sidebar badge and the dashboard counts.
+app.MapGet("/api/admin/renewals/summary", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    await parts.SyncAllAsync();
+    var now = DateTime.UtcNow;
+    var states = (await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.IsActive).ToListAsync())
+        .Select(p => (p.Kind, State: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
+        .ToList();
+    object CountsFor(SubscriptionPartKind? kind)
+    {
+        var mine = states.Where(s => kind == null || s.Kind == kind).ToList();
+        return new
+        {
+            expiring = mine.Count(s => s.State.Status == Pos.Api.Services.PartStatus.Expiring),
+            overdue = mine.Count(s => s.State.Status is Pos.Api.Services.PartStatus.Expired or Pos.Api.Services.PartStatus.PaymentDue)
+        };
+    }
+    return Results.Ok(new
+    {
+        withinDays = Pos.Api.Services.SubscriptionPartsService.ExpiringWithinDays,
+        all = CountsFor(null),
+        erp = CountsFor(SubscriptionPartKind.Erp),
+        pos = CountsFor(SubscriptionPartKind.Pos),
+        tablet = CountsFor(SubscriptionPartKind.Tablet),
+        addOn = CountsFor(SubscriptionPartKind.AddOn)
+    });
+}).RequireAuthorization();
+
+// One business's parts, including those no longer in use, for its Subscriptions tab.
+app.MapGet("/api/admin/tenants/{id:guid}/subscription-parts", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+    await parts.SyncAsync(id);
+    var now = DateTime.UtcNow;
+    var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.TenantId == id).ToListAsync();
+    return Results.Ok(rows
+        .OrderByDescending(p => p.IsActive).ThenBy(p => p.Kind).ThenBy(p => p.Name)
+        .Select(p => SubscriptionPartView(p, tenant.Name, now)));
+}).RequireAuthorization();
+
+// A payment received for one part: renews it by whole periods from its own anniversary.
+app.MapPost("/api/admin/subscription-parts/{id:guid}/mark-paid", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionPartsService parts, MarkPartPaidDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    try
+    {
+        var part = await parts.MarkPaidAsync(id, dto.Annual, dto.Periods ?? 1);
+        var actingUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, part.TenantId, actingUser, "SubscriptionPartPaid", "SubscriptionPart", part.Id, null,
+            $"{part.Name}: paid until {part.PaidUntil:yyyy-MM-dd} ({(dto.Annual ? "yearly" : "monthly")} × {dto.Periods ?? 1})");
+        await db.SaveChangesAsync();
+        var tenantName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == part.TenantId).Select(t => t.Name).FirstOrDefaultAsync();
+        return Results.Ok(SubscriptionPartView(part, tenantName, DateTime.UtcNow));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+}).RequireAuthorization();
+
+// Sets the date a part is paid up to — a correction, or a free period given by the platform.
+app.MapPost("/api/admin/subscription-parts/{id:guid}/paid-until", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionPartsService parts, SetPartPaidUntilDto dto) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    try
+    {
+        var part = await parts.SetPaidUntilAsync(id, dto.PaidUntil);
+        var actingUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, part.TenantId, actingUser, "SubscriptionPartDateSet", "SubscriptionPart", part.Id, null,
+            $"{part.Name}: paid until set to {part.PaidUntil:yyyy-MM-dd}");
+        await db.SaveChangesAsync();
+        var tenantName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == part.TenantId).Select(t => t.Name).FirstOrDefaultAsync();
+        return Results.Ok(SubscriptionPartView(part, tenantName, DateTime.UtcNow));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+}).RequireAuthorization();
+
+// ============================================================
 // PROVIDER CONSOLE
 //
 // The platform owner's own tooling. Previously this was three actions — list, toggle active,
@@ -11680,6 +11819,24 @@ app.MapGet("/api/public/countries", (string? verticalPack) => Results.Ok(Pos.Api
 // It now returns the resolved snapshot, plus the vertical-pack capabilities that decide which
 // screens and item fields this business should even have.
 // ============================================================
+// The business's own parts and when each renews — the owner's Plan & Add-ons page and its
+// renewal reminder.
+app.MapGet("/api/tenant/my-subscriptions", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.NotFound();
+    await parts.SyncAsync(tenantId.Value);
+    var now = DateTime.UtcNow;
+    var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.TenantId == tenantId.Value && p.IsActive)
+        .ToListAsync();
+    return Results.Ok(rows
+        .Select(p => (part: p, state: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
+        .OrderBy(x => x.state.RenewsAt ?? DateTime.MaxValue).ThenBy(x => x.part.Kind)
+        .Select(x => SubscriptionPartView(x.part, null, now)));
+}).RequireAuthorization()
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
 app.MapGet("/api/tenant/my-package", async (
     AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
 {
@@ -15342,6 +15499,8 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record SendStockRequestDto(Guid SourceBranchId, string? Notes);
+public record MarkPartPaidDto(bool Annual, int? Periods);
+public record SetPartPaidUntilDto(DateTime PaidUntil);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
 /// <summary>
 /// DeploymentMode is "Standalone" (one shop) or "MultiBranch" (a head office with outlets under

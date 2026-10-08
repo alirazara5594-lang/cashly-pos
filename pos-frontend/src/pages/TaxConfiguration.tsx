@@ -162,7 +162,7 @@ export const TaxConfiguration: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4 lg:p-6">
       <div className="flex items-center gap-3 pb-1">
         <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
           <Percent className="w-5 h-5 text-amber-600" />

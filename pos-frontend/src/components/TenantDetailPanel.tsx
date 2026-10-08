@@ -2,15 +2,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   X, ShieldAlert, Clock, Gift, Eye, Activity, AlertTriangle,
   CreditCard, Server, RefreshCw, Trash2, LayoutDashboard, Puzzle,
-  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History, Globe
+  KeyRound, CheckCircle2, Plus, Receipt, ArrowRight, Building2, Rocket, History, Globe, CalendarClock
 } from 'lucide-react';
+import { SubscriptionPartsTable } from './SubscriptionParts';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { tierLabel } from '../utils/tierLabel';
 import { restaurantSignInLink, webNameProblem } from '../services/restaurantAddress';
 import { beginSupportSession } from '../services/supportSession';
 import type {
   TenantOverview, PlanChangePreview, PlanOption,
-  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine, TenantOwnerAccount
+  AddOnCatalogItem, AddOnSubscriptionRow, SubscriptionInvoice, AuditLogPage, BillingLine, TenantOwnerAccount,
+  SubscriptionPartRow
 } from '../types';
 
 /**
@@ -19,7 +21,7 @@ import type {
  * "they bought WhatsApp") ends here instead of in a hand-typed database query.
  */
 
-export type TenantPanelTab = 'overview' | 'plan' | 'addons' | 'entitlements' | 'deploy' | 'devices' | 'audit';
+export type TenantPanelTab = 'overview' | 'plan' | 'subscriptions' | 'addons' | 'entitlements' | 'deploy' | 'devices' | 'audit';
 
 interface TenantDetailPanelProps {
   tenantId: string;
@@ -31,6 +33,7 @@ interface TenantDetailPanelProps {
 const TABS: { key: TenantPanelTab; label: string; icon: React.FC<{ className?: string }> }[] = [
   { key: 'overview', label: 'Overview', icon: LayoutDashboard },
   { key: 'plan', label: 'Plan & Billing', icon: CreditCard },
+  { key: 'subscriptions', label: 'Subscriptions', icon: CalendarClock },
   { key: 'addons', label: 'Add-ons', icon: Puzzle },
   { key: 'entitlements', label: 'Entitlements', icon: KeyRound },
   { key: 'deploy', label: 'Deploy', icon: Building2 },
@@ -389,6 +392,10 @@ export const TenantDetailPanel: React.FC<TenantDetailPanelProps> = ({ tenantId, 
               onMarkPaid={(id) => run(() => posApi.markSubscriptionInvoicePaid(id), 'Invoice marked paid.')}
               onChanged={onChanged}
             />
+          )}
+
+          {tab === 'subscriptions' && (
+            <SubscriptionsTab tenantId={tenantId} onChanged={onChanged} />
           )}
 
           {tab === 'addons' && (
@@ -1711,3 +1718,50 @@ const Stat: React.FC<{ label: string; value: React.ReactNode; tone?: 'good' | 'w
 // OverviewTab needs the tenant id for status/trial calls without threading it through every
 // prop — it is stable for the lifetime of the panel.
 const tenantIdFrom = (data: TenantOverview) => data.tenant.id;
+
+/**
+ * What this business pays for, part by part — the ERP, each outlet's POS, each extra tablet and
+ * add-ons — each renewing on its own date from when it was installed. A payment is recorded
+ * against the part it was for.
+ */
+const SubscriptionsTab: React.FC<{ tenantId: string; onChanged: () => void }> = ({ tenantId, onChanged }) => {
+  const [parts, setParts] = useState<SubscriptionPartRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    posApi.getTenantSubscriptionParts(tenantId)
+      .then(rows => { setParts(rows); setError(null); })
+      .catch(err => setError(getApiErrorMessage(err, 'Could not load this business\'s subscriptions.')));
+  }, [tenantId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (error) return <p className="text-xs text-rose-600 font-semibold">{error}</p>;
+  if (!parts) {
+    return <div className="flex items-center justify-center py-10"><RefreshCw className="w-5 h-5 text-slate-400 animate-spin" /></div>;
+  }
+
+  const monthlyTotal = parts.filter(p => p.isActive && p.status !== 'NotInstalled')
+    .reduce((sum, p) => sum + (p.annual ? p.pricePKR / 12 : p.pricePKR), 0);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        Each part renews from its own installation date. Record a payment against the part it was for;
+        the business stays open while anything it pays for is paid up.
+        {monthlyTotal > 0 && <> Together about <strong className="text-slate-800">PKR {Math.round(monthlyTotal).toLocaleString()} a month</strong>.</>}
+      </p>
+      <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
+        <SubscriptionPartsTable
+          parts={parts}
+          canManage
+          onChanged={(updated) => {
+            setParts(prev => prev?.map(p => (p.id === updated.id ? updated : p)) ?? prev);
+            onChanged();
+          }}
+          emptyText="Nothing to renew yet."
+        />
+      </div>
+    </div>
+  );
+};

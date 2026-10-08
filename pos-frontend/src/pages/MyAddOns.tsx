@@ -6,9 +6,10 @@ import {
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import { PurchaseDialog } from '../components/PurchaseDialog';
+import { SubscriptionPartsTable } from '../components/SubscriptionParts';
 import type {
   MyCharges, TenantAddOnCatalogRow, PlanRow, MySubscriptionSummary,
-  SubscriptionInvoice, CheckoutRequest, PaymentProvider
+  SubscriptionInvoice, CheckoutRequest, PaymentProvider, SubscriptionPartRow
 } from '../types';
 
 const pkr = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
@@ -39,6 +40,8 @@ export const MyAddOns: React.FC = () => {
   const [plans, setPlans] = useState<PlanRow[]>([]);
   const [subscription, setSubscription] = useState<MySubscriptionSummary | null>(null);
   const [invoices, setInvoices] = useState<SubscriptionInvoice[]>([]);
+  // What the business pays for, part by part, each renewing on its own date.
+  const [parts, setParts] = useState<SubscriptionPartRow[]>([]);
   const [providers, setProviders] = useState<Array<{ provider: PaymentProvider; isConfigured: boolean }>>(FALLBACK_PROVIDERS);
   const [annual, setAnnual] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -56,15 +59,17 @@ export const MyAddOns: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [data, bill, planRows, sub, myInvoices, gatewayRows] = await Promise.all([
+      const [data, bill, planRows, sub, myInvoices, gatewayRows, myParts] = await Promise.all([
         posApi.getAddOnCatalog(),
         // The bill is for the owner; anyone else simply does not see it.
         posApi.getMyCharges().catch(() => null),
         posApi.getPlans().catch(() => []),
         posApi.getSubscription().catch(() => null),
         posApi.getMySubscriptionInvoices().catch(() => []),
-        posApi.getPaymentProviderStatus().catch(() => FALLBACK_PROVIDERS)
+        posApi.getPaymentProviderStatus().catch(() => FALLBACK_PROVIDERS),
+        posApi.getMySubscriptions().catch(() => [] as SubscriptionPartRow[])
       ]);
+      setParts(Array.isArray(myParts) ? myParts : []);
       setCatalog(Array.isArray(data) ? data : []);
       setCharges(bill);
       setPlans(Array.isArray(planRows) ? planRows : []);
@@ -215,6 +220,22 @@ export const MyAddOns: React.FC = () => {
               Switching raises an invoice. Your current plan keeps running until that invoice is paid.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Each part renews on its own date, counted from when it was installed. */}
+      {parts.length > 0 && (
+        <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden">
+          <div className="p-4 border-b border-slate-200">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-teal-600" /> What you pay for, and when each renews
+            </h2>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Your head office ERP, each outlet's POS and any extra tablets each renew from the day they were installed.
+              Anything installed during your free trial is covered until the trial ends.
+            </p>
+          </div>
+          <SubscriptionPartsTable parts={parts} />
         </div>
       )}
 

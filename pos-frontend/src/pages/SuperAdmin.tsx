@@ -27,17 +27,20 @@ import { WhatsAppConfig } from './WhatsAppConfig';
 import { SubscriptionBilling } from './SubscriptionBilling';
 import { AddOnManagement } from './AddOnManagement';
 import { TenantDetailPanel, type TenantPanelTab } from '../components/TenantDetailPanel';
-import type { AdminTenantRow, AdminPlatformStats, DeviceHealthReport } from '../types';
+import { RenewalsBoard } from '../components/SubscriptionParts';
+import { KIND_LABEL, daysText, needsAttention } from '../utils/renewals';
+import type { AdminTenantRow, AdminPlatformStats, DeviceHealthReport, SubscriptionPartRow, RenewalsSummary } from '../types';
 import { tierLabel } from '../utils/tierLabel';
 
-type SuperTab = 'dashboard' | 'tenants' | 'packages' | 'whatsapp' | 'billing' | 'addons';
-const SUPER_TABS: SuperTab[] = ['dashboard', 'tenants', 'packages', 'whatsapp', 'billing', 'addons'];
-const PANEL_TABS = ['overview', 'plan', 'addons', 'entitlements', 'deploy', 'devices', 'audit'] as const;
+type SuperTab = 'dashboard' | 'tenants' | 'renewals' | 'packages' | 'whatsapp' | 'billing' | 'addons';
+const SUPER_TABS: SuperTab[] = ['dashboard', 'tenants', 'renewals', 'packages', 'whatsapp', 'billing', 'addons'];
+const PANEL_TABS = ['overview', 'plan', 'subscriptions', 'addons', 'entitlements', 'deploy', 'devices', 'audit'] as const;
 
 /** Each section's heading; the sidebar is where they are picked. */
 const TAB_TITLES: Record<SuperTab, { title: string; subtitle: string }> = {
   dashboard: { title: 'Dashboard', subtitle: 'The whole platform at a glance' },
   tenants: { title: 'Tenants', subtitle: 'Every registered business' },
+  renewals: { title: 'Renewals', subtitle: 'ERP, POS and tablets — each renewing on its own date' },
   packages: { title: 'Packages & Pricing', subtitle: 'Plans, prices and what each includes' },
   billing: { title: 'Subscription Billing', subtitle: 'Invoices and payments from businesses' },
   addons: { title: 'Add-ons', subtitle: 'Extras businesses can add to their plan' },
@@ -139,7 +142,7 @@ export const SuperAdmin: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4 lg:p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -179,6 +182,16 @@ export const SuperAdmin: React.FC = () => {
             setOpenPanelTab(tab);
             setOpenTenantId(id);
           }}
+          onSeeRenewals={() => setSearchParams({ tab: 'renewals' })}
+        />
+      )}
+
+      {activeTab === 'renewals' && (
+        <RenewalsBoard
+          onOpenTenant={(id) => {
+            setOpenPanelTab('subscriptions');
+            setOpenTenantId(id);
+          }}
         />
       )}
 
@@ -214,7 +227,7 @@ export const SuperAdmin: React.FC = () => {
           {/* Tenants Table */}
           <div className="rounded-2xl border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full min-w-[1120px] text-xs">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200">
                     <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px]">Restaurant</th>
@@ -607,11 +620,17 @@ const ProvisionModal: React.FC<{ onClose: () => void; onDone: () => void }> = ({
 const DashboardTab: React.FC<{
   stats: AdminPlatformStats | null;
   onOpenTenant: (id: string, tab: TenantPanelTab) => void;
-}> = ({ stats, onOpenTenant }) => {
+  onSeeRenewals: () => void;
+}> = ({ stats, onOpenTenant, onSeeRenewals }) => {
   const [health, setHealth] = useState<DeviceHealthReport | null>(null);
+  // Renewals per part: the ERP, each outlet's POS and each extra tablet, each on its own date.
+  const [renewals, setRenewals] = useState<SubscriptionPartRow[]>([]);
+  const [renewalCounts, setRenewalCounts] = useState<RenewalsSummary | null>(null);
 
   useEffect(() => {
     posApi.getDeviceHealth().then(setHealth).catch(() => setHealth(null));
+    posApi.getRenewals().then(setRenewals).catch(() => setRenewals([]));
+    posApi.getRenewalsSummary().then(setRenewalCounts).catch(() => setRenewalCounts(null));
   }, []);
 
   if (!stats) {
@@ -631,7 +650,12 @@ const DashboardTab: React.FC<{
     { label: 'Branches', value: stats.totalBranches.toLocaleString(), icon: Building2, color: 'text-cyan-700' },
     { label: 'Orders', value: stats.totalOrders.toLocaleString(), icon: Users, color: 'text-pink-600' },
     { label: 'In arrears', value: stats.arrears.toLocaleString(), icon: AlertTriangle, color: 'text-rose-600' },
-    { label: 'Expiring ≤14d', value: stats.expiringSoonCount.toLocaleString(), icon: Receipt, color: 'text-amber-600' },
+    {
+      label: 'Renewals due ≤14d',
+      value: (renewalCounts ? renewalCounts.all.expiring + renewalCounts.all.overdue : stats.expiringSoonCount).toLocaleString(),
+      icon: Receipt,
+      color: 'text-amber-600'
+    },
     { label: 'Dark tills (24h)', value: (health?.count ?? stats.staleDevices).toLocaleString(), icon: Activity, color: 'text-rose-600' }
   ];
 
@@ -676,23 +700,45 @@ const DashboardTab: React.FC<{
           ))}
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2">
-          <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Renewals in the next 14 days</div>
-          {stats.expiringSoon.length === 0 && (
-            <p className="text-xs text-slate-500">Nothing expiring soon.</p>
+        {/* Each part renews on its own date, so the counts are by what is renewing. */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Renewals in the next 14 days</div>
+            <button onClick={onSeeRenewals} className="text-[11px] font-bold text-teal-700 hover:text-teal-900">See all</button>
+          </div>
+          {renewalCounts && (
+            <div className="grid grid-cols-4 gap-2">
+              {([
+                ['ERP', renewalCounts.erp],
+                ['POS', renewalCounts.pos],
+                ['Tablets', renewalCounts.tablet],
+                ['Add-ons', renewalCounts.addOn]
+              ] as const).map(([label, counts]) => (
+                <div key={label} className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                  <div className="text-[10px] font-bold text-slate-500">{label}</div>
+                  <div className="text-base font-black text-amber-600">{counts.expiring}</div>
+                  <div className={`text-[10px] ${counts.overdue > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>
+                    {counts.overdue} overdue
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
-          {stats.expiringSoon.map(t => (
+          {renewals.filter(needsAttention).length === 0 && (
+            <p className="text-xs text-slate-500">Nothing renewing soon or overdue.</p>
+          )}
+          {renewals.filter(needsAttention).slice(0, 5).map(p => (
             <button
-              key={t.id}
-              onClick={() => onOpenTenant(t.id, 'plan')}
+              key={p.id}
+              onClick={() => onOpenTenant(p.tenantId, 'subscriptions')}
               className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 hover:border-teal-300 transition text-left"
             >
               <div className="min-w-0">
-                <div className="text-[11px] font-bold text-slate-800 truncate">{t.name}</div>
-                <div className="text-[10px] text-slate-500">{tierLabel(t.tier)}</div>
+                <div className="text-[11px] font-bold text-slate-800 truncate">{p.tenantName}</div>
+                <div className="text-[10px] text-slate-500 truncate">{KIND_LABEL[p.kind]} · {p.name}</div>
               </div>
-              <span className="shrink-0 text-[10px] font-bold text-amber-600">
-                {new Date(t.paidUntil).toLocaleDateString()}
+              <span className={`shrink-0 text-[10px] font-bold ${(p.daysLeft ?? 0) < 0 ? 'text-rose-600' : 'text-amber-600'}`}>
+                {p.renewsAt ? new Date(p.renewsAt).toLocaleDateString() : ''} · {daysText(p.daysLeft)}
               </span>
             </button>
           ))}

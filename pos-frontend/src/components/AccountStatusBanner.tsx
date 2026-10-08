@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, CreditCard, WifiOff, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, CreditCard, WifiOff, ShieldAlert, CalendarDays } from 'lucide-react';
 import type { DeviceStatus } from '../services/deviceLicense';
-import type { MyPackageInfo } from '../types';
+import { posApi } from '../services/api';
+import { usePosStore, runsBusiness } from '../store/posStore';
+import { daysText } from '../utils/renewals';
+import type { MyPackageInfo, SubscriptionPartRow } from '../types';
 
 interface AccountStatusBannerProps {
   packageInfo: MyPackageInfo | null;
@@ -21,6 +24,21 @@ interface AccountStatusBannerProps {
  * three.
  */
 export const AccountStatusBanner: React.FC<AccountStatusBannerProps> = ({ packageInfo, deviceStatus }) => {
+  // Each part (the ERP, an outlet's POS, an extra tablet) renews on its own date. Those are the
+  // owner's business, so only the people who run it are told — never the cashier at the till.
+  const { currentUser } = usePosStore();
+  const runsIt = runsBusiness(currentUser?.role);
+  const hasPackage = !!packageInfo;
+  const [parts, setParts] = useState<SubscriptionPartRow[]>([]);
+  useEffect(() => {
+    if (!runsIt || !hasPackage) return;
+    let cancelled = false;
+    posApi.getMySubscriptions()
+      .then(rows => { if (!cancelled) setParts(Array.isArray(rows) ? rows : []); })
+      .catch(() => { /* a reminder is a convenience; Plan & Add-ons has the full list */ });
+    return () => { cancelled = true; };
+  }, [runsIt, hasPackage]);
+
   // 1. Device licence problems come first: they stop this machine working, which is more
   //    immediate to the person standing at it than a billing state affecting the whole business.
   if (deviceStatus && deviceStatus.state !== 'Valid' && deviceStatus.state !== 'Unactivated') {
@@ -98,6 +116,27 @@ export const AccountStatusBanner: React.FC<AccountStatusBannerProps> = ({ packag
         </Banner>
       );
     }
+  }
+
+  // 4. One of the parts renewing within a week, lapsed, or never paid — soonest first.
+  const urgent = parts
+    .filter(p => p.status === 'Expired' || p.status === 'PaymentDue' || (p.status === 'Expiring' && (p.daysLeft ?? 99) <= 7))
+    .sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
+  if (urgent.length > 0) {
+    const first = urgent[0];
+    const overdue = first.status !== 'Expiring';
+    const more = urgent.length - 1;
+    return (
+      <Banner tone={overdue ? 'amber' : 'teal'} icon={<CalendarDays className="w-4 h-4" />}>
+        <strong>
+          {overdue
+            ? `${first.name} is due for payment`
+            : `${first.name} renews on ${first.renewsAt ? new Date(first.renewsAt).toLocaleDateString([], { day: 'numeric', month: 'short' }) : 'soon'} (${daysText(first.daysLeft)})`}
+          {more > 0 && ` — and ${more} more`}.
+        </strong>{' '}
+        <Link to="/my-addons" className="underline font-semibold">See what renews when</Link>
+      </Banner>
+    );
   }
 
   return null;

@@ -387,6 +387,51 @@ public class AddOnSubscription
     public Guid? BranchId { get; set; }
 }
 
+public enum SubscriptionPartKind
+{
+    Erp = 1,     // the head office's ERP
+    Pos = 2,     // one selling location's POS version
+    Tablet = 3,  // one waiter tablet beyond what its location's POS version includes
+    AddOn = 4    // any other add-on (extra counter, kitchen screen, feature)
+}
+
+/// <summary>
+/// One thing a business pays for, renewing on its own date from when it was installed: the ERP
+/// from registration, each outlet's POS from its first till, each extra tablet from its
+/// activation. A chain grows over time, and each piece is billed from the day it went in rather
+/// than being pulled onto the business's first date.
+///
+/// Kept in step with the real setup by SubscriptionPartsService.SyncAsync, keyed by <see cref="Key"/>
+/// ("erp", "pos:{branch}", "tablet:{terminal}", "addon:{add-on}").
+/// </summary>
+public class SubscriptionPart
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string Key { get; set; } = string.Empty;
+    public SubscriptionPartKind Kind { get; set; }
+    public Guid? BranchId { get; set; }
+    public Guid? TerminalId { get; set; }
+    public Guid? AddOnSubscriptionId { get; set; }
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>When it went in; null while not installed (an outlet with no till yet), which bills nothing.</summary>
+    public DateTime? InstalledAt { get; set; }
+    /// <summary>Installed during the business's free trial: covered until the trial ends.</summary>
+    public DateTime? TrialEndsAt { get; set; }
+    /// <summary>End of the last period paid for; null when never paid.</summary>
+    public DateTime? PaidUntil { get; set; }
+    /// <summary>Renews yearly rather than monthly.</summary>
+    public bool Annual { get; set; }
+    /// <summary>Today's price for one period (month or year, per <see cref="Annual"/>).</summary>
+    public decimal PricePKR { get; set; }
+
+    /// <summary>False once the thing is gone — the outlet stopped selling, the tablet was revoked.</summary>
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? EndedAt { get; set; }
+}
+
 public class Category
 {
     public Guid Id { get; set; } = Guid.NewGuid();

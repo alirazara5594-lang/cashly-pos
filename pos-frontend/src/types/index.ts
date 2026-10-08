@@ -890,6 +890,56 @@ export interface SupportSessionStart {
   warning: string;
 }
 
+/** One thing a business pays for: the ERP, an outlet's POS, an extra tablet, or an add-on. */
+export type SubscriptionPartKind = 'Erp' | 'Pos' | 'Tablet' | 'AddOn';
+
+/**
+ * Where a part stands: not installed yet (an outlet with no till), in the free trial, paid up,
+ * renewing within 14 days, installed after the trial and never paid, lapsed, or no longer in use.
+ */
+export type SubscriptionPartStatus = 'NotInstalled' | 'Trial' | 'Active' | 'Expiring' | 'PaymentDue' | 'Expired' | 'Ended';
+
+/** A part with its own renewal date, counted from when it was installed. */
+export interface SubscriptionPartRow {
+  id: string;
+  tenantId: string;
+  tenantName?: string | null;
+  kind: SubscriptionPartKind;
+  name: string;
+  branchId?: string | null;
+  installedAt?: string | null;
+  trialEndsAt?: string | null;
+  paidUntil?: string | null;
+  /** Renews yearly rather than monthly. */
+  annual: boolean;
+  /** Today's price for one period (month or year). */
+  pricePKR: number;
+  isActive: boolean;
+  endedAt?: string | null;
+  status: SubscriptionPartStatus;
+  /** When the covered period ends (or, unpaid, when payment fell due). */
+  renewsAt?: string | null;
+  /** Days until renewal; negative once overdue. */
+  daysLeft?: number | null;
+  inTrial: boolean;
+}
+
+export interface RenewalCounts {
+  /** Renewing within the window. */
+  expiring: number;
+  /** Lapsed, or installed after the trial and never paid. */
+  overdue: number;
+}
+
+export interface RenewalsSummary {
+  withinDays: number;
+  all: RenewalCounts;
+  erp: RenewalCounts;
+  pos: RenewalCounts;
+  tablet: RenewalCounts;
+  addOn: RenewalCounts;
+}
+
 /** What a new business has done so far, for the Getting started checklist. */
 export interface OnboardingStatus {
   email: string | null;

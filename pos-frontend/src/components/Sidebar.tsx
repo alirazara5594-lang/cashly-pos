@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Store,
@@ -47,6 +47,7 @@ import {
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
 import { useBusinessShape } from '../hooks/useBusinessShape';
+import { posApi } from '../services/api';
 import type { EffectivePackageFeatures, ModuleKey, PermissionAction } from '../types';
 
 interface SidebarProps {
@@ -143,6 +144,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setOpenMenu(prev => (prev === id ? null : id));
   };
 
+  // The platform admin's count of parts renewing within 14 days or overdue, on the Renewals link.
+  // Re-read as they move around, so recording a payment brings it down.
+  const [renewalsDue, setRenewalsDue] = useState(0);
+  useEffect(() => {
+    if (!isPlatformSuperAdmin) return;
+    let cancelled = false;
+    posApi.getRenewalsSummary()
+      .then(s => { if (!cancelled) setRenewalsDue(s.all.expiring + s.all.overdue); })
+      .catch(() => { /* the badge is a convenience; the page has the real list */ });
+    return () => { cancelled = true; };
+  }, [isPlatformSuperAdmin, location.pathname, location.search]);
+
   // Ordered the way the business uses it: the overview, selling, what it sells, stock, money,
   // insight, customers, people, and settings last. Who sees what is unchanged — every entry keeps
   // its module permission and plan check; only the grouping and names are new.
@@ -162,6 +175,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           title: 'Customers',
           items: [
             { id: 'tenants', label: 'Tenants', path: '/super-admin', search: '?tab=tenants', icon: Building2 },
+            // ERP, each outlet's POS and each extra tablet, each renewing on its own date.
+            {
+              id: 'renewals', label: 'Renewals', path: '/super-admin', search: '?tab=renewals', icon: CalendarClock,
+              badge: renewalsDue > 0 ? String(renewalsDue) : undefined
+            },
             { id: 'billing', label: 'Subscription Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt }
           ]
         },
@@ -379,7 +397,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (settingsItems.length > 0) sections.push({ title: 'Settings', items: settingsItems });
 
     return sections;
-  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly]);
+  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue]);
 
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.
@@ -512,6 +530,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           <Icon className={`w-4 h-4 shrink-0 ${leafActive ? 'text-teal-600' : groupActive ? 'text-white' : 'text-teal-200 group-hover:text-white'}`} />
                           {!isCollapsed && <span className="truncate">{item.label}</span>}
                         </div>
+                        {/* A count that needs attention, e.g. renewals due. */}
+                        {!isCollapsed && item.badge && (
+                          <span className="min-w-[1.25rem] px-1.5 py-0.5 rounded-full bg-amber-400 text-amber-950 text-[10px] font-black text-center shrink-0">
+                            {item.badge}
+                          </span>
+                        )}
                       </Link>
                     )}
 

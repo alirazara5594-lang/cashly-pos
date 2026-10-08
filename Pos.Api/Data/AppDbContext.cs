@@ -56,6 +56,7 @@ public class AppDbContext : DbContext
     public DbSet<PasswordResetToken> PasswordResetTokens => Set<PasswordResetToken>();
     public DbSet<EmailConfirmationToken> EmailConfirmationTokens => Set<EmailConfirmationToken>();
     public DbSet<MobileVerification> MobileVerifications => Set<MobileVerification>();
+    public DbSet<SubscriptionPart> SubscriptionParts => Set<SubscriptionPart>();
     public DbSet<StockTransferOrder> StockTransferOrders => Set<StockTransferOrder>();
     public DbSet<StockTransferItem> StockTransferItems => Set<StockTransferItem>();
     public DbSet<Supplier> Suppliers => Set<Supplier>();
@@ -163,6 +164,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Tenant>().HasIndex(t => t.ContactMobile).HasFilter("\"ContactMobile\" IS NOT NULL");
         modelBuilder.Entity<JournalEntry>().HasIndex(j => j.CompanyId);
         modelBuilder.Entity<MobileVerification>().HasIndex(m => m.Mobile);
+        modelBuilder.Entity<SubscriptionPart>().HasIndex(p => new { p.TenantId, p.Key }).IsUnique();
 
         modelBuilder.Entity<Company>()
             .HasIndex(c => c.TenantId);
