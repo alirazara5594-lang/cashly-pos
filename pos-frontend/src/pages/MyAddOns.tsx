@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Puzzle, RefreshCw, CheckCircle2, Receipt, MessageSquare, Layers, FileText,
-  CalendarDays, AlertTriangle, CreditCard
+  CalendarDays, AlertTriangle, CreditCard, Printer, X, Landmark
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import { PurchaseDialog } from '../components/PurchaseDialog';
 import { SubscriptionPartsTable } from '../components/SubscriptionParts';
+import { InvoicePrintView } from '../components/PlatformBilling';
 import type {
   MyCharges, TenantAddOnCatalogRow, PlanRow, MySubscriptionSummary,
-  SubscriptionInvoice, CheckoutRequest, PaymentProvider, SubscriptionPartRow
+  SubscriptionInvoice, CheckoutRequest, PaymentProvider, SubscriptionPartRow, BillingDetails, SubscriptionInvoiceDetail
 } from '../types';
 
 const pkr = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
@@ -26,6 +27,7 @@ const FALLBACK_PROVIDERS: Array<{ provider: PaymentProvider; isConfigured: boole
 
 const INVOICE_STATUS: Record<string, string> = {
   Pending: 'bg-amber-50 text-amber-700 border-amber-200',
+  PartiallyPaid: 'bg-sky-50 text-sky-700 border-sky-200',
   Paid: 'bg-teal-50 text-teal-700 border-teal-200',
   Overdue: 'bg-rose-50 text-rose-700 border-rose-200',
   Cancelled: 'bg-slate-100 text-slate-500 border-slate-200'
@@ -44,6 +46,9 @@ export const MyAddOns: React.FC = () => {
   const [parts, setParts] = useState<SubscriptionPartRow[]>([]);
   const [providers, setProviders] = useState<Array<{ provider: PaymentProvider; isConfigured: boolean }>>(FALLBACK_PROVIDERS);
   const [annual, setAnnual] = useState(false);
+  // Who bills the business and how to pay, for its invoices; and the invoice open for printing.
+  const [billingDetails, setBillingDetails] = useState<BillingDetails | null>(null);
+  const [viewing, setViewing] = useState<SubscriptionInvoiceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +74,7 @@ export const MyAddOns: React.FC = () => {
         posApi.getPaymentProviderStatus().catch(() => FALLBACK_PROVIDERS),
         posApi.getMySubscriptions().catch(() => [] as SubscriptionPartRow[])
       ]);
+      posApi.getBillingDetails().then(setBillingDetails).catch(() => setBillingDetails(null));
       setParts(Array.isArray(myParts) ? myParts : []);
       setCatalog(Array.isArray(data) ? data : []);
       setCharges(bill);
@@ -100,7 +106,19 @@ export const MyAddOns: React.FC = () => {
 
   const active = catalog.filter(c => c.isActiveForTenant);
   const available = catalog.filter(c => !c.isActiveForTenant);
-  const openInvoices = invoices.filter(i => i.status === 'Pending' || i.status === 'Overdue');
+  const openInvoices = invoices.filter(i => i.status === 'Pending' || i.status === 'Overdue' || i.status === 'PartiallyPaid');
+  const payLines = billingDetails ? [
+    billingDetails.bankIban || billingDetails.bankAccountNumber
+      ? `${billingDetails.bankName ?? 'Bank'}${billingDetails.bankAccountTitle ? ` (${billingDetails.bankAccountTitle})` : ''}: ${billingDetails.bankIban ? `IBAN ${billingDetails.bankIban}` : billingDetails.bankAccountNumber}`
+      : null,
+    billingDetails.jazzCashNumber ? `JazzCash: ${billingDetails.jazzCashNumber}` : null,
+    billingDetails.easypaisaNumber ? `Easypaisa: ${billingDetails.easypaisaNumber}` : null,
+    billingDetails.raastId ? `Raast: ${billingDetails.raastId}` : null
+  ].filter(Boolean) as string[] : [];
+  const openInvoice = async (inv: SubscriptionInvoice) => {
+    try { setViewing(await posApi.getMySubscriptionInvoice(inv.id)); }
+    catch (err) { setError(getApiErrorMessage(err, 'Could not open the invoice.')); }
+  };
 
   const buyPlan = (plan: PlanRow) => setPending({
     request: { kind: 'plan', planCode: plan.code, annual },
@@ -232,10 +250,10 @@ export const MyAddOns: React.FC = () => {
             </h2>
             <p className="text-[11px] text-slate-500 mt-0.5">
               Your head office ERP, each outlet's POS and any extra tablets each renew from the day they were installed.
-              Anything installed during your free trial is covered until the trial ends.
+              Anything installed during your free trial is covered until the trial ends.{isOwner && ' Press Renew to get the invoice for one now.'}
             </p>
           </div>
-          <SubscriptionPartsTable parts={parts} />
+          <SubscriptionPartsTable parts={parts} canRenew={isOwner} onChanged={load} />
         </div>
       )}
 
@@ -249,6 +267,14 @@ export const MyAddOns: React.FC = () => {
             </span>
           )}
         </h2>
+        {openInvoices.length > 0 && (payLines.length > 0 || billingDetails?.paymentInstructions) && (
+          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-0.5">
+            <div className="font-bold text-slate-800 flex items-center gap-1.5"><Landmark className="w-3.5 h-3.5 text-teal-600" /> How to pay {billingDetails?.companyName}</div>
+            {payLines.map(l => <div key={l} className="font-mono text-slate-700">{l}</div>)}
+            {billingDetails?.paymentInstructions && <div className="text-slate-600 whitespace-pre-line">{billingDetails.paymentInstructions}</div>}
+            <div className="text-[11px] text-slate-500">Quote the invoice number with your payment.</div>
+          </div>
+        )}
         {invoices.length === 0 ? (
           <p className="text-xs text-slate-400 py-2">No invoices yet.</p>
         ) : (
@@ -275,8 +301,11 @@ export const MyAddOns: React.FC = () => {
                       {inv.status}
                     </span>
                   </td>
-                  <td className="py-2 text-right">
-                    {(inv.status === 'Pending' || inv.status === 'Overdue') && isOwner && (
+                  <td className="py-2 text-right whitespace-nowrap">
+                    <button onClick={() => openInvoice(inv)} className="inline-flex items-center gap-1 px-2 py-1 mr-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold" title="View or print">
+                      <Printer className="w-3 h-3" /> View
+                    </button>
+                    {(inv.status === 'Pending' || inv.status === 'Overdue' || inv.status === 'PartiallyPaid') && isOwner && (
                       <button
                         onClick={() => payInvoice(inv)}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-500 hover:bg-teal-600 text-white text-[11px] font-bold transition"
@@ -403,6 +432,21 @@ export const MyAddOns: React.FC = () => {
           </div>
         )}
       </div>
+
+      {viewing && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="sticky top-0 bg-slate-50 border-b border-slate-200 px-5 py-3 flex items-center justify-between no-print">
+              <span className="text-xs font-black text-slate-900">{viewing.invoice.invoiceNumber}</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold"><Printer className="w-3.5 h-3.5" /> Print / save PDF</button>
+                <button onClick={() => setViewing(null)} className="p-1 rounded-lg hover:bg-slate-200 text-slate-500"><X className="w-4 h-4" /></button>
+              </div>
+            </div>
+            <InvoicePrintView detail={viewing} from={billingDetails} />
+          </div>
+        </div>
+      )}
 
       <PurchaseDialog
         open={!!pending}

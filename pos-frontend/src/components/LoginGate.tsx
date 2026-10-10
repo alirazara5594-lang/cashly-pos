@@ -117,7 +117,19 @@ export const LoginGate: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<PendingBranchChoice | null>(null);
   // Password (or PIN) right, 2-step sign-in on: the code from the authenticator app comes next.
-  const [twoFactor, setTwoFactor] = useState<{ challenge: string; via: 'email' | 'username' } | null>(null);
+  const [twoFactor, setTwoFactor] = useState<{ challenge: string; via: 'email' | 'username' | 'platform' } | null>(null);
+  // Platform Admin: each team member signs in as themselves (email + password + 2-step). The shared
+  // setup PIN is offered only while the server still allows it (before a named owner exists).
+  const [setupPinAllowed, setSetupPinAllowed] = useState(false);
+  const [usePin, setUsePin] = useState(false);
+  useEffect(() => {
+    if (mode !== 'platform') return;
+    let cancelled = false;
+    posApi.getPlatformLoginMode()
+      .then(r => { if (!cancelled) { setSetupPinAllowed(r.setupPinAllowed); if (!r.setupPinAllowed) setUsePin(false); } })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mode]);
   const [code, setCode] = useState('');
   const [forgotState, setForgotState] = useState<{ sending: boolean; message?: string; noEmail?: boolean }>({ sending: false });
 
@@ -147,7 +159,9 @@ export const LoginGate: React.FC = () => {
     if (branchId) save(LOGIN_BRANCH_KEY, branchId);
     const identity: CurrentUser = {
       id: user.id, fullName: user.fullName, username: user.username, role: user.role,
-      tenantId: user.tenantId, branchId: user.branchId, homeBranchId: user.homeBranchId
+      tenantId: user.tenantId, branchId: user.branchId, homeBranchId: user.homeBranchId,
+      // A member of the platform team: their role decides what the console lets them change.
+      platformRole: user.platformRole, email: user.email, isSetupAccount: user.isSetupAccount, mustSetUpTwoStep: user.mustSetUpTwoStep
     };
     login(identity, token, permissions ?? EMPTY_PERMISSIONS);
     // Pull the caller's real ModulePermission rows so the sidebar and route
@@ -172,7 +186,8 @@ export const LoginGate: React.FC = () => {
     mode === 'till' ? /^\d{4,6}$/.test(pinCode)
       : mode === 'email' ? !!email.trim() && !!password
       : mode === 'username' ? !!username.trim() && !!pinCode.trim() && (!!address || !restaurantNeeded || !!typedRestaurant)
-      : !!username.trim() && !!pinCode.trim();
+      : usePin ? !!username.trim() && !!pinCode.trim()
+      : !!email.trim() && !!password;
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -238,6 +253,18 @@ export const LoginGate: React.FC = () => {
         else await continueAfterSignIn(result);
         return;
       }
+      if (!usePin) {
+        // A platform team member: email + password, then the code from their authenticator app.
+        const result = await posApi.platformLogin(email.trim(), password);
+        save(EMAIL_KEY, email.trim());
+        if (result.twoFactorRequired && result.challenge) {
+          setTwoFactor({ challenge: result.challenge, via: 'platform' });
+          setCode('');
+          return;
+        }
+        await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions);
+        return;
+      }
       const result = await posApi.superAdminLogin(username.trim(), pinCode.trim());
       const user = result?.user as SignedInUser | undefined;
       if (!user || !result?.token) {
@@ -285,7 +312,9 @@ export const LoginGate: React.FC = () => {
     try {
       const result = await posApi.verifyTwoFactor(twoFactor.challenge, code.trim());
       setTwoFactor(null);
-      if (twoFactor.via === 'username' && tillBranchId) {
+      if (twoFactor.via === 'platform') {
+        await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions);
+      } else if (twoFactor.via === 'username' && tillBranchId) {
         await finish(result.user as SignedInUser, result.token, (result.user as SignedInUser).permissions, tillBranchId);
       } else {
         await continueAfterSignIn(result);
@@ -644,8 +673,38 @@ export const LoginGate: React.FC = () => {
               </>
             )}
 
-            {mode === 'platform' && (
+            {mode === 'platform' && !usePin && (
               <>
+                <div>
+                  <label className={labelClass}>Work email</label>
+                  <input type="email" value={email} autoFocus autoComplete="email"
+                    onChange={(e) => { setEmail(e.target.value); setError(''); }} placeholder="you@cashly.com" className={inputClass} />
+                </div>
+                <div>
+                  <label className={labelClass}>Password</label>
+                  <div className="relative">
+                    <input type={showPassword ? 'text' : 'password'} value={password} autoComplete="current-password"
+                      onChange={(e) => { setPassword(e.target.value); setError(''); }} className={`${inputClass} pr-10`} />
+                    <button type="button" onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600">
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+                {setupPinAllowed && (
+                  <button type="button" onClick={() => { setUsePin(true); setError(''); }}
+                    className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
+                    First time? Use the setup PIN to create the team
+                  </button>
+                )}
+              </>
+            )}
+
+            {mode === 'platform' && usePin && (
+              <>
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                  The shared setup PIN only works until you add yourself as a named owner (Platform → Team).
+                </p>
                 <div>
                   <label className={labelClass}>Username</label>
                   <input type="text" value={username} autoFocus autoComplete="username"
@@ -653,6 +712,10 @@ export const LoginGate: React.FC = () => {
                 </div>
                 {pinInput(false)}
                 {keypad}
+                <button type="button" onClick={() => { setUsePin(false); setError(''); setPinCode(''); }}
+                  className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
+                  Sign in with my email instead
+                </button>
               </>
             )}
 

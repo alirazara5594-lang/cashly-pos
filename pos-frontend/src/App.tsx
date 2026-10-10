@@ -10,6 +10,7 @@ import { RequireFeature } from './components/RequireFeature';
 import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
+import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { GettingStarted } from './components/GettingStarted';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { webNameFromPath } from './services/restaurantAddress';
@@ -59,6 +60,7 @@ const PublicOrder = lazy(() => import('./pages/PublicOrder').then(m => ({ defaul
 const ConnectDevice = lazy(() => import('./pages/ConnectDevice').then(m => ({ default: m.ConnectDevice })));
 const ResetPassword = lazy(() => import('./pages/ResetPassword').then(m => ({ default: m.ResetPassword })));
 const ConfirmEmail = lazy(() => import('./pages/ConfirmEmail').then(m => ({ default: m.ConfirmEmail })));
+const RedeemInvite = lazy(() => import('./pages/RedeemInvite').then(m => ({ default: m.RedeemInvite })));
 
 /** The only screens of the platform admin, who owns no restaurant. */
 const PLATFORM_ADMIN_PATHS = ['/super-admin', '/pricing-admin'];
@@ -284,6 +286,15 @@ function MainLayoutInner() {
     );
   }
 
+  // A business set up by Cashly: the owner's invite link opens here to choose a username and PIN.
+  if (location.pathname === '/invite') {
+    return (
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <RedeemInvite />
+      </Suspense>
+    );
+  }
+
   // Pairing a till, tablet, kitchen screen or office PC with a code from its manager.
   if (location.pathname === '/connect') {
     return (
@@ -385,6 +396,9 @@ function MainLayoutInner() {
 
         {/* Account and device state, above everything. Graduated, never a hard block. */}
         <AccountStatusBanner packageInfo={packageInfo} deviceStatus={deviceStatus} />
+
+        {/* Messages from Cashly to every business (or some), until closed. */}
+        {!supportSession && <AnnouncementBanner tenantId={currentUser?.tenantId && currentUser.tenantId !== '00000000-0000-0000-0000-000000000000' ? currentUser.tenantId : null} />}
 
         {/* The owner's first-days checklist; gone once it is all done or they hide it. */}
         {normalizeRole(currentUser?.role) === 'OwnerAdmin' && !supportSession && currentUser?.tenantId && (

@@ -42,7 +42,10 @@ import {
   Settings,
   MapPin,
   UserCog,
-  Package
+  Package,
+  Megaphone,
+  MessageCircle,
+  Settings2
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
@@ -166,6 +169,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     // restaurant's audit log is a tab there).
     // Each is a section of the one console page, opened through the address.
     if (isPlatformSuperAdmin) {
+      // Prices, settings and the team are a platform owner's; everyone else still reads the rest.
+      const platformOwner = !currentUser?.platformRole || currentUser.platformRole === 'Owner';
       return [
         {
           title: '',
@@ -174,13 +179,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           title: 'Customers',
           items: [
-            { id: 'tenants', label: 'Tenants', path: '/super-admin', search: '?tab=tenants', icon: Building2 },
+            { id: 'tenants', label: 'Businesses', path: '/super-admin', search: '?tab=tenants', icon: Building2 },
             // ERP, each outlet's POS and each extra tablet, each renewing on its own date.
             {
               id: 'renewals', label: 'Renewals', path: '/super-admin', search: '?tab=renewals', icon: CalendarClock,
               badge: renewalsDue > 0 ? String(renewalsDue) : undefined
-            },
-            { id: 'billing', label: 'Subscription Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt }
+            }
+          ]
+        },
+        {
+          title: 'Money',
+          items: [
+            { id: 'billing', label: 'Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt },
+            { id: 'revenue', label: 'Revenue', path: '/super-admin', search: '?tab=revenue', icon: TrendingUp }
           ]
         },
         {
@@ -192,7 +203,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
         {
           title: 'Messages',
-          items: [{ id: 'whatsappLogs', label: 'WhatsApp Logs', path: '/super-admin', search: '?tab=whatsapp', icon: MessageSquare }]
+          items: [
+            { id: 'messageLog', label: 'Message Log', path: '/super-admin', search: '?tab=messages', icon: MessageSquare },
+            { id: 'announcements', label: 'Announcements', path: '/super-admin', search: '?tab=announcements', icon: Megaphone },
+            { id: 'whatsappLogs', label: 'Customer WhatsApp', path: '/super-admin', search: '?tab=whatsapp', icon: MessageCircle }
+          ]
+        },
+        {
+          title: 'Platform',
+          items: [
+            ...(platformOwner ? [{ id: 'team', label: 'Team', path: '/super-admin', search: '?tab=team', icon: UserCog }] : []),
+            { id: 'activity', label: 'Activity Log', path: '/super-admin', search: '?tab=activity', icon: History },
+            ...(platformOwner ? [{ id: 'platformSettings', label: 'Settings', path: '/super-admin', search: '?tab=settings', icon: Settings2 }] : [])
+          ]
         }
       ];
     }
@@ -397,7 +420,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (settingsItems.length > 0) sections.push({ title: 'Settings', items: settingsItems });
 
     return sections;
-  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue]);
+  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue, currentUser?.platformRole]);
 
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.

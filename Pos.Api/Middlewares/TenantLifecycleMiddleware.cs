@@ -56,7 +56,9 @@ public class TenantLifecycleMiddleware
         "/api/admin/",
         "/api/tenant/my-package",
         "/api/public/",
-        "/api/addons/catalog"
+        "/api/addons/catalog",
+        // Buying and paying: an owner whose account is paused must still be able to pay to unpause it.
+        "/api/subscription/"
     };
 
     public async Task InvokeAsync(HttpContext context, IEntitlementService entitlements)
@@ -101,6 +103,25 @@ public class TenantLifecycleMiddleware
 
         var isOperational = OperationalWritePaths.Any(p => path.StartsWith(p, StringComparison.Ordinal));
         var permitted = isOperational ? ent.CanSell : ent.CanUseBackOffice;
+
+        // A part stopped for not being paid stops only itself. The head office's ERP (or a single
+        // shop's own POS, which is its back office too) pauses changes; selling carries on.
+        if (permitted && !isOperational)
+        {
+            var db = context.RequestServices.GetRequiredService<AppDbContext>();
+            var stops = await SubscriptionPartsService.StoppedPartsAsync(db, tenantId.Value);
+            if (stops.StopsBackOffice)
+            {
+                context.Response.StatusCode = StatusCodes.Status402PaymentRequired;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    message = "Changes are paused because the head office subscription is unpaid. Your data can still be viewed and the tills keep selling. Renew it from Plan & Add-ons.",
+                    tenantStatus = ent.Status.ToString(),
+                    billingAction = true
+                });
+                return;
+            }
+        }
 
         if (permitted)
         {

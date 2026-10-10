@@ -130,6 +130,8 @@ public class Tenant
     public DateTime TrialEndsAt { get; set; } = DateTime.UtcNow.AddDays(30);
     public DateTime? SubscriptionPaidUntil { get; set; } // null = not paid yet
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>When the account was closed (status Cancelled); null while open.</summary>
+    public DateTime? CancelledAt { get; set; }
 
     // --- Provisioning ------------------------------------------------------
     /// <summary>
@@ -385,6 +387,10 @@ public class AddOnSubscription
     /// branch's device quota this grant raises. Null for tenant-wide add-ons (EXTRA_USER, and every
     /// boolean feature flag add-on, which apply across the whole tenant regardless of branch).</summary>
     public Guid? BranchId { get; set; }
+
+    /// <summary>Paid up to here when it was bought and paid through an invoice. Extra tablets are billed
+    /// per tablet, so a tablet connected under this purchase starts covered to this date.</summary>
+    public DateTime? CoveredUntil { get; set; }
 }
 
 public enum SubscriptionPartKind
@@ -425,11 +431,20 @@ public class SubscriptionPart
     public bool Annual { get; set; }
     /// <summary>Today's price for one period (month or year, per <see cref="Annual"/>).</summary>
     public decimal PricePKR { get; set; }
+    /// <summary>Today's price for a month and for a year, so an invoice can bill either.</summary>
+    public decimal MonthlyPricePKR { get; set; }
+    public decimal YearlyPricePKR { get; set; }
 
     /// <summary>False once the thing is gone — the outlet stopped selling, the tablet was revoked.</summary>
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? EndedAt { get; set; }
+
+    /// <summary>
+    /// Set when this part was stopped for not being paid: only this part stops — the outlet's tills,
+    /// the one tablet, the head office's changes, or the one add-on. Cleared when it is paid.
+    /// </summary>
+    public DateTime? StoppedAt { get; set; }
 }
 
 public class Category
@@ -940,6 +955,11 @@ public class AppUser
     public UserRole Role { get; set; } = UserRole.Cashier;
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>For a member of the Cashly platform team (Role SuperAdmin): Owner, Billing, Support or
+    /// Sales — see PlatformRoles. Null for everyone else, and for the old setup-PIN account.</summary>
+    public string? PlatformRole { get; set; }
+    public DateTime? LastSignInAt { get; set; }
 
     // Permissions flags
     public bool CanViewFinancialReports { get; set; } = false;
@@ -1592,7 +1612,9 @@ public enum SubscriptionInvoiceStatus
     Pending = 1,
     Paid = 2,
     Overdue = 3,
-    Cancelled = 4
+    Cancelled = 4,
+    /// <summary>Some money received, not all of it.</summary>
+    PartiallyPaid = 5
 }
 
 public class SubscriptionInvoice
@@ -1627,6 +1649,15 @@ public class SubscriptionInvoice
     /// period rather than to sell something.
     /// </summary>
     public string? EffectJson { get; set; }
+
+    /// <summary>Before tax. Older invoices have 0 here and carry everything in <see cref="AmountPKR"/>.</summary>
+    public decimal SubtotalPKR { get; set; }
+    public decimal TaxPKR { get; set; }
+    public decimal TaxRatePercent { get; set; }
+    /// <summary>Money received against it so far (payments less any voided).</summary>
+    public decimal PaidPKR { get; set; }
+    /// <summary>renewal (raised for parts coming up), purchase (an owner bought something), manual.</summary>
+    public string Kind { get; set; } = "manual";
 }
 
 /// <summary>

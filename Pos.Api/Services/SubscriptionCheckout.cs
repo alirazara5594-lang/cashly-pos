@@ -36,7 +36,9 @@ public sealed record CheckoutQuote(
     string Description,
     int Quantity,
     decimal UnitPricePKR,
-    decimal TotalPKR);
+    decimal TotalPKR,
+    /// <summary>An add-on's monthly list price, kept even on a yearly purchase: that is what renews it.</summary>
+    decimal? MonthlyUnitPricePKR = null);
 
 public sealed record CheckoutOutcome(bool Ok, string? Error, SubscriptionInvoice? Invoice);
 
@@ -63,12 +65,14 @@ public class SubscriptionCheckout : ISubscriptionCheckout
     private readonly AppDbContext _db;
     private readonly ISubscriptionService _subs;
     private readonly IEntitlementService _entitlements;
+    private readonly ISubscriptionPartsService _parts;
 
-    public SubscriptionCheckout(AppDbContext db, ISubscriptionService subs, IEntitlementService entitlements)
+    public SubscriptionCheckout(AppDbContext db, ISubscriptionService subs, IEntitlementService entitlements, ISubscriptionPartsService parts)
     {
         _db = db;
         _subs = subs;
         _entitlements = entitlements;
+        _parts = parts;
     }
 
     public async Task<CheckoutQuote> QuoteAsync(Guid tenantId, CheckoutRequest request, CancellationToken ct = default)
@@ -102,23 +106,31 @@ public class SubscriptionCheckout : ISubscriptionCheckout
             .Select(t => t.Tier.ToString())
             .FirstOrDefaultAsync(ct) ?? "Unknown";
 
-        var count = await _db.SubscriptionInvoices.IgnoreQueryFilters().CountAsync(ct);
+        var settings = await PlatformInvoicing.SettingsAsync(_db);
+        var tax = PlatformInvoicing.TaxOn(quote.TotalPKR, settings);
+        var lines = new List<object>
+        {
+            new { description = quote.Description, quantity = quote.Quantity, unitPricePKR = quote.UnitPricePKR, amountPKR = quote.TotalPKR, kind = quote.Kind }
+        };
+        if (tax > 0)
+            lines.Add(new { description = $"{settings.TaxLabel} {settings.TaxRatePercent:0.##}%", quantity = 1, unitPricePKR = tax, amountPKR = tax, kind = "tax" });
 
         var invoice = new SubscriptionInvoice
         {
             TenantId = tenantId,
-            InvoiceNumber = $"INV-{count + 1:00000}",
+            InvoiceNumber = await PlatformInvoicing.NextInvoiceNumberAsync(_db),
             Tier = tier,
             BillingPeriodStart = now,
             BillingPeriodEnd = now.AddMonths(months),
-            AmountPKR = quote.TotalPKR,
+            SubtotalPKR = quote.TotalPKR,
+            TaxPKR = tax,
+            TaxRatePercent = settings.TaxRatePercent,
+            AmountPKR = quote.TotalPKR + tax,
             Status = SubscriptionInvoiceStatus.Pending,
-            DueAt = now.AddDays(7),
+            DueAt = now.AddDays(Math.Max(1, settings.InvoiceDueDays)),
             Notes = quote.Description,
-            LinesJson = JsonSerializer.Serialize(new[]
-            {
-                new { description = quote.Description, quantity = quote.Quantity, unitPricePKR = quote.UnitPricePKR, amountPKR = quote.TotalPKR, kind = quote.Kind }
-            }),
+            Kind = "purchase",
+            LinesJson = JsonSerializer.Serialize(lines),
             EffectJson = BuildEffect(request, quote)
         };
 
@@ -135,23 +147,22 @@ public class SubscriptionCheckout : ISubscriptionCheckout
         invoice.Status = SubscriptionInvoiceStatus.Paid;
         invoice.PaidAt = DateTime.UtcNow;
         invoice.PaymentMethod = paymentMethod;
-
-        // Paying an invoice extends the tenant's paid-until date to cover the billed period.
-        var tenant = await _db.Tenants.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(t => t.Id == invoice.TenantId, ct);
-        if (tenant != null && (tenant.SubscriptionPaidUntil == null || tenant.SubscriptionPaidUntil < invoice.BillingPeriodEnd))
-            tenant.SubscriptionPaidUntil = invoice.BillingPeriodEnd;
+        if (invoice.PaidPKR < invoice.AmountPKR) invoice.PaidPKR = invoice.AmountPKR;
 
         // The money has been taken; what it bought must follow. A failure here is recorded on the
         // invoice rather than thrown, because the payment is already irrevocable and losing the
         // reason it happened would leave an owner charged with nothing to show for it.
-        var (applied, error) = await ApplyEffectAsync(invoice, actingUserId, ct);
+        var (applied, error, addOnId, plan, annual) = await ApplyEffectAsync(invoice, actingUserId, ct);
         if (!applied)
             invoice.Notes = string.IsNullOrWhiteSpace(invoice.Notes)
                 ? $"Paid, but not applied: {error}"
                 : $"{invoice.Notes}\nPaid, but not applied: {error}";
-
         await _db.SaveChangesAsync(ct);
+
+        // What the money paid for moves on — only that: the parts a renewal invoice lists, the add-on
+        // just bought, the plan just bought. A small purchase never pays for the whole business.
+        await _parts.CoverInvoiceAsync(invoice, addOnId, plan, annual);
+        await _entitlements.RecomputeAsync(invoice.TenantId);
         return applied;
     }
 
@@ -207,7 +218,7 @@ public class SubscriptionCheckout : ISubscriptionCheckout
             : null;
 
         var description = where == null ? item.DisplayName : $"{item.DisplayName} ({where})";
-        return new CheckoutQuote("addon", key, description, quantity, unit, unit * quantity);
+        return new CheckoutQuote("addon", key, description, quantity, unit, unit * quantity, item.MonthlyPricePKR);
     }
 
     // ---------------------------------------------------------
@@ -228,78 +239,86 @@ public class SubscriptionCheckout : ISubscriptionCheckout
             branchId = request.BranchId,
             // Frozen here rather than read back from the catalogue at settlement: a list price
             // raised between purchase and payment must not change what this invoice was for.
-            unitPricePKR = quote.UnitPricePKR
+            unitPricePKR = quote.UnitPricePKR,
+            // What it renews at each month — the add-on's own monthly price, even when bought for a year.
+            monthlyUnitPricePKR = quote.MonthlyUnitPricePKR ?? quote.UnitPricePKR
         });
     }
 
-    private async Task<(bool Ok, string? Error)> ApplyEffectAsync(
+    private async Task<(bool Ok, string? Error, Guid? AddOnId, bool Plan, bool Annual)> ApplyEffectAsync(
         SubscriptionInvoice invoice, Guid? actingUserId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(invoice.EffectJson)) return (true, null);
+        if (string.IsNullOrWhiteSpace(invoice.EffectJson)) return (true, null, null, false, false);
 
         JsonDocument doc;
         try { doc = JsonDocument.Parse(invoice.EffectJson); }
-        catch (JsonException) { return (false, "the invoice carries no readable purchase"); }
+        catch (JsonException) { return (false, "the invoice carries no readable purchase", null, false, false); }
 
         using (doc)
         {
             var root = doc.RootElement;
             var kind = root.TryGetProperty("kind", out var k) ? k.GetString() : null;
+            var annual = root.TryGetProperty("annual", out var a) && a.ValueKind == JsonValueKind.True;
+            Guid? addOnId = null;
 
             try
             {
                 if (kind == "plan")
                 {
                     var planCode = root.GetProperty("planCode").GetString();
-                    if (string.IsNullOrWhiteSpace(planCode)) return (false, "no plan named on the invoice");
+                    if (string.IsNullOrWhiteSpace(planCode)) return (false, "no plan named on the invoice", null, false, false);
                     await _subs.ChangePlanAsync(invoice.TenantId, planCode, actingUserId, "Self-serve purchase");
                 }
                 else if (kind == "addon")
                 {
                     var key = root.GetProperty("addOnKey").GetString();
-                    if (string.IsNullOrWhiteSpace(key)) return (false, "no add-on named on the invoice");
+                    if (string.IsNullOrWhiteSpace(key)) return (false, "no add-on named on the invoice", null, false, false);
 
                     var quantity = root.TryGetProperty("quantity", out var q) && q.TryGetInt32(out var n)
                         ? Math.Max(1, n) : 1;
-                    var annual = root.TryGetProperty("annual", out var a)
-                        && a.ValueKind == JsonValueKind.True;
                     var branchId = root.TryGetProperty("branchId", out var b)
                         && b.ValueKind == JsonValueKind.String && Guid.TryParse(b.GetString(), out var parsed)
                         ? parsed : (Guid?)null;
 
-                    // Price as at purchase, not as at settlement: a list price raised between the
-                    // two must not change what this invoice was for.
-                    var unit = root.TryGetProperty("unitPricePKR", out var u) && u.TryGetDecimal(out var unitPrice)
-                        ? unitPrice
-                        : await _db.AddOnCatalogItems.AsNoTracking()
-                            .Where(x => x.Key == key)
-                            .Select(x => annual ? x.YearlyPricePKR : x.MonthlyPricePKR)
-                            .FirstOrDefaultAsync(ct);
+                    // The add-on renews at its monthly price per unit, as at purchase. A yearly purchase
+                    // used to store the yearly price here, which the next monthly bill then charged
+                    // every month.
+                    var monthly = root.TryGetProperty("monthlyUnitPricePKR", out var m) && m.TryGetDecimal(out var monthlyPrice)
+                        ? monthlyPrice
+                        : !annual && root.TryGetProperty("unitPricePKR", out var u) && u.TryGetDecimal(out var unitPrice)
+                            ? unitPrice
+                            : await _db.AddOnCatalogItems.AsNoTracking()
+                                .Where(x => x.Key == key)
+                                .Select(x => x.MonthlyPricePKR)
+                                .FirstOrDefaultAsync(ct);
 
-                    _db.AddOnSubscriptions.Add(new AddOnSubscription
+                    var addOn = new AddOnSubscription
                     {
                         TenantId = invoice.TenantId,
                         AddOnKey = key,
                         Quantity = quantity,
-                        PricePKR = unit,
+                        PricePKR = monthly,
                         BranchId = branchId,
-                        IsActive = true
-                    });
+                        IsActive = true,
+                        CoveredUntil = invoice.BillingPeriodEnd
+                    };
+                    _db.AddOnSubscriptions.Add(addOn);
                     await _db.SaveChangesAsync(ct);
+                    addOnId = addOn.Id;
                 }
                 else
                 {
-                    return (false, $"unrecognised purchase kind '{kind}'");
+                    return (false, $"unrecognised purchase kind '{kind}'", null, false, false);
                 }
             }
             catch (InvalidOperationException ex)
             {
                 // ChangePlanAsync refuses downgrades that would strand an over-limit configuration.
-                return (false, ex.Message);
+                return (false, ex.Message, null, false, false);
             }
 
             await _entitlements.RecomputeAsync(invoice.TenantId);
-            return (true, null);
+            return (true, null, addOnId, kind == "plan", annual);
         }
     }
 

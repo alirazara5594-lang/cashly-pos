@@ -103,6 +103,15 @@ public class AppDbContext : DbContext
     public DbSet<PlatformDataVersion> PlatformDataVersions => Set<PlatformDataVersion>();
     public DbSet<FiscalIntegration> FiscalIntegrations => Set<FiscalIntegration>();
 
+    // --- The platform's own records (Models/PlatformEntities.cs) ---
+    public DbSet<PlatformSettings> PlatformSettings => Set<PlatformSettings>();
+    public DbSet<SubscriptionInvoicePart> SubscriptionInvoiceParts => Set<SubscriptionInvoicePart>();
+    public DbSet<SubscriptionPayment> SubscriptionPayments => Set<SubscriptionPayment>();
+    public DbSet<PlatformMessage> PlatformMessages => Set<PlatformMessage>();
+    public DbSet<SubscriptionReminderMark> SubscriptionReminderMarks => Set<SubscriptionReminderMark>();
+    public DbSet<TenantNote> TenantNotes => Set<TenantNote>();
+    public DbSet<PlatformAnnouncement> PlatformAnnouncements => Set<PlatformAnnouncement>();
+
     // --- Subscription / entitlements ---
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<PlanFeature> PlanFeatures => Set<PlanFeature>();
@@ -629,6 +638,19 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<PlatformPrice>().HasKey(p => p.Key);
         modelBuilder.Entity<PlatformDataVersion>().HasKey(v => v.Key);
+
+        // The platform's own records. Settings is one row with a fixed key, never generated.
+        modelBuilder.Entity<PlatformSettings>().HasKey(s => s.Id);
+        modelBuilder.Entity<PlatformSettings>().Property(s => s.Id).ValueGeneratedNever();
+        modelBuilder.Entity<SubscriptionInvoicePart>().HasIndex(p => p.InvoiceId);
+        modelBuilder.Entity<SubscriptionInvoicePart>().HasIndex(p => new { p.PartId, p.PeriodEnd });
+        modelBuilder.Entity<SubscriptionPayment>().HasIndex(p => new { p.TenantId, p.ReceivedAt });
+        modelBuilder.Entity<SubscriptionPayment>().HasIndex(p => p.InvoiceId);
+        modelBuilder.Entity<PlatformMessage>().HasIndex(m => m.CreatedAt);
+        modelBuilder.Entity<PlatformMessage>().HasIndex(m => new { m.TenantId, m.CreatedAt });
+        modelBuilder.Entity<SubscriptionReminderMark>().HasIndex(m => new { m.PartId, m.Key }).IsUnique();
+        modelBuilder.Entity<TenantNote>().HasIndex(n => new { n.TenantId, n.CreatedAt });
+        modelBuilder.Entity<TenantNote>().HasIndex(n => n.FollowUpAt);
 
         // One tax-authority connection per location.
         modelBuilder.Entity<FiscalIntegration>()

@@ -126,7 +126,8 @@ export const WhatsAppConfig: React.FC = () => {
     posApi.getAdminTenants().then((rows) => {
       if (cancelled) return;
       setTenants(rows);
-      setSelectedTenant((prev) => prev || rows[0]?.id || '');
+      // No business is opened by itself: this edits one customer's own WhatsApp line, so pick it.
+      setSelectedTenant((prev) => prev);
       setTenantsLoading(false);
     }).catch(() => { if (!cancelled) setTenantsLoading(false); });
     return () => { cancelled = true; };
@@ -197,12 +198,19 @@ export const WhatsAppConfig: React.FC = () => {
       <div className="flex items-center justify-center h-96">
         <div className="text-center max-w-sm">
           <Building2 className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-          <p className="text-sm font-bold text-slate-700">No tenant selected</p>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-sm font-bold text-slate-700">Which business?</p>
+          <p className="text-xs text-slate-500 mt-1 mb-3">
             {tenants.length === 0
-              ? 'There are no tenants in the platform yet — provision one from the Tenants tab first.'
-              : 'Pick a tenant above to view and edit its WhatsApp configuration.'}
+              ? 'There are no businesses on the platform yet.'
+              : 'This is a business\'s own WhatsApp line to its customers. The platform\'s own messages are in Message Log.'}
           </p>
+          {tenants.length > 0 && (
+            <select value="" onChange={(e) => setSelectedTenant(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 focus:border-teal-500">
+              <option value="" disabled>Pick a business…</option>
+              {tenants.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          )}
         </div>
       </div>
     );

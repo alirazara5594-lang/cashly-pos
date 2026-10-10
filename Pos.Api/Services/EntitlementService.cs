@@ -320,9 +320,7 @@ public class EntitlementService : IEntitlementService
         }
 
         // --- 2. Purchased add-ons -------------------------------------------
-        var addOns = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
-            .Where(a => a.TenantId == tenantId && a.IsActive)
-            .ToListAsync();
+        var addOns = await LiveAddOnsAsync(tenantId);
 
         foreach (var addOn in addOns)
         {
@@ -480,6 +478,31 @@ public class EntitlementService : IEntitlementService
         return tenant.Status;
     }
 
+    /// <summary>
+    /// The business's add-ons in force: active, and not stopped for being left unpaid. A stopped
+    /// add-on switches off on its own; nothing else the business has changes. Should the renewals
+    /// table not be readable yet (a brand-new database mid-start), nothing counts as stopped.
+    /// </summary>
+    private async Task<List<AddOnSubscription>> LiveAddOnsAsync(Guid tenantId)
+    {
+        var rows = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
+            .Where(a => a.TenantId == tenantId && a.IsActive)
+            .ToListAsync();
+        if (rows.Count == 0) return rows;
+        try
+        {
+            var stopped = await _db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => p.TenantId == tenantId && p.IsActive && p.StoppedAt != null && p.AddOnSubscriptionId != null)
+                .Select(p => p.AddOnSubscriptionId!.Value)
+                .ToListAsync();
+            return stopped.Count == 0 ? rows : rows.Where(a => !stopped.Contains(a.Id)).ToList();
+        }
+        catch (Npgsql.PostgresException)
+        {
+            return rows;
+        }
+    }
+
     private static bool ReadPlanFlag(SaaSPackageConfig plan, string flagName) => flagName switch
     {
         nameof(SaaSPackageConfig.HasKitchenDisplay) => plan.HasKitchenDisplay,
@@ -605,9 +628,7 @@ public class EntitlementService : IEntitlementService
         SaaSPackageConfig? PackageFor(SubscriptionTier tier) =>
             packages.FirstOrDefault(p => string.Equals(p.PackageKey, tier.ToString(), StringComparison.OrdinalIgnoreCase));
 
-        addOns ??= await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
-            .Where(a => a.TenantId == tenantId && a.IsActive)
-            .ToListAsync();
+        addOns ??= await LiveAddOnsAsync(tenantId);
         var kdsKey = nameof(SaaSPackageConfig.HasKitchenDisplay);
 
         var result = new Dictionary<Guid, BranchPosAllowance>();
@@ -644,10 +665,10 @@ public class EntitlementService : IEntitlementService
 
         // Sold per shop: an add-on for this shop, one bought for every shop, or — when no add-on
         // exists at all — a support grant, which covers the whole business.
-        var bought = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
-            .Where(a => a.TenantId == tenantId && a.IsActive && a.AddOnKey == featureCode)
+        var bought = (await LiveAddOnsAsync(tenantId))
+            .Where(a => a.AddOnKey == featureCode)
             .Select(a => a.BranchId)
-            .ToListAsync();
+            .ToList();
         return bought.Count == 0 || bought.Any(b => b == null || b == branchId);
     }
 
@@ -673,9 +694,9 @@ public class EntitlementService : IEntitlementService
             included = perMonth < 0 ? null : perMonth;
         }
 
-        var bundles = await _db.AddOnSubscriptions.AsNoTracking().IgnoreQueryFilters()
-            .Where(a => a.TenantId == tenantId && a.IsActive && a.AddOnKey == "WHATSAPP_1000")
-            .SumAsync(a => (int?)a.Quantity) ?? 0;
+        var bundles = (await LiveAddOnsAsync(tenantId))
+            .Where(a => a.AddOnKey == "WHATSAPP_1000")
+            .Sum(a => a.Quantity);
 
         var monthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
         var used = await _db.NotificationLogs.AsNoTracking().IgnoreQueryFilters()
@@ -715,9 +736,9 @@ public class EntitlementService : IEntitlementService
 
         // Branch-scoped device add-ons stack on top of the plan's per-branch allowance.
         var addOnKey = type == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
-        var addOnBonus = await _db.AddOnSubscriptions.IgnoreQueryFilters()
-            .Where(a => a.TenantId == tenantId && a.BranchId == branchId && a.AddOnKey == addOnKey && a.IsActive)
-            .SumAsync(a => (int?)a.Quantity) ?? 0;
+        var addOnBonus = (await LiveAddOnsAsync(tenantId))
+            .Where(a => a.BranchId == branchId && a.AddOnKey == addOnKey)
+            .Sum(a => a.Quantity);
 
         var limit = baseLimit + addOnBonus;
         var inUse = await CountDevicesInUseAsync(branchId, type);

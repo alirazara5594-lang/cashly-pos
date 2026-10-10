@@ -193,6 +193,10 @@ builder.Services.AddScoped<Pos.Api.Services.ISubscriptionPartsService, Pos.Api.S
 // The owner-facing half of billing: price it, raise the invoice, and apply what it bought once
 // it is paid — by a human or by a webhook, through the same settle path.
 builder.Services.AddScoped<Pos.Api.Services.ISubscriptionCheckout, Pos.Api.Services.SubscriptionCheckout>();
+// Cashly's own billing: invoices per part, payments, reminders, and stopping only what is unpaid.
+// The worker runs it every hour.
+builder.Services.AddScoped<Pos.Api.Services.IPlatformBilling, Pos.Api.Services.PlatformBillingService>();
+builder.Services.AddHostedService<Pos.Api.Services.BillingAutomationWorker>();
 builder.Services.AddScoped<Pos.Api.Services.ISyncService, Pos.Api.Services.SyncService>();
 // The other end of sync: writes what a business host pushes into this database.
 builder.Services.AddScoped<Pos.Api.Services.ISyncReceiver, Pos.Api.Services.SyncReceiver>();
@@ -258,6 +262,28 @@ app.UseMiddleware<TenantIsolationMiddleware>();
 // Runs after tenant resolution (it needs the tenant) and before any endpoint, so the billing
 // ladder applies to every write by default rather than only where a filter was remembered.
 app.UseMiddleware<TenantLifecycleMiddleware>();
+// A platform team member who has not turned on 2-step sign-in yet can only do that: the console
+// stays closed to them until they have (when Platform Settings requires it, which is the default).
+app.Use(async (context, next) =>
+{
+    if (context.User?.FindFirst("mfaPending")?.Value == "true" && context.IsSuperAdmin()
+        && (context.Request.Path.Value ?? "").StartsWith("/api/admin/", StringComparison.OrdinalIgnoreCase))
+    {
+        var db = context.RequestServices.GetRequiredService<AppDbContext>();
+        var settings = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+        if (settings.RequireTwoStepForTeam)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                message = "Turn on 2-step sign-in first: it protects every customer on the platform.",
+                twoFactorSetupRequired = true
+            });
+            return;
+        }
+    }
+    await next();
+});
 
 if (app.Environment.IsDevelopment())
 {
@@ -1587,7 +1613,10 @@ using (var scope = app.Services.CreateScope())
         ("Onboarding", EnsureOnboardingSchemaAsync),
         ("Books per company", EnsureCompanyBooksSchemaAsync),
         ("Stock requests answered by transfers", EnsureStockRequestTransferSchemaAsync),
-        ("Renewals per part", EnsureSubscriptionPartsSchemaAsync)
+        ("Renewals per part", EnsureSubscriptionPartsSchemaAsync),
+        ("Platform billing, team and messages", EnsurePlatformSchemaAsync),
+        ("Add-on prices per unit", FixAddOnUnitPricesAsync),
+        ("Plan prices follow the price list", SyncPlanPricesFromPackagesAsync)
     })
     {
         try
@@ -1701,6 +1730,185 @@ static Task EnsureSubscriptionPartsSchemaAsync(AppDbContext db) => db.Database.E
     );
     CREATE UNIQUE INDEX IF NOT EXISTS ""IX_SubscriptionParts_TenantId_Key"" ON ""SubscriptionParts"" (""TenantId"", ""Key"");
 ");
+
+/// <summary>
+/// The platform's own records: its settings, which parts an invoice renews, payments, the messages it
+/// sends, reminder marks, notes about customers, announcements — plus the columns billing per part
+/// and the platform team need on existing tables. Idempotent.
+/// </summary>
+static Task EnsurePlatformSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""SubscriptionParts"" ADD COLUMN IF NOT EXISTS ""StoppedAt"" timestamp with time zone NULL;
+    ALTER TABLE ""SubscriptionParts"" ADD COLUMN IF NOT EXISTS ""MonthlyPricePKR"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""SubscriptionParts"" ADD COLUMN IF NOT EXISTS ""YearlyPricePKR"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""AddOnSubscriptions"" ADD COLUMN IF NOT EXISTS ""CoveredUntil"" timestamp with time zone NULL;
+    ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""SubtotalPKR"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""TaxPKR"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""TaxRatePercent"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""PaidPKR"" numeric NOT NULL DEFAULT 0;
+    ALTER TABLE ""SubscriptionInvoices"" ADD COLUMN IF NOT EXISTS ""Kind"" text NOT NULL DEFAULT 'manual';
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""PlatformRole"" text NULL;
+    ALTER TABLE ""Users"" ADD COLUMN IF NOT EXISTS ""LastSignInAt"" timestamp with time zone NULL;
+    ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""CancelledAt"" timestamp with time zone NULL;
+
+    -- Invoices paid before payments were recorded one by one count as paid in full.
+    UPDATE ""SubscriptionInvoices"" SET ""PaidPKR"" = ""AmountPKR"" WHERE ""Status"" = 2 AND ""PaidPKR"" = 0;
+    -- An invoice an owner raised by buying something is a purchase.
+    UPDATE ""SubscriptionInvoices"" SET ""Kind"" = 'purchase' WHERE ""Kind"" = 'manual' AND ""EffectJson"" IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS ""PlatformSettings"" (
+        ""Id"" integer NOT NULL PRIMARY KEY,
+        ""CompanyName"" text NOT NULL DEFAULT 'Cashly',
+        ""LegalName"" text NULL, ""Ntn"" text NULL, ""Strn"" text NULL, ""Address"" text NULL, ""City"" text NULL,
+        ""Phone"" text NULL, ""Email"" text NULL, ""Website"" text NULL,
+        ""BankName"" text NULL, ""BankAccountTitle"" text NULL, ""BankAccountNumber"" text NULL, ""BankIban"" text NULL,
+        ""JazzCashNumber"" text NULL, ""EasypaisaNumber"" text NULL, ""RaastId"" text NULL,
+        ""PaymentInstructions"" text NULL, ""InvoiceFooter"" text NULL,
+        ""TaxLabel"" text NOT NULL DEFAULT 'Sales tax',
+        ""TaxRatePercent"" numeric NOT NULL DEFAULT 0,
+        ""AutoInvoice"" boolean NOT NULL DEFAULT true,
+        ""InvoiceDaysBefore"" integer NOT NULL DEFAULT 7,
+        ""InvoiceDueDays"" integer NOT NULL DEFAULT 7,
+        ""AutoReminders"" boolean NOT NULL DEFAULT false,
+        ""ReminderDays"" text NOT NULL DEFAULT '7,1,-1,-3',
+        ""AutoStopUnpaid"" boolean NOT NULL DEFAULT false,
+        ""StopAfterDays"" integer NOT NULL DEFAULT 7,
+        ""WhatsAppProvider"" text NOT NULL DEFAULT 'Manual',
+        ""WhatsAppApiKey"" text NULL, ""WhatsAppApiSecret"" text NULL, ""WhatsAppPhoneNumberId"" text NULL, ""WhatsAppAccessToken"" text NULL,
+        ""EmailReminders"" boolean NOT NULL DEFAULT true,
+        ""RequireTwoStepForTeam"" boolean NOT NULL DEFAULT true,
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    INSERT INTO ""PlatformSettings"" (""Id"") VALUES (1) ON CONFLICT (""Id"") DO NOTHING;
+
+    CREATE TABLE IF NOT EXISTS ""SubscriptionInvoiceParts"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""InvoiceId"" uuid NOT NULL,
+        ""TenantId"" uuid NOT NULL,
+        ""PartId"" uuid NOT NULL,
+        ""Description"" text NOT NULL DEFAULT '',
+        ""PeriodStart"" timestamp with time zone NOT NULL,
+        ""PeriodEnd"" timestamp with time zone NOT NULL,
+        ""Annual"" boolean NOT NULL DEFAULT false,
+        ""AmountPKR"" numeric NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_SubscriptionInvoiceParts_InvoiceId"" ON ""SubscriptionInvoiceParts"" (""InvoiceId"");
+    CREATE INDEX IF NOT EXISTS ""IX_SubscriptionInvoiceParts_PartId_PeriodEnd"" ON ""SubscriptionInvoiceParts"" (""PartId"", ""PeriodEnd"");
+
+    CREATE TABLE IF NOT EXISTS ""SubscriptionPayments"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""InvoiceId"" uuid NULL,
+        ""Kind"" text NOT NULL DEFAULT 'Payment',
+        ""AmountPKR"" numeric NOT NULL DEFAULT 0,
+        ""Method"" text NOT NULL DEFAULT '',
+        ""Reference"" text NULL,
+        ""ReceivedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""Notes"" text NULL,
+        ""RecordedByUserId"" uuid NULL,
+        ""RecordedByName"" text NOT NULL DEFAULT '',
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""VoidedAt"" timestamp with time zone NULL,
+        ""VoidReason"" text NULL
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_SubscriptionPayments_TenantId_ReceivedAt"" ON ""SubscriptionPayments"" (""TenantId"", ""ReceivedAt"");
+    CREATE INDEX IF NOT EXISTS ""IX_SubscriptionPayments_InvoiceId"" ON ""SubscriptionPayments"" (""InvoiceId"");
+
+    CREATE TABLE IF NOT EXISTS ""PlatformMessages"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NULL,
+        ""InvoiceId"" uuid NULL,
+        ""Channel"" text NOT NULL DEFAULT 'whatsapp',
+        ""Recipient"" text NOT NULL DEFAULT '',
+        ""Kind"" text NOT NULL DEFAULT '',
+        ""Subject"" text NULL,
+        ""Body"" text NOT NULL DEFAULT '',
+        ""Status"" text NOT NULL DEFAULT 'sent',
+        ""Error"" text NULL,
+        ""SentByName"" text NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_PlatformMessages_CreatedAt"" ON ""PlatformMessages"" (""CreatedAt"");
+    CREATE INDEX IF NOT EXISTS ""IX_PlatformMessages_TenantId_CreatedAt"" ON ""PlatformMessages"" (""TenantId"", ""CreatedAt"");
+
+    CREATE TABLE IF NOT EXISTS ""SubscriptionReminderMarks"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""PartId"" uuid NOT NULL,
+        ""Key"" text NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_SubscriptionReminderMarks_PartId_Key"" ON ""SubscriptionReminderMarks"" (""PartId"", ""Key"");
+
+    CREATE TABLE IF NOT EXISTS ""TenantNotes"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""Kind"" text NOT NULL DEFAULT 'Note',
+        ""Body"" text NOT NULL DEFAULT '',
+        ""FollowUpAt"" timestamp with time zone NULL,
+        ""DoneAt"" timestamp with time zone NULL,
+        ""PromisedAmountPKR"" numeric NULL,
+        ""AuthorUserId"" uuid NULL,
+        ""AuthorName"" text NOT NULL DEFAULT '',
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_TenantNotes_TenantId_CreatedAt"" ON ""TenantNotes"" (""TenantId"", ""CreatedAt"");
+    CREATE INDEX IF NOT EXISTS ""IX_TenantNotes_FollowUpAt"" ON ""TenantNotes"" (""FollowUpAt"");
+
+    CREATE TABLE IF NOT EXISTS ""PlatformAnnouncements"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""Title"" text NOT NULL DEFAULT '',
+        ""Body"" text NOT NULL DEFAULT '',
+        ""Tone"" text NOT NULL DEFAULT 'info',
+        ""StartsAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""EndsAt"" timestamp with time zone NULL,
+        ""Audience"" text NOT NULL DEFAULT 'all',
+        ""AudienceValue"" text NULL,
+        ""IsActive"" boolean NOT NULL DEFAULT true,
+        ""CreatedByName"" text NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+");
+
+/// <summary>
+/// The old Add-ons screen saved a quantity add-on's price as unit price × quantity, and the bill then
+/// multiplied by the quantity again. Puts those rows back to the unit price, once.
+/// </summary>
+static async Task FixAddOnUnitPricesAsync(AppDbContext db)
+{
+    const string marker = "addon-unit-prices-2026-10";
+    if (await db.PlatformDataVersions.AnyAsync(v => v.Key == marker)) return;
+
+    var catalogue = await db.AddOnCatalogItems.AsNoTracking().ToDictionaryAsync(c => c.Key, c => c.MonthlyPricePKR);
+    var multiplied = await db.AddOnSubscriptions.IgnoreQueryFilters().Where(a => a.Quantity > 1).ToListAsync();
+    var fixedRows = 0;
+    foreach (var row in multiplied)
+    {
+        if (!catalogue.TryGetValue(row.AddOnKey, out var unit) || unit <= 0) continue;
+        if (row.PricePKR != unit * row.Quantity) continue;
+        row.PricePKR = unit;
+        fixedRows++;
+    }
+    db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
+    await db.SaveChangesAsync();
+    if (fixedRows > 0) Console.WriteLine($"[Billing] {fixedRows} add-on(s) put back to their unit price.");
+}
+
+/// <summary>
+/// The plans an owner sees and buys from carry the prices set on Packages &amp; Pricing. Runs at every
+/// start (the screen also keeps them in step when it saves), so the two price lists cannot drift.
+/// </summary>
+static async Task SyncPlanPricesFromPackagesAsync(AppDbContext db)
+{
+    var packages = await db.SaaSPackageConfigs.AsNoTracking().ToListAsync();
+    var plans = await db.Plans.IgnoreQueryFilters().ToListAsync();
+    foreach (var plan in plans)
+    {
+        var package = packages.FirstOrDefault(p => string.Equals(p.PackageKey, plan.Code, StringComparison.OrdinalIgnoreCase));
+        if (package == null) continue;
+        if (plan.MonthlyPricePKR != package.MonthlyPricePKR) plan.MonthlyPricePKR = package.MonthlyPricePKR;
+        if (plan.YearlyPricePKR != package.YearlyPricePKR) plan.YearlyPricePKR = package.YearlyPricePKR;
+    }
+    await db.SaveChangesAsync();
+}
 
 /// <summary>Links an outlet's stock request to the transfer head office sent for it. Idempotent.</summary>
 static Task EnsureStockRequestTransferSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
@@ -2814,6 +3022,10 @@ static (string accessToken, string refreshToken, RefreshToken refreshTokenEntity
     else
     {
         claims["permissions"] = "{}";
+        // The platform team: what this person may do, and whether they still owe the 2-step setup.
+        // The old setup-PIN account carries no role and is the owner.
+        claims["platformRole"] = user.PlatformRole ?? PlatformRoles.Owner;
+        claims["mfaPending"] = (user.PlatformRole != null && !user.TwoFactorEnabled).ToString().ToLower();
     }
 
     var tokenDescriptor = new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
@@ -3970,7 +4182,7 @@ app.MapGet("/api/public/restaurants/{webName}", async (AppDbContext db, string w
 app.MapPut("/api/admin/tenants/{tenantId:guid}/web-name", async (Guid tenantId, AppDbContext db, HttpContext http,
     Pos.Api.Middlewares.ICurrentUserAccessor accessor, ChangeWebNameDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId);
     if (tenant == null) return Results.NotFound();
     var name = (dto.WebName ?? "").Trim().ToLowerInvariant();
@@ -4136,7 +4348,10 @@ static async Task<AppUser?> SelfForSecurityAsync(AppDbContext db, HttpContext ht
     var userId = http.GetUserId();
     if (userId == null) return null;
     var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId.Value && u.IsActive);
-    return user == null || user.Role == UserRole.SuperAdmin ? null : user;
+    // A named platform team member manages their own password and 2-step sign-in; the shared setup
+    // account has neither.
+    if (user == null || (user.Role == UserRole.SuperAdmin && user.PlatformRole == null)) return null;
+    return user;
 }
 
 /// <summary>
@@ -4375,6 +4590,14 @@ authApi.MapPost("/2fa/verify", async (AppDbContext db, HttpContext http, Pos.Api
     user.LockedUntil = null;
     await WriteAuditAsync(db, user.TenantId, user, "UserLoggedIn", "AppUser", user.Id, null,
         $"Signed in with 2-step ({how}), IP {clientIp}");
+    // A member of the platform team signs into the platform console, never a business.
+    if (user.Role == UserRole.SuperAdmin)
+    {
+        user.LastSignInAt = DateTime.UtcNow;
+        var (platformAccess, platformRefresh, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: true, clientIp);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { token = platformAccess, refreshToken = platformRefresh, user = PlatformUserView(user) });
+    }
     var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: false, clientIp, challenge.Value.SessionBranchId);
     await db.SaveChangesAsync();
     return Results.Ok(SignInResponse(user, challenge.Value.SessionBranchId, accessToken, refreshToken));
@@ -4732,7 +4955,7 @@ authApi.MapPost("/refresh", async (AppDbContext db, HttpContext http, RefreshTok
         token = accessToken,
         refreshToken = newRefreshToken,
         user = existing.IsSuperAdminToken
-            ? new { id = user.Id, fullName = user.FullName, username = user.Username, role = "SuperAdmin", tenantId = Guid.Empty, branchId = (Guid?)null }
+            ? PlatformUserView(user)
             : new
             {
                 id = user.Id, fullName = user.FullName, username = user.Username, role = user.Role.ToString(),
@@ -6322,6 +6545,14 @@ api.MapPost("/orders", async (
         .FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value && b.TenantId == scopedTenantId!.Value);
     if (branch == null) return Results.NotFound(new { message = "Branch not found" });
 
+    // Only the part that was not paid stops: this outlet's tills, not the business's other outlets.
+    if (!http.IsSuperAdmin() && (await Pos.Api.Services.SubscriptionPartsService.StoppedPartsAsync(db, branch.TenantId)).StopsSellingAt(branch.Id))
+        return Results.Json(new
+        {
+            message = "This outlet's POS subscription is unpaid, so new sales are paused here. The owner can renew it from Plan & Add-ons.",
+            billingAction = true
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+
     var actingUser = await accessor.GetCurrentUserAsync(http);
     var (error, order, priced) = await CreateOrderCoreAsync(db, branch, dto, actingUser, fiscal, waResolver);
     if (error != null) return error;
@@ -7790,6 +8021,26 @@ api.MapPost("/terminals/heartbeat", async (
         await db.SaveChangesAsync();
         return Results.Json(new { state = "Suspended", canSell = false, reason = "This account is suspended.", mustReactivate = false },
             statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    // A part stopped for not being paid stops only itself: this outlet's tills, or this one tablet.
+    if (terminal.TerminalType is TerminalType.Counter or TerminalType.OrderTab)
+    {
+        var stops = await Pos.Api.Services.SubscriptionPartsService.StoppedPartsAsync(db, terminal.TenantId);
+        if (stops.StopsDevice(terminal.BranchId, terminal.Id))
+        {
+            var reason = stops.StopsSellingAt(terminal.BranchId)
+                ? "This outlet's POS subscription is unpaid, so new sales are paused here. It starts again as soon as it is renewed."
+                : "This tablet's subscription is unpaid, so it is paused. It starts again as soon as it is renewed.";
+            db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+            {
+                TenantId = terminal.TenantId, TerminalId = terminal.Id, BranchId = terminal.BranchId,
+                EventType = "RenewalDenied", Detail = "Subscription unpaid.", Ip = http.Connection.RemoteIpAddress?.ToString()
+            });
+            await db.SaveChangesAsync();
+            return Results.Json(new { state = "Unpaid", canSell = false, reason, mustReactivate = false },
+                statusCode: StatusCodes.Status402PaymentRequired);
+        }
     }
 
     // A device may only keep operating if it is still inside its branch's current allowance.
@@ -10272,7 +10523,7 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     }
 });
 
-app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
+app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService partsService) =>
 {
     // Only super admins can list all tenants
     if (!http.IsSuperAdmin())
@@ -10285,52 +10536,115 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
         return Results.Ok(new[] { myTenant });
     }
 
-    var tenants = await db.Tenants
+    await partsService.SyncAllAsync();
+    var now = DateTime.UtcNow;
+    var tenants = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
         .OrderByDescending(t => t.CreatedAt)
         .Select(t => new
         {
-            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
-            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
-            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt,
-            branchCount = t.Branches.Count
+            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone, t.ContactMobile,
+            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive, t.Status, t.DeploymentMode,
+            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt, t.CancelledAt
         })
         .ToListAsync();
 
-    // Real staff-account count — the old projection above counted Terminal devices under the name
-    // "userCount", which was actually device count, not staff. Fixed here by counting Users directly.
-    var realUserCounts = await db.Users.GroupBy(u => u.TenantId)
+    // Back-office logins, the people the plan's user ceiling counts.
+    var userCounts = await db.Users.IgnoreQueryFilters()
+        .Where(u => u.IsActive && u.Role != UserRole.Cashier && u.Role != UserRole.Waiter && u.Role != UserRole.KitchenChef && u.Role != UserRole.SuperAdmin)
+        .GroupBy(u => u.TenantId)
         .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
 
-    var counterCounts = await db.Terminals.Where(t => t.TerminalType == TerminalType.Counter)
-        .GroupBy(t => t.Branch!.TenantId)
-        .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
-    var tabletCounts = await db.Terminals.Where(t => t.TerminalType == TerminalType.OrderTab)
-        .GroupBy(t => t.Branch!.TenantId)
-        .Select(g => new { TenantId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.TenantId, x => x.Count);
+    var branches = await db.Branches.IgnoreQueryFilters().AsNoTracking()
+        .Select(b => new { b.Id, b.TenantId, b.CanSell, b.LocationType, b.PosEdition }).ToListAsync();
+    var cooldown = now.AddHours(-Terminal.DeviceSlotCooldownHours);
+    var devices = await db.Terminals.IgnoreQueryFilters().AsNoTracking()
+        .Where(t => t.RevokedAt == null && (t.DeactivatedAt == null || t.DeactivatedAt > cooldown)
+                    && (t.TerminalType == TerminalType.Counter || t.TerminalType == TerminalType.OrderTab))
+        .Select(t => new { t.TenantId, t.BranchId, t.TerminalType, t.LastSeenAt }).ToListAsync();
+    var lastSeen = await db.Terminals.IgnoreQueryFilters().AsNoTracking()
+        .Where(t => t.RevokedAt == null && t.DeactivatedAt == null)
+        .GroupBy(t => t.TenantId).Select(g => new { TenantId = g.Key, Last = g.Max(t => t.LastSeenAt) })
+        .ToDictionaryAsync(x => x.TenantId, x => x.Last);
 
-    var addOnsByTenant = await db.AddOnSubscriptions.Where(a => a.IsActive)
-        .GroupBy(a => a.TenantId)
-        .Select(g => new { TenantId = g.Key, Count = g.Count(), ExtraCounters = g.Where(a => a.AddOnKey == "EXTRA_COUNTER").Sum(a => a.Quantity), ExtraTablets = g.Where(a => a.AddOnKey == "EXTRA_TABLET").Sum(a => a.Quantity), ExtraUsers = g.Where(a => a.AddOnKey == "EXTRA_USER").Sum(a => a.Quantity) })
-        .ToDictionaryAsync(x => x.TenantId, x => x);
+    var addOns = await db.AddOnSubscriptions.IgnoreQueryFilters().AsNoTracking().Where(a => a.IsActive)
+        .Select(a => new { a.TenantId, a.AddOnKey, a.BranchId, a.Quantity }).ToListAsync();
+    var packages = await db.SaaSPackageConfigs.AsNoTracking().ToDictionaryAsync(p => p.PackageKey);
 
-    var packages = await db.SaaSPackageConfigs.ToDictionaryAsync(p => p.PackageKey);
+    // Each part renews on its own date; the business's next renewal is the soonest one that matters.
+    var parts = (await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.IsActive).ToListAsync())
+        .Select(p => (Part: p, State: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
+        .ToList();
 
     var result = tenants.Select(t =>
     {
-        var pkg = packages.GetValueOrDefault(t.Tier.ToString());
-        var addOns = addOnsByTenant.GetValueOrDefault(t.Id);
+        var package = packages.GetValueOrDefault(t.Tier.ToString());
+        var mine = addOns.Where(a => a.TenantId == t.Id).ToList();
+        var outlets = branches.Where(b => b.TenantId == t.Id && b.CanSell).ToList();
+        var tills = devices.Where(d => d.TenantId == t.Id && d.TerminalType == TerminalType.Counter).ToList();
+        var tablets = devices.Where(d => d.TenantId == t.Id && d.TerminalType == TerminalType.OrderTab).ToList();
+
+        // Tills and tablets are allowed PER OUTLET, by that outlet's own POS version plus extras bought for it.
+        int Allowed(Guid branchId, SubscriptionTier? edition, TerminalType type)
+        {
+            var pkg = packages.GetValueOrDefault((edition ?? t.Tier).ToString()) ?? package;
+            var baseLimit = type == TerminalType.OrderTab ? pkg?.MaxOrderTabs ?? 0 : pkg?.MaxCounters ?? 0;
+            var extraKey = type == TerminalType.OrderTab ? "EXTRA_TABLET" : "EXTRA_COUNTER";
+            return baseLimit + mine.Where(a => a.AddOnKey == extraKey && a.BranchId == branchId).Sum(a => a.Quantity);
+        }
+        var outletsOverTills = outlets.Count(o => tills.Count(d => d.BranchId == o.Id) > Allowed(o.Id, o.PosEdition, TerminalType.Counter));
+        var outletsOverTablets = outlets.Count(o => tablets.Count(d => d.BranchId == o.Id) > Allowed(o.Id, o.PosEdition, TerminalType.OrderTab)
+                                                    && Allowed(o.Id, o.PosEdition, TerminalType.OrderTab) < Pos.Api.Data.FeatureCatalog.UnlimitedCount);
+
+        var myParts = parts.Where(p => p.Part.TenantId == t.Id).ToList();
+        var monthly = myParts.Where(p => p.State.Status != Pos.Api.Services.PartStatus.NotInstalled)
+            .Sum(p => p.Part.Annual ? p.Part.YearlyPricePKR / 12m : p.Part.MonthlyPricePKR);
+        var attention = myParts
+            .Where(p => p.State.Status is Pos.Api.Services.PartStatus.Expiring or Pos.Api.Services.PartStatus.Expired
+                        or Pos.Api.Services.PartStatus.PaymentDue or Pos.Api.Services.PartStatus.Stopped)
+            .OrderBy(p => p.State.RenewsAt ?? DateTime.MaxValue).ToList();
+        var next = attention.FirstOrDefault();
+        if (next.Part == null)
+            next = myParts.Where(p => p.State.RenewsAt != null && p.State.Status != Pos.Api.Services.PartStatus.NotInstalled)
+                .OrderBy(p => p.State.RenewsAt).FirstOrDefault();
+
+        // The status the business is really in: a trial whose date passed counts as ended.
+        var status = t.Status == TenantStatus.Trial && t.TrialEndsAt <= now ? TenantStatus.PastDue : t.Status;
+        if (!t.IsActive && status != TenantStatus.Cancelled) status = TenantStatus.Suspended;
+
         return new
         {
-            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail, t.ContactPhone,
-            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive, t.IsTrialActive,
-            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt, t.branchCount,
-            userCount = realUserCounts.GetValueOrDefault(t.Id),
-            maxUsers = (pkg?.MaxUsers ?? 0) + (addOns?.ExtraUsers ?? 0),
-            counterCount = counterCounts.GetValueOrDefault(t.Id),
-            maxCounters = (pkg?.MaxCounters ?? 0) + (addOns?.ExtraCounters ?? 0),
-            tabletCount = tabletCounts.GetValueOrDefault(t.Id),
-            maxTablets = (pkg?.MaxOrderTabs ?? 0) + (addOns?.ExtraTablets ?? 0),
-            activeAddOnsCount = addOns?.Count ?? 0
+            t.Id, t.Name, t.Slug, t.ContactName, t.ContactEmail,
+            contactPhone = string.IsNullOrWhiteSpace(t.ContactPhone) ? t.ContactMobile ?? "" : t.ContactPhone,
+            t.City, t.Country, t.BusinessType, t.Tier, t.IsActive,
+            isTrialActive = status == TenantStatus.Trial,
+            status = status.ToString(),
+            deploymentMode = t.DeploymentMode.ToString(),
+            t.TrialEndsAt, t.SubscriptionPaidUntil, t.CreatedAt, t.CancelledAt,
+            branchCount = branches.Count(b => b.TenantId == t.Id),
+            outletCount = outlets.Count,
+            userCount = userCounts.GetValueOrDefault(t.Id),
+            maxUsers = t.DeploymentMode == DeploymentMode.HeadOffice ? Pos.Api.Data.FeatureCatalog.UnlimitedCount
+                : (package?.MaxUsers ?? 0) + mine.Where(a => a.AddOnKey == "EXTRA_USER").Sum(a => a.Quantity),
+            counterCount = tills.Count,
+            // 9999 means "no limit" (an outlet whose version allows any number).
+            maxCounters = outlets.Any(o => Allowed(o.Id, o.PosEdition, TerminalType.Counter) >= Pos.Api.Data.FeatureCatalog.UnlimitedCount)
+                ? 9999 : outlets.Sum(o => Allowed(o.Id, o.PosEdition, TerminalType.Counter)),
+            tabletCount = tablets.Count,
+            maxTablets = outlets.Any(o => Allowed(o.Id, o.PosEdition, TerminalType.OrderTab) >= Pos.Api.Data.FeatureCatalog.UnlimitedCount)
+                ? 9999 : outlets.Sum(o => Allowed(o.Id, o.PosEdition, TerminalType.OrderTab)),
+            outletsOverLimit = outletsOverTills + outletsOverTablets,
+            activeAddOnsCount = mine.Count,
+            lastSeenAt = lastSeen.TryGetValue(t.Id, out var seen) ? seen : (DateTime?)null,
+            monthlyPKR = Math.Round(monthly, 0),
+            partsNeedingAttention = attention.Count,
+            nextRenewal = next.Part == null ? null : new
+            {
+                partName = next.Part.Name,
+                kind = next.Part.Kind.ToString(),
+                renewsAt = next.State.RenewsAt,
+                daysLeft = next.State.DaysLeft,
+                status = next.State.Status.ToString()
+            }
         };
     });
 
@@ -10341,13 +10655,15 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http) =>
 // lifecycle ladder. Prefer PUT /status, which records a reason and can stop somewhere gentler
 // than "your tills are off".
 app.MapPut("/api/admin/tenants/{id:guid}/toggle-active", async (
-    Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
+    Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
     tenant.IsActive = !tenant.IsActive;
+    await WriteAuditAsync(db, tenant.Id, await accessor.GetCurrentUserAsync(http), tenant.IsActive ? "TenantActivated" : "TenantDeactivated",
+        "Tenant", tenant.Id, null, "Switched from the business list");
 
     // Keep the ladder in step. Reactivating returns the tenant to PastDue rather than Active —
     // whether they have actually paid is a separate fact, recorded by the plan-change endpoint.
@@ -10398,13 +10714,13 @@ app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     ChangeTierDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
 
     var previousTier = tenant.Tier;
-    if (previousTier == dto.Tier && dto.PaidUntil == tenant.SubscriptionPaidUntil)
+    if (previousTier == dto.Tier && (dto.PaidUntil == null || dto.PaidUntil == tenant.SubscriptionPaidUntil))
         return Results.Ok(new { tenant.Id, tier = tenant.Tier.ToString(), tenant.SubscriptionPaidUntil, message = "No change." });
 
     var impact = await AssessPlanChangeAsync(db, entitlements, tenant, dto.Tier);
@@ -10420,7 +10736,8 @@ app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (
         });
 
     tenant.Tier = dto.Tier;
-    tenant.SubscriptionPaidUntil = dto.PaidUntil;
+    // Payment dates now belong to each part (Billing tab). An older screen may still send one.
+    if (dto.PaidUntil != null) tenant.SubscriptionPaidUntil = dto.PaidUntil;
 
     // Paying for a plan ends the trial and clears any past-due state. Deliberately does not
     // touch Restricted/ReadOnly/Suspended — those are support decisions, undone on purpose.
@@ -10453,80 +10770,41 @@ app.MapPut("/api/admin/tenants/{id:guid}/change-tier", async (
     });
 }).RequireAuthorization();
 
-// --- Subscription billing history — platform-vendor only, same reasoning as
-// Tenant Management above: this bills every restaurant on the platform, not one. ---
-app.MapGet("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Guid? tenantId) =>
+// Subscription invoices and payments: see PLATFORM BILLING below.
+
+// ============================================================
+// THE PLATFORM TEAM
+//
+// Everyone who runs Cashly signs in as themselves — email, password and 2-step sign-in — with a role
+// that decides what they may change (Models/PlatformBillingEntities.cs → PlatformRoles). The old
+// shared setup PIN only works until the first named owner exists: it is how that owner is created.
+// ============================================================
+
+static object PlatformUserView(AppUser u) => new
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
-    var query = db.SubscriptionInvoices.AsQueryable();
-    if (tenantId.HasValue) query = query.Where(i => i.TenantId == tenantId.Value);
-    var rows = await query.OrderByDescending(i => i.IssuedAt).Take(500).ToListAsync();
-    return Results.Ok(rows);
-}).RequireAuthorization();
+    id = u.Id,
+    fullName = u.FullName,
+    username = u.Username,
+    email = u.Email,
+    role = "SuperAdmin",
+    platformRole = u.PlatformRole ?? PlatformRoles.Owner,
+    tenantId = Guid.Empty,
+    branchId = (Guid?)null,
+    twoFactorEnabled = u.TwoFactorEnabled,
+    // The setup-PIN account has no email and no 2-step: it is there to create real accounts.
+    isSetupAccount = u.PlatformRole == null,
+    mustSetUpTwoStep = u.PlatformRole != null && !u.TwoFactorEnabled
+};
 
-app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Pos.Api.Services.IBillingService billing, IssueSubscriptionInvoiceDto dto) =>
-{
-    if (!http.IsSuperAdmin()) return Results.Forbid();
-    var tenant = await db.Tenants.FindAsync(dto.TenantId);
-    if (tenant == null) return Results.NotFound(new { message = "Tenant not found." });
+// A named owner counts once they have actually signed in — adding yourself and then losing the
+// temporary password must not lock the platform out.
+static async Task<bool> NamedPlatformOwnerExistsAsync(AppDbContext db) =>
+    await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Role == UserRole.SuperAdmin && u.IsActive && u.PlatformRole == PlatformRoles.Owner
+                                                      && u.Email != null && u.LastSignInAt != null);
 
-    // The amount is what the business actually runs: the Head Office ERP, each shop's POS
-    // version and each add-on. An amount typed by hand still wins (a negotiated price).
-    var quote = await billing.QuoteAsync(tenant.Id, dto.Annual);
-    var amount = dto.AmountPKR ?? quote.TotalPKR;
-    var periodStart = dto.BillingPeriodStart ?? DateTime.UtcNow;
-    var periodEnd = dto.BillingPeriodEnd ?? periodStart.AddMonths(dto.Annual ? 12 : 1);
-    var count = await db.SubscriptionInvoices.CountAsync();
-    var shops = quote.Lines.Count(l => l.Kind == "pos");
-
-    var invoice = new SubscriptionInvoice
-    {
-        TenantId = tenant.Id,
-        InvoiceNumber = $"INV-{count + 1:00000}",
-        Tier = quote.HasHeadOffice ? $"Head Office ERP + {shops} shop{(shops == 1 ? "" : "s")}" : tenant.Tier.ToString(),
-        BillingPeriodStart = periodStart,
-        BillingPeriodEnd = periodEnd,
-        AmountPKR = amount,
-        Status = SubscriptionInvoiceStatus.Pending,
-        DueAt = dto.DueAt ?? periodStart.AddDays(7),
-        Notes = dto.Notes,
-        LinesJson = System.Text.Json.JsonSerializer.Serialize(quote.Lines.Select(l => new
-        {
-            description = l.Description, quantity = l.Quantity, unitPricePKR = l.UnitPricePKR, amountPKR = l.AmountPKR, kind = l.Kind
-        }))
-    };
-    db.SubscriptionInvoices.Add(invoice);
-    await db.SaveChangesAsync();
-    return Results.Ok(invoice);
-}).RequireAuthorization();
-
-app.MapPost("/api/admin/subscription-invoices/{id:guid}/mark-paid", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionCheckout checkout, Guid id, MarkSubscriptionInvoicePaidDto dto) =>
-{
-    if (!http.IsSuperAdmin()) return Results.Forbid();
-    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().FirstOrDefaultAsync(i => i.Id == id);
-    if (invoice == null) return Results.NotFound();
-    if (invoice.Status == SubscriptionInvoiceStatus.Paid) return Results.BadRequest(new { message = "Already paid." });
-
-    // Through the same settle path a gateway webhook takes, so marking an invoice paid by hand
-    // applies what it bought — a self-serve purchase paid offline must not need a second, manual
-    // grant on top of the money.
-    var applied = await checkout.SettleAsync(invoice, dto.PaymentMethod, actingUserId: null);
-    if (!applied)
-        return Results.Ok(new { message = "Invoice paid, but the purchase could not be applied. See the invoice notes.", invoice });
-
-    return Results.Ok(invoice);
-}).RequireAuthorization();
-
-app.MapPost("/api/admin/subscription-invoices/{id:guid}/cancel", async (AppDbContext db, HttpContext http, Guid id) =>
-{
-    if (!http.IsSuperAdmin()) return Results.Forbid();
-    var invoice = await db.SubscriptionInvoices.FirstOrDefaultAsync(i => i.Id == id);
-    if (invoice == null) return Results.NotFound();
-    if (invoice.Status == SubscriptionInvoiceStatus.Paid) return Results.BadRequest(new { message = "A paid invoice cannot be cancelled." });
-    invoice.Status = SubscriptionInvoiceStatus.Cancelled;
-    await db.SaveChangesAsync();
-    return Results.Ok(invoice);
-}).RequireAuthorization();
+// Which sign-in the platform admin page should offer.
+authApi.MapGet("/platform-login-mode", async (AppDbContext db) =>
+    Results.Ok(new { setupPinAllowed = !await NamedPlatformOwnerExistsAsync(db) || string.Equals(builder.Configuration["SuperAdmin:AllowSetupPin"], "true", StringComparison.OrdinalIgnoreCase) }));
 
 authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, LoginDto dto) =>
 {
@@ -10538,14 +10816,23 @@ authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, 
         && !string.Equals(origin.Host, "admin." + baseDomain, StringComparison.OrdinalIgnoreCase))
         return Results.Json(new { message = $"Platform Admin sign-in is only at admin.{baseDomain}." }, statusCode: StatusCodes.Status403Forbidden);
 
+    // The shared setup PIN is how the first named owner gets created. After that, everyone signs in
+    // as themselves — unless the server is told otherwise (SuperAdmin:AllowSetupPin=true, for recovery).
+    if (await NamedPlatformOwnerExistsAsync(db)
+        && !string.Equals(builder.Configuration["SuperAdmin:AllowSetupPin"], "true", StringComparison.OrdinalIgnoreCase))
+        return Results.Json(new { message = "The setup PIN is switched off now that the platform has named owners. Sign in with your email and password." },
+            statusCode: StatusCodes.Status403Forbidden);
+
     // Super admin credentials from configuration (not hardcoded)
     var superAdminUsername = builder.Configuration["SuperAdmin:Username"] ?? "superadmin";
     var superAdminPin = builder.Configuration["SuperAdmin:Pin"] ?? Environment.GetEnvironmentVariable("SUPER_ADMIN_PIN") ?? "999999";
 
-    if (isProduction && dto.PinCode == superAdminPin && superAdminPin == "999999")
+    // The well-known default PIN never opens a production server.
+    if (isProduction && superAdminPin == "999999")
     {
-        // Warn if using default PIN in production
-        Console.WriteLine("[WARNING] Super admin is using the default PIN. Change SUPER_ADMIN_PIN in production!");
+        Console.WriteLine("[WARNING] Platform sign-in refused: the setup PIN is still the default. Set SUPER_ADMIN_PIN.");
+        return Results.Json(new { message = "The setup PIN has not been set on this server. Set SUPER_ADMIN_PIN, then try again." },
+            statusCode: StatusCodes.Status403Forbidden);
     }
 
     if (dto.Username != superAdminUsername || dto.PinCode != superAdminPin)
@@ -10555,16 +10842,16 @@ authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, 
     }
 
     // Find or create super admin user (no tenant)
-    var superAdmin = await db.Users.FirstOrDefaultAsync(u => u.Username == "superadmin" && u.Role == UserRole.SuperAdmin);
+    var superAdmin = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Username == "superadmin" && u.Role == UserRole.SuperAdmin && u.PlatformRole == null);
     if (superAdmin == null)
     {
         superAdmin = new AppUser
         {
             TenantId = Guid.Empty,
             BranchId = null,
-            FullName = "Platform Super Admin",
+            FullName = "Platform setup",
             Username = "superadmin",
-            PinCodeHash = BCrypt.Net.BCrypt.HashPassword("999999"),
+            PinCodeHash = BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString("N")),
             Role = UserRole.SuperAdmin,
             IsActive = true
         };
@@ -10572,67 +10859,472 @@ authApi.MapPost("/super-admin-login", async (AppDbContext db, HttpContext http, 
         await db.SaveChangesAsync();
     }
 
-    await WriteAuditAsync(db, Guid.Empty, superAdmin, "UserLoggedIn", "AppUser", superAdmin.Id, null, $"Platform admin login, IP {clientIp}");
+    superAdmin.LastSignInAt = DateTime.UtcNow;
+    await WriteAuditAsync(db, Guid.Empty, superAdmin, "UserLoggedIn", "AppUser", superAdmin.Id, null, $"Platform sign-in with the setup PIN, IP {clientIp}");
     var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, superAdmin, isSuperAdmin: true, clientIp);
     await db.SaveChangesAsync();
 
-    return Results.Ok(new
-    {
-        token = accessToken,
-        refreshToken,
-        user = new
-        {
-            id = superAdmin.Id,
-            fullName = superAdmin.FullName,
-            username = superAdmin.Username,
-            role = "SuperAdmin",
-            tenantId = Guid.Empty,
-            branchId = (Guid?)null
-        }
-    });
+    return Results.Ok(new { token = accessToken, refreshToken, user = PlatformUserView(superAdmin) });
 });
 
-app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
+// A platform team member signing in as themselves: email and password, then the 2-step code.
+authApi.MapPost("/platform-login", async (AppDbContext db, HttpContext http, EmailLoginDto dto) =>
+{
+    const int MaxFailedAttempts = 5;
+    var clientIp = http.Connection.RemoteIpAddress?.ToString();
+    if (baseDomain != null && Uri.TryCreate(http.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
+        && !string.Equals(origin.Host, "admin." + baseDomain, StringComparison.OrdinalIgnoreCase))
+        return Results.Json(new { message = $"Platform Admin sign-in is only at admin.{baseDomain}." }, statusCode: StatusCodes.Status403Forbidden);
+
+    var email = NormalizeEmail(dto.Email);
+    if (email == null || string.IsNullOrEmpty(dto.Password))
+        return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
+
+    var user = await db.Users.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(u => u.Email == email && u.IsActive && u.Role == UserRole.SuperAdmin && u.PlatformRole != null);
+    if (user != null && user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+        return Results.Json(new { message = $"Too many failed attempts. Try again in {Math.Ceiling((user.LockedUntil.Value - DateTime.UtcNow).TotalMinutes)} minute(s)." },
+            statusCode: StatusCodes.Status423Locked);
+
+    if (user == null || user.PasswordHash == null || !BCrypt.Net.BCrypt.Verify(dto.Password, user.PasswordHash))
+    {
+        if (user != null)
+        {
+            user.FailedLoginAttempts += 1;
+            var lockedOut = user.FailedLoginAttempts >= MaxFailedAttempts;
+            if (lockedOut)
+            {
+                user.LockedUntil = DateTime.UtcNow.AddMinutes(15);
+                user.FailedLoginAttempts = 0;
+            }
+            await WriteAuditAsync(db, Guid.Empty, user, lockedOut ? "AccountLocked" : "LoginFailed", "AppUser", user.Id, null, $"Wrong password (IP {clientIp})");
+            await db.SaveChangesAsync();
+        }
+        Console.WriteLine($"[Auth] Failed platform sign-in for '{email}' from IP {clientIp}");
+        return Results.Json(new { message = "Wrong email or password." }, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    if (user.TwoFactorEnabled)
+        return Results.Ok(new { twoFactorRequired = true, challenge = IssueTwoFactorChallenge(builder.Configuration, user, null) });
+
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    user.LastSignInAt = DateTime.UtcNow;
+    await WriteAuditAsync(db, Guid.Empty, user, "UserLoggedIn", "AppUser", user.Id, null, $"Platform sign-in (2-step not set up yet), IP {clientIp}");
+    var (accessToken, refreshToken, _) = IssueTokenPair(db, builder.Configuration, user, isSuperAdmin: true, clientIp);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { token = accessToken, refreshToken, user = PlatformUserView(user) });
+}).RequireRateLimiting("auth");
+
+static object TeamMemberView(AppUser u) => new
+{
+    u.Id, u.FullName, u.Email, platformRole = u.PlatformRole ?? PlatformRoles.Owner, u.IsActive, u.TwoFactorEnabled,
+    u.LastSignInAt, u.CreatedAt, locked = u.LockedUntil > DateTime.UtcNow, isSetupAccount = u.PlatformRole == null
+};
+
+static string TemporaryPassword()
+{
+    const string letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(12);
+    return new string(bytes.Select(b => letters[b % letters.Length]).ToArray()) + "-7";
+}
+
+app.MapGet("/api/admin/team", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var members = await db.Users.IgnoreQueryFilters().AsNoTracking()
+        .Where(u => u.Role == UserRole.SuperAdmin).OrderByDescending(u => u.PlatformRole == PlatformRoles.Owner).ThenBy(u => u.FullName).ToListAsync();
+    return Results.Ok(members.Select(TeamMemberView));
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/team", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateTeamMemberDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var email = NormalizeEmail(dto.Email);
+    if (string.IsNullOrWhiteSpace(dto.FullName) || email == null || !email.Contains('@'))
+        return Results.BadRequest(new { message = "A name and a valid email are required." });
+    if (!PlatformRoles.All.Contains(dto.PlatformRole))
+        return Results.BadRequest(new { message = "Pick a role: Owner, Billing, Support or Sales." });
+    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == email))
+        return Results.BadRequest(new { message = "That email already has an account." });
+
+    var password = TemporaryPassword();
+    var member = new AppUser
+    {
+        TenantId = Guid.Empty, BranchId = null, FullName = dto.FullName.Trim(),
+        Username = $"platform-{Guid.NewGuid():N}"[..20], Email = email,
+        PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
+        PinCodeHash = BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString("N")),
+        Role = UserRole.SuperAdmin, PlatformRole = dto.PlatformRole, IsActive = true
+    };
+    db.Users.Add(member);
+    await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "PlatformTeamMemberAdded", "AppUser", member.Id, null,
+        $"{member.FullName} <{email}> as {dto.PlatformRole}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { member = TeamMemberView(member), temporaryPassword = password });
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/team/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, UpdateTeamMemberDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var member = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == id && u.Role == UserRole.SuperAdmin);
+    if (member == null) return Results.NotFound();
+    var actor = await accessor.GetCurrentUserAsync(http);
+    if (dto.PlatformRole != null && !PlatformRoles.All.Contains(dto.PlatformRole))
+        return Results.BadRequest(new { message = "Pick a role: Owner, Billing, Support or Sales." });
+
+    var losesOwner = member.PlatformRole == PlatformRoles.Owner && member.IsActive
+                     && ((dto.PlatformRole != null && dto.PlatformRole != PlatformRoles.Owner) || dto.IsActive == false);
+    if (losesOwner && !await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Id != id && u.Role == UserRole.SuperAdmin && u.IsActive && u.PlatformRole == PlatformRoles.Owner))
+        return Results.BadRequest(new { message = "The platform needs at least one active owner. Make someone else an owner first." });
+    if (actor?.Id == id && dto.IsActive == false)
+        return Results.BadRequest(new { message = "You cannot switch off your own account." });
+
+    var before = $"{member.FullName}, {member.PlatformRole ?? "setup"}, {(member.IsActive ? "active" : "off")}";
+    if (!string.IsNullOrWhiteSpace(dto.FullName)) member.FullName = dto.FullName.Trim();
+    if (dto.PlatformRole != null && member.PlatformRole != null) member.PlatformRole = dto.PlatformRole;
+    if (dto.IsActive != null) member.IsActive = dto.IsActive.Value;
+    if (dto.IsActive == false) await SignOutEverywhereAsync(db, member.Id, null);
+    await WriteAuditAsync(db, Guid.Empty, actor, "PlatformTeamMemberChanged", "AppUser", member.Id, before,
+        $"{member.FullName}, {member.PlatformRole ?? "setup"}, {(member.IsActive ? "active" : "off")}");
+    await db.SaveChangesAsync();
+    return Results.Ok(TeamMemberView(member));
+}).RequireAuthorization();
+
+// A new temporary password (shown once), and — when they lost their phone — 2-step switched off.
+app.MapPost("/api/admin/team/{id:guid}/reset", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, ResetTeamMemberDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var member = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == id && u.Role == UserRole.SuperAdmin && u.PlatformRole != null);
+    if (member == null) return Results.NotFound(new { message = "That team member was not found." });
+    var password = TemporaryPassword();
+    member.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+    member.LockedUntil = null;
+    member.FailedLoginAttempts = 0;
+    if (dto.TurnOffTwoStep == true) TurnOffTwoFactor(member);
+    var signedOut = await SignOutEverywhereAsync(db, member.Id, null);
+    await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "PlatformTeamPasswordReset", "AppUser", member.Id, null,
+        $"{member.FullName}: new temporary password{(dto.TurnOffTwoStep == true ? ", 2-step switched off" : "")}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { temporaryPassword = password, signedOutSessions = signedOut, twoStepOff = dto.TurnOffTwoStep == true });
+}).RequireAuthorization();
+
+// Everything the platform team (and the billing automation) did, across every business.
+app.MapGet("/api/admin/activity", async (AppDbContext db, HttpContext http, Guid? actorId, Guid? tenantId, string? action, string? search, int page = 1, int pageSize = 50) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    page = Math.Max(page, 1);
+    pageSize = Math.Clamp(pageSize, 1, 200);
+    var teamIds = await db.Users.IgnoreQueryFilters().Where(u => u.Role == UserRole.SuperAdmin).Select(u => u.Id).ToListAsync();
+    var query = db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+        .Where(a => teamIds.Contains(a.UserId) || a.TenantId == Guid.Empty || a.UserName == "Cashly (automatic)");
+    if (actorId.HasValue) query = query.Where(a => a.UserId == actorId.Value);
+    if (tenantId.HasValue) query = query.Where(a => a.TenantId == tenantId.Value);
+    if (!string.IsNullOrWhiteSpace(action)) query = query.Where(a => a.Action == action);
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim().ToLower();
+        query = query.Where(a => (a.NewValue != null && a.NewValue.ToLower().Contains(term)) || a.UserName.ToLower().Contains(term) || a.Action.ToLower().Contains(term));
+    }
+    var total = await query.CountAsync();
+    var rows = await query.OrderByDescending(a => a.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var actions = await db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+        .Where(a => teamIds.Contains(a.UserId) || a.TenantId == Guid.Empty || a.UserName == "Cashly (automatic)")
+        .Select(a => a.Action).Distinct().OrderBy(a => a).ToListAsync();
+    return Results.Ok(new
+    {
+        page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize), actions,
+        entries = rows.Select(a => new
+        {
+            a.Id, a.TenantId, tenantName = a.TenantId == Guid.Empty ? null : names.GetValueOrDefault(a.TenantId),
+            a.UserId, a.UserName, a.Action, a.EntityType, a.EntityId, a.OldValue, a.NewValue, a.CreatedAt
+        })
+    });
+}).RequireAuthorization();
+
+// ============================================================
+// CUSTOMER NOTES, ANNOUNCEMENTS AND REVENUE
+// ============================================================
+
+// Notes about one business: calls, visits, promises to pay — each with an optional follow-up date.
+app.MapGet("/api/admin/tenants/{id:guid}/notes", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await db.TenantNotes.IgnoreQueryFilters().AsNoTracking()
+        .Where(n => n.TenantId == id).OrderByDescending(n => n.CreatedAt).Take(200).ToListAsync());
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/tenants/{id:guid}/notes", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SaveTenantNoteDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.WriteNotes)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Body)) return Results.BadRequest(new { message = "Write the note first." });
+    if (!await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Id == id)) return Results.NotFound();
+    var kind = dto.Kind is "Call" or "Visit" or "Promise" ? dto.Kind : "Note";
+    if (kind == "Promise" && dto.FollowUpAt == null)
+        return Results.BadRequest(new { message = "A promise to pay needs the date they promised." });
+    var actor = await accessor.GetCurrentUserAsync(http);
+    var note = new TenantNote
+    {
+        TenantId = id, Kind = kind, Body = dto.Body.Trim(),
+        FollowUpAt = dto.FollowUpAt.HasValue ? DateTime.SpecifyKind(dto.FollowUpAt.Value, DateTimeKind.Utc) : null,
+        PromisedAmountPKR = kind == "Promise" ? dto.PromisedAmountPKR : null,
+        AuthorUserId = actor?.Id, AuthorName = actor?.FullName ?? "Platform admin"
+    };
+    db.TenantNotes.Add(note);
+    await db.SaveChangesAsync();
+    return Results.Ok(note);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/notes/{noteId:guid}", async (Guid noteId, AppDbContext db, HttpContext http, UpdateTenantNoteDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.WriteNotes)) return PlatformDenied();
+    var note = await db.TenantNotes.IgnoreQueryFilters().FirstOrDefaultAsync(n => n.Id == noteId);
+    if (note == null) return Results.NotFound();
+    if (dto.Done != null) note.DoneAt = dto.Done.Value ? note.DoneAt ?? DateTime.UtcNow : null;
+    if (dto.FollowUpAt != null) note.FollowUpAt = DateTime.SpecifyKind(dto.FollowUpAt.Value, DateTimeKind.Utc);
+    if (dto.ClearFollowUp == true) note.FollowUpAt = null;
+    await db.SaveChangesAsync();
+    return Results.Ok(note);
+}).RequireAuthorization();
+
+app.MapDelete("/api/admin/notes/{noteId:guid}", async (Guid noteId, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!PlatformCan(http, PlatformRoles.WriteNotes)) return PlatformDenied();
+    var note = await db.TenantNotes.IgnoreQueryFilters().FirstOrDefaultAsync(n => n.Id == noteId);
+    if (note == null) return Results.NotFound();
+    var actor = await accessor.GetCurrentUserAsync(http);
+    // Only the person who wrote it, or a platform owner, removes a note.
+    if (note.AuthorUserId != actor?.Id && !PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    db.TenantNotes.Remove(note);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { removed = true });
+}).RequireAuthorization();
+
+// Follow-ups across every business: open notes with a date, soonest first.
+app.MapGet("/api/admin/follow-ups", async (AppDbContext db, HttpContext http, int? days) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var until = DateTime.UtcNow.AddDays(Math.Clamp(days ?? 7, 0, 90));
+    var rows = await db.TenantNotes.IgnoreQueryFilters().AsNoTracking()
+        .Where(n => n.DoneAt == null && n.FollowUpAt != null && n.FollowUpAt <= until)
+        .OrderBy(n => n.FollowUpAt).Take(100).ToListAsync();
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    return Results.Ok(rows.Select(n => new
+    {
+        n.Id, n.TenantId, tenantName = names.GetValueOrDefault(n.TenantId), n.Kind, n.Body, n.FollowUpAt, n.PromisedAmountPKR,
+        n.AuthorName, n.CreatedAt, overdue = n.FollowUpAt < DateTime.UtcNow
+    }));
+}).RequireAuthorization();
+
+// --- Announcements --------------------------------------------------------------
+
+app.MapGet("/api/admin/announcements", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await db.PlatformAnnouncements.AsNoTracking().OrderByDescending(a => a.CreatedAt).Take(200).ToListAsync());
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/announcements", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SaveAnnouncementDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Title) || string.IsNullOrWhiteSpace(dto.Body))
+        return Results.BadRequest(new { message = "A title and a message are required." });
+    var actor = await accessor.GetCurrentUserAsync(http);
+    var item = new PlatformAnnouncement { CreatedByName = actor?.FullName };
+    ApplyAnnouncement(item, dto);
+    db.PlatformAnnouncements.Add(item);
+    await WriteAuditAsync(db, Guid.Empty, actor, "AnnouncementPublished", "PlatformAnnouncement", item.Id, null, $"{item.Title} → {item.Audience}");
+    await db.SaveChangesAsync();
+    return Results.Ok(item);
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/announcements/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, SaveAnnouncementDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var item = await db.PlatformAnnouncements.FirstOrDefaultAsync(a => a.Id == id);
+    if (item == null) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(dto.Title) || string.IsNullOrWhiteSpace(dto.Body))
+        return Results.BadRequest(new { message = "A title and a message are required." });
+    ApplyAnnouncement(item, dto);
+    await db.SaveChangesAsync();
+    return Results.Ok(item);
+}).RequireAuthorization();
+
+app.MapDelete("/api/admin/announcements/{id:guid}", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var item = await db.PlatformAnnouncements.FirstOrDefaultAsync(a => a.Id == id);
+    if (item == null) return Results.NotFound();
+    db.PlatformAnnouncements.Remove(item);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { removed = true });
+}).RequireAuthorization();
+
+static void ApplyAnnouncement(PlatformAnnouncement item, SaveAnnouncementDto dto)
+{
+    item.Title = dto.Title!.Trim();
+    item.Body = dto.Body!.Trim();
+    item.Tone = dto.Tone is "warning" or "success" ? dto.Tone : "info";
+    item.StartsAt = dto.StartsAt.HasValue ? DateTime.SpecifyKind(dto.StartsAt.Value, DateTimeKind.Utc) : DateTime.UtcNow;
+    item.EndsAt = dto.EndsAt.HasValue ? DateTime.SpecifyKind(dto.EndsAt.Value, DateTimeKind.Utc) : null;
+    item.Audience = dto.Audience is "plan" or "shape" or "businesses" ? dto.Audience : "all";
+    item.AudienceValue = item.Audience == "all" ? null : dto.AudienceValue?.Trim();
+    item.IsActive = dto.IsActive ?? true;
+}
+
+// What a signed-in business should see right now. Shown as a banner in the app.
+app.MapGet("/api/announcements/active", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Ok(Array.Empty<object>());
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+        .Where(t => t.Id == tenantId.Value).Select(t => new { t.Tier, t.DeploymentMode }).FirstOrDefaultAsync();
+    if (tenant == null) return Results.Ok(Array.Empty<object>());
+    var now = DateTime.UtcNow;
+    var live = await db.PlatformAnnouncements.AsNoTracking()
+        .Where(a => a.IsActive && a.StartsAt <= now && (a.EndsAt == null || a.EndsAt > now))
+        .OrderByDescending(a => a.StartsAt).Take(20).ToListAsync();
+    var mine = live.Where(a => a.Audience switch
+    {
+        "plan" => string.Equals(a.AudienceValue, tenant.Tier.ToString(), StringComparison.OrdinalIgnoreCase),
+        "shape" => string.Equals(a.AudienceValue, tenant.DeploymentMode.ToString(), StringComparison.OrdinalIgnoreCase),
+        "businesses" => (a.AudienceValue ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(tenantId.Value.ToString(), StringComparer.OrdinalIgnoreCase),
+        _ => true
+    });
+    return Results.Ok(mine.Select(a => new { a.Id, a.Title, a.Body, a.Tone, a.StartsAt, a.EndsAt }));
+}).RequireAuthorization();
+
+// --- Revenue ----------------------------------------------------------------------
+
+// Month by month: money in, invoiced, new and lost businesses, and recurring revenue from the parts
+// installed at each month's end (at today's prices). Plus today's split by plan and by city.
+app.MapGet("/api/admin/reports/revenue", async (AppDbContext db, HttpContext http, int? months) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var count = Math.Clamp(months ?? 12, 3, 36);
+    var now = DateTime.UtcNow;
+    var firstMonth = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc).AddMonths(-(count - 1));
+
+    var payments = await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.VoidedAt == null && p.ReceivedAt >= firstMonth).Select(p => new { p.Kind, p.AmountPKR, p.ReceivedAt, p.TenantId }).ToListAsync();
+    // Invoices paid before payments were recorded one by one count on their paid date.
+    var oldPaid = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking()
+        .Where(i => i.Status == SubscriptionInvoiceStatus.Paid && i.PaidAt >= firstMonth
+                    && !db.SubscriptionPayments.IgnoreQueryFilters().Any(p => p.InvoiceId == i.Id))
+        .Select(i => new { i.AmountPKR, PaidAt = i.PaidAt!.Value }).ToListAsync();
+    var invoiced = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking()
+        .Where(i => i.Status != SubscriptionInvoiceStatus.Cancelled && i.IssuedAt >= firstMonth)
+        .Select(i => new { i.AmountPKR, i.IssuedAt }).ToListAsync();
+    var tenants = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+        .Select(t => new { t.Id, t.CreatedAt, t.CancelledAt, t.Tier, t.City, t.Status, t.IsActive }).ToListAsync();
+    var parts = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.InstalledAt != null)
+        .Select(p => new { p.TenantId, p.InstalledAt, p.EndedAt, p.IsActive, p.Annual, p.MonthlyPricePKR, p.YearlyPricePKR }).ToListAsync();
+
+    var rows = Enumerable.Range(0, count).Select(i =>
+    {
+        var start = firstMonth.AddMonths(i);
+        var end = start.AddMonths(1);
+        var at = end > now ? now : end;
+        var collected = payments.Where(p => p.ReceivedAt >= start && p.ReceivedAt < end).Sum(p => p.Kind == "Refund" ? -p.AmountPKR : p.AmountPKR)
+                        + oldPaid.Where(p => p.PaidAt >= start && p.PaidAt < end).Sum(p => p.AmountPKR);
+        var recurring = parts.Where(p => p.InstalledAt <= at && (p.EndedAt == null || p.EndedAt > at))
+            .Sum(p => p.Annual ? p.YearlyPricePKR / 12m : p.MonthlyPricePKR);
+        return new
+        {
+            month = start.ToString("yyyy-MM"),
+            collectedPKR = Math.Round(collected, 0),
+            invoicedPKR = Math.Round(invoiced.Where(x => x.IssuedAt >= start && x.IssuedAt < end).Sum(x => x.AmountPKR), 0),
+            recurringPKR = Math.Round(recurring, 0),
+            newBusinesses = tenants.Count(t => t.CreatedAt >= start && t.CreatedAt < end),
+            lostBusinesses = tenants.Count(t => t.CancelledAt >= start && t.CancelledAt < end),
+            businessesAtEnd = tenants.Count(t => t.CreatedAt < at && (t.CancelledAt == null || t.CancelledAt >= at))
+        };
+    }).ToList();
+
+    var open = tenants.Where(t => t.IsActive && t.Status != TenantStatus.Cancelled).Select(t => t.Id).ToHashSet();
+    var liveParts = parts.Where(p => p.IsActive && open.Contains(p.TenantId)).ToList();
+    decimal MonthlyOf(Guid tenantId) => liveParts.Where(p => p.TenantId == tenantId).Sum(p => p.Annual ? p.YearlyPricePKR / 12m : p.MonthlyPricePKR);
+    var byPlan = tenants.Where(t => open.Contains(t.Id)).GroupBy(t => t.Tier.ToString())
+        .Select(g => new { label = g.Key, businesses = g.Count(), monthlyPKR = Math.Round(g.Sum(t => MonthlyOf(t.Id)), 0) })
+        .OrderByDescending(x => x.monthlyPKR).ToList();
+    var byCity = tenants.Where(t => open.Contains(t.Id)).GroupBy(t => string.IsNullOrWhiteSpace(t.City) ? "Unknown" : t.City!.Trim())
+        .Select(g => new { label = g.Key, businesses = g.Count(), monthlyPKR = Math.Round(g.Sum(t => MonthlyOf(t.Id)), 0) })
+        .OrderByDescending(x => x.monthlyPKR).Take(15).ToList();
+
+    // Trials that became paying: businesses that started 30–365 days ago and have paid anything.
+    var cohort = tenants.Where(t => t.CreatedAt <= now.AddDays(-30) && t.CreatedAt >= now.AddDays(-365)).Select(t => t.Id).ToList();
+    var payers = (await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.Kind == "Payment" && p.VoidedAt == null && cohort.Contains(p.TenantId)).Select(p => p.TenantId).Distinct().ToListAsync())
+        .Union(await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking()
+            .Where(i => i.Status == SubscriptionInvoiceStatus.Paid && cohort.Contains(i.TenantId)).Select(i => i.TenantId).Distinct().ToListAsync())
+        .Distinct().Count();
+
+    return Results.Ok(new
+    {
+        months = rows,
+        byPlan,
+        byCity,
+        trialCohort = cohort.Count,
+        trialConverted = payers,
+        averageMonthlyPKR = open.Count == 0 ? 0 : Math.Round(open.Sum(MonthlyOf) / open.Count, 0)
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService partsService) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
 
+    await partsService.SyncAllAsync();
     var now = DateTime.UtcNow;
-    var totalTenants = await db.Tenants.CountAsync();
-    var activeTenants = await db.Tenants.CountAsync(t => t.IsActive);
-    var trialTenants = await db.Tenants.CountAsync(t => t.IsTrialActive && t.TrialEndsAt > now);
-    var paidTenants = await db.Tenants.CountAsync(t => !t.IsTrialActive && t.SubscriptionPaidUntil > now);
-    var totalBranches = await db.Branches.CountAsync();
-    var totalOrders = await db.Orders.CountAsync();
-
-    // Money and mix — the numbers the dashboard exists for. A paying business's MRR is what its
-    // monthly bill would be: the Head Office ERP, each shop's POS version and its add-ons.
-    var tenantRows = await db.Tenants.AsNoTracking()
-        .Select(t => new { t.Name, t.Id, t.Tier, t.IsTrialActive, t.SubscriptionPaidUntil, t.Status, t.IsActive })
+    var tenantRows = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+        .Select(t => new { t.Name, t.Id, t.Tier, t.IsTrialActive, t.TrialEndsAt, t.SubscriptionPaidUntil, t.Status, t.IsActive, t.CreatedAt, t.CancelledAt })
         .ToListAsync();
+    var open = tenantRows.Where(t => t.IsActive && t.Status != TenantStatus.Cancelled).ToList();
+    var totalTenants = tenantRows.Count;
+    var activeTenants = open.Count;
+    var trialTenants = open.Count(t => t.Status == TenantStatus.Trial && t.TrialEndsAt > now);
+    var totalBranches = await db.Branches.IgnoreQueryFilters().CountAsync();
+    var since30 = now.AddDays(-30);
+    var ordersLast30d = await db.Orders.IgnoreQueryFilters().CountAsync(o => o.CreatedAt >= since30);
 
-    decimal mrrPKR = 0;
-    var billing = http.RequestServices.GetRequiredService<Pos.Api.Services.IBillingService>();
-    foreach (var paying in tenantRows.Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now))
-        mrrPKR += (await billing.QuoteAsync(paying.Id)).TotalPKR;
+    // Monthly recurring revenue from the parts each business pays for: what is paid up now (MRR),
+    // and what everything installed would bring in once trials end (potential).
+    var openIds = open.Select(t => t.Id).ToHashSet();
+    var parts = (await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.IsActive && p.InstalledAt != null).ToListAsync())
+        .Where(p => openIds.Contains(p.TenantId)).ToList();
+    decimal Monthly(SubscriptionPart p) => p.Annual ? p.YearlyPricePKR / 12m : p.MonthlyPricePKR;
+    var paidParts = parts.Where(p => p.PaidUntil > now).ToList();
+    var mrrPKR = Math.Round(paidParts.Sum(Monthly), 0);
+    var potentialMrrPKR = Math.Round(parts.Sum(Monthly), 0);
+    var payingIds = paidParts.Select(p => p.TenantId).ToHashSet();
+    var paidTenants = payingIds.Count;
 
-    var planMix = tenantRows
-        .Where(t => t.IsActive)
+    var planMix = open
         .GroupBy(t => t.Tier.ToString())
         .Select(g => new { tier = g.Key, count = g.Count() })
         .OrderByDescending(g => g.count)
         .ToList();
 
-    var expiringSoonRows = tenantRows
-        .Where(t => t.IsActive && !t.IsTrialActive && t.SubscriptionPaidUntil > now
-                    && t.SubscriptionPaidUntil <= now.AddDays(14))
-        .OrderBy(t => t.SubscriptionPaidUntil)
-        .ToList();
-    var expiringSoon = expiringSoonRows
-        .Take(5)
-        .Select(t => new { t.Id, t.Name, tier = t.Tier.ToString(), paidUntil = t.SubscriptionPaidUntil })
-        .ToList();
+    var arrears = open.Count(t => t.Status is TenantStatus.PastDue or TenantStatus.Restricted or TenantStatus.ReadOnly
+                                  || (t.Status == TenantStatus.Trial && t.TrialEndsAt <= now && !payingIds.Contains(t.Id)));
 
-    var arrears = tenantRows.Count(t => t.Status is TenantStatus.PastDue or TenantStatus.Restricted or TenantStatus.ReadOnly);
+    // Sign-ups, and how many trials turned into paying customers: businesses that started 30 to
+    // 120 days ago (their trial is over) and have paid anything since.
+    var newSignups7d = tenantRows.Count(t => t.CreatedAt >= now.AddDays(-7));
+    var newSignups30d = tenantRows.Count(t => t.CreatedAt >= since30);
+    var closed30d = tenantRows.Count(t => t.CancelledAt >= since30);
+    var cohort = tenantRows.Where(t => t.CreatedAt <= now.AddDays(-30) && t.CreatedAt >= now.AddDays(-120)).Select(t => t.Id).ToList();
+    var cohortPaid = await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => cohort.Contains(p.TenantId) && p.Kind == "Payment" && p.VoidedAt == null)
+        .Select(p => p.TenantId).Distinct().CountAsync();
+    var cohortPaidOld = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking()
+        .Where(i => cohort.Contains(i.TenantId) && i.Status == SubscriptionInvoiceStatus.Paid)
+        .Select(i => i.TenantId).Distinct().CountAsync();
+
+    var followUpsDue = await db.TenantNotes.IgnoreQueryFilters().CountAsync(n => n.DoneAt == null && n.FollowUpAt != null && n.FollowUpAt <= now);
 
     // A till that has not checked in for a day is the earliest warning that a shop is shut
     // or a customer has a problem — the dashboard shows how many are dark platform-wide.
@@ -10647,30 +11339,78 @@ app.MapGet("/api/admin/stats", async (AppDbContext db, HttpContext http) =>
         trialTenants,
         paidTenants,
         totalBranches,
-        totalOrders,
+        totalOrders = ordersLast30d,
+        ordersLast30d,
         mrrPKR,
+        potentialMrrPKR,
         planMix,
-        expiringSoon,
-        expiringSoonCount = expiringSoonRows.Count,
+        expiringSoon = Array.Empty<object>(),
+        expiringSoonCount = 0,
         arrears,
-        staleDevices
+        staleDevices,
+        newSignups7d,
+        newSignups30d,
+        closed30d,
+        trialCohort = cohort.Count,
+        trialConverted = Math.Max(cohortPaid, cohortPaidOld),
+        followUpsDue
     });
 }).RequireAuthorization();
 
 // ============================================================
-// RENEWALS PER PART — the ERP, each outlet's POS and each extra tablet renew on their own dates,
-// counted from when each was installed. See Services/SubscriptionPartsService.cs.
+// RENEWALS PER PART AND PLATFORM BILLING
+//
+// The ERP, each outlet's POS and each extra tablet renew on their own dates, counted from when each
+// was installed (Services/SubscriptionPartsService.cs). Money moves through one flow: an invoice for
+// the parts coming up, payments recorded against it, and — once paid in full — each part moves on
+// (Services/PlatformBillingService.cs). Every write here checks the platform team member's role.
 // ============================================================
-static object SubscriptionPartView(SubscriptionPart p, string? tenantName, DateTime now)
+
+/// <summary>Whether the signed-in platform team member's role allows this. Reading is open to every role.</summary>
+static bool PlatformCan(HttpContext http, string permission) =>
+    http.IsSuperAdmin() && PlatformRoles.Allows(http.User.FindFirst("platformRole")?.Value, permission);
+
+static IResult PlatformDenied() =>
+    Results.Json(new { message = "Your role on the platform team does not allow this. Ask a platform owner." }, statusCode: StatusCodes.Status403Forbidden);
+
+static async Task<(Guid? Id, string Name)> PlatformActorAsync(HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor)
+{
+    var user = await accessor.GetCurrentUserAsync(http);
+    return (user?.Id, user?.FullName ?? "Platform admin");
+}
+
+static object SubscriptionPartView(SubscriptionPart p, string? tenantName, DateTime now, (Guid Id, string Number)? openInvoice = null, string? tenantPhone = null)
 {
     var state = Pos.Api.Services.SubscriptionPartsService.StateOf(p, now);
     return new
     {
-        p.Id, p.TenantId, tenantName, kind = p.Kind.ToString(), p.Name, p.BranchId,
-        p.InstalledAt, p.TrialEndsAt, p.PaidUntil, p.Annual, p.PricePKR, p.IsActive, p.EndedAt,
-        status = state.Status.ToString(), renewsAt = state.RenewsAt, daysLeft = state.DaysLeft, inTrial = state.InTrial
+        p.Id, p.TenantId, tenantName, tenantPhone, kind = p.Kind.ToString(), p.Name, p.BranchId,
+        p.InstalledAt, p.TrialEndsAt, p.PaidUntil, p.Annual, p.PricePKR, p.MonthlyPricePKR, p.YearlyPricePKR,
+        p.IsActive, p.EndedAt, p.StoppedAt,
+        status = state.Status.ToString(), renewsAt = state.RenewsAt, daysLeft = state.DaysLeft, inTrial = state.InTrial,
+        openInvoiceId = openInvoice?.Id, openInvoiceNumber = openInvoice?.Number
     };
 }
+
+/// <summary>For each part, the unpaid invoice it is on (if any).</summary>
+static async Task<Dictionary<Guid, (Guid Id, string Number)>> OpenInvoicesForPartsAsync(AppDbContext db, List<Guid> partIds)
+{
+    var open = new[] { SubscriptionInvoiceStatus.Pending, SubscriptionInvoiceStatus.Overdue, SubscriptionInvoiceStatus.PartiallyPaid };
+    var rows = await (from line in db.SubscriptionInvoiceParts.IgnoreQueryFilters()
+                      join inv in db.SubscriptionInvoices.IgnoreQueryFilters() on line.InvoiceId equals inv.Id
+                      where partIds.Contains(line.PartId) && open.Contains(inv.Status)
+                      select new { line.PartId, inv.Id, inv.InvoiceNumber }).ToListAsync();
+    return rows.GroupBy(r => r.PartId).ToDictionary(g => g.Key, g => (g.First().Id, g.First().InvoiceNumber));
+}
+
+static object InvoiceView(SubscriptionInvoice i, string? tenantName) => new
+{
+    i.Id, i.TenantId, tenantName, i.InvoiceNumber, i.Tier, i.BillingPeriodStart, i.BillingPeriodEnd,
+    i.AmountPKR, i.SubtotalPKR, i.TaxPKR, i.TaxRatePercent, i.PaidPKR,
+    balancePKR = Math.Max(0, i.AmountPKR - i.PaidPKR),
+    status = i.Status.ToString(), i.IssuedAt, i.DueAt, i.PaidAt, i.PaymentMethod, i.Notes, i.LinesJson, i.Kind,
+    isPurchase = i.EffectJson != null
+};
 
 // Every part of every business, soonest renewal first.
 app.MapGet("/api/admin/renewals", async (AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
@@ -10678,12 +11418,15 @@ app.MapGet("/api/admin/renewals", async (AppDbContext db, HttpContext http, Pos.
     if (!http.IsSuperAdmin()) return Results.Forbid();
     await parts.SyncAllAsync();
     var now = DateTime.UtcNow;
-    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var tenants = await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+        .Select(t => new { t.Id, t.Name, Phone = t.ContactMobile ?? t.ContactPhone }).ToDictionaryAsync(t => t.Id);
     var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.IsActive).ToListAsync();
+    var open = await OpenInvoicesForPartsAsync(db, rows.Select(r => r.Id).ToList());
     return Results.Ok(rows
         .Select(p => (part: p, state: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
         .OrderBy(x => x.state.RenewsAt ?? DateTime.MaxValue)
-        .Select(x => SubscriptionPartView(x.part, names.GetValueOrDefault(x.part.TenantId), now)));
+        .Select(x => SubscriptionPartView(x.part, tenants.GetValueOrDefault(x.part.TenantId)?.Name, now,
+            open.TryGetValue(x.part.Id, out var inv) ? inv : null, tenants.GetValueOrDefault(x.part.TenantId)?.Phone)));
 }).RequireAuthorization();
 
 // How many need attention, by kind — the sidebar badge and the dashboard counts.
@@ -10701,7 +11444,9 @@ app.MapGet("/api/admin/renewals/summary", async (AppDbContext db, HttpContext ht
         return new
         {
             expiring = mine.Count(s => s.State.Status == Pos.Api.Services.PartStatus.Expiring),
-            overdue = mine.Count(s => s.State.Status is Pos.Api.Services.PartStatus.Expired or Pos.Api.Services.PartStatus.PaymentDue)
+            overdue = mine.Count(s => s.State.Status is Pos.Api.Services.PartStatus.Expired or Pos.Api.Services.PartStatus.PaymentDue
+                                      or Pos.Api.Services.PartStatus.Stopped),
+            stopped = mine.Count(s => s.State.Status == Pos.Api.Services.PartStatus.Stopped)
         };
     }
     return Results.Ok(new
@@ -10715,7 +11460,7 @@ app.MapGet("/api/admin/renewals/summary", async (AppDbContext db, HttpContext ht
     });
 }).RequireAuthorization();
 
-// One business's parts, including those no longer in use, for its Subscriptions tab.
+// One business's parts, including those no longer in use, for its Billing tab.
 app.MapGet("/api/admin/tenants/{id:guid}/subscription-parts", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Services.ISubscriptionPartsService parts) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
@@ -10724,51 +11469,476 @@ app.MapGet("/api/admin/tenants/{id:guid}/subscription-parts", async (Guid id, Ap
     await parts.SyncAsync(id);
     var now = DateTime.UtcNow;
     var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().Where(p => p.TenantId == id).ToListAsync();
+    var open = await OpenInvoicesForPartsAsync(db, rows.Select(r => r.Id).ToList());
     return Results.Ok(rows
         .OrderByDescending(p => p.IsActive).ThenBy(p => p.Kind).ThenBy(p => p.Name)
-        .Select(p => SubscriptionPartView(p, tenant.Name, now)));
+        .Select(p => SubscriptionPartView(p, tenant.Name, now, open.TryGetValue(p.Id, out var inv) ? inv : null, tenant.ContactMobile ?? tenant.ContactPhone)));
 }).RequireAuthorization();
 
-// A payment received for one part: renews it by whole periods from its own anniversary.
-app.MapPost("/api/admin/subscription-parts/{id:guid}/mark-paid", async (Guid id, AppDbContext db, HttpContext http,
-    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionPartsService parts, MarkPartPaidDto dto) =>
+// An invoice for one part's next period(s).
+app.MapPost("/api/admin/subscription-parts/{id:guid}/invoice", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.IPlatformBilling billing, PartInvoiceDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var part = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+    if (part == null) return Results.NotFound(new { message = "That part was not found." });
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
     try
     {
-        var part = await parts.MarkPaidAsync(id, dto.Annual, dto.Periods ?? 1);
-        var actingUser = await accessor.GetCurrentUserAsync(http);
-        await WriteAuditAsync(db, part.TenantId, actingUser, "SubscriptionPartPaid", "SubscriptionPart", part.Id, null,
-            $"{part.Name}: paid until {part.PaidUntil:yyyy-MM-dd} ({(dto.Annual ? "yearly" : "monthly")} × {dto.Periods ?? 1})");
-        await db.SaveChangesAsync();
-        var tenantName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == part.TenantId).Select(t => t.Name).FirstOrDefaultAsync();
-        return Results.Ok(SubscriptionPartView(part, tenantName, DateTime.UtcNow));
+        var invoice = await billing.InvoicePartsAsync(part.TenantId,
+            new[] { new Pos.Api.Services.PartRenewal(id, dto.Periods ?? 1, dto.Annual) }, actorId, actorName, notes: dto.Notes);
+        return Results.Ok(InvoiceView(invoice, null));
     }
-    catch (InvalidOperationException ex)
-    {
-        return Results.BadRequest(new { message = ex.Message });
-    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
 }).RequireAuthorization();
 
-// Sets the date a part is paid up to — a correction, or a free period given by the platform.
+// Money received for one part: its open invoice (or a new one for the periods asked), paid.
+app.MapPost("/api/admin/subscription-parts/{id:guid}/record-payment", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.IPlatformBilling billing, PartPaymentDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var part = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+    if (part == null) return Results.NotFound(new { message = "That part was not found." });
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try
+    {
+        var open = await OpenInvoicesForPartsAsync(db, new List<Guid> { id });
+        Guid invoiceId;
+        if (open.TryGetValue(id, out var existing)) invoiceId = existing.Id;
+        else
+        {
+            var raised = await billing.InvoicePartsAsync(part.TenantId,
+                new[] { new Pos.Api.Services.PartRenewal(id, dto.Periods ?? 1, dto.Annual) }, actorId, actorName,
+                agreedSubtotal: dto.AgreedPricePKR);
+            invoiceId = raised.Id;
+        }
+        var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstAsync(i => i.Id == invoiceId);
+        var amount = dto.AmountPKR ?? Math.Max(0, invoice.AmountPKR - invoice.PaidPKR);
+        var (paid, _) = await billing.RecordPaymentAsync(invoiceId, amount, dto.Method ?? "Bank Transfer", dto.Reference, dto.ReceivedAt, dto.Notes, actorId, actorName);
+        return Results.Ok(InvoiceView(paid, null));
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+// Sets the date a part is paid up to — a correction, or a free period given by the platform. No money.
 app.MapPost("/api/admin/subscription-parts/{id:guid}/paid-until", async (Guid id, AppDbContext db, HttpContext http,
     Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionPartsService parts, SetPartPaidUntilDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
     try
     {
         var part = await parts.SetPaidUntilAsync(id, dto.PaidUntil);
         var actingUser = await accessor.GetCurrentUserAsync(http);
         await WriteAuditAsync(db, part.TenantId, actingUser, "SubscriptionPartDateSet", "SubscriptionPart", part.Id, null,
-            $"{part.Name}: paid until set to {part.PaidUntil:yyyy-MM-dd}");
+            $"{part.Name}: covered until {part.PaidUntil:yyyy-MM-dd} (no payment){(string.IsNullOrWhiteSpace(dto.Reason) ? "" : $" — {dto.Reason.Trim()}")}");
         await db.SaveChangesAsync();
         var tenantName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == part.TenantId).Select(t => t.Name).FirstOrDefaultAsync();
         return Results.Ok(SubscriptionPartView(part, tenantName, DateTime.UtcNow));
     }
-    catch (InvalidOperationException ex)
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+// Stops one part now, or lets a stopped part run again before it is paid (goodwill).
+app.MapPost("/api/admin/subscription-parts/{id:guid}/stopped", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.ISubscriptionPartsService parts, SetPartStoppedDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { message = "A reason is required — it is recorded against the account." });
+    try
     {
-        return Results.BadRequest(new { message = ex.Message });
+        var part = await parts.SetStoppedAsync(id, dto.Stopped);
+        var actingUser = await accessor.GetCurrentUserAsync(http);
+        await WriteAuditAsync(db, part.TenantId, actingUser, dto.Stopped ? "SubscriptionPartStopped" : "SubscriptionPartResumed",
+            "SubscriptionPart", part.Id, null, $"{part.Name} — {dto.Reason.Trim()}");
+        await db.SaveChangesAsync();
+        var tenantName = await db.Tenants.IgnoreQueryFilters().Where(t => t.Id == part.TenantId).Select(t => t.Name).FirstOrDefaultAsync();
+        return Results.Ok(SubscriptionPartView(part, tenantName, DateTime.UtcNow));
     }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+// --- Invoices ---------------------------------------------------------------
+
+app.MapGet("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Guid? tenantId, string? status, int? take) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var query = db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking();
+    if (tenantId.HasValue) query = query.Where(i => i.TenantId == tenantId.Value);
+    if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<SubscriptionInvoiceStatus>(status, true, out var wanted))
+        query = query.Where(i => i.Status == wanted);
+    var rows = await query.OrderByDescending(i => i.IssuedAt).Take(Math.Clamp(take ?? 2000, 1, 5000)).ToListAsync();
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    return Results.Ok(rows.Select(i => InvoiceView(i, names.GetValueOrDefault(i.TenantId))));
+}).RequireAuthorization();
+
+// One invoice with everything about it: the parts it renews, the money received, the messages sent.
+app.MapGet("/api/admin/subscription-invoices/{id:guid}", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(i => i.Id == id);
+    if (invoice == null) return Results.NotFound();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == invoice.TenantId);
+    var parts = await db.SubscriptionInvoiceParts.IgnoreQueryFilters().AsNoTracking().Where(l => l.InvoiceId == id).ToListAsync();
+    var payments = await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking().Where(p => p.InvoiceId == id).OrderBy(p => p.ReceivedAt).ToListAsync();
+    var messages = await db.PlatformMessages.AsNoTracking().Where(m => m.InvoiceId == id).OrderByDescending(m => m.CreatedAt).Take(20).ToListAsync();
+    return Results.Ok(new
+    {
+        invoice = InvoiceView(invoice, tenant?.Name),
+        billedTo = tenant == null ? null : new
+        {
+            tenant.Name, tenant.ContactName, tenant.ContactEmail, phone = tenant.ContactMobile ?? tenant.ContactPhone, tenant.Address, tenant.City
+        },
+        parts,
+        payments,
+        messages
+    });
+}).RequireAuthorization();
+
+// Issue an invoice: the parts picked (each from the end of what it covers), or — when none are named —
+// every part that is due or renewing within the reminder window.
+app.MapPost("/api/admin/subscription-invoices", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, Pos.Api.Services.ISubscriptionPartsService partsService, IssueSubscriptionInvoiceDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == dto.TenantId);
+    if (tenant == null) return Results.NotFound(new { message = "Business not found." });
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+
+    List<Pos.Api.Services.PartRenewal> wanted;
+    if (dto.Parts is { Count: > 0 })
+        wanted = dto.Parts.Select(p => new Pos.Api.Services.PartRenewal(p.PartId, p.Periods ?? 1, p.Annual ?? dto.Annual)).ToList();
+    else
+    {
+        await partsService.SyncAsync(tenant.Id);
+        var settings = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+        var horizon = DateTime.UtcNow.AddDays(Math.Max(Pos.Api.Services.SubscriptionPartsService.ExpiringWithinDays, settings.InvoiceDaysBefore));
+        var candidates = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.TenantId == tenant.Id && p.IsActive && p.InstalledAt != null).ToListAsync();
+        var open = await OpenInvoicesForPartsAsync(db, candidates.Select(c => c.Id).ToList());
+        wanted = candidates
+            .Where(p => !open.ContainsKey(p.Id) && Pos.Api.Services.SubscriptionPartsService.NextPeriodStart(p) <= horizon)
+            .Select(p => new Pos.Api.Services.PartRenewal(p.Id, 1, dto.Annual))
+            .ToList();
+        if (wanted.Count == 0)
+            return Results.BadRequest(new { message = "Nothing is due or renewing soon for this business. Pick the parts to invoice from its Billing tab." });
+    }
+
+    try
+    {
+        var invoice = await billing.InvoicePartsAsync(tenant.Id, wanted, actorId, actorName, agreedSubtotal: dto.AmountPKR, notes: dto.Notes);
+        return Results.Ok(InvoiceView(invoice, tenant.Name));
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/payments", async (Guid id, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, RecordSubscriptionPaymentDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try
+    {
+        var (invoice, payment) = await billing.RecordPaymentAsync(id, dto.AmountPKR, dto.Method, dto.Reference, dto.ReceivedAt, dto.Notes, actorId, actorName);
+        return Results.Ok(new { invoice = InvoiceView(invoice, null), payment });
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+// Kept for older screens: records the whole balance as one payment.
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/mark-paid", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.IPlatformBilling billing, MarkSubscriptionInvoicePaidDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(i => i.Id == id);
+    if (invoice == null) return Results.NotFound();
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try
+    {
+        var (paid, _) = await billing.RecordPaymentAsync(id, Math.Max(1, invoice.AmountPKR - invoice.PaidPKR),
+            string.IsNullOrWhiteSpace(dto.PaymentMethod) ? "Bank Transfer" : dto.PaymentMethod, dto.Reference, null, null, actorId, actorName);
+        return Results.Ok(InvoiceView(paid, null));
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/refunds", async (Guid id, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, RecordSubscriptionPaymentDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try { return Results.Ok(await billing.RecordRefundAsync(id, dto.AmountPKR, dto.Method, dto.Reference, dto.Notes, actorId, actorName)); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-payments/{id:guid}/void", async (Guid id, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, ReasonDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try { return Results.Ok(InvoiceView(await billing.VoidPaymentAsync(id, dto.Reason ?? "", actorId, actorName), null)); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/cancel", async (Guid id, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, ReasonDto? dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var (actorId, actorName) = await PlatformActorAsync(http, accessor);
+    try { return Results.Ok(InvoiceView(await billing.CancelInvoiceAsync(id, dto?.Reason, actorId, actorName), null)); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
+}).RequireAuthorization();
+
+// Sends the invoice to the business's owner on WhatsApp and email.
+app.MapPost("/api/admin/subscription-invoices/{id:guid}/send", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.IPlatformBilling billing) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(i => i.Id == id);
+    if (invoice == null) return Results.NotFound();
+    var (_, actorName) = await PlatformActorAsync(http, accessor);
+    var lines = invoice.LinesJson == null ? new List<string>()
+        : System.Text.Json.JsonDocument.Parse(invoice.LinesJson).RootElement.EnumerateArray()
+            .Select(l => $"• {l.GetProperty("description").GetString()} — {Pos.Api.Services.PlatformInvoicing.Money(l.GetProperty("amountPKR").GetDecimal())}")
+            .ToList();
+    var balance = Math.Max(0, invoice.AmountPKR - invoice.PaidPKR);
+    var text = $"Invoice {invoice.InvoiceNumber} for {Pos.Api.Services.PlatformInvoicing.Money(invoice.AmountPKR)}"
+               + (invoice.PaidPKR > 0 ? $" ({Pos.Api.Services.PlatformInvoicing.Money(balance)} still due)" : "")
+               + $", due by {invoice.DueAt:d MMM yyyy}:\n" + string.Join("\n", lines);
+    var (sent, notSent) = await billing.SendToBusinessAsync(invoice.TenantId, "invoice", $"Invoice {invoice.InvoiceNumber}", text, invoice.Id, actorName);
+    return Results.Ok(new { sent, notSent });
+}).RequireAuthorization();
+
+// Money received (and given back), newest first.
+app.MapGet("/api/admin/subscription-payments", async (AppDbContext db, HttpContext http, Guid? tenantId, DateTime? from, DateTime? to, int? take) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var query = db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking();
+    if (tenantId.HasValue) query = query.Where(p => p.TenantId == tenantId.Value);
+    if (from.HasValue) query = query.Where(p => p.ReceivedAt >= DateTime.SpecifyKind(from.Value, DateTimeKind.Utc));
+    if (to.HasValue) query = query.Where(p => p.ReceivedAt < DateTime.SpecifyKind(to.Value, DateTimeKind.Utc));
+    var rows = await query.OrderByDescending(p => p.ReceivedAt).Take(Math.Clamp(take ?? 500, 1, 5000)).ToListAsync();
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var invoiceIds = rows.Where(r => r.InvoiceId != null).Select(r => r.InvoiceId!.Value).Distinct().ToList();
+    var numbers = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().Where(i => invoiceIds.Contains(i.Id))
+        .ToDictionaryAsync(i => i.Id, i => i.InvoiceNumber);
+    return Results.Ok(rows.Select(p => new
+    {
+        p.Id, p.TenantId, tenantName = names.GetValueOrDefault(p.TenantId), p.InvoiceId,
+        invoiceNumber = p.InvoiceId != null ? numbers.GetValueOrDefault(p.InvoiceId.Value) : null,
+        p.Kind, p.AmountPKR, p.Method, p.Reference, p.ReceivedAt, p.Notes, p.RecordedByName, p.CreatedAt, p.VoidedAt, p.VoidReason
+    }));
+}).RequireAuthorization();
+
+// What is owed, overdue and collected — the money cards on Billing and the dashboard.
+app.MapGet("/api/admin/billing/summary", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var now = DateTime.UtcNow;
+    var monthStart = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+    var lastMonthStart = monthStart.AddMonths(-1);
+    var open = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking()
+        .Where(i => i.Status == SubscriptionInvoiceStatus.Pending || i.Status == SubscriptionInvoiceStatus.Overdue || i.Status == SubscriptionInvoiceStatus.PartiallyPaid)
+        .Select(i => new { i.AmountPKR, i.PaidPKR, i.DueAt, i.Status }).ToListAsync();
+    var money = await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.VoidedAt == null && p.ReceivedAt >= lastMonthStart)
+        .Select(p => new { p.Kind, p.AmountPKR, p.ReceivedAt }).ToListAsync();
+    var thisMonth = money.Where(p => p.ReceivedAt >= monthStart).Sum(p => p.Kind == "Refund" ? -p.AmountPKR : p.AmountPKR);
+    var lastMonth = money.Where(p => p.ReceivedAt < monthStart).Sum(p => p.Kind == "Refund" ? -p.AmountPKR : p.AmountPKR);
+    var overdueRows = open.Where(i => i.Status == SubscriptionInvoiceStatus.Overdue || i.DueAt < now).ToList();
+    return Results.Ok(new
+    {
+        owedPKR = open.Sum(i => Math.Max(0, i.AmountPKR - i.PaidPKR)),
+        openCount = open.Count,
+        overduePKR = overdueRows.Sum(i => Math.Max(0, i.AmountPKR - i.PaidPKR)),
+        overdueCount = overdueRows.Count,
+        collectedThisMonthPKR = thisMonth,
+        collectedLastMonthPKR = lastMonth
+    });
+}).RequireAuthorization();
+
+// Runs the billing automation now instead of waiting for the hourly pass.
+app.MapPost("/api/admin/billing/run", async (HttpContext http, Pos.Api.Services.IPlatformBilling billing) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    return Results.Ok(await billing.RunAutomationAsync());
+}).RequireAuthorization();
+
+// --- Platform settings --------------------------------------------------------
+
+static object PlatformSettingsView(PlatformSettings s) => new
+{
+    s.CompanyName, s.LegalName, s.Ntn, s.Strn, s.Address, s.City, s.Phone, s.Email, s.Website,
+    s.BankName, s.BankAccountTitle, s.BankAccountNumber, s.BankIban, s.JazzCashNumber, s.EasypaisaNumber, s.RaastId,
+    s.PaymentInstructions, s.InvoiceFooter, s.TaxLabel, s.TaxRatePercent,
+    s.AutoInvoice, s.InvoiceDaysBefore, s.InvoiceDueDays, s.AutoReminders, s.ReminderDays, s.AutoStopUnpaid, s.StopAfterDays,
+    s.WhatsAppProvider, s.WhatsAppPhoneNumberId,
+    hasWhatsAppApiKey = !string.IsNullOrEmpty(s.WhatsAppApiKey),
+    hasWhatsAppApiSecret = !string.IsNullOrEmpty(s.WhatsAppApiSecret),
+    hasWhatsAppAccessToken = !string.IsNullOrEmpty(s.WhatsAppAccessToken),
+    s.EmailReminders, s.RequireTwoStepForTeam, s.UpdatedAt
+};
+
+app.MapGet("/api/admin/platform-settings", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender email) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var settings = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    return Results.Ok(new { settings = PlatformSettingsView(settings), emailReady = email.CanSend });
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/platform-settings", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.SecretProtector protector, UpdatePlatformSettingsDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    s.CompanyName = Clean(dto.CompanyName) ?? s.CompanyName;
+    s.LegalName = Clean(dto.LegalName); s.Ntn = Clean(dto.Ntn); s.Strn = Clean(dto.Strn);
+    s.Address = Clean(dto.Address); s.City = Clean(dto.City); s.Phone = Clean(dto.Phone); s.Email = Clean(dto.Email); s.Website = Clean(dto.Website);
+    s.BankName = Clean(dto.BankName); s.BankAccountTitle = Clean(dto.BankAccountTitle); s.BankAccountNumber = Clean(dto.BankAccountNumber);
+    s.BankIban = Clean(dto.BankIban)?.Replace(" ", "").ToUpperInvariant();
+    s.JazzCashNumber = Clean(dto.JazzCashNumber); s.EasypaisaNumber = Clean(dto.EasypaisaNumber); s.RaastId = Clean(dto.RaastId);
+    s.PaymentInstructions = Clean(dto.PaymentInstructions); s.InvoiceFooter = Clean(dto.InvoiceFooter);
+    s.TaxLabel = Clean(dto.TaxLabel) ?? "Sales tax";
+    s.TaxRatePercent = Math.Clamp(dto.TaxRatePercent ?? s.TaxRatePercent, 0, 50);
+    s.AutoInvoice = dto.AutoInvoice ?? s.AutoInvoice;
+    s.InvoiceDaysBefore = Math.Clamp(dto.InvoiceDaysBefore ?? s.InvoiceDaysBefore, 0, 60);
+    s.InvoiceDueDays = Math.Clamp(dto.InvoiceDueDays ?? s.InvoiceDueDays, 1, 60);
+    s.AutoReminders = dto.AutoReminders ?? s.AutoReminders;
+    if (dto.ReminderDays != null)
+        s.ReminderDays = string.Join(",", dto.ReminderDays.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => int.TryParse(x, out var n) ? (int?)n : null).Where(n => n is >= -60 and <= 60).Distinct().OrderByDescending(n => n));
+    s.AutoStopUnpaid = dto.AutoStopUnpaid ?? s.AutoStopUnpaid;
+    s.StopAfterDays = Math.Clamp(dto.StopAfterDays ?? s.StopAfterDays, 0, 90);
+    s.EmailReminders = dto.EmailReminders ?? s.EmailReminders;
+    s.RequireTwoStepForTeam = dto.RequireTwoStepForTeam ?? s.RequireTwoStepForTeam;
+
+    s.WhatsAppProvider = Clean(dto.WhatsAppProvider) ?? s.WhatsAppProvider;
+    s.WhatsAppPhoneNumberId = Clean(dto.WhatsAppPhoneNumberId);
+    // Secrets: blank keeps what is on file; "-" clears it.
+    if (!string.IsNullOrWhiteSpace(dto.WhatsAppApiKey)) s.WhatsAppApiKey = dto.WhatsAppApiKey.Trim() == "-" ? null : protector.Protect(dto.WhatsAppApiKey.Trim());
+    if (!string.IsNullOrWhiteSpace(dto.WhatsAppApiSecret)) s.WhatsAppApiSecret = dto.WhatsAppApiSecret.Trim() == "-" ? null : protector.Protect(dto.WhatsAppApiSecret.Trim());
+    if (!string.IsNullOrWhiteSpace(dto.WhatsAppAccessToken)) s.WhatsAppAccessToken = dto.WhatsAppAccessToken.Trim() == "-" ? null : protector.Protect(dto.WhatsAppAccessToken.Trim());
+    s.UpdatedAt = DateTime.UtcNow;
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, Guid.Empty, actingUser, "PlatformSettingsChanged", "PlatformSettings", null, null,
+        $"Billing automation: invoices {(s.AutoInvoice ? "on" : "off")}, reminders {(s.AutoReminders ? "on" : "off")}, stop unpaid {(s.AutoStopUnpaid ? $"after {s.StopAfterDays}d" : "off")}; tax {s.TaxRatePercent:0.##}%");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { settings = PlatformSettingsView(s) });
+}).RequireAuthorization();
+
+app.MapPost("/api/admin/platform-settings/test-message", async (HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, TestPlatformMessageDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Phone) && string.IsNullOrWhiteSpace(dto.Email))
+        return Results.BadRequest(new { message = "Enter a mobile number or an email to send the test to." });
+    var (_, actorName) = await PlatformActorAsync(http, accessor);
+    return Results.Ok(await billing.SendTestAsync(dto.Phone, dto.Email, actorName));
+}).RequireAuthorization();
+
+// --- Messages the platform sent --------------------------------------------------
+
+app.MapGet("/api/admin/platform-messages", async (AppDbContext db, HttpContext http, Guid? tenantId, string? channel, string? status, string? kind, int page = 1, int pageSize = 50) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    page = Math.Max(page, 1);
+    pageSize = Math.Clamp(pageSize, 1, 200);
+    var query = db.PlatformMessages.AsNoTracking().AsQueryable();
+    if (tenantId.HasValue) query = query.Where(m => m.TenantId == tenantId.Value);
+    if (!string.IsNullOrWhiteSpace(channel)) query = query.Where(m => m.Channel == channel);
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(kind)) query = query.Where(m => m.Kind == kind);
+    var total = await query.CountAsync();
+    var rows = await query.OrderByDescending(m => m.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+    var names = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var counts = await db.PlatformMessages.AsNoTracking().Where(m => m.CreatedAt >= DateTime.UtcNow.AddDays(-30))
+        .GroupBy(m => m.Status).Select(g => new { status = g.Key, count = g.Count() }).ToListAsync();
+    return Results.Ok(new
+    {
+        page, pageSize, total, totalPages = (int)Math.Ceiling(total / (double)pageSize),
+        last30Days = counts,
+        entries = rows.Select(m => new
+        {
+            m.Id, m.TenantId, tenantName = m.TenantId != null ? names.GetValueOrDefault(m.TenantId.Value) : null,
+            m.InvoiceId, m.Channel, m.Recipient, m.Kind, m.Subject, m.Body, m.Status, m.Error, m.SentByName, m.CreatedAt
+        })
+    });
+}).RequireAuthorization();
+
+// A message to one business's owner, written by the platform team.
+app.MapPost("/api/admin/tenants/{id:guid}/message", async (Guid id, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IPlatformBilling billing, SendTenantMessageDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.WriteNotes)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Text)) return Results.BadRequest(new { message = "Write the message first." });
+    var (_, actorName) = await PlatformActorAsync(http, accessor);
+    var (sent, notSent) = await billing.SendToBusinessAsync(id, "message", string.IsNullOrWhiteSpace(dto.Subject) ? "A message from Cashly" : dto.Subject.Trim(),
+        dto.Text.Trim(), null, actorName);
+    return Results.Ok(new { sent, notSent });
+}).RequireAuthorization();
+
+// --- The business's own side ------------------------------------------------------
+
+// Who bills them and how to pay — printed on their invoices. No secrets here.
+app.MapGet("/api/subscription/billing-details", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if ((tenantId == null || tenantId == Guid.Empty) && !http.IsSuperAdmin()) return Results.Unauthorized();
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    return Results.Ok(new
+    {
+        s.CompanyName, s.LegalName, s.Ntn, s.Strn, s.Address, s.City, s.Phone, s.Email, s.Website,
+        s.BankName, s.BankAccountTitle, s.BankAccountNumber, s.BankIban, s.JazzCashNumber, s.EasypaisaNumber, s.RaastId,
+        s.PaymentInstructions, s.InvoiceFooter, s.TaxLabel, s.TaxRatePercent
+    });
+}).RequireAuthorization();
+
+// One of the business's own invoices, with what it renews and the money received.
+app.MapGet("/api/subscription/invoices/{id:guid}", async (Guid id, AppDbContext db, HttpContext http) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+    var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(i => i.Id == id && i.TenantId == tenantId.Value);
+    if (invoice == null) return Results.NotFound();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
+    var payments = await db.SubscriptionPayments.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.InvoiceId == id && p.VoidedAt == null).OrderBy(p => p.ReceivedAt)
+        .Select(p => new { p.Kind, p.AmountPKR, p.Method, p.Reference, p.ReceivedAt }).ToListAsync();
+    return Results.Ok(new
+    {
+        invoice = InvoiceView(invoice, tenant?.Name),
+        billedTo = tenant == null ? null : new { tenant.Name, tenant.ContactName, tenant.ContactEmail, phone = tenant.ContactMobile ?? tenant.ContactPhone, tenant.Address, tenant.City },
+        payments
+    });
+}).RequireAuthorization();
+
+// The owner asks for an invoice to renew one part (an outlet's POS, a tablet, the ERP) now.
+app.MapPost("/api/subscription/parts/{id:guid}/renew", async (Guid id, AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, Pos.Api.Services.IPlatformBilling billing, PartInvoiceDto dto) =>
+{
+    var tenantId = http.GetTenantId();
+    if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    if (actingUser?.Role != UserRole.OwnerAdmin)
+        return Results.Json(new { message = "Only an owner can renew for this business." }, statusCode: 403);
+    var part = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (part == null) return Results.NotFound(new { message = "That part was not found." });
+
+    var open = await OpenInvoicesForPartsAsync(db, new List<Guid> { id });
+    if (open.TryGetValue(id, out var existing))
+    {
+        var current = await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().FirstAsync(i => i.Id == existing.Id);
+        return Results.Ok(InvoiceView(current, null));
+    }
+    try
+    {
+        var invoice = await billing.InvoicePartsAsync(tenantId.Value,
+            new[] { new Pos.Api.Services.PartRenewal(id, Math.Clamp(dto.Periods ?? 1, 1, 12), dto.Annual) }, actingUser.Id, actingUser.FullName);
+        return Results.Ok(InvoiceView(invoice, null));
+    }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
 }).RequireAuthorization();
 
 // ============================================================
@@ -10819,7 +11989,14 @@ app.MapGet("/api/admin/tenants/{id:guid}/overview", async (
     var overrides = await db.TenantEntitlementOverrides.IgnoreQueryFilters()
         .Where(o => o.TenantId == id && o.IsActive).OrderByDescending(o => o.CreatedAt).ToListAsync();
 
-    var mrr = (plan?.MonthlyPricePKR ?? 0) + addOns.Sum(a => a.PricePKR * a.Quantity);
+    // What the business pays a month: each part it has, monthly or a twelfth of its yearly price.
+    var parts = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.TenantId == id && p.IsActive && p.InstalledAt != null).ToListAsync();
+    var mrr = parts.Count > 0
+        ? Math.Round(parts.Sum(p => p.Annual ? p.YearlyPricePKR / 12m : p.MonthlyPricePKR), 0)
+        : (plan?.MonthlyPricePKR ?? 0) + addOns.Sum(a => a.PricePKR * a.Quantity);
+    var allowances = await entitlements.GetBranchAllowancesAsync(id);
+    int ExtraFor(Guid branchId, string key) => addOns.Where(a => a.AddOnKey == key && a.BranchId == branchId).Sum(a => a.Quantity);
 
     var unpaidInvoices = await db.SubscriptionInvoices.IgnoreQueryFilters()
         .Where(i => i.TenantId == id && i.Status != SubscriptionInvoiceStatus.Paid && i.Status != SubscriptionInvoiceStatus.Cancelled)
@@ -10883,8 +12060,15 @@ app.MapGet("/api/admin/tenants/{id:guid}/overview", async (
         branches = branches.Select(b => new
         {
             b.Id, b.Name, b.Code, b.City, b.IsHeadOffice,
+            locationType = b.LocationType.ToString(), b.CanSell,
+            posEdition = (b.PosEdition ?? tenant.Tier).ToString(), hasOwnEdition = b.PosEdition != null,
             counters = terminals.Count(t => t.BranchId == b.Id && t.TerminalType == TerminalType.Counter && t.OccupiesQuotaSlot(now)),
-            tablets = terminals.Count(t => t.BranchId == b.Id && t.TerminalType == TerminalType.OrderTab && t.OccupiesQuotaSlot(now))
+            tablets = terminals.Count(t => t.BranchId == b.Id && t.TerminalType == TerminalType.OrderTab && t.OccupiesQuotaSlot(now)),
+            // What this one location may run: its own POS version plus extras bought for it (9999 = no limit).
+            maxCounters = b.CanSell && allowances.TryGetValue(b.Id, out var a1)
+                ? (a1.MaxCounters >= Pos.Api.Data.FeatureCatalog.UnlimitedCount ? 9999 : a1.MaxCounters + ExtraFor(b.Id, "EXTRA_COUNTER")) : 0,
+            maxTablets = b.CanSell && allowances.TryGetValue(b.Id, out var a2)
+                ? (a2.MaxOrderTabs >= Pos.Api.Data.FeatureCatalog.UnlimitedCount ? 9999 : a2.MaxOrderTabs + ExtraFor(b.Id, "EXTRA_TABLET")) : 0
         }),
         devices = terminals.Select(t => new
         {
@@ -10909,7 +12093,7 @@ app.MapPut("/api/admin/tenants/{id:guid}/status", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     SetTenantStatusDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
@@ -10919,6 +12103,8 @@ app.MapPut("/api/admin/tenants/{id:guid}/status", async (
 
     var previous = tenant.Status;
     tenant.Status = dto.Status;
+    // When an account was closed is what the "lost customers" numbers count.
+    tenant.CancelledAt = dto.Status == TenantStatus.Cancelled ? tenant.CancelledAt ?? DateTime.UtcNow : null;
 
     // IsActive is kept in step so older code paths that still read it agree with the ladder.
     tenant.IsActive = dto.Status is not (TenantStatus.Suspended or TenantStatus.Cancelled);
@@ -10962,7 +12148,7 @@ app.MapPost("/api/admin/tenants/{id:guid}/overrides", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     CreateOverrideDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
     if (!await db.Tenants.IgnoreQueryFilters().AnyAsync(t => t.Id == id)) return Results.NotFound();
     if (string.IsNullOrWhiteSpace(dto.Reason))
         return Results.BadRequest(new { message = "A reason is required for every grant." });
@@ -11015,7 +12201,7 @@ app.MapDelete("/api/admin/overrides/{overrideId:guid}", async (
     Pos.Api.Services.IEntitlementService entitlements,
     Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
     var ov = await db.TenantEntitlementOverrides.IgnoreQueryFilters().FirstOrDefaultAsync(o => o.Id == overrideId);
     if (ov == null) return Results.NotFound();
 
@@ -11036,7 +12222,7 @@ app.MapPost("/api/admin/tenants/{id:guid}/extend-trial", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     ExtendTrialDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ExtendTrial)) return PlatformDenied();
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
     if (dto.Days is < 1 or > 180) return Results.BadRequest(new { message = "Extend by 1 to 180 days." });
@@ -11068,7 +12254,7 @@ app.MapPost("/api/admin/tenants/provision", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     ProvisionTenantDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSales)) return PlatformDenied();
 
     // The web name (sign-in address), made from the business's name; changeable later by the
     // platform admin (PUT /api/admin/tenants/{id}/web-name).
@@ -11106,10 +12292,12 @@ app.MapPost("/api/admin/tenants/provision", async (
         };
         db.Tenants.Add(tenant);
 
-        // One selling location to start; a head office can be added later from Locations, which
-        // creates it as a separate office rather than converting this shop.
-        var (_, _, provisioned) = CreateInitialStructure(db, tenant, BusinessStructures.SingleShop, null, null,
-            new List<SetupLocationSpec> { new($"{dto.BusinessName.Trim()} — Main", "MAIN", dto.City, dto.Address, dto.ContactPhone, null) },
+        // The shape chosen: a single shop, a shop with a separate head office, or a chain with a
+        // head office. Every shape starts with one selling outlet; a chain adds the rest later.
+        var structure = BusinessStructures.Resolve(dto.BusinessStructure, null);
+        var outletName = string.IsNullOrWhiteSpace(dto.FirstOutletName) ? $"{dto.BusinessName.Trim()} — Main" : dto.FirstOutletName.Trim();
+        var (_, _, provisioned) = CreateInitialStructure(db, tenant, structure, null, null,
+            new List<SetupLocationSpec> { new(outletName, structure == BusinessStructures.SingleShop ? "MAIN" : "BR-01", dto.City, dto.Address, dto.ContactPhone, null) },
             null);
         var branch = provisioned[0];
 
@@ -11176,7 +12364,7 @@ app.MapPost("/api/admin/tenants/{id:guid}/enable-hq", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     EnableHeadOfficeDto? dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
 
     var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
     if (tenant == null) return Results.NotFound();
@@ -11223,7 +12411,7 @@ app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     CreateBranchDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
 
     if (string.IsNullOrWhiteSpace(dto.Name))
         return Results.BadRequest(new { message = "A branch name is required." });
@@ -11243,13 +12431,18 @@ app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
             upgradeRequired = true
         }, statusCode: StatusCodes.Status402PaymentRequired);
 
-    var loc = await subs.CheckLimitAsync(id, Pos.Api.Data.FeatureCodes.Locations);
-    if (!loc.Allowed)
-        return Results.BadRequest(new { message = loc.Reason, locations = new { inUse = loc.InUse, limit = loc.Limit } });
+    // A warehouse does not sell, so it never counts against the selling-location ceiling.
+    var isWarehouse = dto.LocationType == LocationType.Warehouse;
+    if (!isWarehouse)
+    {
+        var loc = await subs.CheckLimitAsync(id, Pos.Api.Data.FeatureCodes.Locations);
+        if (!loc.Allowed)
+            return Results.BadRequest(new { message = loc.Reason, locations = new { inUse = loc.InUse, limit = loc.Limit } });
+    }
 
     // Codes are generated rather than trusted, so two branches cannot collide on one.
     var code = string.IsNullOrWhiteSpace(dto.Code)
-        ? $"BR-{(await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == id)):D2}"
+        ? $"{(isWarehouse ? "WH" : "BR")}-{(await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == id)):D2}"
         : dto.Code.Trim().ToUpperInvariant();
 
     if (await db.Branches.IgnoreQueryFilters().AnyAsync(b => b.TenantId == id && b.Code == code))
@@ -11264,14 +12457,17 @@ app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
         Address = dto.Address?.Trim() ?? "",
         Phone = dto.Phone?.Trim() ?? "",
         RegionCode = string.IsNullOrWhiteSpace(dto.StateCode) ? null : dto.StateCode.Trim().ToUpperInvariant(),
-        CompanyId = (await GetOrCreateDefaultCompanyAsync(db, id, tenant.Name)).Id
+        CompanyId = (await GetOrCreateDefaultCompanyAsync(db, id, tenant.Name)).Id,
+        // The POS version this outlet runs (and pays for); a warehouse has none.
+        PosEdition = isWarehouse ? null : dto.PosEdition ?? tenant.Tier
     };
-    ApplyLocationType(branch, LocationType.Branch);
+    ApplyLocationType(branch, isWarehouse ? LocationType.Warehouse : LocationType.Branch);
     db.Branches.Add(branch);
 
     var actingUser = await accessor.GetCurrentUserAsync(http);
     if (actingUser != null)
-        await WriteAuditAsync(db, id, actingUser, "BranchCreated", "Branch", branch.Id, null, $"{branch.Name} ({branch.Code})");
+        await WriteAuditAsync(db, id, actingUser, "BranchCreated", "Branch", branch.Id, null,
+            $"{branch.Name} ({branch.Code}){(isWarehouse ? ", warehouse" : $", {branch.PosEdition} POS")}");
     await db.SaveChangesAsync();
 
     await entitlements.RecomputeAsync(id);
@@ -11282,6 +12478,128 @@ app.MapPost("/api/admin/tenants/{id:guid}/branches", async (
         branch.Id, branch.Name, branch.Code, branch.City, branch.IsHeadOffice,
         locations = new { inUse = after.InUse, limit = after.Limit, remaining = after.Remaining, isNearLimit = after.IsNearLimit }
     });
+}).RequireAuthorization();
+
+// An outlet's POS version, set by the platform (it changes what the outlet pays and may run).
+app.MapPut("/api/admin/tenants/{id:guid}/branches/{branchId:guid}/pos-edition", async (Guid id, Guid branchId, AppDbContext db, HttpContext http,
+    Pos.Api.Services.ISubscriptionService subs, Pos.Api.Services.IEntitlementService entitlements, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    SetPosEditionDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var branch = await db.Branches.IgnoreQueryFilters().FirstOrDefaultAsync(b => b.Id == branchId && b.TenantId == id);
+    if (branch == null) return Results.NotFound(new { message = "That location was not found." });
+    if (!branch.CanSell) return Results.BadRequest(new { message = "Only a selling location runs a POS version." });
+    var previous = branch.PosEdition;
+    branch.PosEdition = dto.PosEdition;
+    await WriteAuditAsync(db, id, await accessor.GetCurrentUserAsync(http), "BranchPosEditionChanged", "Branch", branch.Id,
+        previous?.ToString(), $"{branch.Name}: {dto.PosEdition} (set by the platform)");
+    await db.SaveChangesAsync();
+    await entitlements.RecomputeAsync(id);
+    // A smaller version can leave more tills than it allows: they are flagged, never cut mid-shift.
+    await subs.ReconcileOverLimitAsync(id);
+    return Results.Ok(new { branch.Id, posEdition = branch.PosEdition?.ToString() });
+}).RequireAuthorization();
+
+// Blocks a lost or stolen device: its licence dies at once and its slot is freed.
+app.MapPost("/api/admin/tenants/{id:guid}/devices/{terminalId:guid}/block", async (Guid id, Guid terminalId, AppDbContext db, HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements, Pos.Api.Middlewares.ICurrentUserAccessor accessor, ReasonDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
+    if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { message = "Say why this device is being blocked." });
+    var terminal = await db.Terminals.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == terminalId && t.TenantId == id);
+    if (terminal == null) return Results.NotFound(new { message = "That device was not found." });
+    if (terminal.RevokedAt != null) return Results.BadRequest(new { message = "This device is already blocked." });
+    terminal.RevokedAt = DateTime.UtcNow;
+    terminal.RevokedReason = $"Blocked by Cashly support: {dto.Reason.Trim()}";
+    terminal.IsActive = false;
+    db.DeviceLicenseEvents.Add(new DeviceLicenseEvent
+    {
+        TenantId = id, TerminalId = terminal.Id, BranchId = terminal.BranchId, EventType = "Revoked",
+        Detail = terminal.RevokedReason, Ip = http.Connection.RemoteIpAddress?.ToString()
+    });
+    await WriteAuditAsync(db, id, await accessor.GetCurrentUserAsync(http), "TerminalRevoked", "Terminal", terminal.Id,
+        terminal.TerminalName, terminal.RevokedReason);
+    await db.SaveChangesAsync();
+    await entitlements.RecomputeAsync(id);
+    return Results.Ok(new { message = $"{terminal.TerminalName} is blocked. It stops at its next check-in and its slot is free now." });
+}).RequireAuthorization();
+
+// A fresh owner invite, when the first was lost or ran out. Only while the business has no owner yet.
+app.MapPost("/api/admin/tenants/{id:guid}/invite", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageSales) && !PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.TenantId == id && u.Role == UserRole.OwnerAdmin && u.IsActive))
+        return Results.BadRequest(new { message = "This business already has an owner. Reset their password from Overview instead." });
+    var rawInvite = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    tenant.OwnerInviteTokenHash = HashToken(rawInvite);
+    tenant.OwnerInviteExpiresAt = DateTime.UtcNow.AddDays(14);
+    tenant.OwnerInviteRedeemedAt = null;
+    await WriteAuditAsync(db, id, await accessor.GetCurrentUserAsync(http), "OwnerInviteIssued", "Tenant", id, null, "New owner invite (14 days)");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ownerInviteToken = rawInvite, ownerInviteExpiresAt = tenant.OwnerInviteExpiresAt, tenant.Slug });
+}).RequireAuthorization();
+
+// Everything a leaving customer is owed back: their data as spreadsheets in one ZIP.
+app.MapGet("/api/admin/tenants/{id:guid}/export", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageSupport) && !PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == id);
+    if (tenant == null) return Results.NotFound();
+
+    static string Csv<T>(IEnumerable<T> rows, params string[] leaveOut)
+    {
+        var props = typeof(T).GetProperties()
+            .Where(p => !leaveOut.Contains(p.Name))
+            .Where(p =>
+            {
+                var t = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
+                return t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal) || t == typeof(DateTime) || t == typeof(Guid);
+            }).ToList();
+        static string Cell(object? v) => v switch
+        {
+            null => "",
+            DateTime d => d.ToString("yyyy-MM-dd HH:mm:ss"),
+            _ => "\"" + v.ToString()!.Replace("\"", "\"\"") + "\""
+        };
+        var sb = new StringBuilder();
+        sb.AppendLine(string.Join(",", props.Select(p => p.Name)));
+        foreach (var row in rows) sb.AppendLine(string.Join(",", props.Select(p => Cell(p.GetValue(row)))));
+        return sb.ToString();
+    }
+
+    using var buffer = new MemoryStream();
+    using (var zip = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Create, true))
+    {
+        async Task Add(string name, string content)
+        {
+            var entry = zip.CreateEntry(name);
+            await using var stream = entry.Open();
+            var bytes = Encoding.UTF8.GetPreamble().Concat(Encoding.UTF8.GetBytes(content)).ToArray();
+            await stream.WriteAsync(bytes);
+        }
+        await Add("locations.csv", Csv(await db.Branches.IgnoreQueryFilters().AsNoTracking().Where(b => b.TenantId == id).ToListAsync(),
+            "AllowedCounters", "AllowedOrderTabs", "OnlineOrderToken"));
+        await Add("staff.csv", Csv(await db.Users.IgnoreQueryFilters().AsNoTracking().Where(u => u.TenantId == id).ToListAsync(),
+            "PinCodeHash", "PasswordHash", "PinLookup", "TwoFactorSecret", "TwoFactorPendingSecret", "TwoFactorRecoveryCodes", "TwoFactorLastStep", "BankAccountNumber"));
+        await Add("categories.csv", Csv(await db.Categories.IgnoreQueryFilters().AsNoTracking().Where(c => c.TenantId == id).ToListAsync()));
+        await Add("products.csv", Csv(await db.Products.IgnoreQueryFilters().AsNoTracking().Where(p => p.TenantId == id).ToListAsync()));
+        await Add("customers.csv", Csv(await db.Customers.IgnoreQueryFilters().AsNoTracking().Where(c => c.TenantId == id).ToListAsync()));
+        await Add("suppliers.csv", Csv(await db.Suppliers.IgnoreQueryFilters().AsNoTracking().Where(s => s.TenantId == id).ToListAsync()));
+        var orders = await db.Orders.IgnoreQueryFilters().AsNoTracking().Where(o => o.TenantId == id).OrderBy(o => o.CreatedAt).ToListAsync();
+        await Add("sales.csv", Csv(orders));
+        var orderIds = orders.Select(o => o.Id).ToList();
+        var lines = new List<OrderItem>();
+        foreach (var chunk in orderIds.Chunk(2000))
+            lines.AddRange(await db.OrderItems.IgnoreQueryFilters().AsNoTracking().Where(i => chunk.Contains(i.OrderId)).ToListAsync());
+        await Add("sale-lines.csv", Csv(lines));
+        await Add("cashly-invoices.csv", Csv(await db.SubscriptionInvoices.IgnoreQueryFilters().AsNoTracking().Where(i => i.TenantId == id).ToListAsync(), "EffectJson"));
+    }
+
+    await WriteAuditAsync(db, id, await accessor.GetCurrentUserAsync(http), "TenantDataExported", "Tenant", id, null, "Full data export (ZIP)");
+    await db.SaveChangesAsync();
+    return Results.File(buffer.ToArray(), "application/zip", $"{tenant.Slug}-data-{DateTime.UtcNow:yyyyMMdd}.zip");
 }).RequireAuthorization();
 
 // Redeem an owner invite. Anonymous by necessity — the person redeeming it has no account yet,
@@ -11349,7 +12667,7 @@ app.MapPost("/api/admin/tenants/{id:guid}/impersonate", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     ImpersonateDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
     if (string.IsNullOrWhiteSpace(dto.Reason))
         return Results.BadRequest(new { message = "A reason is required — impersonation is always recorded." });
 
@@ -11554,7 +12872,7 @@ app.MapGet("/api/admin/packages", async (AppDbContext db, HttpContext http) =>
 
 app.MapPost("/api/admin/packages", async (AppDbContext db, HttpContext http, CreatePackageDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     if (await db.SaaSPackageConfigs.AnyAsync(p => p.PackageKey == dto.PackageKey))
         return Results.BadRequest(new { error = "Package key already exists" });
 
@@ -11587,11 +12905,12 @@ app.MapPost("/api/admin/packages", async (AppDbContext db, HttpContext http, Cre
     return Results.Ok(pkg);
 }).RequireAuthorization();
 
-app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, UpdatePackageDto dto) =>
+app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, UpdatePackageDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     var pkg = await db.SaaSPackageConfigs.FindAsync(id);
     if (pkg == null) return Results.NotFound();
+    var before = $"{pkg.MonthlyPricePKR:0}/mo, {pkg.YearlyPricePKR:0}/yr, branch {pkg.BranchMonthlyPricePKR:0}/mo";
 
     if (dto.DisplayName != null) pkg.DisplayName = dto.DisplayName;
     if (dto.MonthlyPricePKR.HasValue) pkg.MonthlyPricePKR = dto.MonthlyPricePKR.Value;
@@ -11615,13 +12934,25 @@ app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, Htt
     if (dto.WhatsAppMessagesPerMonth.HasValue) pkg.WhatsAppMessagesPerMonth = dto.WhatsAppMessagesPerMonth.Value;
     pkg.UpdatedAt = DateTime.UtcNow;
 
+    // The plans an owner sees and buys from carry the same prices — one price list, not two.
+    var plan = await db.Plans.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.Code == pkg.PackageKey.ToLower());
+    if (plan != null)
+    {
+        plan.MonthlyPricePKR = pkg.MonthlyPricePKR;
+        plan.YearlyPricePKR = pkg.YearlyPricePKR;
+    }
+
+    var after = $"{pkg.MonthlyPricePKR:0}/mo, {pkg.YearlyPricePKR:0}/yr, branch {pkg.BranchMonthlyPricePKR:0}/mo";
+    if (after != before)
+        await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "PackagePriceChanged", "SaaSPackageConfig", pkg.Id,
+            $"{pkg.PackageKey}: {before}", after);
     await db.SaveChangesAsync();
     return Results.Ok(pkg);
 }).RequireAuthorization();
 
 app.MapDelete("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, HttpContext http) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     var pkg = await db.SaaSPackageConfigs.FindAsync(id);
     if (pkg == null) return Results.NotFound();
     db.SaaSPackageConfigs.Remove(pkg);
@@ -11643,7 +12974,7 @@ app.MapPost("/api/admin/packages/resync", async (
     Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     bool? apply) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
 
     var changes = new List<object>();
 
@@ -11755,7 +13086,7 @@ app.MapGet("/api/admin/platform-prices", async (AppDbContext db, HttpContext htt
 app.MapPut("/api/admin/platform-prices/{key}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     string key, SavePlatformPriceDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     var price = await db.PlatformPrices.FirstOrDefaultAsync(p => p.Key == key);
     if (price == null) return Results.NotFound(new { message = $"No platform price {key}." });
     if (dto.MonthlyPricePKR is < 0 || dto.YearlyPricePKR is < 0 || dto.IncludedWhatsAppMessages is < -1)
@@ -11830,10 +13161,11 @@ app.MapGet("/api/tenant/my-subscriptions", async (AppDbContext db, HttpContext h
     var rows = await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
         .Where(p => p.TenantId == tenantId.Value && p.IsActive)
         .ToListAsync();
+    var open = await OpenInvoicesForPartsAsync(db, rows.Select(r => r.Id).ToList());
     return Results.Ok(rows
         .Select(p => (part: p, state: Pos.Api.Services.SubscriptionPartsService.StateOf(p, now)))
         .OrderBy(x => x.state.RenewsAt ?? DateTime.MaxValue).ThenBy(x => x.part.Kind)
-        .Select(x => SubscriptionPartView(x.part, null, now)));
+        .Select(x => SubscriptionPartView(x.part, null, now, open.TryGetValue(x.part.Id, out var inv) ? inv : null)));
 }).RequireAuthorization()
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
 
@@ -12042,6 +13374,7 @@ static (string Module, string? Route) AddOnUnlockInfo(string key) => key switch
     nameof(SaaSPackageConfig.HasConsolidatedReports) => ("Financial Reports — Multi-Branch Consolidation", "/reports"),
     nameof(SaaSPackageConfig.HasAdvancedReports) => ("Financial Reports — Advanced Analytics", "/reports"),
     nameof(SaaSPackageConfig.HasMultiBranch) => ("Multi-Branch Operations (adding branches)", null),
+    nameof(SaaSPackageConfig.HasWhatsAppMessaging) => ("WhatsApp Messaging", "/whatsapp-config"),
     "EXTRA_COUNTER" => ("POS Terminal Devices (Settings → Devices, per branch)", "/settings"),
     "EXTRA_TABLET" => ("Tablet Waiter App Devices (per branch)", "/order-tab"),
     "EXTRA_KDS" => ("Kitchen Screens (Settings → Branch Connections, per branch)", "/settings"),
@@ -12054,8 +13387,36 @@ static (string Module, string? Route) AddOnUnlockInfo(string key) => key switch
     Pos.Api.Data.FeatureCodes.OnlinePayments => ("Online Payments (Payment Gateways)", "/payment-settings"),
     Pos.Api.Data.FeatureCodes.OnlineOrdering => ("QR & Online Ordering (Floor & Table Setup)", "/floors"),
     Pos.Api.Data.FeatureCodes.Integrations => ("Delivery Platform Integration", "/delivery-integrations"),
+    "EXTRA_BRANCH" => ("One more selling location", "/locations"),
     _ => ("Unknown — key does not match any known feature or quota", null)
 };
+
+// Every key an add-on can sell — the only keys the catalogue accepts, so a typo can never create an
+// add-on that switches nothing on.
+static string[] SellableAddOnKeys() => new[]
+{
+    nameof(SaaSPackageConfig.HasKitchenDisplay), nameof(SaaSPackageConfig.HasDeliveryCOD), nameof(SaaSPackageConfig.HasInventoryManagement),
+    nameof(SaaSPackageConfig.HasStockTransfers), nameof(SaaSPackageConfig.HasDirectorDashboard), nameof(SaaSPackageConfig.HasConsolidatedReports),
+    nameof(SaaSPackageConfig.HasAdvancedReports), nameof(SaaSPackageConfig.HasMultiBranch), nameof(SaaSPackageConfig.HasWhatsAppMessaging),
+    "EXTRA_COUNTER", "EXTRA_TABLET", "EXTRA_KDS", "EXTRA_USER", "EXTRA_BRANCH", "WHATSAPP_1000",
+    Pos.Api.Data.FeatureCodes.Loyalty, Pos.Api.Data.FeatureCodes.Accounting, Pos.Api.Data.FeatureCodes.Payroll,
+    Pos.Api.Data.FeatureCodes.FiscalInvoicing, Pos.Api.Data.FeatureCodes.OnlinePayments, Pos.Api.Data.FeatureCodes.OnlineOrdering,
+    Pos.Api.Data.FeatureCodes.Integrations
+};
+
+// The keys the Add-ons page offers when creating one: what each unlocks, and how it is sold.
+app.MapGet("/api/admin/addons/keys", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var inCatalogue = await db.AddOnCatalogItems.AsNoTracking().Select(c => c.Key).ToListAsync();
+    return Results.Ok(SellableAddOnKeys().Select(key =>
+    {
+        var (module, route) = AddOnUnlockInfo(key);
+        var sold = key.StartsWith("EXTRA_") || key.StartsWith("WHATSAPP_") ? "quantity"
+            : Pos.Api.Data.FeatureCodes.SoldSeparately.Contains(key) ? "per shop" : "switch";
+        return new { key, unlocks = module, route, sold, inCatalogue = inCatalogue.Contains(key) };
+    }));
+}).RequireAuthorization();
 
 // Any signed-in tenant user can see what's purchasable and what they already have.
 app.MapGet("/api/addons/catalog", async (AppDbContext db, HttpContext http) =>
@@ -12083,31 +13444,64 @@ app.MapGet("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http
     }));
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http, CreateAddOnCatalogItemDto dto) =>
+app.MapPost("/api/admin/addons/catalog", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateAddOnCatalogItemDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     if (string.IsNullOrWhiteSpace(dto.Key) || string.IsNullOrWhiteSpace(dto.DisplayName))
         return Results.BadRequest(new { message = "Key and display name are required." });
-    if (await db.AddOnCatalogItems.AnyAsync(a => a.Key == dto.Key))
-        return Results.BadRequest(new { message = $"An add-on with key {dto.Key} already exists." });
-    var item = new AddOnCatalogItem { Key = dto.Key.Trim(), DisplayName = dto.DisplayName.Trim(), Description = dto.Description, MonthlyPricePKR = dto.MonthlyPricePKR, YearlyPricePKR = dto.YearlyPricePKR };
+    var key = SellableAddOnKeys().FirstOrDefault(k => string.Equals(k, dto.Key.Trim(), StringComparison.OrdinalIgnoreCase));
+    if (key == null)
+        return Results.BadRequest(new { message = $"{dto.Key} does not switch anything on. Pick a key from the list." });
+    if (await db.AddOnCatalogItems.AnyAsync(a => a.Key == key))
+        return Results.BadRequest(new { message = $"An add-on with key {key} already exists." });
+    if (dto.MonthlyPricePKR < 0 || dto.YearlyPricePKR < 0) return Results.BadRequest(new { message = "Prices cannot be negative." });
+    var item = new AddOnCatalogItem { Key = key, DisplayName = dto.DisplayName.Trim(), Description = dto.Description, MonthlyPricePKR = dto.MonthlyPricePKR, YearlyPricePKR = dto.YearlyPricePKR };
     db.AddOnCatalogItems.Add(item);
+    await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "AddOnCreated", "AddOnCatalogItem", item.Id, null,
+        $"{item.DisplayName} ({key}): {item.MonthlyPricePKR:0}/mo, {item.YearlyPricePKR:0}/yr");
     await db.SaveChangesAsync();
     return Results.Ok(item);
 }).RequireAuthorization();
 
-app.MapPut("/api/admin/addons/catalog/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, UpdateAddOnCatalogItemDto dto) =>
+app.MapPut("/api/admin/addons/catalog/{id:guid}", async (Guid id, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, UpdateAddOnCatalogItemDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     var item = await db.AddOnCatalogItems.FindAsync(id);
     if (item == null) return Results.NotFound();
+    if (dto.MonthlyPricePKR is < 0 || dto.YearlyPricePKR is < 0) return Results.BadRequest(new { message = "Prices cannot be negative." });
+    var before = $"{item.DisplayName}: {item.MonthlyPricePKR:0}/mo, {item.YearlyPricePKR:0}/yr, {(item.IsActive ? "on sale" : "not on sale")}";
     if (!string.IsNullOrWhiteSpace(dto.DisplayName)) item.DisplayName = dto.DisplayName.Trim();
     if (dto.Description != null) item.Description = dto.Description;
     if (dto.MonthlyPricePKR.HasValue) item.MonthlyPricePKR = dto.MonthlyPricePKR.Value;
     if (dto.YearlyPricePKR.HasValue) item.YearlyPricePKR = dto.YearlyPricePKR.Value;
     if (dto.IsActive.HasValue) item.IsActive = dto.IsActive.Value;
+    var after = $"{item.DisplayName}: {item.MonthlyPricePKR:0}/mo, {item.YearlyPricePKR:0}/yr, {(item.IsActive ? "on sale" : "not on sale")}";
+    if (after != before)
+        await WriteAuditAsync(db, Guid.Empty, await accessor.GetCurrentUserAsync(http), "AddOnChanged", "AddOnCatalogItem", item.Id, before, after);
     await db.SaveChangesAsync();
     return Results.Ok(item);
+}).RequireAuthorization();
+
+// Who has each add-on right now, across every business — the Add-ons page's "Who has it" view.
+app.MapGet("/api/admin/addons/holders", async (AppDbContext db, HttpContext http) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    var rows = await db.AddOnSubscriptions.IgnoreQueryFilters().AsNoTracking().Where(a => a.IsActive).ToListAsync();
+    var tenants = await db.Tenants.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name);
+    var branchIds = rows.Where(r => r.BranchId != null).Select(r => r.BranchId!.Value).Distinct().ToList();
+    var branches = await db.Branches.IgnoreQueryFilters().AsNoTracking().Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
+    var catalogue = await db.AddOnCatalogItems.AsNoTracking().ToDictionaryAsync(c => c.Key, c => c.DisplayName);
+    var stopped = (await db.SubscriptionParts.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.IsActive && p.StoppedAt != null && p.AddOnSubscriptionId != null)
+        .Select(p => p.AddOnSubscriptionId!.Value).ToListAsync()).ToHashSet();
+    return Results.Ok(rows.Select(a => new
+    {
+        a.Id, a.TenantId, tenantName = tenants.GetValueOrDefault(a.TenantId), a.AddOnKey,
+        addOnName = catalogue.GetValueOrDefault(a.AddOnKey) ?? a.AddOnKey,
+        a.Quantity, unitPricePKR = a.PricePKR, monthlyPKR = a.PricePKR * Math.Max(1, a.Quantity),
+        a.BranchId, branchName = a.BranchId != null ? branches.GetValueOrDefault(a.BranchId.Value) : null,
+        stopped = stopped.Contains(a.Id)
+    }).OrderBy(a => a.addOnName).ThenBy(a => a.tenantName));
 }).RequireAuthorization();
 
 // --- SuperAdmin: grant/revoke a specific tenant's add-on ---
@@ -12117,9 +13511,11 @@ app.MapGet("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, Ap
     return Results.Ok(await db.AddOnSubscriptions.Where(a => a.TenantId == tenantId).ToListAsync());
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, GrantAddOnDto dto) =>
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor, GrantAddOnDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
+    if (dto.PricePKR is < 0) return Results.BadRequest(new { message = "The price cannot be negative." });
     var tenant = await db.Tenants.FindAsync(tenantId);
     if (tenant == null) return Results.NotFound(new { message = "Tenant not found." });
     var catalogItem = await db.AddOnCatalogItems.FirstOrDefaultAsync(a => a.Key == dto.AddOnKey);
@@ -12142,18 +13538,21 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
         branchId = dto.BranchId.Value;
     }
 
+    // PricePKR is the agreed price for ONE unit a month; the bill multiplies it by the quantity.
     var existing = await db.AddOnSubscriptions.FirstOrDefaultAsync(a => a.TenantId == tenantId && a.AddOnKey == dto.AddOnKey && a.BranchId == branchId);
     if (existing != null)
     {
         existing.IsActive = true;
         existing.PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR;
-        existing.Quantity = dto.Quantity ?? 1;
+        existing.Quantity = Math.Max(1, dto.Quantity ?? 1);
     }
     else
     {
-        existing = new AddOnSubscription { TenantId = tenantId, AddOnKey = dto.AddOnKey, BranchId = branchId, Quantity = dto.Quantity ?? 1, PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR, IsActive = true };
+        existing = new AddOnSubscription { TenantId = tenantId, AddOnKey = dto.AddOnKey, BranchId = branchId, Quantity = Math.Max(1, dto.Quantity ?? 1), PricePKR = dto.PricePKR ?? catalogItem.MonthlyPricePKR, IsActive = true };
         db.AddOnSubscriptions.Add(existing);
     }
+    await WriteAuditAsync(db, tenantId, await accessor.GetCurrentUserAsync(http), "AddOnGranted", "AddOnSubscription", existing.Id, null,
+        $"{catalogItem.DisplayName} × {existing.Quantity} at {existing.PricePKR:0}/mo each");
     await db.SaveChangesAsync();
 
     // Add-ons feed the entitlement snapshot, so the version has to move — otherwise the customer
@@ -12162,12 +13561,14 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/addons", async (Guid tenantId, A
     return Results.Ok(new { addOn = existing, snapshotVersion = afterGrant.Version });
 }).RequireAuthorization();
 
-app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", async (Guid tenantId, Guid addOnId, AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements) =>
+app.MapPost("/api/admin/tenants/{tenantId:guid}/addons/{addOnId:guid}/revoke", async (Guid tenantId, Guid addOnId, AppDbContext db, HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageBilling)) return PlatformDenied();
     var sub = await db.AddOnSubscriptions.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.Id == addOnId && a.TenantId == tenantId);
     if (sub == null) return Results.NotFound();
     sub.IsActive = false;
+    await WriteAuditAsync(db, tenantId, await accessor.GetCurrentUserAsync(http), "AddOnRevoked", "AddOnSubscription", sub.Id, null, sub.AddOnKey);
     await db.SaveChangesAsync();
 
     var afterRevoke = await entitlements.RecomputeAsync(tenantId);
@@ -12206,7 +13607,7 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-passwo
     Guid tenantId, Guid userId, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     ResetPasswordDto dto) =>
 {
-    if (!http.IsSuperAdmin()) return Results.Forbid();
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
     var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId);
     if (user == null) return Results.NotFound(new { message = "No such account at this business." });
     if (user.Role == UserRole.SuperAdmin) return Results.BadRequest(new { message = "Not for platform accounts." });
@@ -13231,7 +14632,7 @@ api.MapPost("/payments/initiate", async (
 api.MapPost("/payments/webhook/{provider}", async (
     AppDbContext db, HttpContext http,
     Pos.Api.Services.IPaymentGatewayResolver gateways,
-    Pos.Api.Services.ISubscriptionCheckout checkout,
+    Pos.Api.Services.IPlatformBilling platformBilling,
     string provider) =>
 {
     var gateway = gateways.Resolve(provider);
@@ -13278,7 +14679,8 @@ api.MapPost("/payments/webhook/{provider}", async (
         var invoice = await db.SubscriptionInvoices.IgnoreQueryFilters()
             .FirstOrDefaultAsync(i => i.Id == txn.SubscriptionInvoiceId);
         if (invoice != null && invoice.Status != SubscriptionInvoiceStatus.Paid)
-            await checkout.SettleAsync(invoice, gateway.ProviderName, actingUserId: null);
+            await platformBilling.RecordPaymentAsync(invoice.Id, Math.Max(1, txn.AmountPKR), gateway.ProviderName,
+                txn.ProviderTransactionId, DateTime.UtcNow, "Paid online", null, gateway.ProviderName);
     }
 
     // An order paid through the gateway after it was rung up reaches the books here.
@@ -15426,8 +16828,34 @@ public record CreatePOItemDto(Guid? IngredientId, string IngredientName, decimal
 public record ReceivePODto(string? ReceivedBy, string? Notes);
 public record CreateWarehouseDto(Guid? TenantId, Guid BranchId, string Name, string? Code);
 public record UpdateWarehouseDto(string? Name, string? Code, bool? IsActive);
-public record IssueSubscriptionInvoiceDto(Guid TenantId, bool Annual, decimal? AmountPKR, DateTime? BillingPeriodStart, DateTime? BillingPeriodEnd, DateTime? DueAt, string? Notes);
-public record MarkSubscriptionInvoicePaidDto(string? PaymentMethod);
+/// <summary>An invoice for the parts named (each from the end of what it covers); with none named, everything due soon.
+/// AmountPKR is an agreed price before tax that replaces the list total.</summary>
+public record IssueSubscriptionInvoiceDto(Guid TenantId, bool Annual = false, decimal? AmountPKR = null, string? Notes = null, List<PartRenewalDto>? Parts = null);
+public record PartRenewalDto(Guid PartId, int? Periods, bool? Annual);
+public record MarkSubscriptionInvoicePaidDto(string? PaymentMethod, string? Reference = null);
+public record RecordSubscriptionPaymentDto(decimal AmountPKR, string Method, string? Reference, DateTime? ReceivedAt, string? Notes);
+public record ReasonDto(string? Reason);
+public record PartInvoiceDto(int? Periods, bool? Annual, string? Notes);
+/// <summary>Money received for one part. AmountPKR defaults to what its invoice still owes; AgreedPricePKR replaces the list price
+/// (before tax) when a new invoice has to be raised for it.</summary>
+public record PartPaymentDto(int? Periods, bool? Annual, decimal? AmountPKR, decimal? AgreedPricePKR, string? Method, string? Reference, DateTime? ReceivedAt, string? Notes);
+public record SetPartStoppedDto(bool Stopped, string? Reason);
+public record SetPosEditionDto(SubscriptionTier PosEdition);
+public record CreateTeamMemberDto(string FullName, string Email, string PlatformRole);
+public record UpdateTeamMemberDto(string? FullName, string? PlatformRole, bool? IsActive);
+public record ResetTeamMemberDto(bool? TurnOffTwoStep);
+public record SaveTenantNoteDto(string? Kind, string? Body, DateTime? FollowUpAt, decimal? PromisedAmountPKR);
+public record UpdateTenantNoteDto(bool? Done, DateTime? FollowUpAt, bool? ClearFollowUp);
+public record SaveAnnouncementDto(string? Title, string? Body, string? Tone, DateTime? StartsAt, DateTime? EndsAt, string? Audience, string? AudienceValue, bool? IsActive);
+public record TestPlatformMessageDto(string? Phone, string? Email);
+public record SendTenantMessageDto(string? Subject, string Text);
+public record UpdatePlatformSettingsDto(
+    string? CompanyName, string? LegalName, string? Ntn, string? Strn, string? Address, string? City, string? Phone, string? Email, string? Website,
+    string? BankName, string? BankAccountTitle, string? BankAccountNumber, string? BankIban, string? JazzCashNumber, string? EasypaisaNumber, string? RaastId,
+    string? PaymentInstructions, string? InvoiceFooter, string? TaxLabel, decimal? TaxRatePercent,
+    bool? AutoInvoice, int? InvoiceDaysBefore, int? InvoiceDueDays, bool? AutoReminders, string? ReminderDays, bool? AutoStopUnpaid, int? StopAfterDays,
+    string? WhatsAppProvider, string? WhatsAppApiKey, string? WhatsAppApiSecret, string? WhatsAppPhoneNumberId, string? WhatsAppAccessToken,
+    bool? EmailReminders, bool? RequireTwoStepForTeam);
 public record CreateSupplierDto(Guid? TenantId, string Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, decimal? OpeningBalancePKR);
 public record UpdateSupplierDto(string? Name, string? ContactName, string? Phone, string? Email, string? Address, string? TaxNumber, string? PaymentTerms, bool? IsActive);
 /// <summary>BranchId: the location paying, for a head office user; a branch user's own branch is used regardless.</summary>
@@ -15499,8 +16927,7 @@ public record CreateStockRequestDto(Guid BranchId, StockRequestType RequestType,
 public record CreateStockRequestItemDto(Guid IngredientId, string IngredientName, string Unit, decimal QuantityRequested, decimal CurrentStock, decimal UnitCostPKR);
 public record ReviewStockRequestDto(StockRequestStatus Status, string ReviewedBy, string? ReviewNotes);
 public record SendStockRequestDto(Guid SourceBranchId, string? Notes);
-public record MarkPartPaidDto(bool Annual, int? Periods);
-public record SetPartPaidUntilDto(DateTime PaidUntil);
+public record SetPartPaidUntilDto(DateTime PaidUntil, string? Reason = null);
 public record CreateCashEntryDto(CashEntryType EntryType, decimal AmountPKR, string Description, string? RecipientOrSource, string CreatedBy);
 /// <summary>
 /// DeploymentMode is "Standalone" (one shop) or "MultiBranch" (a head office with outlets under
@@ -15655,7 +17082,10 @@ public record ExtendTrialDto(int Days, string? Reason);
 public record ProvisionTenantDto(
     string BusinessName, string ContactName, string ContactEmail, string? ContactPhone,
     string? City, string? Address, string? Country, string? PackageKey, string? VerticalPack,
-    int TrialDays, DateTime? PaidUntil);
+    int TrialDays, DateTime? PaidUntil,
+    /// <summary>SingleShop (default), SingleShopWithHeadOffice or ChainWithHeadOffice.</summary>
+    string? BusinessStructure = null,
+    string? FirstOutletName = null);
 public record RedeemInviteDto(string InviteToken, string Username, string Pin, string? FullName);
 public record ImpersonateDto(string Reason, bool? AllowWrites);
 public record CreateExpenseDto(Guid BranchId, string Category, string? Description, Guid? SupplierId, string? PayeeName,

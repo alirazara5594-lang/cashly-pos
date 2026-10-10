@@ -867,7 +867,16 @@ export interface CurrentUser {
   branchId?: string | null;
   /** The user's own branch, when the session is at another branch they cover. */
   homeBranchId?: string | null;
+  /** A member of the Cashly platform team: Owner, Billing, Support or Sales. */
+  platformRole?: PlatformRole | null;
+  email?: string | null;
+  /** The shared setup-PIN account, which exists to create named team accounts. */
+  isSetupAccount?: boolean;
+  /** A named team member who still has to turn on 2-step sign-in. */
+  mustSetUpTwoStep?: boolean;
 }
+
+export type PlatformRole = 'Owner' | 'Billing' | 'Support' | 'Sales';
 
 export interface LoginResponse {
   token: string;
@@ -895,9 +904,10 @@ export type SubscriptionPartKind = 'Erp' | 'Pos' | 'Tablet' | 'AddOn';
 
 /**
  * Where a part stands: not installed yet (an outlet with no till), in the free trial, paid up,
- * renewing within 14 days, installed after the trial and never paid, lapsed, or no longer in use.
+ * renewing within 14 days, installed after the trial and never paid, lapsed, stopped for not
+ * being paid (only that part), or no longer in use.
  */
-export type SubscriptionPartStatus = 'NotInstalled' | 'Trial' | 'Active' | 'Expiring' | 'PaymentDue' | 'Expired' | 'Ended';
+export type SubscriptionPartStatus = 'NotInstalled' | 'Trial' | 'Active' | 'Expiring' | 'PaymentDue' | 'Expired' | 'Stopped' | 'Ended';
 
 /** A part with its own renewal date, counted from when it was installed. */
 export interface SubscriptionPartRow {
@@ -922,13 +932,23 @@ export interface SubscriptionPartRow {
   /** Days until renewal; negative once overdue. */
   daysLeft?: number | null;
   inTrial: boolean;
+  monthlyPricePKR?: number;
+  yearlyPricePKR?: number;
+  /** Set when this part alone was stopped for not being paid. */
+  stoppedAt?: string | null;
+  /** The unpaid invoice this part is on, if any. */
+  openInvoiceId?: string | null;
+  openInvoiceNumber?: string | null;
+  /** The business's mobile, for a WhatsApp reminder by hand. */
+  tenantPhone?: string | null;
 }
 
 export interface RenewalCounts {
   /** Renewing within the window. */
   expiring: number;
-  /** Lapsed, or installed after the trial and never paid. */
+  /** Lapsed, never paid, or stopped. */
   overdue: number;
+  stopped?: number;
 }
 
 export interface RenewalsSummary {
@@ -1558,24 +1578,276 @@ export interface Warehouse {
 // Subscription billing (platform-vendor)
 // ─────────────────────────────────────────────────────────────
 
-export type SubscriptionInvoiceStatus = 'Pending' | 'Paid' | 'Overdue' | 'Cancelled';
+export type SubscriptionInvoiceStatus = 'Pending' | 'Paid' | 'Overdue' | 'Cancelled' | 'PartiallyPaid';
 
 export interface SubscriptionInvoice {
   id: string;
   tenantId: string;
+  tenantName?: string | null;
   invoiceNumber: string;
+  /** What it is for: one part's name, "3 renewals", or a plan on older invoices. */
   tier: string;
   billingPeriodStart: string;
   billingPeriodEnd: string;
+  /** Total including tax. */
   amountPKR: number;
+  subtotalPKR?: number;
+  taxPKR?: number;
+  taxRatePercent?: number;
+  /** Received so far. */
+  paidPKR?: number;
+  balancePKR?: number;
   status: SubscriptionInvoiceStatus;
   issuedAt: string;
   dueAt: string;
-  paidAt?: string;
-  paymentMethod?: string;
-  notes?: string;
-  /** JSON array of the billed lines (ERP, each shop's version, add-ons) — absent on older invoices. */
+  paidAt?: string | null;
+  paymentMethod?: string | null;
+  notes?: string | null;
+  /** renewal, purchase or manual. */
+  kind?: string;
+  /** An owner bought something with it (a plan or an add-on). */
+  isPurchase?: boolean;
+  /** JSON array of the billed lines — absent on older invoices. */
   linesJson?: string | null;
+}
+
+/** One renewal an invoice pays for. */
+export interface InvoicePartLine {
+  id: string;
+  invoiceId: string;
+  partId: string;
+  description: string;
+  periodStart: string;
+  periodEnd: string;
+  annual: boolean;
+  amountPKR: number;
+}
+
+/** Money received for (or given back on) an invoice. */
+export interface SubscriptionPaymentRow {
+  id: string;
+  tenantId: string;
+  tenantName?: string | null;
+  invoiceId?: string | null;
+  invoiceNumber?: string | null;
+  kind: 'Payment' | 'Refund';
+  amountPKR: number;
+  method: string;
+  reference?: string | null;
+  receivedAt: string;
+  notes?: string | null;
+  recordedByName: string;
+  createdAt: string;
+  voidedAt?: string | null;
+  voidReason?: string | null;
+}
+
+/** A message the platform sent (or tried to). */
+export interface PlatformMessageRow {
+  id: string;
+  tenantId?: string | null;
+  tenantName?: string | null;
+  invoiceId?: string | null;
+  channel: 'whatsapp' | 'email';
+  recipient: string;
+  kind: string;
+  subject?: string | null;
+  body: string;
+  status: 'sent' | 'failed' | 'skipped';
+  error?: string | null;
+  sentByName?: string | null;
+  createdAt: string;
+}
+
+export interface PlatformMessagePage {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  last30Days: { status: string; count: number }[];
+  entries: PlatformMessageRow[];
+}
+
+export interface SubscriptionInvoiceDetail {
+  invoice: SubscriptionInvoice;
+  billedTo: { name: string; contactName: string; contactEmail: string; phone?: string | null; address?: string | null; city?: string | null } | null;
+  parts?: InvoicePartLine[];
+  payments: SubscriptionPaymentRow[];
+  messages?: PlatformMessageRow[];
+}
+
+export interface BillingSummary {
+  owedPKR: number;
+  openCount: number;
+  overduePKR: number;
+  overdueCount: number;
+  collectedThisMonthPKR: number;
+  collectedLastMonthPKR: number;
+}
+
+export interface AutomationReport {
+  invoicesRaised: number;
+  markedOverdue: number;
+  remindersSent: number;
+  partsStopped: number;
+  ranAt: string;
+  notes: string[];
+}
+
+/** Who Cashly is on an invoice and how customers pay — what a business sees on its invoices. */
+export interface BillingDetails {
+  companyName: string;
+  legalName?: string | null;
+  ntn?: string | null;
+  strn?: string | null;
+  address?: string | null;
+  city?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  bankName?: string | null;
+  bankAccountTitle?: string | null;
+  bankAccountNumber?: string | null;
+  bankIban?: string | null;
+  jazzCashNumber?: string | null;
+  easypaisaNumber?: string | null;
+  raastId?: string | null;
+  paymentInstructions?: string | null;
+  invoiceFooter?: string | null;
+  taxLabel: string;
+  taxRatePercent: number;
+}
+
+/** The platform's own settings (Platform → Settings). Secrets come back only as "is one saved". */
+export interface PlatformSettingsData extends BillingDetails {
+  autoInvoice: boolean;
+  invoiceDaysBefore: number;
+  invoiceDueDays: number;
+  autoReminders: boolean;
+  reminderDays: string;
+  autoStopUnpaid: boolean;
+  stopAfterDays: number;
+  whatsAppProvider: string;
+  whatsAppPhoneNumberId?: string | null;
+  hasWhatsAppApiKey: boolean;
+  hasWhatsAppApiSecret: boolean;
+  hasWhatsAppAccessToken: boolean;
+  emailReminders: boolean;
+  requireTwoStepForTeam: boolean;
+  updatedAt: string;
+}
+
+export interface TeamMember {
+  id: string;
+  fullName: string;
+  email?: string | null;
+  platformRole: PlatformRole;
+  isActive: boolean;
+  twoFactorEnabled: boolean;
+  lastSignInAt?: string | null;
+  createdAt: string;
+  locked: boolean;
+  isSetupAccount: boolean;
+}
+
+export interface ActivityEntry {
+  id: string;
+  tenantId: string;
+  tenantName?: string | null;
+  userId: string;
+  userName: string;
+  action: string;
+  entityType: string;
+  entityId?: string | null;
+  oldValue?: string | null;
+  newValue?: string | null;
+  createdAt: string;
+}
+
+export interface ActivityPage {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  actions: string[];
+  entries: ActivityEntry[];
+}
+
+export type TenantNoteKind = 'Note' | 'Call' | 'Visit' | 'Promise';
+
+export interface TenantNote {
+  id: string;
+  tenantId: string;
+  kind: TenantNoteKind;
+  body: string;
+  followUpAt?: string | null;
+  doneAt?: string | null;
+  promisedAmountPKR?: number | null;
+  authorUserId?: string | null;
+  authorName: string;
+  createdAt: string;
+}
+
+export interface FollowUp extends TenantNote {
+  tenantName?: string | null;
+  overdue: boolean;
+}
+
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  tone: 'info' | 'warning' | 'success';
+  startsAt: string;
+  endsAt?: string | null;
+  audience: 'all' | 'plan' | 'shape' | 'businesses';
+  audienceValue?: string | null;
+  isActive: boolean;
+  createdByName?: string | null;
+  createdAt: string;
+}
+
+export interface RevenueMonth {
+  month: string;
+  collectedPKR: number;
+  invoicedPKR: number;
+  recurringPKR: number;
+  newBusinesses: number;
+  lostBusinesses: number;
+  businessesAtEnd: number;
+}
+
+export interface RevenueReport {
+  months: RevenueMonth[];
+  byPlan: { label: string; businesses: number; monthlyPKR: number }[];
+  byCity: { label: string; businesses: number; monthlyPKR: number }[];
+  trialCohort: number;
+  trialConverted: number;
+  averageMonthlyPKR: number;
+}
+
+/** A key an add-on can sell, for the catalogue's "New add-on" picker. */
+export interface AddOnKeyOption {
+  key: string;
+  unlocks: string;
+  route?: string | null;
+  sold: 'quantity' | 'per shop' | 'switch';
+  inCatalogue: boolean;
+}
+
+/** Who has an add-on right now. */
+export interface AddOnHolder {
+  id: string;
+  tenantId: string;
+  tenantName?: string | null;
+  addOnKey: string;
+  addOnName: string;
+  quantity: number;
+  unitPricePKR: number;
+  monthlyPKR: number;
+  branchId?: string | null;
+  branchName?: string | null;
+  stopped: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1942,6 +2214,24 @@ export interface AdminTenantRow {
   tabletCount?: number;
   maxTablets?: number;
   activeAddOnsCount?: number;
+  /** The lifecycle the business is really in (an ended trial reads as PastDue). */
+  status?: 'Trial' | 'Active' | 'PastDue' | 'Restricted' | 'ReadOnly' | 'Suspended' | 'Cancelled';
+  deploymentMode?: 'Standalone' | 'HeadOffice';
+  outletCount?: number;
+  /** Outlets running more tills or tablets than their own POS version allows. */
+  outletsOverLimit?: number;
+  lastSeenAt?: string | null;
+  cancelledAt?: string | null;
+  /** What the business pays a month, from its parts. */
+  monthlyPKR?: number;
+  partsNeedingAttention?: number;
+  nextRenewal?: {
+    partName: string;
+    kind: SubscriptionPartKind;
+    renewsAt?: string | null;
+    daysLeft?: number | null;
+    status: SubscriptionPartStatus;
+  } | null;
 }
 
 export interface AdminPlatformStats {
@@ -1951,13 +2241,22 @@ export interface AdminPlatformStats {
   paidTenants: number;
   totalBranches: number;
   totalOrders: number;
-  /** Monthly recurring revenue in PKR: plan price + active add-on subscriptions. */
+  /** Monthly recurring revenue from parts paid up now. */
   mrrPKR: number;
+  /** What every installed part would bring in a month once trials end. */
+  potentialMrrPKR?: number;
+  ordersLast30d?: number;
   planMix: { tier: string; count: number }[];
   expiringSoon: { id: string; name: string; tier: string; paidUntil: string }[];
   expiringSoonCount: number;
   arrears: number;
   staleDevices: number;
+  newSignups7d?: number;
+  newSignups30d?: number;
+  closed30d?: number;
+  trialCohort?: number;
+  trialConverted?: number;
+  followUpsDue?: number;
 }
 
 /** `GET /api/admin/device-health` — tills that have not checked in within the window. */
@@ -2066,7 +2365,17 @@ export interface TenantOverview {
     unpaidInvoices: { id: string; invoiceNumber: string; amountPKR: number; issuedAt: string; dueAt: string; status: string }[];
   };
   overrides: { id: string; key: string; value: string; expiresAt: string | null; reason: string; createdAt: string; inForce: boolean }[];
-  branches: { id: string; name: string; code: string; city: string | null; isHeadOffice: boolean; counters: number; tablets: number }[];
+  branches: {
+    id: string; name: string; code: string; city: string | null; isHeadOffice: boolean; counters: number; tablets: number;
+    locationType?: 'HeadOffice' | 'Branch' | 'Warehouse' | string;
+    canSell?: boolean;
+    /** The POS version this outlet runs (its own, or the business's plan). */
+    posEdition?: string;
+    hasOwnEdition?: boolean;
+    /** What this one outlet may run. */
+    maxCounters?: number;
+    maxTablets?: number;
+  }[];
   devices: {
     id: string;
     branchId: string;

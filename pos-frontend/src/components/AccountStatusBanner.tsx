@@ -118,7 +118,20 @@ export const AccountStatusBanner: React.FC<AccountStatusBannerProps> = ({ packag
     }
   }
 
-  // 4. One of the parts renewing within a week, lapsed, or never paid — soonest first.
+  // 4. A part stopped for not being paid — only that part stops, so say exactly which.
+  const stopped = parts.filter(p => p.status === 'Stopped');
+  if (stopped.length > 0) {
+    return (
+      <Banner tone="rose" icon={<CreditCard className="w-4 h-4" />}>
+        <strong>
+          {stopped[0].name} is paused because it is unpaid{stopped.length > 1 ? ` — and ${stopped.length - 1} more` : ''}.
+        </strong>{' '}
+        Everything else keeps working. <Link to="/my-addons" className="underline font-semibold">Renew it</Link>
+      </Banner>
+    );
+  }
+
+  // 5. One of the parts renewing within a week, lapsed, or never paid — soonest first.
   const urgent = parts
     .filter(p => p.status === 'Expired' || p.status === 'PaymentDue' || (p.status === 'Expiring' && (p.daysLeft ?? 99) <= 7))
     .sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
@@ -134,7 +147,7 @@ export const AccountStatusBanner: React.FC<AccountStatusBannerProps> = ({ packag
             : `${first.name} renews on ${first.renewsAt ? new Date(first.renewsAt).toLocaleDateString([], { day: 'numeric', month: 'short' }) : 'soon'} (${daysText(first.daysLeft)})`}
           {more > 0 && ` — and ${more} more`}.
         </strong>{' '}
-        <Link to="/my-addons" className="underline font-semibold">See what renews when</Link>
+        <Link to="/my-addons" className="underline font-semibold">{first.openInvoiceNumber ? `Pay ${first.openInvoiceNumber}` : 'See what renews when'}</Link>
       </Banner>
     );
   }

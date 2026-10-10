@@ -496,3 +496,11 @@ input:focus, select:focus {
 
 /* ── Group hover text (sidebar nav items) ── */
 .theme-dark .group:hover .group-hover\:text-slate-700 { color: #cbd5e1 !important; }
+
+/* Printing an invoice: only the invoice itself goes to paper, never the screen behind it. */
+@media print {
+  body * { visibility: hidden !important; }
+  .print-area, .print-area * { visibility: visible !important; }
+  .print-area { position: absolute !important; left: 0 !important; top: 0 !important; width: 100% !important; box-shadow: none !important; border: 0 !important; }
+  .no-print { display: none !important; }
+}

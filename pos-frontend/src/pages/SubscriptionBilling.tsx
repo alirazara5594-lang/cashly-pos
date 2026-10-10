@@ -1,324 +1,242 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Receipt, Plus, RefreshCw, CheckCircle2, Ban, X, Save, ChevronDown, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, RefreshCw, Search, Zap, Receipt, Wallet } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
-import type { BillingLine, SubscriptionInvoice } from '../types';
-import { tierLabel } from '../utils/tierLabel';
+import { BillingSummaryCards, IssueInvoiceModal, InvoiceDrawer, InvoiceStatusBadge } from '../components/PlatformBilling';
+import { dateOf, pkr } from '../utils/renewals';
+import type { AutomationReport, BillingSummary, SubscriptionInvoice, SubscriptionPaymentRow } from '../types';
 
-interface Quote {
-  annual: boolean;
-  lines: BillingLine[];
-  totalPKR: number;
-}
+type StatusFilter = 'open' | 'Overdue' | 'PartiallyPaid' | 'Paid' | 'Cancelled' | 'all';
 
-/** The billed lines stored on an invoice; older invoices have none. */
-const invoiceLines = (inv: SubscriptionInvoice): Pick<BillingLine, 'description' | 'quantity' | 'amountPKR'>[] => {
-  if (!inv.linesJson) return [];
-  try {
-    const parsed: unknown = JSON.parse(inv.linesJson);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-const LineTable: React.FC<{ lines: Pick<BillingLine, 'description' | 'quantity' | 'amountPKR'>[] }> = ({ lines }) => (
-  <table className="w-full text-[11px]">
-    <tbody>
-      {lines.map((line, idx) => (
-        <tr key={idx} className="border-b border-slate-100 last:border-0">
-          <td className="py-1 pr-2 text-slate-700">
-            {line.description}
-            {line.quantity > 1 && <span className="text-slate-400"> × {line.quantity}</span>}
-          </td>
-          <td className="py-1 text-right font-mono text-slate-900">{Math.round(line.amountPKR).toLocaleString()}</td>
-        </tr>
-      ))}
-    </tbody>
-  </table>
-);
-
-interface TenantOption {
-  id: string;
-  name: string;
-  tier: string;
-}
-
-const STATUS_COLORS: Record<string, string> = {
-  Pending: 'bg-amber-50 text-amber-700 border-amber-200',
-  Paid: 'bg-teal-50 text-teal-700 border-teal-200',
-  Overdue: 'bg-rose-50 text-rose-700 border-rose-200',
-  Cancelled: 'bg-slate-100 text-slate-500 border-slate-200'
-};
-
-export const SubscriptionBilling: React.FC = () => {
-  const [tenants, setTenants] = useState<TenantOption[]>([]);
-  const [selectedTenantId, setSelectedTenantId] = useState('');
+/**
+ * Cashly's billing: what every business owes and has paid. Invoices are raised per renewal (by
+ * themselves, or here), payments are recorded one by one with how and a reference, and the money
+ * cards add it all up.
+ */
+export const SubscriptionBilling: React.FC<{ onOpenTenant?: (tenantId: string) => void }> = ({ onOpenTenant }) => {
+  const [tab, setTab] = useState<'invoices' | 'payments'>('invoices');
   const [invoices, setInvoices] = useState<SubscriptionInvoice[]>([]);
+  const [payments, setPayments] = useState<SubscriptionPaymentRow[]>([]);
+  const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-
-  const [isIssueOpen, setIsIssueOpen] = useState(false);
-  const [annual, setAnnual] = useState(false);
-  const [customAmount, setCustomAmount] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<StatusFilter>('open');
+  const [search, setSearch] = useState('');
   const [issuing, setIssuing] = useState(false);
-  const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  const [report, setReport] = useState<AutomationReport | null>(null);
+  const [running, setRunning] = useState(false);
+  // Bumped after any change; everything reloads when it moves.
+  const [tick, setTick] = useState(0);
 
-  // What the invoice will charge, line by line, so the amount is never a surprise.
-  const loadQuote = (isAnnual: boolean) => {
-    if (!selectedTenantId) return;
-    setQuoteError(null);
-    posApi.getBillingQuote(selectedTenantId, isAnnual)
-      .then(q => setQuote({ annual: q.annual, lines: q.lines, totalPKR: q.totalPKR }))
-      .catch(err => setQuoteError(getApiErrorMessage(err, 'Could not work out the charges')));
-  };
-  const openIssue = () => {
-    setQuote(null);
-    setIsIssueOpen(true);
-    loadQuote(annual);
-  };
-  // A quote for the other billing period is still in flight when the box is ticked quickly.
-  const shownQuote = quote && quote.annual === annual ? quote : null;
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      posApi.getSubscriptionInvoices(),
+      posApi.getSubscriptionPayments({ take: 500 }),
+      posApi.getBillingSummary()
+    ])
+      .then(([inv, pay, sum]) => {
+        if (cancelled) return;
+        setInvoices(inv);
+        setPayments(pay);
+        setSummary(sum);
+        setError(null);
+      })
+      .catch(err => { if (!cancelled) setError(getApiErrorMessage(err, 'Could not load billing.')); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [tick]);
 
-  const loadTenants = useCallback(async () => {
+  const reload = () => { setLoading(true); setTick(t => t + 1); };
+
+  const runNow = async () => {
+    setRunning(true);
+    setReport(null);
     try {
-      const data = await posApi.getAdminTenants();
-      setTenants(Array.isArray(data) ? data : []);
-    } catch {
-      setTenants([]);
-    }
-  }, []);
-
-  const loadInvoices = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await posApi.getSubscriptionInvoices(selectedTenantId || undefined);
-      setInvoices(Array.isArray(data) ? data : []);
+      setReport(await posApi.runBillingAutomation());
+      reload();
     } catch (err) {
-      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to load invoices') });
-      setInvoices([]);
+      setError(getApiErrorMessage(err, 'Could not run the billing automation.'));
     } finally {
-      setLoading(false);
-    }
-  }, [selectedTenantId]);
-
-  useEffect(() => { loadTenants(); }, [loadTenants]);
-  useEffect(() => { loadInvoices(); }, [loadInvoices]);
-
-  const handleIssue = async () => {
-    if (!selectedTenantId) return;
-    setIssuing(true);
-    try {
-      await posApi.issueSubscriptionInvoice({
-        tenantId: selectedTenantId,
-        annual,
-        amountPKR: customAmount ? Number(customAmount) : undefined
-      });
-      setIsIssueOpen(false);
-      setCustomAmount('');
-      setMessage({ type: 'success', text: 'Invoice issued' });
-      await loadInvoices();
-    } catch (err) {
-      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to issue invoice') });
-    } finally {
-      setIssuing(false);
+      setRunning(false);
     }
   };
 
-  const handleMarkPaid = async (inv: SubscriptionInvoice) => {
-    const method = window.prompt('Payment method (e.g. Bank Transfer, JazzCash)', 'Bank Transfer');
-    if (method === null) return;
-    try {
-      await posApi.markSubscriptionInvoicePaid(inv.id, method || undefined);
-      setMessage({ type: 'success', text: `${inv.invoiceNumber} marked paid` });
-      await loadInvoices();
-    } catch (err) {
-      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to mark invoice paid') });
-    }
-  };
+  const term = search.trim().toLowerCase();
+  const shownInvoices = useMemo(() => invoices.filter(i => {
+    const statusOk = status === 'all' ? true
+      : status === 'open' ? ['Pending', 'Overdue', 'PartiallyPaid'].includes(i.status)
+      : i.status === status;
+    const searchOk = !term || i.invoiceNumber.toLowerCase().includes(term) || (i.tenantName ?? '').toLowerCase().includes(term) || i.tier.toLowerCase().includes(term);
+    return statusOk && searchOk;
+  }), [invoices, status, term]);
+  const shownPayments = useMemo(() => payments.filter(p =>
+    !term || (p.tenantName ?? '').toLowerCase().includes(term) || (p.invoiceNumber ?? '').toLowerCase().includes(term) || (p.reference ?? '').toLowerCase().includes(term)
+  ), [payments, term]);
 
-  const handleCancel = async (inv: SubscriptionInvoice) => {
-    if (!window.confirm(`Cancel invoice ${inv.invoiceNumber}?`)) return;
-    try {
-      await posApi.cancelSubscriptionInvoice(inv.id);
-      await loadInvoices();
-    } catch (err) {
-      setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to cancel invoice') });
-    }
-  };
-
-  const tenantName = (id: string) => tenants.find(t => t.id === id)?.name || id;
+  const statusChips: { key: StatusFilter; label: string }[] = [
+    { key: 'open', label: 'Not paid' },
+    { key: 'Overdue', label: 'Overdue' },
+    { key: 'PartiallyPaid', label: 'Part paid' },
+    { key: 'Paid', label: 'Paid' },
+    { key: 'Cancelled', label: 'Cancelled' },
+    { key: 'all', label: 'All' }
+  ];
+  const countFor = (s: StatusFilter) => invoices.filter(i =>
+    s === 'all' ? true : s === 'open' ? ['Pending', 'Overdue', 'PartiallyPaid'].includes(i.status) : i.status === s).length;
+  const chip = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[11px] font-bold transition ${active ? 'bg-teal-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedTenantId}
-            onChange={(e) => setSelectedTenantId(e.target.value)}
-            className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
-          >
-            <option value="">All tenants</option>
-            {tenants.map(t => <option key={t.id} value={t.id}>{t.name} ({tierLabel(t.tier)})</option>)}
-          </select>
-          <button
-            onClick={loadInvoices}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-teal-500 ${loading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
+      <BillingSummaryCards summary={summary} />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-xl border border-slate-200 bg-white p-0.5">
+          <button onClick={() => setTab('invoices')} className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 ${tab === 'invoices' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>
+            <Receipt className="w-3.5 h-3.5" /> Invoices
+          </button>
+          <button onClick={() => setTab('payments')} className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 ${tab === 'payments' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>
+            <Wallet className="w-3.5 h-3.5" /> Payments
           </button>
         </div>
-        <button
-          onClick={openIssue}
-          disabled={!selectedTenantId}
-          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Issue Invoice</span>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder={tab === 'invoices' ? 'Invoice no., business, part…' : 'Business, invoice, reference…'}
+            className="pl-8 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-xs w-56 focus:outline-none focus:border-teal-500" />
+        </div>
+        <button onClick={reload} className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-slate-900" title="Refresh">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={runNow} disabled={running}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold disabled:opacity-40"
+            title="Raise invoices that are due, mark overdue ones, send reminders and stop unpaid parts — as set in Settings. It also runs by itself every hour.">
+            <Zap className={`w-3.5 h-3.5 text-amber-500 ${running ? 'animate-pulse' : ''}`} /> {running ? 'Running…' : 'Run renewals now'}
+          </button>
+          <button onClick={() => setIssuing(true)}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold shadow-md shadow-teal-500/20">
+            <Plus className="w-3.5 h-3.5" /> New invoice
+          </button>
+        </div>
       </div>
 
-      {!selectedTenantId && (
-        <p className="text-[11px] text-slate-400">Select a tenant above to issue a new invoice for them.</p>
-      )}
-
-      {message && (
-        <div className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border ${
-          message.type === 'success' ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-rose-50 border-rose-200 text-rose-700'
-        }`}>
-          <span>{message.text}</span>
+      {report && (
+        <div className="px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+          <strong>Renewals run:</strong> {report.invoicesRaised} invoice(s) raised, {report.markedOverdue} marked overdue,
+          {' '}{report.remindersSent} reminder(s) sent, {report.partsStopped} part(s) stopped.
+          {report.notes.map(n => <div key={n} className="text-[11px] mt-0.5">{n}</div>)}
         </div>
       )}
+      {error && <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{error}</div>}
 
-      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                <th className="px-4 py-2.5">Invoice #</th>
-                {!selectedTenantId && <th className="px-4 py-2.5">Tenant</th>}
-                <th className="px-4 py-2.5">Tier</th>
-                <th className="px-4 py-2.5">Billing Period</th>
-                <th className="px-4 py-2.5 text-right">Amount (PKR)</th>
-                <th className="px-4 py-2.5">Status</th>
-                <th className="px-4 py-2.5 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-400">Loading invoices…</td></tr>
-              ) : invoices.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-400">No invoices yet.</td></tr>
-              ) : invoices.map(inv => {
-                const lines = invoiceLines(inv);
-                const expanded = expandedId === inv.id;
-                return (
-                <React.Fragment key={inv.id}>
-                <tr className="hover:bg-slate-50">
-                  <td className="px-4 py-2.5 text-xs font-mono font-bold text-slate-900">
-                    {lines.length > 0 ? (
-                      <button
-                        onClick={() => setExpandedId(expanded ? null : inv.id)}
-                        className="inline-flex items-center gap-1 hover:text-teal-700"
-                        title="Show what this invoice charges"
-                      >
-                        {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                        {inv.invoiceNumber}
-                      </button>
-                    ) : inv.invoiceNumber}
-                  </td>
-                  {!selectedTenantId && <td className="px-4 py-2.5 text-xs text-slate-700">{tenantName(inv.tenantId)}</td>}
-                  <td className="px-4 py-2.5 text-[11px] text-slate-500">{tierLabel(inv.tier)}</td>
-                  <td className="px-4 py-2.5 text-[11px] text-slate-500">
-                    {new Date(inv.billingPeriodStart).toLocaleDateString()} – {new Date(inv.billingPeriodEnd).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-xs font-mono font-bold text-slate-900">{inv.amountPKR.toLocaleString()}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${STATUS_COLORS[inv.status] || ''}`}>{inv.status}</span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                    {inv.status === 'Pending' && (
-                      <>
-                        <button onClick={() => handleMarkPaid(inv)} className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-600 hover:text-teal-700 mr-3">
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Mark Paid
-                        </button>
-                        <button onClick={() => handleCancel(inv)} className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700">
-                          <Ban className="w-3.5 h-3.5" /> Cancel
-                        </button>
-                      </>
-                    )}
-                    {inv.status === 'Paid' && (
-                      <span className="text-[11px] text-slate-400">{inv.paymentMethod || 'Paid'} · {inv.paidAt ? new Date(inv.paidAt).toLocaleDateString() : ''}</span>
-                    )}
-                  </td>
-                </tr>
-                {expanded && (
-                  <tr className="bg-slate-50/60">
-                    <td colSpan={7} className="px-4 py-2">
-                      <div className="max-w-lg"><LineTable lines={lines} /></div>
-                    </td>
+      {tab === 'invoices' && (
+        <>
+          <div className="flex flex-wrap gap-2">
+            {statusChips.map(c => (
+              <button key={c.key} onClick={() => setStatus(c.key)} className={chip(status === c.key)}>
+                {c.label}<span className="ml-1.5 opacity-70">{countFor(c.key)}</span>
+              </button>
+            ))}
+          </div>
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200">
+                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <th className="px-4 py-2.5">Invoice</th>
+                    <th className="px-4 py-2.5">Business</th>
+                    <th className="px-4 py-2.5">For</th>
+                    <th className="px-4 py-2.5">Due</th>
+                    <th className="px-4 py-2.5 text-right">Total</th>
+                    <th className="px-4 py-2.5 text-right">Balance</th>
+                    <th className="px-4 py-2.5">Status</th>
                   </tr>
-                )}
-                </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {loading && invoices.length === 0 ? (
+                    <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Loading…</td></tr>
+                  ) : shownInvoices.length === 0 ? (
+                    <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                      {invoices.length === 0 ? 'No invoices yet. They are raised by themselves before each renewal, or press New invoice.' : 'No invoices match.'}
+                    </td></tr>
+                  ) : shownInvoices.map(i => (
+                    <tr key={i.id} onClick={() => setOpenInvoiceId(i.id)} className="hover:bg-slate-50 cursor-pointer transition">
+                      <td className="px-4 py-2.5 font-mono font-bold text-slate-900">{i.invoiceNumber}</td>
+                      <td className="px-4 py-2.5">
+                        <button onClick={(e) => { e.stopPropagation(); onOpenTenant?.(i.tenantId); }} className="font-bold text-slate-800 hover:text-teal-700 text-left">
+                          {i.tenantName ?? '—'}
+                        </button>
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-600 max-w-[16rem] truncate">{i.tier}</td>
+                      <td className={`px-4 py-2.5 whitespace-nowrap ${i.status === 'Overdue' ? 'text-rose-600 font-bold' : 'text-slate-600'}`}>{dateOf(i.dueAt)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-bold">{pkr(i.amountPKR)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">{i.status === 'Cancelled' ? '—' : pkr(i.balancePKR ?? 0)}</td>
+                      <td className="px-4 py-2.5"><InvoiceStatusBadge status={i.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
-      {isIssueOpen && (
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900 flex items-center gap-2"><Receipt className="w-4 h-4 text-teal-600" /> Issue Invoice — {tenantName(selectedTenantId)}</h2>
-              <button onClick={() => setIsIssueOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
-            </div>
-            <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={annual}
-                onChange={(e) => { setAnnual(e.target.checked); loadQuote(e.target.checked); }}
-                className="w-4 h-4 accent-teal-500"
-              />
-              <span>Annual billing (default: monthly)</span>
-            </label>
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">This invoice charges</div>
-              {quoteError ? (
-                <p className="text-[11px] text-rose-600">{quoteError}</p>
-              ) : !shownQuote ? (
-                <p className="text-[11px] text-slate-400">Working out the charges…</p>
-              ) : shownQuote.lines.length === 0 ? (
-                <p className="text-[11px] text-slate-400">Nothing billable on this account.</p>
-              ) : (
-                <>
-                  <LineTable lines={shownQuote.lines} />
-                  <div className="flex justify-between items-baseline pt-1.5 border-t border-slate-200">
-                    <span className="text-xs font-bold text-slate-700">Total {annual ? 'per year' : 'per month'}</span>
-                    <span className="text-sm font-black text-teal-700">PKR {Math.round(shownQuote.totalPKR).toLocaleString()}</span>
-                  </div>
-                </>
-              )}
-            </div>
-            <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount override (optional)</label>
-              <input type="number" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)}
-                placeholder="Leave blank to charge the total above"
-                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
-            </div>
-            <button
-              onClick={handleIssue}
-              disabled={issuing}
-              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-teal-500/25 transition"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{issuing ? 'Issuing…' : 'Issue Invoice'}</span>
-            </button>
+      {tab === 'payments' && (
+        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <th className="px-4 py-2.5">Received</th>
+                  <th className="px-4 py-2.5">Business</th>
+                  <th className="px-4 py-2.5">Invoice</th>
+                  <th className="px-4 py-2.5">How</th>
+                  <th className="px-4 py-2.5">Reference</th>
+                  <th className="px-4 py-2.5 text-right">Amount</th>
+                  <th className="px-4 py-2.5">Recorded by</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {shownPayments.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">No payments recorded yet.</td></tr>
+                ) : shownPayments.map(p => (
+                  <tr key={p.id} className={`${p.voidedAt ? 'opacity-50 line-through' : ''} hover:bg-slate-50`}>
+                    <td className="px-4 py-2.5 whitespace-nowrap">{dateOf(p.receivedAt)}</td>
+                    <td className="px-4 py-2.5 font-bold text-slate-800">{p.tenantName ?? '—'}</td>
+                    <td className="px-4 py-2.5">
+                      {p.invoiceId ? (
+                        <button onClick={() => setOpenInvoiceId(p.invoiceId!)} className="font-mono text-teal-700 hover:underline">{p.invoiceNumber}</button>
+                      ) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5">{p.kind === 'Refund' ? <span className="text-amber-700 font-bold">Refund · </span> : null}{p.method}</td>
+                    <td className="px-4 py-2.5 text-slate-500 font-mono">{p.reference ?? '—'}</td>
+                    <td className={`px-4 py-2.5 text-right font-mono font-bold ${p.kind === 'Refund' ? 'text-amber-700' : 'text-teal-700'}`}>
+                      {p.kind === 'Refund' ? '−' : ''}{pkr(p.amountPKR)}
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-500">{p.recordedByName}{p.voidedAt ? ` · taken back: ${p.voidReason}` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
+      )}
+
+      {issuing && (
+        <IssueInvoiceModal
+          onClose={() => setIssuing(false)}
+          onIssued={(invoice) => { setIssuing(false); reload(); setOpenInvoiceId(invoice.id); }}
+        />
+      )}
+      {openInvoiceId && (
+        <InvoiceDrawer
+          invoiceId={openInvoiceId}
+          onClose={() => setOpenInvoiceId(null)}
+          onChanged={reload}
+          onOpenTenant={onOpenTenant ? (id) => { setOpenInvoiceId(null); onOpenTenant(id); } : undefined}
+        />
       )}
     </div>
   );

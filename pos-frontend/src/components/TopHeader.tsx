@@ -97,7 +97,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   // Password and 2-step sign-in for the person signed in (not the platform admin's own account).
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   // Not the platform admin's own account, and not a support session (it has no sign-in of its own).
-  const canManageOwnSignIn = !!currentUser && currentUser.role !== 'SuperAdmin' && !getSupportSession();
+  // A named platform team member manages their own password and 2-step sign-in too; the shared
+  // setup-PIN account has neither.
+  const canManageOwnSignIn = !!currentUser && !getSupportSession()
+    && (currentUser.role !== 'SuperAdmin' || (!!currentUser.platformRole && !currentUser.isSetupAccount));
 
   // Staff pinned to a branch switch on the server: the session moves to another branch they
   // cover, so what they ring up lands there. Owners and head office staff already see every
@@ -358,7 +361,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 <User className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{currentUser.fullName || currentUser.username}</span>
                 <span className="hidden lg:inline text-[9px] px-1.5 py-0.5 rounded bg-white text-teal-600 border border-slate-200 font-bold uppercase tracking-wider">
-                  {ROLE_LABELS[normalizeRole(currentUser.role) ?? ''] ?? 'Staff'}
+                  {currentUser.role === 'SuperAdmin' && currentUser.platformRole && !currentUser.isSetupAccount
+                    ? `Platform ${currentUser.platformRole.toLowerCase()}`
+                    : ROLE_LABELS[normalizeRole(currentUser.role) ?? ''] ?? 'Staff'}
                 </span>
               </button>
               {canManageOwnSignIn && (

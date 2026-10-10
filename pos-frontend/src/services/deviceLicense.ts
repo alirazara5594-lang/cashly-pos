@@ -14,7 +14,7 @@ const FINGERPRINT_KEY = 'cashly_device_fingerprint';
 const TERMINAL_KEY = 'cashly_device_terminal';
 const LAST_STATE_KEY = 'cashly_device_state';
 
-export type DeviceState = 'Unactivated' | 'Valid' | 'Grace' | 'ReadOnly' | 'Revoked' | 'OverLimit' | 'Suspended';
+export type DeviceState = 'Unactivated' | 'Valid' | 'Grace' | 'ReadOnly' | 'Revoked' | 'OverLimit' | 'Suspended' | 'Unpaid';
 
 export interface DeviceStatus {
   state: DeviceState;

@@ -117,7 +117,25 @@ import type {
   PublicOrderResult,
   OnboardingStatus,
   SubscriptionPartRow,
-  RenewalsSummary
+  RenewalsSummary,
+  SubscriptionInvoiceDetail,
+  SubscriptionPaymentRow,
+  BillingSummary,
+  AutomationReport,
+  BillingDetails,
+  PlatformSettingsData,
+  PlatformMessagePage,
+  PlatformMessageRow,
+  TeamMember,
+  ActivityPage,
+  TenantNote,
+  TenantNoteKind,
+  FollowUp,
+  Announcement,
+  RevenueReport,
+  AddOnKeyOption,
+  AddOnHolder,
+  PlatformRole
 } from '../types';
 
 /**
@@ -180,6 +198,7 @@ const PUBLIC_ENDPOINTS = [
   '/api/auth/confirm-email',
   '/api/auth/signup',
   '/api/auth/super-admin-login',
+  '/api/auth/platform-login',
   '/api/auth/refresh',
   '/api/auth/redeem-invite',
   '/api/setup/status',
@@ -1456,7 +1475,10 @@ export const posApi = {
     const res = await api.post(`/api/admin/tenants/${tenantId}/enable-hq`);
     return res.data;
   },
-  createTenantBranch: async (tenantId: string, data: { name: string; code?: string; city?: string; address?: string; phone?: string; stateCode?: string }) => {
+  createTenantBranch: async (tenantId: string, data: {
+    name: string; code?: string; city?: string; address?: string; phone?: string; stateCode?: string;
+    locationType?: 'Branch' | 'Warehouse'; posEdition?: string;
+  }) => {
     const res = await api.post(`/api/admin/tenants/${tenantId}/branches`, data);
     return res.data;
   },
@@ -1571,13 +1593,27 @@ export const posApi = {
     const res = await api.get<SubscriptionPartRow[]>(`/api/admin/tenants/${tenantId}/subscription-parts`);
     return res.data;
   },
-  /** A payment received for one part: renews it by whole periods from its own anniversary. */
-  markSubscriptionPartPaid: async (partId: string, annual: boolean, periods = 1) => {
-    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/mark-paid`, { annual, periods });
+  /** An invoice for one part's next period(s), from the end of what it already covers. */
+  invoiceSubscriptionPart: async (partId: string, data: { periods?: number; annual?: boolean; notes?: string }) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-parts/${partId}/invoice`, data);
     return res.data;
   },
-  setSubscriptionPartPaidUntil: async (partId: string, paidUntil: string) => {
-    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/paid-until`, { paidUntil });
+  /** Money received for one part: its open invoice (or a new one) is paid, and the part moves on. */
+  recordSubscriptionPartPayment: async (partId: string, data: {
+    periods?: number; annual?: boolean; amountPKR?: number; agreedPricePKR?: number;
+    method: string; reference?: string; receivedAt?: string; notes?: string;
+  }) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-parts/${partId}/record-payment`, data);
+    return res.data;
+  },
+  /** Sets the date a part is covered to, with no payment — a correction or a free period. */
+  setSubscriptionPartPaidUntil: async (partId: string, paidUntil: string, reason?: string) => {
+    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/paid-until`, { paidUntil, reason });
+    return res.data;
+  },
+  /** Stops one part for not being paid, or lets it run again. */
+  setSubscriptionPartStopped: async (partId: string, stopped: boolean, reason: string) => {
+    const res = await api.post<SubscriptionPartRow>(`/api/admin/subscription-parts/${partId}/stopped`, { stopped, reason });
     return res.data;
   },
   /** The signed-in business's own parts and when each renews. */
@@ -1585,6 +1621,92 @@ export const posApi = {
     const res = await api.get<SubscriptionPartRow[]>('/api/tenant/my-subscriptions');
     return res.data;
   },
+  /** The owner asks for an invoice to renew one part now (returns the open one if there is one). */
+  renewMyPart: async (partId: string, annual?: boolean) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/subscription/parts/${partId}/renew`, { annual });
+    return res.data;
+  },
+  /** Who bills the business and how to pay — printed on its invoices. */
+  getBillingDetails: async () => {
+    const res = await api.get<BillingDetails>('/api/subscription/billing-details');
+    return res.data;
+  },
+  getMySubscriptionInvoice: async (id: string) => {
+    const res = await api.get<SubscriptionInvoiceDetail>(`/api/subscription/invoices/${id}`);
+    return res.data;
+  },
+
+  // ── Platform: team, activity, notes, announcements, revenue
+  getPlatformLoginMode: async () => {
+    const res = await api.get<{ setupPinAllowed: boolean }>('/api/auth/platform-login-mode');
+    return res.data;
+  },
+  platformLogin: async (email: string, password: string) => {
+    const res = await api.post<LoginResponse>('/api/auth/platform-login', { email, password });
+    if (res.data.token && res.data.refreshToken) authStorage.setItem('cashly_pos_refresh_token', res.data.refreshToken);
+    return res.data;
+  },
+  getTeam: async () => (await api.get<TeamMember[]>('/api/admin/team')).data,
+  addTeamMember: async (data: { fullName: string; email: string; platformRole: PlatformRole }) =>
+    (await api.post<{ member: TeamMember; temporaryPassword: string }>('/api/admin/team', data)).data,
+  updateTeamMember: async (id: string, data: { fullName?: string; platformRole?: PlatformRole; isActive?: boolean }) =>
+    (await api.put<TeamMember>(`/api/admin/team/${id}`, data)).data,
+  resetTeamMember: async (id: string, turnOffTwoStep: boolean) =>
+    (await api.post<{ temporaryPassword: string; signedOutSessions: number; twoStepOff: boolean }>(`/api/admin/team/${id}/reset`, { turnOffTwoStep })).data,
+  getPlatformActivity: async (params: { actorId?: string; tenantId?: string; action?: string; search?: string; page?: number; pageSize?: number }) =>
+    (await api.get<ActivityPage>('/api/admin/activity', { params })).data,
+  getTenantNotes: async (tenantId: string) => (await api.get<TenantNote[]>(`/api/admin/tenants/${tenantId}/notes`)).data,
+  addTenantNote: async (tenantId: string, data: { kind: TenantNoteKind; body: string; followUpAt?: string; promisedAmountPKR?: number }) =>
+    (await api.post<TenantNote>(`/api/admin/tenants/${tenantId}/notes`, data)).data,
+  updateTenantNote: async (noteId: string, data: { done?: boolean; followUpAt?: string; clearFollowUp?: boolean }) =>
+    (await api.put<TenantNote>(`/api/admin/notes/${noteId}`, data)).data,
+  deleteTenantNote: async (noteId: string) => (await api.delete(`/api/admin/notes/${noteId}`)).data,
+  getFollowUps: async (days = 7) => (await api.get<FollowUp[]>('/api/admin/follow-ups', { params: { days } })).data,
+  getAnnouncements: async () => (await api.get<Announcement[]>('/api/admin/announcements')).data,
+  saveAnnouncement: async (data: Partial<Announcement> & { title: string; body: string }, id?: string) =>
+    (id ? await api.put<Announcement>(`/api/admin/announcements/${id}`, data) : await api.post<Announcement>('/api/admin/announcements', data)).data,
+  deleteAnnouncement: async (id: string) => (await api.delete(`/api/admin/announcements/${id}`)).data,
+  /** What the signed-in business should see now, as banners. */
+  getActiveAnnouncements: async () =>
+    (await api.get<Pick<Announcement, 'id' | 'title' | 'body' | 'tone' | 'startsAt' | 'endsAt'>[]>('/api/announcements/active')).data,
+  getRevenueReport: async (months = 12) => (await api.get<RevenueReport>('/api/admin/reports/revenue', { params: { months } })).data,
+
+  // ── Platform: settings, messages, billing automation
+  getPlatformSettings: async () => (await api.get<{ settings: PlatformSettingsData; emailReady: boolean }>('/api/admin/platform-settings')).data,
+  savePlatformSettings: async (data: Partial<PlatformSettingsData> & { whatsAppApiKey?: string; whatsAppApiSecret?: string; whatsAppAccessToken?: string }) =>
+    (await api.put<{ settings: PlatformSettingsData }>('/api/admin/platform-settings', data)).data,
+  sendPlatformTestMessage: async (phone?: string, email?: string) =>
+    (await api.post<PlatformMessageRow[]>('/api/admin/platform-settings/test-message', { phone, email })).data,
+  getPlatformMessages: async (params: { tenantId?: string; channel?: string; status?: string; kind?: string; page?: number; pageSize?: number }) =>
+    (await api.get<PlatformMessagePage>('/api/admin/platform-messages', { params })).data,
+  sendTenantMessage: async (tenantId: string, subject: string, text: string) =>
+    (await api.post<{ sent: number; notSent: number }>(`/api/admin/tenants/${tenantId}/message`, { subject, text })).data,
+  runBillingAutomation: async () => (await api.post<AutomationReport>('/api/admin/billing/run')).data,
+  getBillingSummary: async () => (await api.get<BillingSummary>('/api/admin/billing/summary')).data,
+
+  // ── Platform: a business's locations and devices
+  setOutletPosEdition: async (tenantId: string, branchId: string, posEdition: string) =>
+    (await api.put(`/api/admin/tenants/${tenantId}/branches/${branchId}/pos-edition`, { posEdition })).data,
+  blockTenantDevice: async (tenantId: string, terminalId: string, reason: string) =>
+    (await api.post<{ message: string }>(`/api/admin/tenants/${tenantId}/devices/${terminalId}/block`, { reason })).data,
+  issueOwnerInvite: async (tenantId: string) =>
+    (await api.post<{ ownerInviteToken: string; ownerInviteExpiresAt: string; slug: string }>(`/api/admin/tenants/${tenantId}/invite`)).data,
+  /** A business's data as spreadsheets in one ZIP, saved through the browser. */
+  exportTenantData: async (tenantId: string) => {
+    const res = await api.get(`/api/admin/tenants/${tenantId}/export`, { responseType: 'blob' });
+    const disposition = String(res.headers['content-disposition'] ?? '');
+    const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? 'business-data.zip';
+    const url = URL.createObjectURL(res.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
+  getAddOnKeys: async () => (await api.get<AddOnKeyOption[]>('/api/admin/addons/keys')).data,
+  getAddOnHolders: async () => (await api.get<AddOnHolder[]>('/api/admin/addons/holders')).data,
 
   // SAAS — WhatsApp Config
   // tenantId is only sent by the platform console; a tenant caller's own JWT scopes the request.
@@ -2065,20 +2187,50 @@ export const posApi = {
   },
 
   // ── Subscription billing (platform-vendor)
-  getSubscriptionInvoices: async (tenantId?: string) => {
-    const res = await api.get<SubscriptionInvoice[]>('/api/admin/subscription-invoices', { params: { tenantId } });
+  getSubscriptionInvoices: async (tenantId?: string, status?: string) => {
+    const res = await api.get<SubscriptionInvoice[]>('/api/admin/subscription-invoices', { params: { tenantId, status } });
     return res.data;
   },
-  issueSubscriptionInvoice: async (data: { tenantId: string; annual?: boolean; amountPKR?: number; notes?: string }) => {
+  getSubscriptionInvoice: async (id: string) => {
+    const res = await api.get<SubscriptionInvoiceDetail>(`/api/admin/subscription-invoices/${id}`);
+    return res.data;
+  },
+  /** An invoice for the parts named; with none named, everything due or renewing soon. */
+  issueSubscriptionInvoice: async (data: {
+    tenantId: string; annual?: boolean; amountPKR?: number; notes?: string;
+    parts?: { partId: string; periods?: number; annual?: boolean }[];
+  }) => {
     const res = await api.post<SubscriptionInvoice>('/api/admin/subscription-invoices', data);
     return res.data;
   },
-  markSubscriptionInvoicePaid: async (id: string, paymentMethod?: string) => {
-    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/mark-paid`, { paymentMethod });
+  recordSubscriptionPayment: async (invoiceId: string, data: { amountPKR: number; method: string; reference?: string; receivedAt?: string; notes?: string }) => {
+    const res = await api.post<{ invoice: SubscriptionInvoice; payment: SubscriptionPaymentRow }>(`/api/admin/subscription-invoices/${invoiceId}/payments`, data);
     return res.data;
   },
-  cancelSubscriptionInvoice: async (id: string) => {
-    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/cancel`);
+  recordSubscriptionRefund: async (invoiceId: string, data: { amountPKR: number; method: string; reference?: string; notes?: string }) => {
+    const res = await api.post<SubscriptionPaymentRow>(`/api/admin/subscription-invoices/${invoiceId}/refunds`, data);
+    return res.data;
+  },
+  voidSubscriptionPayment: async (paymentId: string, reason: string) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-payments/${paymentId}/void`, { reason });
+    return res.data;
+  },
+  /** Records the whole balance as one payment. */
+  markSubscriptionInvoicePaid: async (id: string, paymentMethod?: string, reference?: string) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/mark-paid`, { paymentMethod, reference });
+    return res.data;
+  },
+  cancelSubscriptionInvoice: async (id: string, reason?: string) => {
+    const res = await api.post<SubscriptionInvoice>(`/api/admin/subscription-invoices/${id}/cancel`, { reason });
+    return res.data;
+  },
+  /** Sends the invoice to the business's owner on WhatsApp and email. */
+  sendSubscriptionInvoice: async (id: string) => {
+    const res = await api.post<{ sent: number; notSent: number }>(`/api/admin/subscription-invoices/${id}/send`);
+    return res.data;
+  },
+  getSubscriptionPayments: async (params?: { tenantId?: string; from?: string; to?: string; take?: number }) => {
+    const res = await api.get<SubscriptionPaymentRow[]>('/api/admin/subscription-payments', { params });
     return res.data;
   },
 

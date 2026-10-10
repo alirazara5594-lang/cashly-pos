@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CreditCard,
   RefreshCw,
   Save,
   CheckCircle2,
@@ -12,15 +11,12 @@ import {
   ToggleLeft,
   ToggleRight,
   Building2,
-  Lock,
-  KeyRound,
-  ShieldCheck
+  Lock
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import type { PlanOption, PlatformPrice } from '../types';
 import { tierLabel } from '../utils/tierLabel';
-import { usePosStore, hasModuleAccess } from '../store/posStore';
-import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
+import { usePosStore } from '../store/posStore';
 
 interface PackageData {
   id: string;
@@ -60,21 +56,15 @@ const PACKAGE_FEATURES: { key: string; label: string; flag: keyof PlanOption }[]
 
 export const PricingAdmin: React.FC = () => {
   const currentUser = usePosStore(s => s.currentUser);
-  const permissions = usePosStore(s => s.permissions);
-  const modulePermissions = usePosStore(s => s.modulePermissions);
 
-  // Package pricing is a platform-admin surface; the server rejects writes from
-  // anyone without it regardless of what this flag says.
-  const canEditPricing =
-    hasModuleAccess(currentUser?.role, modulePermissions, 'admin', 'edit') ||
-    !!permissions?.canManageMenuAndTax;
-
-  const [override, setOverride] = useState<ManagerOverrideResult | null>(null);
-  const [isOverrideOpen, setIsOverrideOpen] = useState(false);
-  const isUnlocked = canEditPricing || !!override;
+  // Prices are a platform owner's decision; the server refuses anyone else whatever this says.
+  const isUnlocked = !currentUser?.platformRole || currentUser.platformRole === 'Owner';
 
   const [packages, setPackages] = useState<PackageData[]>([]);
+  const [saved, setSaved] = useState<PackageData[]>([]);
   const [erpPrice, setErpPrice] = useState<PlatformPrice | null>(null);
+  const [savedErp, setSavedErp] = useState<PlatformPrice | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -88,7 +78,7 @@ export const PricingAdmin: React.FC = () => {
       ]);
       // The API returns the raw package row; the screen works with friendly names and the
       // Has* columns expressed as a feature list so the toggles show what is actually on.
-      setPackages(Array.isArray(data) ? data.map((p) => ({
+      const rows: PackageData[] = Array.isArray(data) ? data.map((p) => ({
         id: p.id,
         name: p.displayName || p.packageKey,
         slug: p.packageKey,
@@ -103,8 +93,12 @@ export const PricingAdmin: React.FC = () => {
         branchYearlyPricePKR: p.branchYearlyPricePKR ?? 0,
         whatsappMessagesPerMonth: p.whatsAppMessagesPerMonth ?? 0,
         features: PACKAGE_FEATURES.filter(f => p[f.flag] === true).map(f => f.key),
-      })) : []);
-      setErpPrice((Array.isArray(prices) ? prices : []).find(p => p.key === HEAD_OFFICE_ERP) ?? null);
+      })) : [];
+      setPackages(rows);
+      setSaved(rows);
+      const erp = (Array.isArray(prices) ? prices : []).find(p => p.key === HEAD_OFFICE_ERP) ?? null;
+      setErpPrice(erp);
+      setSavedErp(erp);
     } catch (err) {
       // No made-up packages here: saving them would write demo numbers over the real ones.
       setPackages([]);
@@ -164,19 +158,31 @@ export const PricingAdmin: React.FC = () => {
           includedWhatsAppMessages: erpPrice.includedWhatsAppMessages
         });
       }
-      setMessage({
-        type: 'success',
-        text: override?.authorizedByName
-          ? `All packages updated — authorized by ${override.authorizedByName}`
-          : 'All packages updated successfully'
-      });
-      setOverride(null);
+      setMessage({ type: 'success', text: 'Saved. The new prices apply to each business\'s next invoice, and to what owners see when they buy.' });
+      setConfirming(false);
+      await loadData();
     } catch (err) {
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Failed to save some packages') });
     } finally {
       setSaving(false);
     }
   };
+
+  const money = (n: number) => `PKR ${Math.round(n).toLocaleString()}`;
+  const priceChanges: string[] = [];
+  for (const pkg of packages) {
+    const before = saved.find(p => p.id === pkg.id);
+    if (!before) continue;
+    const label = tierLabel(pkg.slug);
+    if (before.monthlyPricePKR !== pkg.monthlyPricePKR) priceChanges.push(`${label} monthly: ${money(before.monthlyPricePKR)} → ${money(pkg.monthlyPricePKR)}`);
+    if (before.yearlyPricePKR !== pkg.yearlyPricePKR) priceChanges.push(`${label} yearly: ${money(before.yearlyPricePKR)} → ${money(pkg.yearlyPricePKR)}`);
+    if (before.branchMonthlyPricePKR !== pkg.branchMonthlyPricePKR) priceChanges.push(`${label} per outlet monthly: ${money(before.branchMonthlyPricePKR)} → ${money(pkg.branchMonthlyPricePKR)}`);
+    if (before.branchYearlyPricePKR !== pkg.branchYearlyPricePKR) priceChanges.push(`${label} per outlet yearly: ${money(before.branchYearlyPricePKR)} → ${money(pkg.branchYearlyPricePKR)}`);
+  }
+  if (savedErp && erpPrice && savedErp.monthlyPricePKR !== erpPrice.monthlyPricePKR)
+    priceChanges.push(`Head Office ERP monthly: ${money(savedErp.monthlyPricePKR)} → ${money(erpPrice.monthlyPricePKR)}`);
+  if (savedErp && erpPrice && savedErp.yearlyPricePKR !== erpPrice.yearlyPricePKR)
+    priceChanges.push(`Head Office ERP yearly: ${money(savedErp.yearlyPricePKR)} → ${money(erpPrice.yearlyPricePKR)}`);
 
   if (loading) {
     return (
@@ -203,57 +209,44 @@ export const PricingAdmin: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
-            <CreditCard className="w-5 h-5 text-teal-500" />
-          </div>
-          <div>
-            <h1 className="text-lg font-black text-slate-900">Packages & Pricing</h1>
-            <p className="text-xs text-slate-500">Manage subscription tiers, limits, and features</p>
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-slate-500 max-w-2xl">
+          Prices, limits and features of each POS version, and the Head Office ERP. A change applies to every business's next
+          invoice and to what owners see when they buy — invoices already issued keep their amounts.
+        </p>
         {isUnlocked ? (
           <button
-            onClick={handleSaveAll}
+            onClick={() => (priceChanges.length > 0 ? setConfirming(true) : handleSaveAll())}
             disabled={saving}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition disabled:opacity-50 cursor-pointer"
           >
             <Save className="w-4 h-4" />
-            {saving ? 'Saving...' : 'Save All Changes'}
+            {saving ? 'Saving...' : 'Save changes'}
           </button>
         ) : (
-          <button
-            onClick={() => setIsOverrideOpen(true)}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition cursor-pointer"
-            title="You do not have permission to change package pricing — a manager can authorize this"
-          >
-            <KeyRound className="w-4 h-4" />
-            Manager Override
-          </button>
+          <span className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold border bg-slate-50 text-slate-600 border-slate-200">
+            <Lock className="w-4 h-4 text-slate-400" /> View only — prices are changed by a platform owner.
+          </span>
         )}
       </div>
 
-      {!canEditPricing && (
-        <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold border ${
-          override
-            ? 'bg-teal-50 text-teal-700 border-teal-200'
-            : 'bg-slate-50 text-slate-600 border-slate-200'
-        }`}>
-          {override ? <ShieldCheck className="w-4 h-4 text-teal-600" /> : <Lock className="w-4 h-4 text-slate-400" />}
-          {override
-            ? `Override active — ${override.authorizedByName || 'a manager'} authorized these changes. It expires once you save.`
-            : 'View only: your account cannot change package pricing. Use Manager Override to unlock.'}
+      {confirming && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-3">
+            <h3 className="text-sm font-black text-slate-900 flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-500" /> Change prices for everyone?</h3>
+            <ul className="text-xs text-slate-700 space-y-1 list-disc pl-5">
+              {priceChanges.map(c => <li key={c}>{c}</li>)}
+            </ul>
+            <p className="text-[11px] text-slate-500">Every business on these versions pays the new price from its next invoice. This is recorded with your name.</p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setConfirming(false)} className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold">Not now</button>
+              <button onClick={handleSaveAll} disabled={saving} className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold disabled:opacity-50">
+                {saving ? 'Saving…' : 'Yes, change them'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
-
-      <ManagerOverrideModal
-        isOpen={isOverrideOpen}
-        onClose={() => setIsOverrideOpen(false)}
-        requiredPermission="canManageMenuAndTax"
-        actionLabel="Change subscription package pricing, limits, and features"
-        onAuthorized={(result) => setOverride(result)}
-      />
 
       {message && (
         <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-xs font-semibold ${
