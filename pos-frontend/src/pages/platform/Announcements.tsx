@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Megaphone, Plus, Trash2, Edit, X, Save, RefreshCw } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { usePosStore } from '../../store/posStore';
@@ -45,7 +46,9 @@ export const Announcements: React.FC = () => {
   const canEdit = !currentUser?.platformRole || currentUser.platformRole === 'Owner';
   const [items, setItems] = useState<Announcement[]>([]);
   const [tenants, setTenants] = useState<AdminTenantRow[]>([]);
-  const [draft, setDraft] = useState<Draft | null>(null);
+  // The header's "New announcement" (?new=1) opens straight on a blank one.
+  const [searchParams] = useSearchParams();
+  const [draft, setDraft] = useState<Draft | null>(() => (canEdit && searchParams.get('new') === '1' ? blank() : null));
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const [busy, setBusy] = useState(false);

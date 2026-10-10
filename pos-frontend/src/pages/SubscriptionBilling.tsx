@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, RefreshCw, Search, Zap, Receipt, Wallet } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { BillingSummaryCards, IssueInvoiceModal, InvoiceDrawer, InvoiceStatusBadge } from '../components/PlatformBilling';
@@ -23,6 +24,16 @@ export const SubscriptionBilling: React.FC<{ onOpenTenant?: (tenantId: string) =
   const [search, setSearch] = useState('');
   const [issuing, setIssuing] = useState(false);
   const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  // The header's "New invoice" (?new=1) and its search (?invoice=<id>) open them here.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const clearParam = (key: string) => {
+    if (!searchParams.get(key)) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete(key);
+    setSearchParams(next, { replace: true });
+  };
+  const showIssue = issuing || searchParams.get('new') === '1';
+  const drawerId = openInvoiceId ?? searchParams.get('invoice');
   const [report, setReport] = useState<AutomationReport | null>(null);
   const [running, setRunning] = useState(false);
   // Bumped after any change; everything reloads when it moves.
@@ -224,16 +235,16 @@ export const SubscriptionBilling: React.FC<{ onOpenTenant?: (tenantId: string) =
         </div>
       )}
 
-      {issuing && (
+      {showIssue && (
         <IssueInvoiceModal
-          onClose={() => setIssuing(false)}
-          onIssued={(invoice) => { setIssuing(false); reload(); setOpenInvoiceId(invoice.id); }}
+          onClose={() => { setIssuing(false); clearParam('new'); }}
+          onIssued={(invoice) => { setIssuing(false); clearParam('new'); reload(); setOpenInvoiceId(invoice.id); }}
         />
       )}
-      {openInvoiceId && (
+      {drawerId && (
         <InvoiceDrawer
-          invoiceId={openInvoiceId}
-          onClose={() => setOpenInvoiceId(null)}
+          invoiceId={drawerId}
+          onClose={() => { setOpenInvoiceId(null); clearParam('invoice'); }}
           onChanged={reload}
           onOpenTenant={onOpenTenant ? (id) => { setOpenInvoiceId(null); onOpenTenant(id); } : undefined}
         />

@@ -294,10 +294,31 @@ input:focus, select:focus {
 /* ═══════════════════════════════════════════════════════════════
    DARK THEME — Clean matching dark mode
    ═══════════════════════════════════════════════════════════════ */
+/* One family of dark surfaces, all on the brand's cyan-teal hue, so the sidebar, the page and
+   the cards read as one piece. Darkest to lightest: sidebar, page, sunken (inputs and table
+   heads inside a card), card, then raised steps for hovers and chips. */
+.theme-dark,
+:root:has(.theme-dark) {
+  --dk-sidebar: #091317;
+  --dk-page: #0d181d;
+  --dk-sunken: #101d23;
+  --dk-card: #13222a;
+  --dk-raised: #1b2e37;
+  --dk-raised-2: #263c47;
+  --dk-raised-3: #324b57;
+  --dk-line: rgb(145, 172, 184);
+  --dk-text-1: #eef4f6;
+  --dk-text-2: #dde6ea;
+  --dk-text-3: #c3d1d7;
+  --dk-text-4: #a0b1b9;
+  --dk-text-5: #8698a1;
+  --dk-text-6: #6d7f87;
+}
+
 .theme-dark {
   color-scheme: dark;
-  background: #0b1120 !important;
-  color: #e2e8f0 !important;
+  background: var(--dk-page) !important;
+  color: var(--dk-text-2) !important;
 }
 
 .theme-dark .bg-mesh {
@@ -305,59 +326,59 @@ input:focus, select:focus {
     radial-gradient(at 20% 80%, rgba(42, 129, 147, 0.06) 0px, transparent 50%),
     radial-gradient(at 80% 20%, rgba(31, 95, 109, 0.04) 0px, transparent 50%),
     radial-gradient(at 50% 50%, rgba(55, 134, 114, 0.04) 0px, transparent 50%),
-    #0b1120 !important;
+    var(--dk-page) !important;
 }
 
 /* ── Header / Sidebar / Glass ── */
 .theme-dark .header-glass {
-  background: rgba(11, 17, 32, 0.88) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.1) !important;
+  background: color-mix(in srgb, var(--dk-page) 88%, transparent) !important;
+  border-bottom-color: color-mix(in srgb, var(--dk-line) 10%, transparent) !important;
 }
 
 .theme-dark .sidebar-glass {
-  background: rgba(11, 17, 32, 0.95) !important;
+  background: color-mix(in srgb, var(--dk-sidebar) 95%, transparent) !important;
 }
 
 /* The sidebar is a teal gradient in the light theme; here it goes flat and darker. */
 .theme-dark .app-sidebar {
-  background: #0e2328 !important;
-  border-color: rgba(148, 163, 184, 0.1) !important;
+  background: var(--dk-sidebar) !important;
+  border-color: color-mix(in srgb, var(--dk-line) 10%, transparent) !important;
 }
 
 .theme-dark .glass {
-  background: rgba(17, 24, 39, 0.75) !important;
-  border-color: rgba(148, 163, 184, 0.08) !important;
+  background: color-mix(in srgb, var(--dk-card) 75%, transparent) !important;
+  border-color: color-mix(in srgb, var(--dk-line) 8%, transparent) !important;
 }
 
 .theme-dark .glass-strong {
-  background: rgba(17, 24, 39, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.1) !important;
+  background: color-mix(in srgb, var(--dk-card) 90%, transparent) !important;
+  border-color: color-mix(in srgb, var(--dk-line) 10%, transparent) !important;
 }
 
 /* ── Surface backgrounds (3-tier depth) ── */
-.theme-dark .bg-white { background-color: #111827 !important; }
-.theme-dark .bg-slate-50 { background-color: #0f172a !important; }
-.theme-dark .bg-slate-100 { background-color: #1e293b !important; }
-.theme-dark .bg-slate-200 { background-color: #334155 !important; }
+.theme-dark .bg-white { background-color: var(--dk-card) !important; }
+.theme-dark .bg-slate-50 { background-color: var(--dk-sunken) !important; }
+.theme-dark .bg-slate-100 { background-color: var(--dk-raised) !important; }
+.theme-dark .bg-slate-200 { background-color: var(--dk-raised-2) !important; }
 
 /* ── Text hierarchy ── */
-.theme-dark .text-slate-900 { color: #f1f5f9 !important; }
-.theme-dark .text-slate-800 { color: #e2e8f0 !important; }
-.theme-dark .text-slate-700 { color: #cbd5e1 !important; }
-.theme-dark .text-slate-600 { color: #94a3b8 !important; }
-.theme-dark .text-slate-500 { color: #64748b !important; }
-.theme-dark .text-slate-400 { color: #4b5563 !important; }
-.theme-dark .text-slate-300 { color: #94a3b8 !important; }
-.theme-dark .text-slate-200 { color: #cbd5e1 !important; }
-.theme-dark .text-slate-100 { color: #e2e8f0 !important; }
-.theme-dark .text-white { color: #f1f5f9 !important; }
+.theme-dark .text-slate-900 { color: var(--dk-text-1) !important; }
+.theme-dark .text-slate-800 { color: var(--dk-text-2) !important; }
+.theme-dark .text-slate-700 { color: var(--dk-text-3) !important; }
+.theme-dark .text-slate-600 { color: var(--dk-text-4) !important; }
+.theme-dark .text-slate-500 { color: var(--dk-text-5) !important; }
+.theme-dark .text-slate-400 { color: var(--dk-text-6) !important; }
+.theme-dark .text-slate-300 { color: var(--dk-text-4) !important; }
+.theme-dark .text-slate-200 { color: var(--dk-text-3) !important; }
+.theme-dark .text-slate-100 { color: var(--dk-text-2) !important; }
+.theme-dark .text-white { color: var(--dk-text-1) !important; }
 
 /* ── Borders ── */
-.theme-dark .border-slate-200 { border-color: rgba(148, 163, 184, 0.12) !important; }
-.theme-dark .border-slate-100 { border-color: rgba(148, 163, 184, 0.08) !important; }
-.theme-dark .border-slate-300 { border-color: rgba(148, 163, 184, 0.15) !important; }
+.theme-dark .border-slate-200 { border-color: color-mix(in srgb, var(--dk-line) 12%, transparent) !important; }
+.theme-dark .border-slate-100 { border-color: color-mix(in srgb, var(--dk-line) 8%, transparent) !important; }
+.theme-dark .border-slate-300 { border-color: color-mix(in srgb, var(--dk-line) 15%, transparent) !important; }
 .theme-dark .divide-slate-100 > *,
-.theme-dark .divide-slate-200 > * { border-color: rgba(148, 163, 184, 0.08) !important; }
+.theme-dark .divide-slate-200 > * { border-color: color-mix(in srgb, var(--dk-line) 8%, transparent) !important; }
 
 /* ── Inputs ── */
 .theme-dark input.bg-slate-50,
@@ -368,27 +389,27 @@ input:focus, select:focus {
 .theme-dark input[type="number"],
 .theme-dark input[type="email"],
 .theme-dark select {
-  background-color: #1e293b !important;
-  color: #e2e8f0 !important;
-  border-color: rgba(148, 163, 184, 0.15) !important;
+  background-color: var(--dk-raised) !important;
+  color: var(--dk-text-2) !important;
+  border-color: color-mix(in srgb, var(--dk-line) 15%, transparent) !important;
 }
 
 .theme-dark input::placeholder,
 .theme-dark textarea::placeholder {
-  color: #4b5563 !important;
+  color: var(--dk-text-6) !important;
 }
 
 /* ── Hover: backgrounds ── */
-.theme-dark .hover\:bg-slate-50:hover { background-color: #1e293b !important; }
-.theme-dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
-.theme-dark .hover\:bg-slate-200:hover { background-color: #475569 !important; }
-.theme-dark .hover\:bg-white:hover { background-color: #1e293b !important; }
+.theme-dark .hover\:bg-slate-50:hover { background-color: var(--dk-raised) !important; }
+.theme-dark .hover\:bg-slate-100:hover { background-color: var(--dk-raised-2) !important; }
+.theme-dark .hover\:bg-slate-200:hover { background-color: var(--dk-raised-3) !important; }
+.theme-dark .hover\:bg-white:hover { background-color: var(--dk-raised) !important; }
 
 /* ── Hover: text ── */
-.theme-dark .hover\:text-white:hover { color: #f1f5f9 !important; }
-.theme-dark .hover\:text-slate-900:hover { color: #f1f5f9 !important; }
-.theme-dark .hover\:text-slate-700:hover { color: #cbd5e1 !important; }
-.theme-dark .hover\:text-slate-600:hover { color: #94a3b8 !important; }
+.theme-dark .hover\:text-white:hover { color: var(--dk-text-1) !important; }
+.theme-dark .hover\:text-slate-900:hover { color: var(--dk-text-1) !important; }
+.theme-dark .hover\:text-slate-700:hover { color: var(--dk-text-3) !important; }
+.theme-dark .hover\:text-slate-600:hover { color: var(--dk-text-4) !important; }
 
 /* ── Accent backgrounds (subtle on dark) ── */
 .theme-dark .bg-teal-50 { background-color: rgba(82, 169, 186, 0.14) !important; }
@@ -444,12 +465,12 @@ input:focus, select:focus {
 .theme-dark .shadow-teal-500\/25 { box-shadow: 0 4px 20px rgba(42, 129, 147, 0.15) !important; }
 
 /* ── Modals ── */
-.theme-dark .fixed .bg-white { background-color: #111827 !important; }
+.theme-dark .fixed .bg-white { background-color: var(--dk-card) !important; }
 .theme-dark .bg-black\/40 { background-color: rgba(0, 0, 0, 0.6) !important; }
 
 /* ── Scrollbar ── */
-.theme-dark ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.15); }
-.theme-dark ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.3); }
+.theme-dark ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--dk-line) 15%, transparent); }
+.theme-dark ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--dk-line) 30%, transparent); }
 
 /* ── Input focus ring ── */
 .theme-dark input:focus,
@@ -469,7 +490,7 @@ input:focus, select:focus {
 /* ── Card hover ── */
 .theme-dark .card-hover:hover {
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5) !important;
-  border-color: rgba(148, 163, 184, 0.15) !important;
+  border-color: color-mix(in srgb, var(--dk-line) 15%, transparent) !important;
 }
 
 /* ── Glow effects ── */
@@ -486,7 +507,7 @@ input:focus, select:focus {
 }
 
 /* ── Empty states ── */
-.theme-dark .bg-slate-100.text-slate-300 { background-color: #1e293b !important; color: #64748b !important; }
+.theme-dark .bg-slate-100.text-slate-300 { background-color: var(--dk-raised) !important; color: var(--dk-text-6) !important; }
 
 /* ── Stat card top accent ── */
 .theme-dark .stat-card::before { opacity: 0.6; }
@@ -495,7 +516,170 @@ input:focus, select:focus {
 .theme-dark .shadow-md { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4) !important; }
 
 /* ── Group hover text (sidebar nav items) ── */
-.theme-dark .group:hover .group-hover\:text-slate-700 { color: #cbd5e1 !important; }
+.theme-dark .group:hover .group-hover\:text-slate-700 { color: var(--dk-text-3) !important; }
+
+/* Sidebar section labels and idle icons step back; menu text leads, hover brings an icon up. */
+.theme-dark .app-sidebar .text-teal-200 { color: var(--dk-text-5); }
+.theme-dark .app-sidebar .group:hover .text-teal-200 { color: var(--dk-text-1); }
+
+/* ── The page edge to edge: no white flash past the app when the page bounces ── */
+html:has(.theme-dark),
+body:has(.theme-dark) { background: var(--dk-page); color-scheme: dark; }
+
+/* ── Frosted and see-through surfaces ── */
+.theme-dark .bg-white\/95 { background-color: color-mix(in srgb, var(--dk-card) 92%, transparent) !important; }
+.theme-dark .bg-white\/60 { background-color: color-mix(in srgb, var(--dk-card) 60%, transparent) !important; }
+.theme-dark .hover\:bg-white\/60:hover { background-color: rgba(255, 255, 255, 0.08) !important; }
+.theme-dark .bg-slate-50\/50,
+.theme-dark .bg-slate-50\/60,
+.theme-dark .bg-slate-50\/70,
+.theme-dark .bg-slate-50\/80 { background-color: color-mix(in srgb, var(--dk-sunken) 60%, transparent) !important; }
+.theme-dark .hover\:bg-slate-50\/70:hover { background-color: color-mix(in srgb, var(--dk-raised) 60%, transparent) !important; }
+.theme-dark .focus\:bg-white:focus { background-color: var(--dk-sunken) !important; }
+.theme-dark .disabled\:bg-slate-50:disabled { background-color: var(--dk-sunken) !important; }
+.theme-dark .disabled\:bg-slate-100:disabled { background-color: var(--dk-raised) !important; }
+.theme-dark .ring-white { --tw-ring-color: var(--dk-card) !important; }
+.theme-dark .border-slate-50 { border-color: color-mix(in srgb, var(--dk-line) 6%, transparent) !important; }
+.theme-dark .divide-slate-50 > * { border-color: color-mix(in srgb, var(--dk-line) 6%, transparent) !important; }
+.theme-dark .hover\:border-slate-300:hover { border-color: color-mix(in srgb, var(--dk-line) 30%, transparent) !important; }
+.theme-dark .hover\:text-slate-800:hover { color: var(--dk-text-2) !important; }
+
+/* ── Panels that are dark in both themes (call order, receipt, toasts) join the same family ── */
+.theme-dark .bg-slate-950 { background-color: var(--dk-sidebar) !important; }
+.theme-dark .bg-slate-900 { background-color: var(--dk-sunken) !important; }
+.theme-dark .bg-slate-800 { background-color: var(--dk-raised) !important; }
+.theme-dark .bg-slate-800\/80 { background-color: color-mix(in srgb, var(--dk-raised) 80%, transparent) !important; }
+.theme-dark .bg-slate-800\/50 { background-color: color-mix(in srgb, var(--dk-raised) 50%, transparent) !important; }
+.theme-dark .hover\:bg-slate-700:hover { background-color: var(--dk-raised-2) !important; }
+.theme-dark .border-slate-700 { border-color: color-mix(in srgb, var(--dk-line) 15%, transparent) !important; }
+
+/* ── Ink buttons and active tabs (near-black on white) turn light on the dark page ── */
+.theme-dark .bg-slate-900.text-white { background-color: #e2e8f0 !important; color: #0f172a !important; }
+.theme-dark .bg-slate-900.text-white:hover { background-color: #f8fafc !important; }
+
+/* ── Accent tints, the rest of each family: pale fills glow, dark ink turns light ── */
+.theme-dark .bg-teal-100,
+.theme-dark .group:hover .group-hover\:bg-teal-100 { background-color: rgba(82, 169, 186, 0.2) !important; }
+.theme-dark .hover\:bg-teal-100:hover { background-color: rgba(82, 169, 186, 0.28) !important; }
+.theme-dark .bg-teal-200 { background-color: rgba(82, 169, 186, 0.3) !important; }
+.theme-dark .bg-teal-50\/40,
+.theme-dark .bg-teal-50\/50,
+.theme-dark .bg-teal-50\/60 { background-color: rgba(82, 169, 186, 0.07) !important; }
+.theme-dark .hover\:bg-teal-50\/50:hover { background-color: rgba(82, 169, 186, 0.14) !important; }
+.theme-dark .text-teal-800,
+.theme-dark .text-teal-900,
+.theme-dark .hover\:text-teal-600:hover,
+.theme-dark .hover\:text-teal-700:hover,
+.theme-dark .hover\:text-teal-800:hover,
+.theme-dark .hover\:text-teal-900:hover,
+.theme-dark .group:hover .group-hover\:text-teal-700 { color: #b4e0e8 !important; }
+.theme-dark .border-teal-300,
+.theme-dark .hover\:border-teal-200:hover,
+.theme-dark .hover\:border-teal-300:hover { border-color: rgba(82, 169, 186, 0.45) !important; }
+
+.theme-dark .bg-amber-100 { background-color: rgba(251, 191, 36, 0.16) !important; }
+.theme-dark .hover\:bg-amber-100:hover { background-color: rgba(251, 191, 36, 0.24) !important; }
+.theme-dark .bg-amber-50\/40,
+.theme-dark .bg-amber-50\/50 { background-color: rgba(251, 191, 36, 0.06) !important; }
+.theme-dark .text-amber-800,
+.theme-dark .text-amber-900 { color: #fcd34d !important; }
+.theme-dark .hover\:text-amber-700:hover,
+.theme-dark .hover\:text-amber-900:hover { color: #fde68a !important; }
+.theme-dark .border-amber-300 { border-color: rgba(251, 191, 36, 0.4) !important; }
+
+.theme-dark .bg-rose-100,
+.theme-dark .bg-red-100 { background-color: rgba(251, 113, 133, 0.16) !important; }
+.theme-dark .hover\:bg-rose-100:hover { background-color: rgba(251, 113, 133, 0.24) !important; }
+.theme-dark .bg-red-50 { background-color: rgba(248, 113, 113, 0.1) !important; }
+.theme-dark .hover\:bg-red-50:hover { background-color: rgba(248, 113, 113, 0.18) !important; }
+.theme-dark .bg-rose-50\/40,
+.theme-dark .bg-rose-50\/50 { background-color: rgba(251, 113, 133, 0.06) !important; }
+.theme-dark .text-rose-800,
+.theme-dark .text-red-600,
+.theme-dark .text-red-700,
+.theme-dark .hover\:text-rose-600:hover,
+.theme-dark .hover\:text-rose-700:hover,
+.theme-dark .hover\:text-red-600:hover { color: #fda4af !important; }
+.theme-dark .border-rose-100 { border-color: rgba(251, 113, 133, 0.18) !important; }
+.theme-dark .border-red-200 { border-color: rgba(248, 113, 113, 0.3) !important; }
+.theme-dark .border-rose-300,
+.theme-dark .hover\:border-rose-200:hover,
+.theme-dark .hover\:border-rose-300:hover { border-color: rgba(251, 113, 133, 0.45) !important; }
+
+.theme-dark .bg-sky-50 { background-color: rgba(56, 189, 248, 0.1) !important; }
+.theme-dark .bg-sky-50\/50,
+.theme-dark .bg-sky-50\/60 { background-color: rgba(56, 189, 248, 0.06) !important; }
+.theme-dark .bg-sky-100,
+.theme-dark .bg-sky-200\/60 { background-color: rgba(56, 189, 248, 0.16) !important; }
+.theme-dark .text-sky-600,
+.theme-dark .text-sky-700 { color: #7dd3fc !important; }
+.theme-dark .text-sky-800,
+.theme-dark .text-sky-900,
+.theme-dark .hover\:text-sky-800:hover,
+.theme-dark .hover\:text-sky-900:hover { color: #bae6fd !important; }
+.theme-dark .border-sky-200 { border-color: rgba(56, 189, 248, 0.3) !important; }
+.theme-dark .border-sky-300 { border-color: rgba(56, 189, 248, 0.4) !important; }
+
+.theme-dark .bg-blue-100 { background-color: rgba(96, 165, 250, 0.16) !important; }
+.theme-dark .hover\:bg-blue-100:hover { background-color: rgba(96, 165, 250, 0.24) !important; }
+.theme-dark .text-blue-800 { color: #93c5fd !important; }
+.theme-dark .border-blue-300 { border-color: rgba(96, 165, 250, 0.4) !important; }
+
+.theme-dark .bg-purple-100 { background-color: rgba(79, 165, 142, 0.18) !important; }
+.theme-dark .hover\:bg-purple-50:hover { background-color: rgba(79, 165, 142, 0.18) !important; }
+.theme-dark .hover\:bg-purple-100:hover { background-color: rgba(79, 165, 142, 0.26) !important; }
+.theme-dark .border-purple-300,
+.theme-dark .hover\:border-purple-300:hover { border-color: rgba(79, 165, 142, 0.45) !important; }
+
+.theme-dark .bg-emerald-100 { background-color: rgba(52, 211, 153, 0.16) !important; }
+
+.theme-dark .bg-orange-50 { background-color: rgba(251, 146, 60, 0.1) !important; }
+.theme-dark .bg-orange-100 { background-color: rgba(251, 146, 60, 0.16) !important; }
+.theme-dark .text-orange-700 { color: #fdba74 !important; }
+.theme-dark .border-orange-200 { border-color: rgba(251, 146, 60, 0.3) !important; }
+
+/* gray-* is used in a few older screens; it follows slate. */
+.theme-dark .bg-gray-100 { background-color: var(--dk-raised) !important; }
+.theme-dark .text-gray-700 { color: var(--dk-text-3) !important; }
+.theme-dark .text-gray-600 { color: var(--dk-text-4) !important; }
+.theme-dark .text-gray-500 { color: var(--dk-text-5) !important; }
+.theme-dark .text-gray-400 { color: var(--dk-text-6) !important; }
+.theme-dark .border-gray-200 { border-color: color-mix(in srgb, var(--dk-line) 12%, transparent) !important; }
+.theme-dark .border-gray-300 { border-color: color-mix(in srgb, var(--dk-line) 15%, transparent) !important; }
+.theme-dark .border-gray-400 { border-color: color-mix(in srgb, var(--dk-line) 25%, transparent) !important; }
+
+/* ── Paper: an invoice or a receipt preview stays white paper in the dark theme,
+      so it reads like the printout and prints with dark ink. ── */
+.theme-dark .paper.paper { background-color: #ffffff !important; color: #0f172a !important; }
+.theme-dark .paper.paper .text-slate-900,
+.theme-dark .paper.paper .text-black { color: #0f172a !important; }
+.theme-dark .paper.paper .text-slate-800 { color: #1e293b !important; }
+.theme-dark .paper.paper .text-slate-700,
+.theme-dark .paper.paper .text-gray-700 { color: #334155 !important; }
+.theme-dark .paper.paper .text-slate-600 { color: #475569 !important; }
+.theme-dark .paper.paper .text-slate-500,
+.theme-dark .paper.paper .text-gray-500 { color: #64748b !important; }
+.theme-dark .paper.paper .text-slate-400 { color: #94a3b8 !important; }
+.theme-dark .paper.paper .bg-white { background-color: #ffffff !important; }
+.theme-dark .paper.paper .bg-slate-50,
+.theme-dark .paper.paper .bg-slate-50\/70 { background-color: #f8fafc !important; }
+.theme-dark .paper.paper .bg-slate-100 { background-color: #f1f5f9 !important; }
+.theme-dark .paper.paper .border-slate-200 { border-color: #e2e8f0 !important; }
+.theme-dark .paper.paper .border-slate-100,
+.theme-dark .paper.paper .divide-slate-100 > * { border-color: #f1f5f9 !important; }
+.theme-dark .paper.paper .border-gray-400 { border-color: #9ca3af !important; }
+.theme-dark .paper.paper .text-teal-700 { color: #1f5f6d !important; }
+.theme-dark .paper.paper .bg-teal-50 { background-color: #eff9fb !important; }
+.theme-dark .paper.paper .border-teal-200 { border-color: #b4e0e8 !important; }
+.theme-dark .paper.paper .text-amber-700 { color: #b45309 !important; }
+.theme-dark .paper.paper .bg-amber-50 { background-color: #fffbeb !important; }
+.theme-dark .paper.paper .border-amber-200 { border-color: #fde68a !important; }
+.theme-dark .paper.paper .text-rose-700 { color: #be123c !important; }
+.theme-dark .paper.paper .bg-rose-50 { background-color: #fff1f2 !important; }
+.theme-dark .paper.paper .border-rose-200 { border-color: #fecdd3 !important; }
+.theme-dark .paper.paper .text-sky-700 { color: #0369a1 !important; }
+.theme-dark .paper.paper .bg-sky-50 { background-color: #f0f9ff !important; }
+.theme-dark .paper.paper .border-sky-200 { border-color: #bae6fd !important; }
 
 /* Printing an invoice: only the invoice itself goes to paper, never the screen behind it. */
 @media print {

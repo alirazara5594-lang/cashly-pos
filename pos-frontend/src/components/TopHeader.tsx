@@ -23,6 +23,7 @@ import { usePosStore, normalizeRole } from '../store/posStore';
 import { useBusinessShape } from '../hooks/useBusinessShape';
 import { AlertsBell } from './AlertsBell';
 import { AccountSecurityModal } from './AccountSecurityModal';
+import { PlatformHeader } from './PlatformHeader';
 import { getSupportSession } from '../services/supportSession';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { posApi, getApiErrorMessage } from '../services/api';
@@ -168,6 +169,11 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const outletCount = atHeadOfficeOnly
     ? (outlets.length === 0 ? 'no outlets yet' : `${outlets.length} outlet${outlets.length === 1 ? '' : 's'}`)
     : '';
+
+  // The platform team has its own console header: no till, no shop, no phone orders.
+  if (isPlatformAdmin) {
+    return <PlatformHeader onToggleSidebar={onToggleSidebar} isSidebarOpen={isSidebarOpen} onLogout={onLogout} />;
+  }
 
   return (
     <>

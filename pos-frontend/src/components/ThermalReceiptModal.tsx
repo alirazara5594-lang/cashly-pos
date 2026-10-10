@@ -55,7 +55,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         </div>
 
         {/* 80mm Thermal Receipt Preview (White Paper with Black Monospace) */}
-        <div className="p-4 overflow-y-auto flex-1 bg-white text-black font-mono text-[11px] leading-tight select-all">
+        <div className="paper p-4 overflow-y-auto flex-1 bg-white text-black font-mono text-[11px] leading-tight select-all">
           <div className="text-center pb-2 border-b border-dashed border-gray-400">
             <div className="font-bold text-base tracking-wider uppercase">{branchName}</div>
             <div className="text-[10px] text-gray-700 mt-0.5">{branchAddress}</div>

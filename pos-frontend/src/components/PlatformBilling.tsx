@@ -272,7 +272,7 @@ export const InvoicePrintView: React.FC<{ detail: SubscriptionInvoiceDetail; fro
   ].filter(Boolean) as string[] : [];
 
   return (
-    <div className="print-area bg-white p-6 sm:p-8 space-y-6 text-slate-900">
+    <div className="print-area paper bg-white p-6 sm:p-8 space-y-6 text-slate-900">
       <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <h1 className="text-2xl font-black tracking-tight">{from?.companyName ?? 'Cashly'}</h1>

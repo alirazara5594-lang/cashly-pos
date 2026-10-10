@@ -2221,6 +2221,10 @@ export interface AdminTenantRow {
   /** Outlets running more tills or tablets than their own POS version allows. */
   outletsOverLimit?: number;
   lastSeenAt?: string | null;
+  /** Latest sign-in by anyone at the business (last 90 days). */
+  lastSignInAt?: string | null;
+  /** The later of a device checking in and someone signing in. */
+  lastActiveAt?: string | null;
   cancelledAt?: string | null;
   /** What the business pays a month, from its parts. */
   monthlyPKR?: number;
@@ -2231,6 +2235,8 @@ export interface AdminTenantRow {
     renewsAt?: string | null;
     daysLeft?: number | null;
     status: SubscriptionPartStatus;
+    /** Still covered by the free trial: the date is when the trial ends. */
+    inTrial?: boolean;
   } | null;
 }
 

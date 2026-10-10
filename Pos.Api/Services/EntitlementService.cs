@@ -677,13 +677,14 @@ public class EntitlementService : IEntitlementService
         var ent = await GetAsync(tenantId);
 
         // What the plan includes: the Head Office ERP's allowance for a head-office business, the
-        // version's for a single shop. -1 on a version means unlimited.
+        // version's for a single shop. -1 on either means unlimited.
         int? included;
         if (ent.DeploymentMode == DeploymentMode.HeadOffice)
         {
             var erp = await _db.PlatformPrices.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.Key == FeatureCatalog.HeadOfficeErpPriceKey);
-            included = erp?.IncludedWhatsAppMessages ?? FeatureCatalog.HeadOfficeErpWhatsAppMessages;
+            var erpMessages = erp?.IncludedWhatsAppMessages ?? FeatureCatalog.HeadOfficeErpWhatsAppMessages;
+            included = erpMessages < 0 ? null : erpMessages;
         }
         else
         {

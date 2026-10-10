@@ -155,6 +155,9 @@ export const SuperAdmin: React.FC = () => {
   const openTenant = (id: string, tab: TenantPanelTab = 'overview') => {
     const next = new URLSearchParams(searchParams);
     next.set('tenant', id);
+    // A one-off "open this" from the header (new business, an invoice) is done once the panel opens.
+    next.delete('new');
+    next.delete('invoice');
     if (tab === 'overview') next.delete('ptab'); else next.set('ptab', tab);
     setSearchParams(next);
   };
@@ -224,7 +227,7 @@ export const SuperAdmin: React.FC = () => {
       else if (sortField === 'status') c = (a.status ?? '').localeCompare(b.status ?? '');
       else if (sortField === 'monthly') c = (a.monthlyPKR ?? 0) - (b.monthlyPKR ?? 0);
       else if (sortField === 'renewal') c = new Date(a.nextRenewal?.renewsAt ?? '2999-01-01').getTime() - new Date(b.nextRenewal?.renewsAt ?? '2999-01-01').getTime();
-      else if (sortField === 'lastSeen') c = new Date(a.lastSeenAt ?? 0).getTime() - new Date(b.lastSeenAt ?? 0).getTime();
+      else if (sortField === 'lastSeen') c = new Date(a.lastActiveAt ?? 0).getTime() - new Date(b.lastActiveAt ?? 0).getTime();
       else c = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return sortDir === 'asc' ? c : -c;
     });
@@ -246,12 +249,12 @@ export const SuperAdmin: React.FC = () => {
   const handleExportCSV = () => {
     const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const headers = ['Business', 'Web name', 'Contact', 'Email', 'Phone', 'City', 'Sector', 'Shape', 'Outlets', 'Plan', 'Status',
-      'Pays a month (PKR)', 'Next renewal', 'Renews on', 'Last seen', 'Created'];
+      'Monthly (PKR)', 'Next renewal', 'Renews on', 'Last active', 'Created'];
     const rows = filteredAndSortedTenants.map(t => [
       t.name, t.slug, t.contactName, t.contactEmail, t.contactPhone, t.city, t.businessType,
       t.deploymentMode === 'HeadOffice' ? 'Head office' : 'Single shop', t.outletCount ?? '', tierLabel(t.tier), STATUS_LOOK[t.status ?? '']?.label ?? t.status,
       Math.round(t.monthlyPKR ?? 0), t.nextRenewal?.partName ?? '', t.nextRenewal?.renewsAt ? dateOf(t.nextRenewal.renewsAt) : '',
-      t.lastSeenAt ? new Date(t.lastSeenAt).toLocaleString() : '', dateOf(t.createdAt)
+      t.lastActiveAt ? new Date(t.lastActiveAt).toLocaleString() : '', dateOf(t.createdAt)
     ].map(cell).join(','));
     const blob = new Blob(['﻿' + [headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -301,13 +304,40 @@ export const SuperAdmin: React.FC = () => {
     );
   }
 
-  const pills: { key: StatusFilter; label: string; color: string }[] = [
-    { key: 'all', label: 'All businesses', color: 'border-slate-200 bg-white text-slate-800' },
-    { key: 'active', label: 'Active', color: 'border-teal-200 bg-teal-50/50 text-teal-800' },
-    { key: 'trial', label: 'On trial', color: 'border-sky-200 bg-sky-50/50 text-sky-800' },
-    { key: 'issues', label: 'Payment issues', color: 'border-rose-200 bg-rose-50/50 text-rose-800' },
-    { key: 'renewing', label: 'Renewing ≤14d', color: 'border-amber-200 bg-amber-50/50 text-amber-800' },
-    { key: 'off', label: 'Suspended / closed', color: 'border-slate-200 bg-slate-50 text-slate-600' }
+  // The summary above the list: each card is a filter, with the one fact that matters under its count.
+  const sumMonthly = (rows: AdminTenantRow[]) => rows.reduce((s, t) => s + (t.monthlyPKR ?? 0), 0);
+  const inFilter = (f: StatusFilter) => tenants.filter(t => matchesStatus(t, f));
+  const withHq = tenants.filter(t => t.deploymentMode === 'HeadOffice').length;
+  const trialsEndingThisWeek = inFilter('trial').filter(t => {
+    const ends = new Date(t.trialEndsAt).getTime();
+    return ends > openedAt && ends - openedAt <= 7 * 86400000;
+  }).length;
+  const closedLately = tenants.filter(t => t.cancelledAt && openedAt - new Date(t.cancelledAt).getTime() <= 30 * 86400000).length;
+  const pills: { key: StatusFilter; label: string; color: string; sub: string }[] = [
+    {
+      key: 'all', label: 'All businesses', color: 'border-slate-200 bg-white text-slate-800',
+      sub: `${withHq} with head office · ${tenants.length - withHq} single shop${tenants.length - withHq === 1 ? '' : 's'}`
+    },
+    {
+      key: 'active', label: 'Paying', color: 'border-teal-200 bg-teal-50/50 text-teal-800',
+      sub: tenantStats.active > 0 ? `${pkr(sumMonthly(inFilter('active')))} a month` : 'None paying yet'
+    },
+    {
+      key: 'trial', label: 'On free trial', color: 'border-sky-200 bg-sky-50/50 text-sky-800',
+      sub: tenantStats.trial === 0 ? 'No trials running' : trialsEndingThisWeek > 0 ? `${trialsEndingThisWeek} end within 7 days` : `${pkr(sumMonthly(inFilter('trial')))} a month once they pay`
+    },
+    {
+      key: 'issues', label: 'Payment issues', color: 'border-rose-200 bg-rose-50/50 text-rose-800',
+      sub: tenantStats.issues > 0 ? `${pkr(sumMonthly(inFilter('issues')))} a month at risk` : 'Nothing overdue'
+    },
+    {
+      key: 'renewing', label: 'Renewing in 14 days', color: 'border-amber-200 bg-amber-50/50 text-amber-800',
+      sub: tenantStats.renewing > 0 ? 'Invoices go out before the date' : 'Nothing due soon'
+    },
+    {
+      key: 'off', label: 'Suspended / closed', color: 'border-slate-200 bg-slate-50 text-slate-600',
+      sub: closedLately > 0 ? `${closedLately} closed in the last 30 days` : 'None closed lately'
+    }
   ];
   const selectCls = 'appearance-none pl-3 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:outline-none cursor-pointer';
 
@@ -369,12 +399,13 @@ export const SuperAdmin: React.FC = () => {
 
       {activeTab === 'tenants' && (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
             {pills.map(pill => (
               <button key={pill.key} onClick={() => { setFilterStatus(pill.key); setPage(1); }}
-                className={`p-3 rounded-2xl border text-left transition ${pill.color} ${filterStatus === pill.key ? 'ring-2 ring-teal-500' : ''}`}>
+                className={`p-3.5 rounded-2xl border text-left transition hover:shadow-sm ${pill.color} ${filterStatus === pill.key ? 'ring-2 ring-teal-500' : ''}`}>
                 <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{pill.label}</div>
-                <div className="text-xl font-black mt-0.5">{tenantStats[pill.key]}</div>
+                <div className="text-2xl font-black mt-0.5 leading-tight">{tenantStats[pill.key]}</div>
+                <div className="text-[10px] font-semibold opacity-70 mt-0.5 truncate" title={pill.sub}>{pill.sub}</div>
               </button>
             ))}
           </div>
@@ -423,43 +454,57 @@ export const SuperAdmin: React.FC = () => {
 
           <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1180px] text-xs">
+              <table className="w-full min-w-[980px] text-xs">
                 <thead>
                   <tr className="bg-slate-50/80 border-b border-slate-200 select-none text-[10px] uppercase text-slate-500 font-bold">
                     <th onClick={() => handleSort('name')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Business {sortIcon('name')}</th>
                     <th className="text-left px-4 py-3">Owner</th>
-                    <th className="text-left px-4 py-3">Shape</th>
-                    <th onClick={() => handleSort('tier')} className="text-center px-4 py-3 cursor-pointer hover:text-slate-800">Plan {sortIcon('tier')}</th>
-                    <th onClick={() => handleSort('status')} className="text-center px-4 py-3 cursor-pointer hover:text-slate-800">Status {sortIcon('status')}</th>
-                    <th className="text-center px-4 py-3">Usage</th>
-                    <th onClick={() => handleSort('monthly')} className="text-right px-4 py-3 cursor-pointer hover:text-slate-800">Pays / month {sortIcon('monthly')}</th>
+                    <th className="text-left px-4 py-3">Setup</th>
+                    <th onClick={() => handleSort('status')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Plan &amp; status {sortIcon('status')}</th>
+                    <th onClick={() => handleSort('monthly')} className="text-right px-4 py-3 cursor-pointer hover:text-slate-800">Monthly {sortIcon('monthly')}</th>
                     <th onClick={() => handleSort('renewal')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Next renewal {sortIcon('renewal')}</th>
-                    <th onClick={() => handleSort('lastSeen')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Last seen {sortIcon('lastSeen')}</th>
-                    <th className="text-center px-4 py-3"></th>
+                    <th onClick={() => handleSort('lastSeen')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Last active {sortIcon('lastSeen')}</th>
+                    <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {paginatedTenants.map(t => {
                     const look = STATUS_LOOK[t.status ?? ''] ?? { label: t.status ?? '—', cls: 'bg-slate-100 text-slate-600 border-slate-200' };
                     const renewal = t.nextRenewal;
-                    const overdue = renewal && ['Expired', 'PaymentDue', 'Stopped'].includes(renewal.status);
+                    const overdue = !!renewal && ['Expired', 'PaymentDue', 'Stopped'].includes(renewal.status);
                     const wa = whatsAppNumber(t.contactPhone);
-                    const stale = !t.lastSeenAt || openedAt - new Date(t.lastSeenAt).getTime() > 86400000;
+                    const hq = t.deploymentMode === 'HeadOffice';
+                    const outlets = t.outletCount ?? 0;
+                    const devices = hq && outlets === 0 ? null : (
+                      `Tills ${t.counterCount ?? 0}/${(t.maxCounters ?? 0) >= 9999 ? '∞' : t.maxCounters ?? 0}`
+                      + ` · Tablets ${t.tabletCount ?? 0}/${(t.maxTablets ?? 0) >= 9999 ? '∞' : t.maxTablets ?? 0}`
+                    );
+                    // Quiet for a week, or never used a few days after joining: worth a look.
+                    const activeAt = t.lastActiveAt ? new Date(t.lastActiveAt).getTime() : null;
+                    const joinedDaysAgo = (openedAt - new Date(t.createdAt).getTime()) / 86400000;
+                    const quiet = isOpen(t) && (activeAt == null ? joinedDaysAgo > 3 : openedAt - activeAt > 7 * 86400000);
+                    const how = !t.lastActiveAt ? null
+                      : t.lastSeenAt && (!t.lastSignInAt || t.lastSeenAt >= t.lastSignInAt) ? 'a till checked in' : 'someone signed in';
                     return (
-                      <tr key={t.id} className="bg-white hover:bg-slate-50/70 transition">
-                        <td className="px-4 py-3">
-                          <button onClick={() => openTenant(t.id)} className="font-bold text-slate-900 hover:text-teal-600 text-left truncate block max-w-[200px]" title="Open">{t.name}</button>
-                          <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-400">
-                            <span className="font-mono truncate max-w-[120px]">{t.slug}</span>
-                            <button onClick={() => { navigator.clipboard.writeText(t.slug); setCopiedSlugId(t.id); setTimeout(() => setCopiedSlugId(null), 1500); }} title="Copy web name">
+                      <tr key={t.id} className="bg-white hover:bg-slate-50/70 transition align-top">
+                        <td className="px-4 py-3 max-w-[220px]">
+                          <button onClick={() => openTenant(t.id)} className="font-bold text-slate-900 hover:text-teal-600 text-left block truncate max-w-full" title="Open">{t.name}</button>
+                          <div className="flex items-center gap-1 mt-0.5 text-[10px] text-slate-400 min-w-0">
+                            <span className="font-mono truncate" title={t.slug}>{t.slug}</span>
+                            <button onClick={() => { navigator.clipboard.writeText(t.slug); setCopiedSlugId(t.id); setTimeout(() => setCopiedSlugId(null), 1500); }}
+                              title="Copy web name" className="shrink-0 hover:text-teal-600">
                               {copiedSlugId === t.id ? <Check className="w-2.5 h-2.5 text-teal-600" /> : <Copy className="w-2.5 h-2.5" />}
                             </button>
-                            {t.city && <span>· {t.city}</span>}
+                          </div>
+                          <div className="text-[10px] text-slate-500 capitalize">
+                            {[t.city, t.businessType].filter(Boolean).join(' · ') || '—'}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="text-slate-800 font-medium">{t.contactName}</div>
-                          <a href={`mailto:${t.contactEmail}`} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-teal-600"><Mail className="w-2.5 h-2.5" /><span className="truncate max-w-[150px]">{t.contactEmail}</span></a>
+                        <td className="px-4 py-3 max-w-[200px]">
+                          <div className="text-slate-800 font-medium truncate">{t.contactName}</div>
+                          <a href={`mailto:${t.contactEmail}`} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-teal-600 min-w-0">
+                            <Mail className="w-2.5 h-2.5 shrink-0" /><span className="truncate">{t.contactEmail}</span>
+                          </a>
                           {t.contactPhone && (
                             <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
                               <a href={`tel:${t.contactPhone}`} className="flex items-center gap-1 hover:text-teal-600 font-mono"><Phone className="w-2.5 h-2.5" />{t.contactPhone}</a>
@@ -467,39 +512,68 @@ export const SuperAdmin: React.FC = () => {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-slate-700">
-                          {t.deploymentMode === 'HeadOffice' ? `Head office + ${t.outletCount ?? 0} outlet${t.outletCount === 1 ? '' : 's'}` : 'Single shop'}
-                          <div className="text-[10px] text-slate-400 capitalize">{t.businessType || '—'}</div>
+                        <td className="px-4 py-3">
+                          <div className="text-slate-800 font-semibold">
+                            {hq ? `Head office · ${outlets === 0 ? 'no outlets yet' : `${outlets} outlet${outlets === 1 ? '' : 's'}`}` : 'Single shop'}
+                          </div>
+                          {devices && (
+                            <div className={`text-[10px] font-mono ${(t.outletsOverLimit ?? 0) > 0 ? 'text-rose-600 font-bold' : 'text-slate-500'}`}>{devices}</div>
+                          )}
+                          {(t.outletsOverLimit ?? 0) > 0 && (
+                            <div className="text-[10px] text-rose-600 font-bold">{t.outletsOverLimit} outlet{t.outletsOverLimit === 1 ? '' : 's'} over the limit</div>
+                          )}
+                          {!!t.activeAddOnsCount && (
+                            <div className="inline-flex items-center gap-1 text-[10px] text-purple-700 font-semibold"><Puzzle className="w-2.5 h-2.5" />{t.activeAddOnsCount} add-on{t.activeAddOnsCount > 1 ? 's' : ''}</div>
+                          )}
                         </td>
-                        <td className="text-center px-4 py-3">
-                          <button onClick={() => openTenant(t.id, 'plan')} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold hover:opacity-80 ${tierColor(t.tier)}`}>
-                            {tierLabel(t.tier)} <ArrowRight className="w-2.5 h-2.5 opacity-60" />
-                          </button>
-                        </td>
-                        <td className="text-center px-4 py-3"><span className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold ${look.cls}`}>{look.label}</span></td>
-                        <td className="text-center px-4 py-3">
-                          <div className={`flex flex-col gap-0.5 text-[10px] font-mono ${(t.outletsOverLimit ?? 0) > 0 ? 'text-rose-600 font-bold' : 'text-slate-600'}`}>
-                            <span>Tills {t.counterCount ?? 0}/{(t.maxCounters ?? 0) >= 9999 ? '∞' : t.maxCounters ?? 0}</span>
-                            <span>Tablets {t.tabletCount ?? 0}/{(t.maxTablets ?? 0) >= 9999 ? '∞' : t.maxTablets ?? 0}</span>
-                            {(t.outletsOverLimit ?? 0) > 0 && <span title="Outlets running more devices than their own POS version allows">{t.outletsOverLimit} outlet(s) over</span>}
-                            {!!t.activeAddOnsCount && <span className="inline-flex items-center justify-center gap-1 text-purple-700"><Puzzle className="w-2.5 h-2.5" />{t.activeAddOnsCount} add-on{t.activeAddOnsCount > 1 ? 's' : ''}</span>}
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col items-start gap-1">
+                            <button onClick={() => openTenant(t.id, 'plan')} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold hover:opacity-80 ${tierColor(t.tier)}`} title="Plan & features">
+                              {tierLabel(t.tier)} <ArrowRight className="w-2.5 h-2.5 opacity-60" />
+                            </button>
+                            <span className={`inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold ${look.cls}`}>{look.label}</span>
                           </div>
                         </td>
-                        <td className="text-right px-4 py-3 font-mono font-bold text-slate-800">{t.monthlyPKR ? pkr(t.monthlyPKR) : '—'}</td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          {t.monthlyPKR ? (
+                            <>
+                              <div className="font-mono font-black text-slate-900">{pkr(t.monthlyPKR)}</div>
+                              <div className="text-[10px] text-slate-500">{t.status === 'Trial' ? 'a month after the trial' : 'a month'}</div>
+                            </>
+                          ) : (
+                            <div className="text-[10px] text-slate-400">Nothing billed yet</div>
+                          )}
+                        </td>
                         <td className="px-4 py-3">
                           {renewal ? (
-                            <button onClick={() => openTenant(t.id, 'billing')} className="text-left">
-                              <div className={`font-semibold ${overdue ? 'text-rose-600' : renewal.status === 'Expiring' ? 'text-amber-700' : 'text-slate-700'}`}>
-                                {renewal.renewsAt ? dateOf(renewal.renewsAt) : '—'}{renewal.status === 'Stopped' && ' · stopped'}
+                            <button onClick={() => openTenant(t.id, 'billing')} className="text-left" title="Billing">
+                              <div className={`font-semibold whitespace-nowrap ${overdue ? 'text-rose-600' : renewal.status === 'Expiring' ? 'text-amber-700' : 'text-slate-800'}`}>
+                                {renewal.status === 'Stopped' ? 'Stopped — unpaid'
+                                  : renewal.inTrial ? `Trial ends ${dateOf(renewal.renewsAt)}`
+                                  : overdue ? `Due ${dateOf(renewal.renewsAt)}`
+                                  : dateOf(renewal.renewsAt)}
                               </div>
-                              <div className="text-[10px] text-slate-500 truncate max-w-[180px]">{KIND_LABEL[renewal.kind]} · {renewal.partName}</div>
-                              {renewal.daysLeft != null && <div className={`text-[10px] ${overdue ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>{daysText(renewal.daysLeft)}</div>}
+                              {!renewal.inTrial && <div className="text-[10px] text-slate-500 truncate max-w-[190px]">{renewal.partName}</div>}
+                              {renewal.daysLeft != null && (
+                                <div className={`text-[10px] ${overdue ? 'text-rose-600 font-bold' : renewal.status === 'Expiring' ? 'text-amber-700 font-semibold' : 'text-slate-400'}`}>
+                                  {daysText(renewal.daysLeft)}
+                                </div>
+                              )}
                             </button>
-                          ) : <span className="text-slate-400">—</span>}
+                          ) : <span className="text-[10px] text-slate-400">Nothing to renew yet</span>}
                         </td>
-                        <td className={`px-4 py-3 text-[11px] ${stale && isOpen(t) ? 'text-amber-700 font-semibold' : 'text-slate-500'}`}>{ago(t.lastSeenAt)}</td>
-                        <td className="text-center px-4 py-3">
-                          <div className="flex items-center justify-center gap-1.5 relative tenant-action-menu-container">
+                        <td className="px-4 py-3">
+                          {t.lastActiveAt ? (
+                            <>
+                              <div className={`text-[11px] font-semibold ${quiet ? 'text-amber-700' : 'text-slate-700'}`}>{ago(t.lastActiveAt)}</div>
+                              <div className="text-[10px] text-slate-400">{how}</div>
+                            </>
+                          ) : (
+                            <div className={`text-[11px] font-semibold ${quiet ? 'text-amber-700' : 'text-slate-400'}`}>{quiet ? 'Never used' : 'Not yet'}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1.5 relative tenant-action-menu-container">
                             <button onClick={() => openTenant(t.id)} className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-bold">Manage</button>
                             <div className="relative">
                               <button onClick={() => setActionMenuTenantId(actionMenuTenantId === t.id ? null : t.id)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-600" title="More">
@@ -529,7 +603,7 @@ export const SuperAdmin: React.FC = () => {
                     );
                   })}
                   {filteredAndSortedTenants.length === 0 && (
-                    <tr><td colSpan={10} className="text-center py-12 text-slate-500">No businesses match these filters.</td></tr>
+                    <tr><td colSpan={8} className="text-center py-12 text-slate-500">No businesses match these filters.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -611,8 +685,19 @@ export const SuperAdmin: React.FC = () => {
         </div>
       )}
 
-      {provisionOpen && (
-        <ProvisionModal onClose={() => setProvisionOpen(false)} onDone={(tenantId) => { setProvisionOpen(false); loadData(); if (tenantId) openTenant(tenantId); }} />
+      {(provisionOpen || (searchParams.get('new') === '1' && (activeTab === 'tenants' || activeTab === 'dashboard'))) && (
+        <ProvisionModal
+          onClose={() => {
+            setProvisionOpen(false);
+            if (searchParams.get('new')) { const next = new URLSearchParams(searchParams); next.delete('new'); setSearchParams(next, { replace: true }); }
+          }}
+          onDone={(tenantId) => {
+            setProvisionOpen(false);
+            loadData();
+            if (tenantId) openTenant(tenantId);
+            else if (searchParams.get('new')) { const next = new URLSearchParams(searchParams); next.delete('new'); setSearchParams(next, { replace: true }); }
+          }}
+        />
       )}
     </div>
   );

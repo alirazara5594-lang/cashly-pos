@@ -10565,6 +10565,13 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http, Pos.A
         .Where(t => t.RevokedAt == null && t.DeactivatedAt == null)
         .GroupBy(t => t.TenantId).Select(g => new { TenantId = g.Key, Last = g.Max(t => t.LastSeenAt) })
         .ToDictionaryAsync(x => x.TenantId, x => x.Last);
+    // A head office or an owner working in the browser has no till checking in, but does sign in:
+    // the latest sign-in (last 90 days) counts as activity too.
+    var since90 = now.AddDays(-90);
+    var lastSignIn = await db.AuditLogs.IgnoreQueryFilters().AsNoTracking()
+        .Where(a => a.Action == "UserLoggedIn" && a.TenantId != Guid.Empty && a.CreatedAt >= since90)
+        .GroupBy(a => a.TenantId).Select(g => new { TenantId = g.Key, Last = g.Max(a => a.CreatedAt) })
+        .ToDictionaryAsync(x => x.TenantId, x => x.Last);
 
     var addOns = await db.AddOnSubscriptions.IgnoreQueryFilters().AsNoTracking().Where(a => a.IsActive)
         .Select(a => new { a.TenantId, a.AddOnKey, a.BranchId, a.Quantity }).ToListAsync();
@@ -10635,6 +10642,9 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http, Pos.A
             outletsOverLimit = outletsOverTills + outletsOverTablets,
             activeAddOnsCount = mine.Count,
             lastSeenAt = lastSeen.TryGetValue(t.Id, out var seen) ? seen : (DateTime?)null,
+            lastSignInAt = lastSignIn.TryGetValue(t.Id, out var signedIn) ? signedIn : (DateTime?)null,
+            // The later of a device checking in and someone signing in.
+            lastActiveAt = new[] { lastSeen.TryGetValue(t.Id, out var s1) ? s1 : (DateTime?)null, lastSignIn.TryGetValue(t.Id, out var s2) ? s2 : (DateTime?)null }.Max(),
             monthlyPKR = Math.Round(monthly, 0),
             partsNeedingAttention = attention.Count,
             nextRenewal = next.Part == null ? null : new
@@ -10643,7 +10653,9 @@ app.MapGet("/api/admin/tenants", async (AppDbContext db, HttpContext http, Pos.A
                 kind = next.Part.Kind.ToString(),
                 renewsAt = next.State.RenewsAt,
                 daysLeft = next.State.DaysLeft,
-                status = next.State.Status.ToString()
+                status = next.State.Status.ToString(),
+                // Covered by the free trial: the "renewal" is the trial ending.
+                inTrial = next.State.InTrial
             }
         };
     });
@@ -12910,6 +12922,11 @@ app.MapPut("/api/admin/packages/{id:guid}", async (Guid id, AppDbContext db, Htt
     if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
     var pkg = await db.SaaSPackageConfigs.FindAsync(id);
     if (pkg == null) return Results.NotFound();
+    if (dto.MonthlyPricePKR is < 0 || dto.YearlyPricePKR is < 0 || dto.BranchMonthlyPricePKR is < 0 || dto.BranchYearlyPricePKR is < 0)
+        return Results.BadRequest(new { message = "Prices cannot be negative." });
+    if (dto.MaxBranches is < 0 || dto.MaxCounters is < 0 || dto.MaxOrderTabs is < 0 || dto.MaxKitchenDisplays is < 0 || dto.MaxUsers is < 0
+        || dto.WhatsAppMessagesPerMonth is < -1)
+        return Results.BadRequest(new { message = "Limits cannot be negative (WhatsApp messages: -1 means unlimited)." });
     var before = $"{pkg.MonthlyPricePKR:0}/mo, {pkg.YearlyPricePKR:0}/yr, branch {pkg.BranchMonthlyPricePKR:0}/mo";
 
     if (dto.DisplayName != null) pkg.DisplayName = dto.DisplayName;
