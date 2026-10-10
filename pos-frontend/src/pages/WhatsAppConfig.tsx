@@ -55,7 +55,8 @@ export const WhatsAppConfig: React.FC = () => {
   const isPlatformMode = normalizeRole(currentUser?.role) === 'SuperAdmin';
   const [tenants, setTenants] = useState<AdminTenantRow[]>([]);
   const [tenantsLoading, setTenantsLoading] = useState(isPlatformMode);
-  const [selectedTenant, setSelectedTenant] = useState('');
+  // A business's panel links here with ?business=<id>, so it opens on that business.
+  const [selectedTenant, setSelectedTenant] = useState(() => (isPlatformMode ? new URLSearchParams(window.location.search).get('business') ?? '' : ''));
   const [featureDisabled, setFeatureDisabled] = useState(false);
   const tenantId = isPlatformMode && selectedTenant ? selectedTenant : undefined;
 
@@ -230,15 +231,20 @@ export const WhatsAppConfig: React.FC = () => {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
-            <MessageSquare className="w-5 h-5 text-teal-500" />
+        {/* In the platform console the page title is the console's own; here it would say it twice. */}
+        {isPlatformMode ? (
+          <p className="text-xs text-slate-500">The business's own WhatsApp line, for order updates and receipts to its customers.</p>
+        ) : (
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center">
+              <MessageSquare className="w-5 h-5 text-teal-500" />
+            </div>
+            <div>
+              <h1 className="text-lg font-black text-slate-900">WhatsApp Configuration</h1>
+              <p className="text-xs text-slate-500">Configure WhatsApp notifications for order updates</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-black text-slate-900">WhatsApp Configuration</h1>
-            <p className="text-xs text-slate-500">Configure WhatsApp notifications for order updates</p>
-          </div>
-        </div>
+        )}
         <div className="flex items-center gap-2">
           {isPlatformMode && (
             <div className="relative">
@@ -248,7 +254,7 @@ export const WhatsAppConfig: React.FC = () => {
                 onChange={(e) => { setSelectedTenant(e.target.value); setMessage(null); }}
                 className="appearance-none pl-8 pr-7 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-xs font-semibold text-slate-700 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 cursor-pointer max-w-[240px]"
               >
-                <option value="" disabled>Select tenant...</option>
+                <option value="" disabled>Pick a business…</option>
                 {tenants.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name} · {tierLabel(t.tier)}

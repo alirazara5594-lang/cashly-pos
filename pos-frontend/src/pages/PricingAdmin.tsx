@@ -17,6 +17,7 @@ import { posApi, getApiErrorMessage } from '../services/api';
 import type { PlanOption, PlatformPrice } from '../types';
 import { tierLabel } from '../utils/tierLabel';
 import { usePosStore } from '../store/posStore';
+import { useNavigate } from 'react-router-dom';
 
 interface PackageData {
   id: string;
@@ -65,6 +66,21 @@ export const PricingAdmin: React.FC = () => {
   const [erpPrice, setErpPrice] = useState<PlatformPrice | null>(null);
   const [savedErp, setSavedErp] = useState<PlatformPrice | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const navigate = useNavigate();
+  // How many businesses each plan has — a price change reaches all of them.
+  const [onPlan, setOnPlan] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getAdminTenants()
+      .then(rows => {
+        if (cancelled) return;
+        const counts: Record<string, number> = {};
+        for (const t of rows) if (t.status !== 'Cancelled') counts[t.tier] = (counts[t.tier] ?? 0) + 1;
+        setOnPlan(counts);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -326,6 +342,10 @@ export const PricingAdmin: React.FC = () => {
                 {tierLabel(pkg.slug)}
               </span>
             </div>
+            <button type="button" onClick={() => navigate(`/super-admin?tab=tenants&plan=${pkg.slug}`)}
+              className="text-[11px] font-bold text-teal-700 hover:text-teal-900 -mt-3">
+              {onPlan[pkg.slug] ?? 0} business{(onPlan[pkg.slug] ?? 0) === 1 ? '' : 'es'} on this plan →
+            </button>
 
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Monthly Price (PKR)</label>

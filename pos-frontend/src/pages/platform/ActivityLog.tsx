@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { RefreshCw, Search, Receipt } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
+import { InvoiceDrawer } from '../../components/PlatformBilling';
 import type { ActivityPage, TeamMember } from '../../types';
 
 /** A readable name for a recorded action: "SubscriptionPaymentRecorded" becomes "Subscription payment recorded". */
@@ -13,7 +15,12 @@ const actionLabel = (action: string) => action.replace(/([a-z])([A-Z])/g, '$1 $2
 export const ActivityLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }> = ({ onOpenTenant }) => {
   const [data, setData] = useState<ActivityPage | null>(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
-  const [actorId, setActorId] = useState('');
+  // Team → "See what they did" opens this log for one person (?actor=<id>).
+  const [searchParams] = useSearchParams();
+  const [actorId, setActorId] = useState(() => searchParams.get('actor') ?? '');
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  // A business's panel links here with ?business=<id>.
+  const [businessId, setBusinessId] = useState(() => searchParams.get('business') ?? '');
   const [action, setAction] = useState('');
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
@@ -30,12 +37,12 @@ export const ActivityLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }
 
   useEffect(() => {
     let cancelled = false;
-    posApi.getPlatformActivity({ actorId: actorId || undefined, action: action || undefined, search: query || undefined, page, pageSize: 50 })
+    posApi.getPlatformActivity({ actorId: actorId || undefined, tenantId: businessId || undefined, action: action || undefined, search: query || undefined, page, pageSize: 50 })
       .then(res => { if (!cancelled) { setData(res); setError(null); } })
       .catch(err => { if (!cancelled) setError(getApiErrorMessage(err, 'Could not load the activity log.')); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [actorId, action, query, page, tick]);
+  }, [actorId, businessId, action, query, page, tick]);
 
   const selectCls = 'px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-teal-500';
 
@@ -58,6 +65,11 @@ export const ActivityLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }
         <button onClick={() => { setLoading(true); setTick(t => t + 1); }} className="p-2 rounded-xl bg-white border border-slate-200 text-slate-500 hover:text-slate-900" title="Refresh">
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
+        {businessId && (
+          <button onClick={() => { setBusinessId(''); setPage(1); setLoading(true); }} className="px-2.5 py-1.5 rounded-lg bg-teal-50 border border-teal-200 text-[11px] font-bold text-teal-800">
+            One business only · show all ✕
+          </button>
+        )}
         {data && <span className="text-[11px] text-slate-400 ml-auto">{data.total.toLocaleString()} entries</span>}
       </div>
 
@@ -91,6 +103,11 @@ export const ActivityLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }
                     {e.oldValue && <span className="text-rose-500 line-through mr-1">{e.oldValue}</span>}
                     {e.oldValue && e.newValue && '→ '}
                     {e.newValue && <span>{e.newValue}</span>}
+                    {e.entityType === 'SubscriptionInvoice' && e.entityId && (
+                      <button onClick={() => setOpenInvoiceId(e.entityId!)} className="ml-2 text-[10px] font-bold text-teal-700 inline-flex items-center gap-0.5">
+                        <Receipt className="w-3 h-3" /> open
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -98,6 +115,11 @@ export const ActivityLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }
           </table>
         </div>
       </div>
+
+      {openInvoiceId && (
+        <InvoiceDrawer invoiceId={openInvoiceId} onClose={() => setOpenInvoiceId(null)}
+          onOpenTenant={onOpenTenant ? (id) => { setOpenInvoiceId(null); onOpenTenant(id); } : undefined} />
+      )}
 
       {data && data.totalPages > 1 && (
         <div className="flex items-center justify-between">

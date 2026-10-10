@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Search, Server, Store, Tablet, Puzzle, CheckCircle2, CalendarDays, MessageCircle, Receipt, MoreHorizontal, PauseCircle, PlayCircle } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { InvoiceDrawer } from './PlatformBilling';
 import { KIND_LABEL, daysText, needsAttention, isOverdue, pkr, dateOf, whatsAppNumber, PAYMENT_METHODS } from '../utils/renewals';
 import type { SubscriptionPartRow, SubscriptionPartKind } from '../types';
 
@@ -40,6 +41,8 @@ interface SubscriptionPartsTableProps {
   /** Show which business each part belongs to (the platform-wide list). */
   showTenant?: boolean;
   onOpenTenant?: (tenantId: string) => void;
+  /** Opens the unpaid invoice a part is on (the platform console). */
+  onOpenInvoice?: (invoiceId: string) => void;
   /** The platform admin records payments, raises invoices, sets dates and stops parts. */
   canManage?: boolean;
   /** The business's owner may ask for an invoice to renew a part. */
@@ -52,7 +55,7 @@ interface SubscriptionPartsTableProps {
 const inputCls = 'px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-teal-500';
 
 export const SubscriptionPartsTable: React.FC<SubscriptionPartsTableProps> = ({
-  parts, showTenant, onOpenTenant, canManage, canRenew, onChanged, emptyText
+  parts, showTenant, onOpenTenant, onOpenInvoice, canManage, canRenew, onChanged, emptyText
 }) => {
   // One row at a time opens a form under it.
   const [editing, setEditing] = useState<{ id: string; mode: EditMode } | null>(null);
@@ -193,11 +196,15 @@ export const SubscriptionPartsTable: React.FC<SubscriptionPartsTableProps> = ({
                       </span>
                       <span className="font-semibold text-slate-800">{part.name}</span>
                     </div>
-                    {part.openInvoiceNumber && (
+                    {part.openInvoiceNumber && (onOpenInvoice && part.openInvoiceId ? (
+                      <button onClick={() => onOpenInvoice(part.openInvoiceId!)} className="mt-0.5 text-[10px] text-amber-700 hover:text-amber-900 font-semibold flex items-center gap-1 underline decoration-dotted">
+                        <Receipt className="w-3 h-3" /> On {part.openInvoiceNumber}, not paid yet — open
+                      </button>
+                    ) : (
                       <div className="mt-0.5 text-[10px] text-amber-700 font-semibold flex items-center gap-1">
                         <Receipt className="w-3 h-3" /> On {part.openInvoiceNumber}, not paid yet
                       </div>
-                    )}
+                    ))}
                   </td>
                   <td className="py-3 px-4 text-slate-600 whitespace-nowrap">
                     {part.installedAt ? dateOf(part.installedAt) : <span className="text-slate-400">Not yet</span>}
@@ -361,6 +368,7 @@ export const RenewalsBoard: React.FC<{ onOpenTenant: (tenantId: string) => void 
   const [search, setSearch] = useState('');
   // Bumped by Refresh (and after any change); the list loads whenever it moves.
   const [refreshTick, setRefreshTick] = useState(0);
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -450,6 +458,7 @@ export const RenewalsBoard: React.FC<{ onOpenTenant: (tenantId: string) => void 
             parts={shown}
             showTenant
             onOpenTenant={onOpenTenant}
+            onOpenInvoice={setOpenInvoiceId}
             canManage
             onChanged={load}
             emptyText={parts.length === 0 ? 'No businesses have anything to renew yet.' : 'Nothing matches these filters.'}
@@ -461,6 +470,10 @@ export const RenewalsBoard: React.FC<{ onOpenTenant: (tenantId: string) => void 
         Each part renews from its own installation date: the ERP from registration, an outlet's POS from its first till,
         an extra tablet from its activation. Recording a payment raises (or uses) its invoice, so every rupee is on record.
       </p>
+      {openInvoiceId && (
+        <InvoiceDrawer invoiceId={openInvoiceId} onClose={() => setOpenInvoiceId(null)} onChanged={load}
+          onOpenTenant={(id) => { setOpenInvoiceId(null); onOpenTenant(id); }} />
+      )}
     </div>
   );
 };

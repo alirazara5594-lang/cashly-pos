@@ -150,12 +150,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // The platform admin's count of parts renewing within 14 days or overdue, on the Renewals link.
   // Re-read as they move around, so recording a payment brings it down.
   const [renewalsDue, setRenewalsDue] = useState(0);
+  const [invoicesOverdue, setInvoicesOverdue] = useState(0);
   useEffect(() => {
     if (!isPlatformSuperAdmin) return;
     let cancelled = false;
     posApi.getRenewalsSummary()
       .then(s => { if (!cancelled) setRenewalsDue(s.all.expiring + s.all.overdue); })
       .catch(() => { /* the badge is a convenience; the page has the real list */ });
+    posApi.getBillingSummary()
+      .then(s => { if (!cancelled) setInvoicesOverdue(s.overdueCount); })
+      .catch(() => { /* likewise */ });
     return () => { cancelled = true; };
   }, [isPlatformSuperAdmin, location.pathname, location.search]);
 
@@ -190,7 +194,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           title: 'Money',
           items: [
-            { id: 'billing', label: 'Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt },
+            {
+              id: 'billing', label: 'Billing', path: '/super-admin', search: '?tab=billing', icon: Receipt,
+              badge: invoicesOverdue > 0 ? String(invoicesOverdue) : undefined
+            },
             { id: 'revenue', label: 'Revenue', path: '/super-admin', search: '?tab=revenue', icon: TrendingUp }
           ]
         },
@@ -420,7 +427,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (settingsItems.length > 0) sections.push({ title: 'Settings', items: settingsItems });
 
     return sections;
-  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue, currentUser?.platformRole]);
+  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue, invoicesOverdue, currentUser?.platformRole]);
 
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.

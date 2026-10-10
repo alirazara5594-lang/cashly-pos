@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { UserPlus, RefreshCw, ShieldCheck, ShieldAlert, KeyRound, Copy, Check, Lock } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { UserPlus, RefreshCw, ShieldCheck, ShieldAlert, KeyRound, Copy, Check, Lock, History } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { usePosStore } from '../../store/posStore';
 import type { PlatformRole, TeamMember } from '../../types';
@@ -20,6 +21,7 @@ const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl t
 export const PlatformTeam: React.FC = () => {
   const currentUser = usePosStore(s => s.currentUser);
   const canEdit = !currentUser?.platformRole || currentUser.platformRole === 'Owner';
+  const navigate = useNavigate();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
@@ -159,6 +161,10 @@ export const PlatformTeam: React.FC = () => {
                 </td>
                 <td className="px-4 py-2.5 text-slate-500">{m.lastSignInAt ? new Date(m.lastSignInAt).toLocaleString() : 'Never'}</td>
                 <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-1.5">
+                  <button onClick={() => navigate(`/super-admin?tab=activity&actor=${m.id}`)} className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-[10px] font-bold text-slate-600 flex items-center gap-1" title="What they did">
+                    <History className="w-3 h-3" /> Activity
+                  </button>
                   {canEdit && !m.isSetupAccount && (
                     <div className="flex items-center justify-end gap-1.5">
                       <button disabled={busy} onClick={() => reset(m, false)} className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-[10px] font-bold flex items-center gap-1">
@@ -177,6 +183,7 @@ export const PlatformTeam: React.FC = () => {
                       )}
                     </div>
                   )}
+                  </div>
                 </td>
               </tr>
             ))}

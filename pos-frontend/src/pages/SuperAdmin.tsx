@@ -4,7 +4,7 @@ import {
   ShieldCheck, Building2, TrendingUp, DollarSign, Search, RefreshCw, AlertTriangle, CheckCircle2, Clock,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Receipt, Puzzle, Plus, Copy, X, Activity, ArrowUpDown,
   MoreVertical, Mail, Phone, MessageCircle, Download, Check, Eye, ArrowRight, XCircle, RotateCcw, UserPlus,
-  CalendarClock, HandCoins, Wallet, LogOut
+  CalendarClock, HandCoins, Wallet, LogOut, LayoutDashboard, CreditCard, MessageSquare, Megaphone, UserCog, History, Settings2, ServerCrash
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { beginSupportSession } from '../services/supportSession';
@@ -30,6 +30,13 @@ type SuperTab = 'dashboard' | 'tenants' | 'renewals' | 'billing' | 'revenue' | '
   | 'messages' | 'announcements' | 'whatsapp' | 'team' | 'activity' | 'settings';
 const SUPER_TABS: SuperTab[] = ['dashboard', 'tenants', 'renewals', 'billing', 'revenue', 'packages', 'addons',
   'messages', 'announcements', 'whatsapp', 'team', 'activity', 'settings'];
+
+/** Each section's icon, matching the sidebar. */
+const TAB_ICONS: Record<SuperTab, React.FC<{ className?: string }>> = {
+  dashboard: LayoutDashboard, tenants: Building2, renewals: CalendarClock, billing: Receipt, revenue: TrendingUp,
+  packages: CreditCard, addons: Puzzle, messages: MessageSquare, announcements: Megaphone, whatsapp: MessageCircle,
+  team: UserCog, activity: History, settings: Settings2
+};
 
 /** Each section's heading; the sidebar is where they are picked. */
 const TAB_TITLES: Record<SuperTab, { title: string; subtitle: string }> = {
@@ -116,6 +123,30 @@ export const SuperAdmin: React.FC = () => {
   const [copiedSlugId, setCopiedSlugId] = useState<string | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
   const [provisionOpen, setProvisionOpen] = useState(false);
+  // The screens are newer than the server when it has not been restarted since an update: every
+  // new section would then just say it could not load. Say what is actually wrong instead.
+  const [serverOutdated, setServerOutdated] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getPlatformLoginMode()
+      .then(() => { if (!cancelled) setServerOutdated(false); })
+      .catch(err => { if (!cancelled && (err as { response?: { status?: number } }).response?.status === 404) setServerOutdated(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Links from other sections (Revenue, Packages) open the business list already filtered:
+  // ?tab=tenants&plan=Standard, &q=Lahore, &status=issues.
+  const urlFilterKey = activeTab === 'tenants'
+    ? [searchParams.get('plan'), searchParams.get('q'), searchParams.get('status')].map(v => v ?? '').join('|')
+    : '';
+  const [appliedFilterKey, setAppliedFilterKey] = useState('');
+  if (urlFilterKey && urlFilterKey !== '||' && urlFilterKey !== appliedFilterKey) {
+    setAppliedFilterKey(urlFilterKey);
+    setFilterTier(searchParams.get('plan') ?? 'all');
+    setSearchQuery(searchParams.get('q') ?? '');
+    setFilterStatus((searchParams.get('status') as StatusFilter | null) ?? 'all');
+    setPage(1);
+  }
   // "Quiet for a day" is judged against when the console was opened, not re-read on every render.
   const [openedAt] = useState(() => Date.now());
 
@@ -285,7 +316,7 @@ export const SuperAdmin: React.FC = () => {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-10 h-10 rounded-xl bg-teal-100 flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-5 h-5 text-teal-700" />
+            {React.createElement(TAB_ICONS[activeTab], { className: "w-5 h-5 text-teal-700" })}
           </div>
           <div className="min-w-0">
             <h1 className="text-lg font-black text-slate-900">{TAB_TITLES[activeTab].title}</h1>
@@ -303,6 +334,14 @@ export const SuperAdmin: React.FC = () => {
           </div>
         )}
       </div>
+
+      {serverOutdated && (
+        <div className="px-3.5 py-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-2">
+          <ServerCrash className="w-4 h-4 shrink-0 mt-0.5" />
+          <span><strong>The server is running an older version than these screens.</strong> Restart the backend (stop it and run it again) — until then the newer
+          sections (Billing totals, Revenue, Team, Settings, Message Log, Announcements, Activity Log) cannot load.</span>
+        </div>
+      )}
 
       {currentUser?.isSetupAccount && activeTab !== 'team' && (
         <div className="px-3.5 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex flex-wrap items-center gap-2">

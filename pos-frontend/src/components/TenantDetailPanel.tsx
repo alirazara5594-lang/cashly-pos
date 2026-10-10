@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   X, ShieldAlert, Clock, Gift, Eye, Activity, AlertTriangle,
   CreditCard, Server, RefreshCw, Trash2, LayoutDashboard, Puzzle,
@@ -195,6 +196,7 @@ type SetMessage = (m: { tone: 'ok' | 'err'; text: string } | null) => void;
 // ── Overview ───────────────────────────────────────────────────
 
 const OverviewTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run }> = ({ data, busy, run }) => {
+  const navigate = useNavigate();
   const { tenant, entitlements, usage, health, billing, branches } = data;
   const [statusChoice, setStatusChoice] = useState(tenant.status);
   const [statusReason, setStatusReason] = useState('');
@@ -320,6 +322,15 @@ const OverviewTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run }> =
         }}
           className="py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40">
           <Download className="w-3.5 h-3.5" /> {exporting ? 'Preparing…' : 'Export their data'}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold">
+        <button onClick={() => navigate(`/super-admin?tab=whatsapp&business=${tenant.id}`)} className="text-teal-700 hover:text-teal-900">
+          Their WhatsApp line to customers →
+        </button>
+        <button onClick={() => navigate(`/super-admin?tab=activity&business=${tenant.id}`)} className="text-teal-700 hover:text-teal-900">
+          What the Cashly team did here →
         </button>
       </div>
 
@@ -586,7 +597,7 @@ const BillingTab: React.FC<{ tenantId: string; tenantName: string; invoices: Sub
 
       <Section icon={<CreditCard className="w-3.5 h-3.5" />} title="What it pays for — each renews on its own date">
         <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
-          <SubscriptionPartsTable parts={parts} canManage onChanged={changed} emptyText="Nothing to renew yet." />
+          <SubscriptionPartsTable parts={parts} canManage onChanged={changed} onOpenInvoice={setOpenInvoiceId} emptyText="Nothing to renew yet." />
         </div>
       </Section>
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, Mail, MessageCircle, ChevronDown, ChevronRight } from 'lucide-react';
+import { RefreshCw, Mail, MessageCircle, ChevronDown, ChevronRight, Receipt } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
+import { InvoiceDrawer } from '../../components/PlatformBilling';
 import type { PlatformMessagePage } from '../../types';
 
 const KIND_LABEL: Record<string, string> = {
@@ -22,6 +23,7 @@ export const MessageLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }>
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,7 +118,14 @@ export const MessageLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }>
                     <td colSpan={5} className="px-4 py-3">
                       {m.subject && <div className="text-[11px] font-bold text-slate-700 mb-1">{m.subject}</div>}
                       <pre className="whitespace-pre-wrap text-[11px] text-slate-700 font-sans">{m.body}</pre>
-                      <div className="text-[10px] text-slate-400 mt-1">Sent by {m.sentByName ?? '—'}</div>
+                      <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-3">
+                        <span>Sent by {m.sentByName ?? '—'}</span>
+                        {m.invoiceId && (
+                          <button onClick={() => setOpenInvoiceId(m.invoiceId!)} className="text-teal-700 font-bold flex items-center gap-1">
+                            <Receipt className="w-3 h-3" /> Open the invoice
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )}
@@ -125,6 +134,11 @@ export const MessageLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }>
           </tbody>
         </table>
       </div>
+
+      {openInvoiceId && (
+        <InvoiceDrawer invoiceId={openInvoiceId} onClose={() => setOpenInvoiceId(null)}
+          onOpenTenant={onOpenTenant ? (id) => { setOpenInvoiceId(null); onOpenTenant(id); } : undefined} />
+      )}
 
       {data && data.totalPages > 1 && (
         <div className="flex items-center justify-between">

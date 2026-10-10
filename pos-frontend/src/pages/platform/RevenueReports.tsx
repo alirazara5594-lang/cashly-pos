@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { RefreshCw, TrendingUp, Users, MapPin, Layers } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { pkr } from '../../utils/renewals';
@@ -12,6 +13,7 @@ const monthName = (ym: string) => new Date(`${ym}-01T00:00:00Z`).toLocaleDateStr
  * won and lost, where the money comes from, and how many trials became paying customers.
  */
 export const RevenueReports: React.FC = () => {
+  const navigate = useNavigate();
   const [months, setMonths] = useState(12);
   const [data, setData] = useState<RevenueReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -58,7 +60,8 @@ export const RevenueReports: React.FC = () => {
           <div className="text-[10px] text-slate-400">a month, from everything installed</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase text-slate-500">Collected in {months} months</div>
+          <div className="text-[10px] font-bold uppercase text-slate-500 flex items-center justify-between">Collected in {months} months
+            <button onClick={() => navigate('/super-admin?tab=billing')} className="text-teal-700 normal-case font-bold">Billing →</button></div>
           <div className="text-xl font-black">{pkr(totalCollected)}</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
@@ -130,13 +133,15 @@ export const RevenueReports: React.FC = () => {
               <h2 className="text-sm font-black text-slate-900 flex items-center gap-2"><Icon className="w-4 h-4 text-teal-600" /> {title}</h2>
               {rows.length === 0 && <p className="text-xs text-slate-500">No businesses yet.</p>}
               {rows.map(r => (
-                <div key={r.label} className="space-y-1">
+                <button key={r.label} className="w-full text-left space-y-1 rounded-lg px-1 -mx-1 py-0.5 hover:bg-slate-50"
+                  title="See these businesses"
+                  onClick={() => navigate(isPlan ? `/super-admin?tab=tenants&plan=${encodeURIComponent(r.label)}` : `/super-admin?tab=tenants&q=${encodeURIComponent(r.label === 'Unknown' ? '' : r.label)}`)}>
                   <div className="flex justify-between text-[11px]">
                     <span className="font-bold text-slate-700">{isPlan ? tierLabel(r.label) : r.label}</span>
                     <span className="text-slate-500 flex items-center gap-2"><Users className="w-3 h-3" />{r.businesses} · <span className="font-mono">{pkr(r.monthlyPKR)}/mo</span></span>
                   </div>
                   <div className="h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-teal-500 rounded-full" style={{ width: `${(r.monthlyPKR / max) * 100}%` }} /></div>
-                </div>
+                </button>
               ))}
             </section>
           );
