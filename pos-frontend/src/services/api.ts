@@ -1749,6 +1749,11 @@ export const posApi = {
     const res = await api.get<PublicPackage[]>('/api/public/packages');
     return res.data;
   },
+  /** The platform's own prices (the Head Office ERP), as anyone registering sees them. */
+  getPublicPlatformPrices: async () => {
+    const res = await api.get<PlatformPrice[]>('/api/public/platform-prices');
+    return res.data;
+  },
   createPackage: async (data: any) => {
     const res = await api.post('/api/admin/packages', data);
     return res.data;
