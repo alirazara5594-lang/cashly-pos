@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
+import { useSector } from '../hooks/useSector';
 import { posApi } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import { getStoredTerminal } from '../services/deviceLicense';
@@ -69,14 +70,14 @@ export const PosTerminal: React.FC = () => {
     setCustomerInfo
   } = usePosStore();
 
-  // Retail/Cash & Carry has no dine-in tables — a shop counter sale is always an
-  // immediate "take it with you" transaction.
-  const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';
-  const orderTypeOptions = (isRetailBiz ? ['Takeaway', 'Delivery'] : ['DineIn', 'Takeaway', 'Delivery']) as OrderType[];
+  // Only a business with table service has dine-in tables (hooks/useSector.ts); everywhere else
+  // — a shop, a pharmacy — a counter sale is always an immediate "take it with you" transaction.
+  const noTables = !useSector().tableService;
+  const orderTypeOptions = (noTables ? ['Takeaway', 'Delivery'] : ['DineIn', 'Takeaway', 'Delivery']) as OrderType[];
 
   useEffect(() => {
-    if (isRetailBiz && orderType === 'DineIn') setOrderType('Takeaway');
-  }, [isRetailBiz, orderType, setOrderType]);
+    if (noTables && orderType === 'DineIn') setOrderType('Takeaway');
+  }, [noTables, orderType, setOrderType]);
 
   // ── Loyalty / promo / gift card extras. Every one of these is optional: leaving
   // the whole section untouched produces exactly the same order payload as before.
@@ -505,7 +506,7 @@ export const PosTerminal: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">
-                  {orderType === 'DineIn' ? (selectedTable || 'Select Table') : orderType === 'Takeaway' ? (isRetailBiz ? 'Counter Sale' : 'Takeaway') : orderType === 'Delivery' ? 'Delivery' : 'Phone Order'}
+                  {orderType === 'DineIn' ? (selectedTable || 'Select Table') : orderType === 'Takeaway' ? (noTables ? 'Counter Sale' : 'Takeaway') : orderType === 'Delivery' ? 'Delivery' : 'Phone Order'}
                 </h2>
                 <p className="text-xs text-slate-400">
                   {customerName || 'Walk-in Customer'}
@@ -533,12 +534,12 @@ export const PosTerminal: React.FC = () => {
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
-                  {type === 'DineIn' ? 'Dine In' : type === 'Takeaway' ? (isRetailBiz ? 'Counter Sale' : 'Take Away') : 'Delivery'}
+                  {type === 'DineIn' ? 'Dine In' : type === 'Takeaway' ? (noTables ? 'Counter Sale' : 'Take Away') : 'Delivery'}
                 </button>
               ))}
             </div>
 
-            {orderType === 'DineIn' && !isRetailBiz && (
+            {orderType === 'DineIn' && !noTables && (
               <div className="mt-3 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-slate-500 font-medium">Table:</span>
@@ -881,7 +882,7 @@ export const PosTerminal: React.FC = () => {
         </div>
       </div>
 
-      {!isRetailBiz && (
+      {!noTables && (
       <div className="bg-white border-t border-slate-200 px-4 py-2 flex items-center gap-2 overflow-x-auto no-scrollbar">
         {tables.length > 0 ? (
           tables.slice(0, 15).map((t) => (

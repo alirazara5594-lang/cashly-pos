@@ -7,6 +7,7 @@ import { PosTerminal } from './pages/PosTerminal';
 import { LoginGate } from './components/LoginGate';
 import { RequireModule } from './components/RequireModule';
 import { RequireFeature } from './components/RequireFeature';
+import { RequireSector } from './components/RequireSector';
 import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
@@ -420,11 +421,11 @@ function MainLayoutInner() {
             <Route path="/kitchen" element={
               isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
                 : isErpOnly ? <Navigate to="/director" replace />
-                : <RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature>} />
+                : <RequireSector feature="kitchenRouting" label="The kitchen display"><RequireFeature flag="hasKitchenDisplay" label="Kitchen Display (KDS)"><KitchenDisplay /></RequireFeature></RequireSector>} />
             <Route path="/order-tab" element={
               isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
                 : isErpOnly ? <Navigate to="/director" replace />
-                : <OrderTab />} />
+                : <RequireSector feature="tableService" label="The waiter tablet"><OrderTab /></RequireSector>} />
             <Route path="/delivery" element={
               isPlatformSuperAdmin ? <Navigate to="/super-admin" replace />
                 : isErpOnly ? <Navigate to="/director" replace />
@@ -449,7 +450,7 @@ function MainLayoutInner() {
             <Route path="/tax-configuration" element={<RequireModule module="accounts"><TaxConfiguration /></RequireModule>} />
             <Route path="/accounting" element={<RequireModule module="accounts"><AccountingManagement /></RequireModule>} />
             <Route path="/audit-log" element={<RequireModule module="admin"><AuditLog /></RequireModule>} />
-            <Route path="/floors" element={<RequireModule module="menu"><FloorManagement /></RequireModule>} />
+            <Route path="/floors" element={<RequireModule module="menu"><RequireSector feature="tableService" label="Floors & Tables"><FloorManagement /></RequireSector></RequireModule>} />
 
             {/* Stock → `inventory` module */}
             <Route path="/inventory" element={<RequireModule module="inventory"><InventoryManagement /></RequireModule>} />
@@ -462,7 +463,7 @@ function MainLayoutInner() {
             <Route path="/reports" element={<RequireModule module="reports"><ReportsManagement /></RequireModule>} />
             <Route path="/director" element={<RequireModule module="reports"><DirectorDashboard /></RequireModule>} />
             <Route path="/analytics" element={<RequireModule module="reports"><SmartAnalytics /></RequireModule>} />
-            <Route path="/menu-engineering" element={<RequireModule module="reports"><MenuEngineering /></RequireModule>} />
+            <Route path="/menu-engineering" element={<RequireModule module="reports"><RequireSector feature="recipes" label="Menu Engineering"><MenuEngineering /></RequireSector></RequireModule>} />
 
             {/* Staff scheduling & time clock → `labor` module (BranchManager-editable baseline) */}
             <Route path="/labor" element={<RequireModule module="labor"><LaborManagement /></RequireModule>} />

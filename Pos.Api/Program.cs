@@ -1616,7 +1616,9 @@ using (var scope = app.Services.CreateScope())
         ("Renewals per part", EnsureSubscriptionPartsSchemaAsync),
         ("Platform billing, team and messages", EnsurePlatformSchemaAsync),
         ("Add-on prices per unit", FixAddOnUnitPricesAsync),
-        ("Plan prices follow the price list", SyncPlanPricesFromPackagesAsync)
+        ("Plan prices follow the price list", SyncPlanPricesFromPackagesAsync),
+        ("Batches and medicines", EnsureBatchSchemaAsync),
+        ("Existing batch numbers into batches", MoveBranchStockBatchesAsync)
     })
     {
         try
@@ -1867,6 +1869,86 @@ static Task EnsurePlatformSchemaAsync(AppDbContext db) => db.Database.ExecuteSql
         ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
     );
 ");
+
+/// <summary>Stock batches with expiry dates, and a medicine's details on its product (Models/PharmacyEntities.cs).</summary>
+static Task EnsureBatchSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""GenericName"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""Strength"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""DosageForm"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""Manufacturer"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""DrapRegistrationNo"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""RackLocation"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""Schedule"" integer NOT NULL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS ""StockBatches"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""ProductId"" uuid NOT NULL,
+        ""BatchNumber"" text NOT NULL DEFAULT '',
+        ""ExpiryDate"" timestamp with time zone NULL,
+        ""QuantityOnHand"" numeric NOT NULL DEFAULT 0,
+        ""QuantityReceived"" numeric NOT NULL DEFAULT 0,
+        ""UnitCostPKR"" numeric NOT NULL DEFAULT 0,
+        ""RetailPricePKR"" numeric NULL,
+        ""SupplierName"" text NULL,
+        ""ReceivedAt"" timestamp with time zone NOT NULL DEFAULT now(),
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_StockBatches_BranchId_ProductId_ExpiryDate"" ON ""StockBatches"" (""BranchId"", ""ProductId"", ""ExpiryDate"");
+    CREATE INDEX IF NOT EXISTS ""IX_StockBatches_TenantId"" ON ""StockBatches"" (""TenantId"");
+
+    CREATE TABLE IF NOT EXISTS ""StockBatchMovements"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BatchId"" uuid NOT NULL,
+        ""StockLedgerEntryId"" uuid NOT NULL,
+        ""QuantityChange"" numeric NOT NULL DEFAULT 0,
+        ""RestoresReferenceId"" uuid NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ""IX_StockBatchMovements_StockLedgerEntryId"" ON ""StockBatchMovements"" (""StockLedgerEntryId"");
+    CREATE INDEX IF NOT EXISTS ""IX_StockBatchMovements_BatchId_RestoresReferenceId"" ON ""StockBatchMovements"" (""BatchId"", ""RestoresReferenceId"");
+
+    -- A return or a cancelled transfer finds the movements it reverses by their reference.
+    CREATE INDEX IF NOT EXISTS ""IX_StockLedgerEntries_ReferenceId"" ON ""StockLedgerEntries"" (""ReferenceId"");
+");
+
+/// <summary>
+/// Before batches existed, a location's stock of a product carried one batch number and expiry date
+/// (BranchStock). Each of those becomes a batch holding the stock on hand, once, so nothing about
+/// stock already on the shelf is lost. The old columns are left as they were.
+/// </summary>
+static async Task MoveBranchStockBatchesAsync(AppDbContext db)
+{
+    const string marker = "stock-batches-2026-10";
+    if (await db.PlatformDataVersions.AnyAsync(v => v.Key == marker)) return;
+
+    var withBatch = await db.BranchStocks.IgnoreQueryFilters().Include(s => s.Product)
+        .Where(s => s.QuantityOnHand > 0 && ((s.BatchNumber != null && s.BatchNumber != "") || s.ExpiryDate != null))
+        .ToListAsync();
+    var tenantOf = await db.Branches.IgnoreQueryFilters().ToDictionaryAsync(b => b.Id, b => b.TenantId);
+    var moved = 0;
+    foreach (var stock in withBatch)
+    {
+        if (!tenantOf.TryGetValue(stock.BranchId, out var tenantId)) continue;
+        var already = await db.StockBatches.IgnoreQueryFilters()
+            .AnyAsync(b => b.BranchId == stock.BranchId && b.ProductId == stock.ProductId);
+        if (already) continue;
+        db.StockBatches.Add(new StockBatch
+        {
+            TenantId = tenantId, BranchId = stock.BranchId, ProductId = stock.ProductId,
+            BatchNumber = stock.BatchNumber?.Trim() ?? string.Empty,
+            ExpiryDate = stock.ExpiryDate.HasValue ? DateTime.SpecifyKind(stock.ExpiryDate.Value.Date, DateTimeKind.Utc) : null,
+            QuantityOnHand = stock.QuantityOnHand, QuantityReceived = stock.QuantityOnHand,
+            UnitCostPKR = UnitCostOf(stock, stock.Product)
+        });
+        moved++;
+    }
+    db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
+    await db.SaveChangesAsync();
+    if (moved > 0) Console.WriteLine($"[Stock] {moved} existing batch record(s) moved into stock batches.");
+}
 
 /// <summary>
 /// The old Add-ons screen saved a quantity add-on's price as unit price × quantity, and the bill then
@@ -3179,6 +3261,184 @@ static StockLedgerEntry RecordProductStockMovement(
     return entry;
 }
 
+/// <summary>A medicine's details onto its product. Sent only by a pharmacy's screens; blank clears a field.</summary>
+static void ApplyMedicineDetails(Product product, MedicineDetailsDto? medicine)
+{
+    if (medicine == null) return;
+    static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+    product.GenericName = Clean(medicine.GenericName);
+    product.Strength = Clean(medicine.Strength);
+    product.DosageForm = Clean(medicine.DosageForm);
+    product.Manufacturer = Clean(medicine.Manufacturer);
+    product.DrapRegistrationNo = Clean(medicine.DrapRegistrationNo);
+    product.RackLocation = Clean(medicine.RackLocation);
+    if (medicine.Schedule.HasValue) product.Schedule = medicine.Schedule.Value;
+}
+
+/// <summary>One product's batches at one location: those saved, plus any added in this unit of work.</summary>
+static async Task<List<StockBatch>> LoadBatchesAsync(AppDbContext db, Guid branchId, Guid productId)
+{
+    var batches = await db.StockBatches.Where(b => b.BranchId == branchId && b.ProductId == productId).ToListAsync();
+    foreach (var pending in db.StockBatches.Local.Where(b => b.BranchId == branchId && b.ProductId == productId))
+        if (!batches.Contains(pending)) batches.Add(pending);
+    return batches;
+}
+
+/// <summary>
+/// Moves a product's batches (Models/PharmacyEntities.cs) in step with one stock movement — the entry
+/// RecordProductStockMovement just wrote:
+///  * stock received with a batch number or expiry goes into that batch, created on first use;
+///  * stock put back (a return, a cancelled order or transfer) goes into the batches
+///    <paramref name="restoreFrom"/> took it from, never more than was taken;
+///  * stock arriving on a transfer goes into batches matching those the sender gave up
+///    (<paramref name="mirrorFrom"/>), same number and expiry;
+///  * stock going out (a sale, a dispatch, a count down) leaves the earliest-expiring good batch first,
+///    then stock with no batch, and expired batches last. The till keeps expired stock from being
+///    sold, so reaching them means the goods left anyway (a sale made offline), and the record follows
+///    the goods.
+/// Whatever the batches cannot account for is stock with no batch. A business without batches has
+/// none to move, so nothing changes for it. The caller saves.
+/// </summary>
+static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, BatchIn? into = null,
+    (string Type, Guid Id)? restoreFrom = null, (string Type, Guid Id)? mirrorFrom = null)
+{
+    if (entry.ProductId is not Guid productId || entry.QuantityChange == 0) return;
+    var change = entry.QuantityChange;
+    var batches = await LoadBatchesAsync(db, entry.BranchId, productId);
+
+    void Move(StockBatch batch, decimal qty, Guid? restores = null)
+    {
+        batch.QuantityOnHand += qty;
+        if (qty > 0 && restores == null) batch.QuantityReceived += qty;
+        db.StockBatchMovements.Add(new StockBatchMovement
+        {
+            TenantId = entry.TenantId, BatchId = batch.Id, StockLedgerEntryId = entry.Id,
+            QuantityChange = qty, RestoresReferenceId = restores
+        });
+    }
+    StockBatch FindOrAdd(string number, DateTime? expiry, decimal unitCost)
+    {
+        var batch = batches.FirstOrDefault(b => string.Equals(b.BatchNumber, number, StringComparison.OrdinalIgnoreCase)
+                                               && b.ExpiryDate?.Date == expiry?.Date);
+        if (batch != null) return batch;
+        batch = new StockBatch
+        {
+            TenantId = entry.TenantId, BranchId = entry.BranchId, ProductId = productId, BatchNumber = number,
+            ExpiryDate = expiry.HasValue ? DateTime.SpecifyKind(expiry.Value.Date, DateTimeKind.Utc) : null,
+            UnitCostPKR = unitCost
+        };
+        db.StockBatches.Add(batch);
+        batches.Add(batch);
+        return batch;
+    }
+
+    if (change > 0)
+    {
+        var remaining = change;
+        if (into != null && (!string.IsNullOrWhiteSpace(into.BatchNumber) || into.ExpiryDate.HasValue))
+        {
+            var batch = FindOrAdd(into.BatchNumber?.Trim() ?? string.Empty, into.ExpiryDate, entry.UnitCostPKR);
+            // What is already in the batch and what has just arrived share one cost.
+            if (batch.QuantityOnHand > 0 && batch.QuantityOnHand + change > 0)
+                batch.UnitCostPKR = Math.Round((batch.QuantityOnHand * batch.UnitCostPKR + change * entry.UnitCostPKR) / (batch.QuantityOnHand + change), 4);
+            else
+                batch.UnitCostPKR = entry.UnitCostPKR;
+            if (into.RetailPricePKR is > 0) batch.RetailPricePKR = into.RetailPricePKR;
+            if (!string.IsNullOrWhiteSpace(into.SupplierName)) batch.SupplierName = into.SupplierName.Trim();
+            batch.ReceivedAt = DateTime.UtcNow;
+            Move(batch, change);
+            return;
+        }
+
+        if (restoreFrom is { } source)
+        {
+            var takenEntries = await db.StockLedgerEntries
+                .Where(e => e.ReferenceType == source.Type && e.ReferenceId == source.Id && e.ProductId == productId
+                         && e.BranchId == entry.BranchId && e.QuantityChange < 0)
+                .Select(e => e.Id).ToListAsync();
+            if (takenEntries.Count == 0) return;
+            var taken = await db.StockBatchMovements
+                .Where(m => takenEntries.Contains(m.StockLedgerEntryId) && m.QuantityChange < 0)
+                .GroupBy(m => m.BatchId)
+                .Select(g => new { BatchId = g.Key, Qty = -g.Sum(m => m.QuantityChange) })
+                .ToListAsync();
+            var takenIds = taken.Select(t => t.BatchId).ToList();
+            var putBack = await db.StockBatchMovements
+                .Where(m => m.RestoresReferenceId == source.Id && takenIds.Contains(m.BatchId) && m.QuantityChange > 0)
+                .GroupBy(m => m.BatchId)
+                .Select(g => new { BatchId = g.Key, Qty = g.Sum(m => m.QuantityChange) })
+                .ToListAsync();
+            var pendingPutBack = db.ChangeTracker.Entries<StockBatchMovement>()
+                .Where(e => e.State == EntityState.Added && e.Entity.RestoresReferenceId == source.Id && e.Entity.QuantityChange > 0)
+                .Select(e => e.Entity).ToList();
+            foreach (var t in taken)
+            {
+                if (remaining <= 0) break;
+                var batch = batches.FirstOrDefault(b => b.Id == t.BatchId);
+                if (batch == null) continue;
+                var already = (putBack.FirstOrDefault(p => p.BatchId == t.BatchId)?.Qty ?? 0)
+                            + pendingPutBack.Where(m => m.BatchId == t.BatchId).Sum(m => m.QuantityChange);
+                var put = Math.Min(t.Qty - already, remaining);
+                if (put <= 0) continue;
+                Move(batch, put, source.Id);
+                remaining -= put;
+            }
+            return; // the rest came from stock with no batch, and goes back there
+        }
+
+        if (mirrorFrom is { } sent)
+        {
+            var sentEntries = await db.StockLedgerEntries
+                .Where(e => e.ReferenceType == sent.Type && e.ReferenceId == sent.Id && e.ProductId == productId
+                         && e.BranchId != entry.BranchId && e.QuantityChange < 0)
+                .Select(e => e.Id).ToListAsync();
+            if (sentEntries.Count == 0) return;
+            var sentBatches = await (
+                from m in db.StockBatchMovements
+                join b in db.StockBatches on m.BatchId equals b.Id
+                where sentEntries.Contains(m.StockLedgerEntryId) && m.QuantityChange < 0
+                group m by new { b.BatchNumber, b.ExpiryDate, b.UnitCostPKR, b.RetailPricePKR, b.SupplierName } into g
+                select new { g.Key.BatchNumber, g.Key.ExpiryDate, g.Key.UnitCostPKR, g.Key.RetailPricePKR, g.Key.SupplierName, Qty = -g.Sum(m => m.QuantityChange) }
+            ).ToListAsync();
+            foreach (var s in sentBatches.OrderBy(s => s.ExpiryDate ?? DateTime.MaxValue))
+            {
+                if (remaining <= 0) break;
+                var put = Math.Min(s.Qty, remaining);
+                var batch = FindOrAdd(s.BatchNumber, s.ExpiryDate, s.UnitCostPKR);
+                batch.RetailPricePKR ??= s.RetailPricePKR;
+                batch.SupplierName ??= s.SupplierName;
+                Move(batch, put);
+                remaining -= put;
+            }
+        }
+        return;
+    }
+
+    // Stock out. What the count held beyond its batches before this movement had no batch.
+    var need = -change;
+    var today = DateTime.UtcNow.Date;
+    bool Expired(StockBatch b) => b.ExpiryDate.HasValue && b.ExpiryDate.Value.Date < today;
+    var unbatched = Math.Max(0, (entry.BalanceAfter - change) - batches.Where(b => b.QuantityOnHand > 0).Sum(b => b.QuantityOnHand));
+
+    foreach (var b in batches.Where(b => b.QuantityOnHand > 0 && !Expired(b))
+                             .OrderBy(b => b.ExpiryDate ?? DateTime.MaxValue).ThenBy(b => b.ReceivedAt).ToList())
+    {
+        if (need <= 0) return;
+        var take = Math.Min(b.QuantityOnHand, need);
+        Move(b, -take);
+        need -= take;
+    }
+    need -= Math.Min(unbatched, need);
+    foreach (var b in batches.Where(b => b.QuantityOnHand > 0 && Expired(b)).OrderBy(b => b.ExpiryDate).ToList())
+    {
+        if (need <= 0) return;
+        var take = Math.Min(b.QuantityOnHand, need);
+        Move(b, -take);
+        need -= take;
+    }
+    // Beyond all of that the count goes below zero, as it always has, with no batch to blame.
+}
+
 /// <summary>
 /// Folds a receipt into this location's average cost. Stock that was at or below zero carries no
 /// meaningful cost, so the receipt's cost simply becomes the average.
@@ -3324,8 +3584,9 @@ static async Task ConsumeStockForSaleAsync(AppDbContext db, Order order, string 
     {
         if (!stock.TryGetValue(line.ProductId, out var row)) continue;
         var before = row.QuantityOnHand;
-        RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleConsumption, -line.Quantity,
+        var sold = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleConsumption, -line.Quantity,
             UnitCostOf(row, row.Product), "Order", order.Id, actor, $"Order {order.OrderNumber}");
+        await ApplyBatchesAsync(db, sold);
         if (before >= 0 && row.QuantityOnHand < 0)
             AddNegativeStockAlert(db, order.TenantId, order.BranchId, line.ProductName, row.QuantityOnHand, "");
     }
@@ -6322,6 +6583,7 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
         Description = dto.Description ?? string.Empty, CostPricePKR = dto.CostPricePKR, SellingPricePKR = dto.SellingPricePKR,
         Unit = dto.Unit ?? "Piece", Station = dto.Station, ImageUrl = dto.ImageUrl, IsActive = true
     };
+    ApplyMedicineDetails(product, dto.Medicine);
     if (dto.Modifiers != null)
     {
         foreach (var mod in dto.Modifiers)
@@ -6352,6 +6614,7 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     product.Barcode = dto.Barcode ?? product.Barcode;
     product.CategoryId = dto.CategoryId;
     product.Station = dto.Station;
+    ApplyMedicineDetails(product, dto.Medicine);
 
     if (oldPrice != product.SellingPricePKR)
     {
@@ -6499,7 +6762,7 @@ api.MapPost("/tables", async (AppDbContext db, HttpContext http, CreateTableDto 
     db.DiningTables.Add(table);
     await db.SaveChangesAsync();
     return Results.Created($"/api/tables/{table.Id}", table);
-});
+}).AddEndpointFilter(SectorGuard((_, flows) => flows.TableService, "Tables"));
 
 api.MapPut("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Guid id, UpdateTableDto dto) =>
 {
@@ -6513,7 +6776,7 @@ api.MapPut("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Guid i
     if (dto.IsOccupied.HasValue) table.IsOccupied = dto.IsOccupied.Value;
     await db.SaveChangesAsync();
     return Results.Ok(table);
-});
+}).AddEndpointFilter(SectorGuard((_, flows) => flows.TableService, "Tables"));
 
 api.MapDelete("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Guid id) =>
 {
@@ -6524,7 +6787,7 @@ api.MapDelete("/tables/{id:guid}", async (AppDbContext db, HttpContext http, Gui
     db.DiningTables.Remove(table);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = "Table deleted successfully" });
-});
+}).AddEndpointFilter(SectorGuard((_, flows) => flows.TableService, "Tables"));
 
 // --- Orders (Mode 1 Parallel Dispatch) ---
 // SECURITY: all money on this order is computed server-side from DB product prices and the
@@ -6969,7 +7232,7 @@ api.MapPost("/tables/{id:guid}/qr", async (AppDbContext db, HttpContext http, Gu
         await db.SaveChangesAsync();
     }
     return Results.Ok(new { tableId = table.Id, table.TableNumber, qrToken = table.QrToken });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("menu", "edit"));
+}).AddEndpointFilter(SectorGuard((_, flows) => flows.TableService, "Tables")).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("menu", "edit"));
 
 api.MapGet("/branches/{id:guid}/online-ordering", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEntitlementService entitlements, Guid id) =>
 {
@@ -7155,8 +7418,11 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.A
     foreach (var item in order.Items)
     {
         if (stockDict.TryGetValue(item.ProductId, out var stock))
-            RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity,
+        {
+            var returned = RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity,
                 UnitCostOf(stock, stock.Product), "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
+            await ApplyBatchesAsync(db, returned, restoreFrom: ("Order", order.Id));
+        }
     }
 
     // Restore recipe-based raw ingredients that were consumed, through the ledger (not a raw
@@ -7349,8 +7615,9 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         {
             if (!stock.TryGetValue(line.ProductId, out var row)) continue;
             var unitCost = soldAt.FirstOrDefault(s => s.ProductId == line.ProductId)?.UnitCost ?? UnitCostOf(row, row.Product);
-            RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleReturn, line.Quantity, unitCost,
+            var backOnShelf = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleReturn, line.Quantity, unitCost,
                 "OrderReturn", ret.Id, ret.CreatedBy, $"Return {ret.ReturnNumber} of order {order.OrderNumber}");
+            await ApplyBatchesAsync(db, backOnShelf, restoreFrom: ("Order", order.Id));
             restockedCost += line.Quantity * unitCost;
         }
     }
@@ -7505,7 +7772,7 @@ api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext 
     }
 
     return Results.Ok(ticket);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
+}).AddEndpointFilter(SectorGuard((_, flows) => flows.KitchenRouting, "Kitchen tickets")).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasKitchenDisplay)));
 
 // --- Delivery ---
 api.MapGet("/delivery/board", async (AppDbContext db, HttpContext http, Guid branchId) =>
@@ -8726,10 +8993,24 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
         .Where(p => p.TenantId == tenantId && p.IsActive && !trackedProductIds.Contains(p.Id))
         .OrderBy(p => p.Name).ToListAsync();
 
+    // Each product's batches here: how many, the nearest expiry still sellable, and what has expired.
+    var today = DateTime.UtcNow.Date;
+    var batchesHere = await db.StockBatches.Where(b => b.BranchId == branchId && b.QuantityOnHand > 0).ToListAsync();
+    var batchPicture = batchesHere.GroupBy(b => b.ProductId).ToDictionary(g => g.Key, g => new
+    {
+        count = g.Count(),
+        nearestExpiry = g.Where(b => b.ExpiryDate == null || b.ExpiryDate.Value.Date >= today)
+                         .Min(b => b.ExpiryDate)?.ToString("yyyy-MM-dd"),
+        expiredQty = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date < today).Sum(b => b.QuantityOnHand)
+    });
+
     var rows = new List<object>();
     rows.AddRange(stocks.Select(s => (object)new
     {
         id = s.Id.ToString(), branchId = s.BranchId, productId = s.ProductId,
+        batchCount = batchPicture.TryGetValue(s.ProductId, out var bp) ? bp.count : 0,
+        nearestExpiry = bp?.nearestExpiry,
+        expiredQty = bp?.expiredQty ?? 0m,
         productName = s.Product?.Name ?? "Item", sku = s.Product?.SKU ?? "",
         barcode = s.Product?.Barcode ?? "", categoryName = s.Product?.Category?.Name ?? "General",
         // Valued at what THIS location paid, once it has received anything at a cost.
@@ -8753,8 +9034,49 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
+// One location's batches, earliest expiry first — for the stock screen.
+api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid branchId, Guid? productId) =>
+{
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var today = DateTime.UtcNow.Date;
+    var batches = await db.StockBatches
+        .Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0 && (productId == null || b.ProductId == productId))
+        .Join(db.Products, b => b.ProductId, p => p.Id, (b, p) => new { b, p.Name })
+        .OrderBy(x => x.b.ExpiryDate == null).ThenBy(x => x.b.ExpiryDate).ThenBy(x => x.Name)
+        .ToListAsync();
+    return Results.Ok(batches.Select(x => new
+    {
+        id = x.b.Id, productId = x.b.ProductId, productName = x.Name, batchNumber = x.b.BatchNumber,
+        expiryDate = x.b.ExpiryDate?.ToString("yyyy-MM-dd"),
+        daysToExpiry = x.b.ExpiryDate.HasValue ? (int?)(x.b.ExpiryDate.Value.Date - today).TotalDays : null,
+        quantityOnHand = x.b.QuantityOnHand, quantityReceived = x.b.QuantityReceived,
+        unitCostPKR = x.b.UnitCostPKR, retailPricePKR = x.b.RetailPricePKR, supplierName = x.b.SupplierName,
+        receivedAt = x.b.ReceivedAt
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// What the till needs to stop expired stock and warn about stock close to expiry: per product with
+// batches here, how much is still sellable, how much has expired, and the nearest sellable expiry.
+// Open to the counter (no inventory permission): a cashier rings these up.
+api.MapGet("/pos/expiry-summary", async (AppDbContext db, HttpContext http, Guid branchId) =>
+{
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var today = DateTime.UtcNow.Date;
+    var batches = await db.StockBatches.Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0).ToListAsync();
+    return Results.Ok(batches.GroupBy(b => b.ProductId).Select(g => new
+    {
+        productId = g.Key,
+        sellableQty = g.Where(b => b.ExpiryDate == null || b.ExpiryDate.Value.Date >= today).Sum(b => b.QuantityOnHand),
+        expiredQty = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date < today).Sum(b => b.QuantityOnHand),
+        nearestExpiry = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date >= today).Min(b => b.ExpiryDate)?.ToString("yyyy-MM-dd")
+    }));
+}).RequireAuthorization();
+
 api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
-    [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
+    Pos.Api.Services.IEntitlementService entitlements, [Microsoft.AspNetCore.Mvc.FromBody] StockInDto dto) =>
 {
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
     if (scopeError != null) return scopeError;
@@ -8774,25 +9096,41 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
         stock = new BranchStock { BranchId = scopedBranchId.Value, ProductId = dto.ProductId, QuantityOnHand = 0, MinAlertLevel = 10 };
         db.BranchStocks.Add(stock);
     }
+    // A business whose stock carries batches (a pharmacy, a grocery) names the batch and its expiry
+    // on every receipt, so each unit can later be sold earliest-expiry first and expired stock stopped.
+    var ent = await entitlements.GetAsync(scopedTenantId.Value);
+    var (packItems, _, _, _) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
+    if (packItems.BatchExpiry && (string.IsNullOrWhiteSpace(dto.BatchNumber) || !dto.ExpiryDate.HasValue))
+        return Results.BadRequest(new { message = "Enter the batch number and expiry date printed on the pack." });
+    if (dto.ExpiryDate.HasValue && dto.ExpiryDate.Value.Date < DateTime.UtcNow.Date)
+        return Results.BadRequest(new { message = "That batch has already expired. Return it to the supplier instead of receiving it." });
+    if (dto.BonusQuantity is < 0) return Results.BadRequest(new { message = "Bonus units cannot be negative." });
+
     if (!string.IsNullOrEmpty(dto.BatchNumber)) stock.BatchNumber = dto.BatchNumber;
     if (dto.ExpiryDate.HasValue) stock.ExpiryDate = dto.ExpiryDate.Value;
 
     // The receipt's cost goes into THIS location's average cost. It used to overwrite the product's
-    // company-wide cost, so one branch buying at a new price rewrote every branch's margins.
-    var unitCost = dto.CostPricePKR is > 0 ? dto.CostPricePKR.Value : UnitCostOf(stock, product);
-    ApplyReceiptToAverageCost(stock, dto.Quantity, unitCost);
+    // company-wide cost, so one branch buying at a new price rewrote every branch's margins. A bonus
+    // (10 + 1) arrives free: more units for the same money, so each unit costs less.
+    var paidUnitCost = dto.CostPricePKR is > 0 ? dto.CostPricePKR.Value : UnitCostOf(stock, product);
+    var bonusUnits = dto.BonusQuantity ?? 0;
+    var unitsIn = dto.Quantity + bonusUnits;
+    var unitCost = Math.Round(dto.Quantity * paidUnitCost / unitsIn, 4);
+    ApplyReceiptToAverageCost(stock, unitsIn, unitCost);
     if (product.CostPricePKR <= 0 && unitCost > 0) product.CostPricePKR = unitCost; // a first cost for a product that had none
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
-    var movement = RecordProductStockMovement(db, stock, scopedTenantId.Value, StockMovementType.PurchaseReceipt, dto.Quantity, unitCost,
+    var receivedNote = string.IsNullOrWhiteSpace(dto.SupplierName) ? "Stock received" : $"Stock received from {dto.SupplierName}";
+    var movement = RecordProductStockMovement(db, stock, scopedTenantId.Value, StockMovementType.PurchaseReceipt, unitsIn, unitCost,
         "StockIn", null, currentUser?.FullName ?? "System",
-        string.IsNullOrWhiteSpace(dto.SupplierName) ? "Stock received" : $"Stock received from {dto.SupplierName}");
+        bonusUnits > 0 ? $"{receivedNote} (incl. {bonusUnits:0.##} bonus)" : receivedNote);
+    await ApplyBatchesAsync(db, movement, new BatchIn(dto.BatchNumber, dto.ExpiryDate, dto.RetailPricePKR, dto.SupplierName));
     await db.SaveChangesAsync();
 
     // Receiving without a purchase order is paid on the spot, the same rule a supplier-less PO
     // follows: the goods go into Inventory, the cash comes out of the till. Without this, the cost
     // of goods posted when they sell would draw down an Inventory balance they never entered.
-    var receiptValue = Math.Round(dto.Quantity * unitCost, 2);
+    var receiptValue = Math.Round(dto.Quantity * paidUnitCost, 2);
     if (receiptValue > 0 && await HasAccountingAsync(db, scopedTenantId.Value))
     {
         try
@@ -8808,7 +9146,7 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
         }
     }
 
-    return Results.Ok(new { message = $"Received {dto.Quantity} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand, averageCostPKR = stock.AverageCostPKR });
+    return Results.Ok(new { message = $"Received {unitsIn:0.##} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand, averageCostPKR = stock.AverageCostPKR });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock."));
 
@@ -8833,8 +9171,11 @@ api.MapPost("/inventory/adjust", async (AppDbContext db, HttpContext http, Pos.A
     // A manual adjustment never takes a count below zero; the ledger records the change actually made.
     var change = Math.Max(0, oldQty + dto.AdjustmentQty) - oldQty;
     if (change != 0)
-        RecordProductStockMovement(db, stock, scopedTenantId!.Value, StockMovementType.Adjustment, change,
+    {
+        var adjusted = RecordProductStockMovement(db, stock, scopedTenantId!.Value, StockMovementType.Adjustment, change,
             UnitCostOf(stock, stock.Product), "Adjustment", null, currentUser?.FullName ?? "System", dto.Reason);
+        await ApplyBatchesAsync(db, adjusted);
+    }
     await WriteAuditAsync(db, scopedTenantId!.Value, currentUser, "StockAdjusted", "BranchStock", stock.Id,
         oldValue: oldQty.ToString("0.##"), newValue: $"{stock.QuantityOnHand:0.##} ({dto.Reason})");
 
@@ -8922,7 +9263,7 @@ api.MapPost("/inventory/ingredients/stock-in", async (AppDbContext db, HttpConte
     if (!string.IsNullOrEmpty(dto.SupplierName)) ingredient.SupplierName = dto.SupplierName;
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Added +{dto.QuantityReceived} {ingredient.Unit} to {ingredient.Name}", ingredientId = ingredient.Id, newStock = ingredient.CurrentStock });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+}).AddEndpointFilter(SectorGuard((items, _) => items.RecipeBom, "Ingredients")).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive ingredients."));
 
 api.MapPost("/inventory/ingredients", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] CreateIngredientDto dto) =>
@@ -8952,7 +9293,7 @@ api.MapPost("/inventory/ingredients", async (AppDbContext db, HttpContext http, 
             dto.InitialStock, dto.CostPerUnitPKR, "Opening", null, "System", "Opening stock");
     await db.SaveChangesAsync();
     return Results.Ok(ingredient);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
+}).AddEndpointFilter(SectorGuard((items, _) => items.RecipeBom, "Ingredients")).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to create ingredients."));
 
 // The company-wide ingredient list, with what each location holds of each — head office's view of
@@ -9017,7 +9358,7 @@ api.MapPut("/inventory/ingredient-master/{id:guid}", async (AppDbContext db, Htt
     }
     await db.SaveChangesAsync();
     return Results.Ok(master);
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to change ingredients."))
+}).AddEndpointFilter(SectorGuard((items, _) => items.RecipeBom, "Ingredients")).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to change ingredients."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 // --- Recipes ---
@@ -9061,7 +9402,7 @@ api.MapPost("/recipes/{productId}", async (AppDbContext db, HttpContext http, Gu
     if (product != null && calculatedCost > 0) product.CostPricePKR = Math.Round(calculatedCost, 2);
     await db.SaveChangesAsync();
     return Results.Ok(new { message = $"Recipe updated with {items.Count} ingredients. Cost: ₨{Math.Round(calculatedCost, 2)}", productId, calculatedCostPKR = Math.Round(calculatedCost, 2) });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit recipes."))
+}).AddEndpointFilter(SectorGuard((items, _) => items.RecipeBom, "Recipes")).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to edit recipes."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 // --- Users (with PIN hashing) ---
@@ -9641,8 +9982,9 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
             {
                 // It travels at what it cost the sending location, and arrives at that cost.
                 item.UnitCostPKR = UnitCostOf(sourceStock, sourceStock.Product);
-                RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.TransferOut, -sent, item.UnitCostPKR,
+                var dispatched = RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.TransferOut, -sent, item.UnitCostPKR,
                     "StockTransfer", order.Id, dispatchedBy, $"Transfer {order.TransferNumber}");
+                await ApplyBatchesAsync(db, dispatched);
             }
             item.QuantityDispatched = sent;
             continue;
@@ -9691,8 +10033,9 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
             if (qtyToReceive > 0)
             {
                 ApplyReceiptToAverageCost(destStock, qtyToReceive, item.UnitCostPKR);
-                RecordProductStockMovement(db, destStock, order.TenantId, StockMovementType.TransferIn, qtyToReceive, item.UnitCostPKR,
+                var arrived = RecordProductStockMovement(db, destStock, order.TenantId, StockMovementType.TransferIn, qtyToReceive, item.UnitCostPKR,
                     "StockTransfer", order.Id, receivedBy, $"Transfer {order.TransferNumber}");
+                await ApplyBatchesAsync(db, arrived, mirrorFrom: ("StockTransfer", order.Id));
             }
             continue;
         }
@@ -9748,8 +10091,11 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
             {
                 var sourceStock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == order.SourceBranchId && s.ProductId == productId);
                 if (sourceStock != null)
-                    RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.Adjustment, item.QuantityDispatched, item.UnitCostPKR,
+                {
+                    var restored = RecordProductStockMovement(db, sourceStock, order.TenantId, StockMovementType.Adjustment, item.QuantityDispatched, item.UnitCostPKR,
                         "StockTransfer", order.Id, "System", $"Transfer {order.TransferNumber} {returnedNote}");
+                    await ApplyBatchesAsync(db, restored, restoreFrom: ("StockTransfer", order.Id));
+                }
                 continue;
             }
             var sourceIng = await FindBranchIngredientAsync(db, order.TenantId, order.SourceBranchId, item.IngredientId, item.IngredientName);
@@ -10018,9 +10364,16 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
                 stock = new BranchStock { BranchId = po.BranchId, ProductId = productId, QuantityOnHand = 0, MinAlertLevel = 10 };
                 db.BranchStocks.Add(stock);
             }
-            ApplyReceiptToAverageCost(stock, item.Quantity, item.UnitCostPKR);
-            RecordProductStockMovement(db, stock, po.TenantId, StockMovementType.PurchaseReceipt, item.Quantity, item.UnitCostPKR,
-                "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
+            // A distributor's bonus (10 + 1) arrives free: more units for the same money, so each costs less.
+            var receivedLine = dto.Lines?.FirstOrDefault(l => l.ItemId == item.Id);
+            var bonus = Math.Max(0, receivedLine?.BonusQuantity ?? 0);
+            var unitsIn = item.Quantity + bonus;
+            var costEach = unitsIn > 0 ? Math.Round(item.Quantity * item.UnitCostPKR / unitsIn, 4) : item.UnitCostPKR;
+            ApplyReceiptToAverageCost(stock, unitsIn, costEach);
+            var poReceipt = RecordProductStockMovement(db, stock, po.TenantId, StockMovementType.PurchaseReceipt, unitsIn, costEach,
+                "PurchaseOrder", po.Id, receivedBy, bonus > 0 ? $"PO {po.PONumber} (incl. {bonus:0.##} bonus)" : $"PO {po.PONumber}");
+            await ApplyBatchesAsync(db, poReceipt, receivedLine == null ? null
+                : new BatchIn(receivedLine.BatchNumber, receivedLine.ExpiryDate, receivedLine.RetailPricePKR, po.SupplierName));
             continue;
         }
 
@@ -11384,6 +11737,27 @@ static bool PlatformCan(HttpContext http, string permission) =>
 
 static IResult PlatformDenied() =>
     Results.Json(new { message = "Your role on the platform team does not allow this. Ask a platform owner." }, statusCode: StatusCodes.Status403Forbidden);
+
+/// <summary>
+/// Restaurant-only features — tables, kitchen tickets, ingredients and recipes — exist only for a
+/// business whose kind has them (Data/VerticalPacks.cs). The screens are hidden and blocked for the
+/// rest; this refuses the same changes at the server, so a pharmacy or a shop cannot end up with
+/// tables or recipes however a request arrives. Reading stays open: an empty list harms nobody.
+/// </summary>
+static Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> SectorGuard(
+    Func<Pos.Api.Data.ItemCapabilities, Pos.Api.Data.FlowCapabilities, bool> allowed, string what) =>
+    async (ctx, next) =>
+    {
+        var http = ctx.HttpContext;
+        var tenantId = http.GetTenantId();
+        if (tenantId == null || tenantId == Guid.Empty) return await next(ctx);
+        var ent = await http.RequestServices.GetRequiredService<Pos.Api.Services.IEntitlementService>().GetAsync(tenantId.Value);
+        var (items, flows, _, _) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
+        return allowed(items, flows)
+            ? await next(ctx)
+            : Results.Json(new { message = $"{what} are not part of this kind of business.", sectorRequired = true },
+                statusCode: StatusCodes.Status403Forbidden);
+    };
 
 static async Task<(Guid? Id, string Name)> PlatformActorAsync(HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor)
 {
@@ -16802,11 +17176,21 @@ public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
 public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
-public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers);
-public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station);
+public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers,
+    MedicineDetailsDto? Medicine = null);
+public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station,
+    MedicineDetailsDto? Medicine = null);
 public record CreateCategoryDto(Guid TenantId, string Name, string? LocalName, string? Icon, int SortOrder);
 public record CreateProductModifierDto(string Name, decimal PricePKR);
-public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate);
+public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate,
+    decimal? BonusQuantity = null, decimal? RetailPricePKR = null);
+/// <summary>The batch a receipt goes into: the number and expiry printed on the pack.</summary>
+public record BatchIn(string? BatchNumber, DateTime? ExpiryDate, decimal? RetailPricePKR = null, string? SupplierName = null);
+/// <summary>One purchase-order line as it arrived: its batch, and any bonus units.</summary>
+public record ReceivePOLineDto(Guid ItemId, string? BatchNumber, DateTime? ExpiryDate, decimal? BonusQuantity = null, decimal? RetailPricePKR = null);
+/// <summary>A medicine's details on its product (Models/PharmacyEntities.cs).</summary>
+public record MedicineDetailsDto(string? GenericName, string? Strength, string? DosageForm, string? Manufacturer,
+    string? DrapRegistrationNo, string? RackLocation, MedicineSchedule? Schedule);
 public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
 public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal QuantityReceived, decimal? NewCostPerUnitPKR, string? SupplierName);
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
@@ -16842,7 +17226,7 @@ public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, str
 /// <summary>A line buys a raw ingredient (IngredientId, or a new one by IngredientName) or goods to
 /// resell (ProductId).</summary>
 public record CreatePOItemDto(Guid? IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR, Guid? ProductId = null);
-public record ReceivePODto(string? ReceivedBy, string? Notes);
+public record ReceivePODto(string? ReceivedBy, string? Notes, List<ReceivePOLineDto>? Lines = null);
 public record CreateWarehouseDto(Guid? TenantId, Guid BranchId, string Name, string? Code);
 public record UpdateWarehouseDto(string? Name, string? Code, bool? IsActive);
 /// <summary>An invoice for the parts named (each from the end of what it covers); with none named, everything due soon.

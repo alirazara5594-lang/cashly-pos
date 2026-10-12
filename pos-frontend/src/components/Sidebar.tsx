@@ -50,6 +50,7 @@ import {
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
 import { useBusinessShape } from '../hooks/useBusinessShape';
+import { useSector } from '../hooks/useSector';
 import { posApi } from '../services/api';
 import type { EffectivePackageFeatures, ModuleKey, PermissionAction } from '../types';
 
@@ -120,9 +121,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Head office of a chain runs the ERP only. The server resolves this (deployment mode plus
   // which branch you sit at) so the sidebar, the router and the API cannot disagree about it.
   const isErpOnly = getDeviceSurface() === 'Erp' || packageInfo?.appSurface === 'Erp';
-  // Retail/Cash & Carry tenants have no kitchen and no dine-in tables — those screens
-  // would just be dead weight in their sidebar.
-  const isRetailBiz = selectedTenant?.businessType === 'Retail' || selectedTenant?.businessType === 'CashAndCarry';
+  // What kind of business this is decides which screens it has at all: tables, the kitchen and
+  // recipes belong to a restaurant; a pharmacy or a shop never sees them (hooks/useSector.ts).
+  const { tableService, kitchenRouting, recipes, catalogNoun } = useSector();
   // Platform-vendor screens (Tenant Management, Package Pricing) manage every
   // tenant on the platform, not just this one — they must never show for a
   // restaurant Owner, even though Owner otherwise bypasses module checks.
@@ -264,7 +265,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         title: 'Sell',
         items: [{
           id: 'pos',
-          label: isRetailBiz ? 'POS & Sales' : 'POS & Orders',
+          label: tableService ? 'POS & Orders' : 'POS & Sales',
           path: '/',
           icon: Store,
           subItems: [
@@ -272,21 +273,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
             // Tabs and QR orders are taken now and paid later; the cashier collects them here.
             { label: 'Open Orders', path: '/open-orders', icon: ClipboardList },
             { label: 'Returns & Refunds', path: '/returns', icon: RotateCcw },
-            ...(isRetailBiz || !has('hasKitchenDisplay') ? [] : [{ label: 'Kitchen Display', path: '/kitchen', icon: ChefHat }]),
-            ...(isRetailBiz ? [] : [{ label: 'Waiter Tablet', path: '/order-tab', icon: Tablet }]),
+            ...(kitchenRouting && has('hasKitchenDisplay') ? [{ label: 'Kitchen Display', path: '/kitchen', icon: ChefHat }] : []),
+            ...(tableService ? [{ label: 'Waiter Tablet', path: '/order-tab', icon: Tablet }] : []),
             ...(has('hasDeliveryCOD') ? [{ label: 'Delivery & COD', path: '/delivery', icon: Bike }] : [])
           ]
         }]
       });
     }
 
-    // ── MENU (Products for retail) → `menu` module
+    // ── WHAT IT SELLS → `menu` module, in the trade's own word: a menu, medicines, a catalog.
     if (can('menu')) {
       sections.push({
-        title: isRetailBiz ? 'Products' : 'Menu',
+        title: catalogNoun === 'Catalog' ? 'Products' : catalogNoun,
         items: [
-          { id: 'menu', label: isRetailBiz ? 'Product Catalog' : 'Menu & Recipes', path: '/menu', icon: BookOpen },
-          ...(isRetailBiz ? [] : [{ id: 'floors', label: 'Floors & Tables', path: '/floors', icon: Armchair }])
+          {
+            id: 'menu',
+            label: recipes ? `${catalogNoun} & Recipes`
+              : catalogNoun === 'Catalog' ? 'Product Catalog'
+              : catalogNoun === 'Price List' ? 'Price List'
+              : `${catalogNoun} & Prices`,
+            path: '/menu',
+            icon: BookOpen
+          },
+          ...(tableService ? [{ id: 'floors', label: 'Floors & Tables', path: '/floors', icon: Armchair }] : [])
         ]
       });
     }
@@ -299,10 +308,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         label: 'Stock',
         path: '/inventory',
         icon: Boxes,
-        subItems: [
-          { label: 'Ingredients & Recipes', path: '/inventory', state: { tab: 'ingredients' }, isDefault: true, icon: Wheat },
-          { label: 'Finished Stock', path: '/inventory', state: { tab: 'finished' }, icon: Package }
-        ]
+        // Ingredients only where recipes consume them; everywhere else stock is just what is sold.
+        ...(recipes
+          ? {
+              subItems: [
+                { label: 'Ingredients & Recipes', path: '/inventory', state: { tab: 'ingredients' }, isDefault: true, icon: Wheat },
+                { label: 'Finished Stock', path: '/inventory', state: { tab: 'finished' }, icon: Package }
+              ]
+            }
+          : { state: { tab: 'finished' } })
       });
       // Outlets ask for stock here; head office is where those requests arrive and are answered.
       stockItems.push({ id: 'stockRequests', label: isErpOnly ? 'Outlet Requests' : 'Stock Requests', path: '/stock-requests', icon: Send });
@@ -360,7 +374,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         title: 'Insights',
         items: [
           { id: 'analytics', label: 'Smart Analytics', path: '/analytics', icon: Brain },
-          { id: 'menuEngineering', label: 'Menu Engineering', path: '/menu-engineering', icon: TrendingUp }
+          ...(recipes ? [{ id: 'menuEngineering', label: 'Menu Engineering', path: '/menu-engineering', icon: TrendingUp }] : [])
         ]
       });
     }
@@ -427,7 +441,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (settingsItems.length > 0) sections.push({ title: 'Settings', items: settingsItems });
 
     return sections;
-  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, isRetailBiz, isErpOnly, renewalsDue, invoicesOverdue, currentUser?.platformRole]);
+  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, tableService, kitchenRouting, recipes, catalogNoun, isErpOnly, renewalsDue, invoicesOverdue, currentUser?.platformRole]);
 
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.

@@ -112,6 +112,10 @@ public class AppDbContext : DbContext
     public DbSet<TenantNote> TenantNotes => Set<TenantNote>();
     public DbSet<PlatformAnnouncement> PlatformAnnouncements => Set<PlatformAnnouncement>();
 
+    // --- Batches and medicines (Models/PharmacyEntities.cs) ---
+    public DbSet<StockBatch> StockBatches => Set<StockBatch>();
+    public DbSet<StockBatchMovement> StockBatchMovements => Set<StockBatchMovement>();
+
     // --- Subscription / entitlements ---
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<PlanFeature> PlanFeatures => Set<PlanFeature>();
@@ -649,6 +653,11 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<PlatformMessage>().HasIndex(m => m.CreatedAt);
         modelBuilder.Entity<PlatformMessage>().HasIndex(m => new { m.TenantId, m.CreatedAt });
         modelBuilder.Entity<SubscriptionReminderMark>().HasIndex(m => new { m.PartId, m.Key }).IsUnique();
+        modelBuilder.Entity<StockBatch>().HasIndex(b => new { b.BranchId, b.ProductId, b.ExpiryDate });
+        modelBuilder.Entity<StockBatch>().HasIndex(b => b.TenantId);
+        modelBuilder.Entity<StockBatchMovement>().HasIndex(m => m.StockLedgerEntryId);
+        modelBuilder.Entity<StockBatchMovement>().HasIndex(m => new { m.BatchId, m.RestoresReferenceId });
+
         modelBuilder.Entity<TenantNote>().HasIndex(n => new { n.TenantId, n.CreatedAt });
         modelBuilder.Entity<TenantNote>().HasIndex(n => n.FollowUpAt);
 

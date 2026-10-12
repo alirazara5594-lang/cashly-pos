@@ -151,7 +151,7 @@ public static class VerticalPacks
             DisplayName = "Pharmacy",
             Description = "Batch and expiry tracking with FEFO issue, prescription capture, controlled-substance log.",
             PosLayout = PosLayout.ScanFirst,
-            CatalogNoun = "Formulary",
+            CatalogNoun = "Medicines",
             SaleNoun = "Sale",
             Items = new ItemCapabilities { BatchExpiry = true, PrescriptionRequired = true },
             Flows = new FlowCapabilities { QuickSale = true, CreditAccounts = true },

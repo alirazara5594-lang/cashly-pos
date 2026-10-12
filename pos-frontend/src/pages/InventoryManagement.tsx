@@ -17,6 +17,7 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
+import { useSector } from '../hooks/useSector';
 import { useBusinessShape } from '../hooks/useBusinessShape';
 import type { BranchStockItem, RawIngredient, IngredientMasterRow } from '../types';
 
@@ -27,9 +28,13 @@ export const InventoryManagement: React.FC = () => {
   // Several locations share one ingredient list; an outlet under a head office asks it for stock.
   const { severalLocations: isMultiBranchChain, hasHeadOffice, atHeadOffice } = useBusinessShape();
 
+  // Ingredients are what recipes consume, so only a business with recipes has them; a shop or a
+  // pharmacy opens straight on the stock it sells (hooks/useSector.ts).
+  const { recipes } = useSector();
   const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>(
-    location.state?.tab || 'ingredients'
+    location.state?.tab || (recipes ? 'ingredients' : 'finished')
   );
+  if (!recipes && activeTab === 'ingredients') setActiveTab('finished');
 
   useEffect(() => {
     if (location.state?.tab) {
@@ -296,7 +301,8 @@ export const InventoryManagement: React.FC = () => {
             </p>
           </div>
 
-          {/* Quick Tabs: Raw Ingredients (BOM) vs Finished Products */}
+          {/* Quick Tabs: Raw Ingredients (BOM) vs Finished Products — a business with recipes only */}
+          {recipes && (
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button
               onClick={() => { setActiveTab('ingredients'); setSelectedCategory('all'); }}
@@ -322,6 +328,7 @@ export const InventoryManagement: React.FC = () => {
               <span>Finished Products ({stocks.length})</span>
             </button>
           </div>
+          )}
 
           {/* Quick Stats Pills */}
           <div className="flex items-center gap-3">

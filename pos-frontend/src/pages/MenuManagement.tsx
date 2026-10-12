@@ -19,6 +19,7 @@ import {
 
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
+import { useSector } from '../hooks/useSector';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { toUrdu } from '../utils/urduTransliterate';
 import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo } from '../types';
@@ -61,6 +62,10 @@ const UNITS = ['Piece', 'Plate', 'Portion', 'Glass', 'Bottle', 'Kg', 'Gram', 'Li
 const CREATE_ONLY_FIELDS = 'SKU, description, unit, image and modifiers';
 
 export const MenuManagement: React.FC = () => {
+  // Kitchen stations, recipes and modifiers are a restaurant's; a shop or a pharmacy keeps a plain
+  // list of what it sells, called what its trade calls it (hooks/useSector.ts).
+  const { kitchenRouting, recipes, modifiers: hasModifiers, catalogNoun } = useSector();
+  const sells = catalogNoun === 'Catalog' ? 'products' : catalogNoun.toLowerCase();
   const {
     selectedTenant,
     currentUser,
@@ -453,10 +458,12 @@ export const MenuManagement: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
           <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-            <span>Menu & Catalog Setup Portal</span>
+            <span>{recipes ? `${catalogNoun} & Catalog` : catalogNoun === 'Catalog' ? 'Product Catalog' : catalogNoun}</span>
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Manage menu items, categories, kitchen routing, and prices in PKR.
+            {kitchenRouting
+              ? 'Manage menu items, categories, kitchen routing, and prices in PKR.'
+              : `Manage your ${sells}, their categories and prices in PKR.`}
           </p>
         </div>
       </div>
@@ -531,14 +538,14 @@ export const MenuManagement: React.FC = () => {
       {/* ═══════ OVERVIEW TAB ═══════ */}
       {activeTab === 'overview' && (
         <>
-          {/* Categories & Kitchen Stations Display */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Categories & Kitchen Stations Display (the stations only where there is a kitchen) */}
+          <div className={`grid grid-cols-1 ${kitchenRouting ? 'lg:grid-cols-2' : ''} gap-4`}>
             <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-sm">
               <div className="border-b border-slate-200 pb-2.5">
                 <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
                   <span>Active Product Categories ({categories.length})</span>
                 </h3>
-                <p className="text-[11px] text-slate-500">Menu categories organized by the platform</p>
+                <p className="text-[11px] text-slate-500">How your {sells} are grouped</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {categories.map(c => {
@@ -554,6 +561,7 @@ export const MenuManagement: React.FC = () => {
               </div>
             </div>
 
+            {kitchenRouting && (
             <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-sm">
               <div className="border-b border-slate-200 pb-2.5">
                 <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
@@ -575,6 +583,7 @@ export const MenuManagement: React.FC = () => {
                 ))}
               </div>
             </div>
+            )}
           </div>
 
           {/* Products Table */}
@@ -611,10 +620,10 @@ export const MenuManagement: React.FC = () => {
                     <th className="pb-3">Product Name</th>
                     <th className="pb-3">Category</th>
                     <th className="pb-3">Barcode / SKU</th>
-                    <th className="pb-3">Kitchen Station</th>
+                    {kitchenRouting && <th className="pb-3">Kitchen Station</th>}
                     <th className="pb-3 text-right">Cost (PKR)</th>
                     <th className="pb-3 text-right">Selling Price (PKR)</th>
-                    <th className="pb-3 text-right">Recipe</th>
+                    {recipes && <th className="pb-3 text-right">Recipe</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -626,11 +635,13 @@ export const MenuManagement: React.FC = () => {
                       </td>
                       <td className="py-3 text-slate-700">{p.category?.name || 'Category'}</td>
                       <td className="py-3 font-mono text-slate-500">{p.barcode}</td>
+                      {kitchenRouting && (
                       <td className="py-3">
                         <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
                           {p.station}
                         </span>
                       </td>
+                      )}
                       <td className="py-3 text-right text-slate-500">{p.costPricePKR.toLocaleString()}</td>
                       <td className="py-3 text-right">
                         {editingPriceId === p.id ? (
@@ -674,6 +685,7 @@ export const MenuManagement: React.FC = () => {
                           </button>
                         )}
                       </td>
+                      {recipes && (
                       <td className="py-3 text-right">
                         <button
                           onClick={() => handleViewRecipe(p)}
@@ -683,6 +695,7 @@ export const MenuManagement: React.FC = () => {
                           <span>View</span>
                         </button>
                       </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -1281,7 +1294,8 @@ export const MenuManagement: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className={`grid grid-cols-1 ${kitchenRouting ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
+                {kitchenRouting && (
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Kitchen Station</label>
                   <select
@@ -1292,6 +1306,7 @@ export const MenuManagement: React.FC = () => {
                     {STATIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
                 </div>
+                )}
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Unit</label>
                   <select
@@ -1355,7 +1370,8 @@ export const MenuManagement: React.FC = () => {
                 />
               </div>
 
-              {/* Modifiers — these are what put the CUSTOM badge on the POS tile. */}
+              {/* Modifiers — these are what put the CUSTOM badge on the POS tile. A restaurant's only. */}
+              {hasModifiers && (
               <div className="pt-1">
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -1419,6 +1435,7 @@ export const MenuManagement: React.FC = () => {
                   </div>
                 )}
               </div>
+              )}
             </div>
 
             <div className="flex items-center gap-2 border-t border-slate-200 p-5 pt-3">

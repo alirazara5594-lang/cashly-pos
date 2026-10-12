@@ -481,6 +481,21 @@ public class Product
     /// sale straight away. "Remove sample menu" deletes these (or hides one that has been sold).</summary>
     public bool IsSample { get; set; }
 
+    // A medicine's details (Models/PharmacyEntities.cs). Empty for anything that is not a medicine.
+    /// <summary>The formula / salt, e.g. "Paracetamol" — how a substitute is found.</summary>
+    public string? GenericName { get; set; }
+    /// <summary>e.g. "500 mg", "120 mg/5 ml".</summary>
+    public string? Strength { get; set; }
+    /// <summary>Tablet, capsule, syrup, injection, cream, drops...</summary>
+    public string? DosageForm { get; set; }
+    /// <summary>The pharmaceutical company that makes it.</summary>
+    public string? Manufacturer { get; set; }
+    /// <summary>DRAP registration number.</summary>
+    public string? DrapRegistrationNo { get; set; }
+    /// <summary>Where it sits in the shop, e.g. "Rack B-3".</summary>
+    public string? RackLocation { get; set; }
+    public MedicineSchedule Schedule { get; set; } = MedicineSchedule.None;
+
     public ICollection<ProductModifier> Modifiers { get; set; } = new List<ProductModifier>();
     public ICollection<ProductRecipeItem> RecipeItems { get; set; } = new List<ProductRecipeItem>();
 }

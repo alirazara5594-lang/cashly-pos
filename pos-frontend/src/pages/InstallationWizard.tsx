@@ -29,7 +29,8 @@ import {
   Pencil,
   ShoppingBag,
   ShoppingCart,
-  X
+  X,
+  Pill
 } from 'lucide-react';
 import { restaurantLinkParts, restaurantSignInLink, suggestWebName, webNameProblem } from '../services/restaurantAddress';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
@@ -1818,16 +1819,16 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                 <div>
                   <div className={labelCls}>What kind of business is it?</div>
-                  <div role="radiogroup" aria-label="Business type" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {BUSINESS_TYPES.map(t => {
-                      const active = businessType === t.key;
+                  <div role="radiogroup" aria-label="Business type" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {BUSINESS_TYPES.filter(t => signupMode || !t.registrationOnly).map(t => {
+                      const active = businessKind === t.id;
                       return (
                         <button
-                          key={t.key}
+                          key={t.id}
                           type="button"
                           role="radio"
                           aria-checked={active}
-                          onClick={() => setBusinessType(t.key)}
+                          onClick={() => setBusinessKind(t.id)}
                           className={`flex items-center gap-3 text-left p-3 rounded-xl border bg-white transition focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/25 cursor-pointer ${
                             active ? 'border-teal-500 ring-4 ring-teal-500/10' : 'border-slate-200 hover:border-slate-300'
                           }`}
@@ -2386,7 +2387,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     {setup.title}{version ? ` · ${version.label}` : ''}
                   </div>
                   <div className="text-xs text-slate-500 truncate">
-                    {setup.tagline}{version ? ` · ${version.tagline}` : ''}
+                    {/* Once the kind of business is known, it says more than the version's tagline
+                        (written for restaurants) — a pharmacy is not a "busy dine-in restaurant". */}
+                    {setup.tagline}{step >= BUSINESS_STEP ? ` · ${kind.label}` : version ? ` · ${version.tagline}` : ''}
                   </div>
                 </div>
               </div>
