@@ -28,7 +28,8 @@ import {
   Loader2,
   Pencil,
   ShoppingBag,
-  ShoppingCart
+  ShoppingCart,
+  X
 } from 'lucide-react';
 import { restaurantLinkParts, restaurantSignInLink, suggestWebName, webNameProblem } from '../services/restaurantAddress';
 import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
@@ -81,8 +82,8 @@ const BUSINESS_TYPES: { key: BusinessType; label: string; hint: string; icon: ty
 
 // One look for every field on the form steps.
 const inputCls = 'w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 transition disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed';
-const labelCls = 'flex items-center justify-between gap-2 text-xs font-semibold text-slate-700 mb-1.5';
-const optionalTag = <span className="text-[10px] font-medium text-slate-400">Optional</span>;
+const labelCls = 'flex items-center justify-between gap-2 text-[13px] font-semibold text-slate-700 mb-1.5';
+const optionalTag = <span className="text-xs font-medium text-slate-400">Optional</span>;
 
 /** All one digit (0000) or a straight run up or down (1234, 654321). */
 const isEasyPin = (pin: string) => {
@@ -125,7 +126,6 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // Each step opens at its top, and a problem scrolls into view rather than sitting above the fold.
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }); }, [step]);
-  useEffect(() => { if (errorMessage) scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' }); }, [errorMessage]);
 
   // 1. Primary System Choice: POS Only vs POS + ERP
   const [systemType, setSystemType] = useState<InstallationSystemType>('POS_ERP');
@@ -355,6 +355,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       kitchenScreens: 0,
       badge: undefined,
       description: 'Ideal for single food stalls, small cafes, and takeout joints.',
+      tagline: 'Small cafés, stalls & takeaways',
       features: ['Direct Receipt Printing', 'Daily Shift Cash Register', 'Waiter / Order Tablets']
     },
     {
@@ -365,6 +366,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       kitchenScreens: 2,
       badge: 'Most Popular',
       description: 'Full-service dine-in cafes and standalone busy restaurants.',
+      tagline: 'Busy dine-in restaurants',
       features: ['Kitchen Display System (KDS)', 'Waiter Tablets & QR Tables', 'Floor & Table Layout Manager']
     },
     {
@@ -375,6 +377,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       kitchenScreens: 999,
       badge: 'High Volume',
       description: 'High-speed fast food and multi-station large dining restaurants.',
+      tagline: 'High volume, many kitchen stations',
       features: ['Multi-Kitchen Routing & KDS', 'Customer Khata & VIP Loyalty', 'Highest till & tablet capacity']
     }
   ];
@@ -475,8 +478,32 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     }
   };
 
+  // A problem with a step: what is wrong and, when it is one field, which (its element id).
+  type StepProblem = { text: string; field?: string };
+  const [problem, setProblem] = useState<(StepProblem & { step: number }) | null>(null);
+
+  /** Moves to a step, dropping the last step's problems with it. */
+  const goToStep = (n: number) => {
+    setProblem(null);
+    setErrorMessage(null);
+    setStep(n);
+  };
+
+  /** Shows a problem where it is: at its field (focused and scrolled to), or as a floating notice. */
+  const showProblem = (found: StepProblem, at: number) => {
+    if (at !== step) goToStep(at);
+    setProblem({ ...found, step: at });
+    if (!found.field) { setErrorMessage(found.text); return; }
+    // After the step has rendered, so the field exists.
+    setTimeout(() => {
+      const el = document.getElementById(found.field!);
+      el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el?.focus({ preventScroll: true });
+    }, 60);
+  };
+
   // Step Validation
-  const validateStep = (s: number): string | null => {
+  const validateStep = (s: number): StepProblem | null => {
     // Setup type and version both default, so those steps are always valid
     if (s === 1 || s === VERSION_STEP) return null;
 
@@ -484,56 +511,58 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     if (s === INSTALL_STEP) {
       if (systemType === 'POS_ERP' && erpRole === 'POS_TERMINAL'
           && serverTopology === 'DIFFERENT_SERVER' && !apiUrl.trim()) {
-        return 'Head Office / ERP Server URL is required.';
+        return { text: 'Head Office / ERP Server URL is required.' };
       }
       return null;
     }
 
     // The business: name and web address
     if (s === BUSINESS_STEP) {
-      if (!restaurantName.trim()) return 'Enter your business name.';
+      if (!restaurantName.trim()) return { text: 'Enter your business name.', field: 'wiz-business-name' };
       if (signupMode) {
-        if (webNameLocalProblem) return `Web address: ${webNameLocalProblem}`;
+        if (webNameLocalProblem) return { text: `Web address: ${webNameLocalProblem}`, field: 'wiz-web-name' };
         if (!webCheckNow) {
-          // Ask again now, so pressing Next a moment later can go through.
+          // Ask again now, so pressing Continue a moment later can go through.
           checkWebNameNow(webName);
           return webCheckFailed
-            ? 'Could not check your web address: the Cashly server did not answer. Make sure it is running, then press Continue again.'
-            : 'Still checking your web address — try again in a moment.';
+            ? { text: 'Could not check your web address: the Cashly server did not answer. Make sure it is running, then press Continue again.' }
+            : { text: 'Still checking your web address — try again in a moment.', field: 'wiz-web-name' };
         }
-        if (!webCheckNow.available) return `Web address: ${webCheckNow.problem ?? 'already taken.'}`;
+        if (!webCheckNow.available) return { text: `Web address: ${webCheckNow.problem ?? 'already taken.'}`, field: 'wiz-web-name' };
       }
     }
 
     // Its locations: the outlet, or the head office and its outlets
     if (s === LOCATIONS_STEP) {
       if (systemType === 'POS_ERP' && erpRole === 'ERP_SERVER') {
-        if (!hqName.trim()) return 'Enter a name for the head office.';
-        if (branches.some(b => !b.name.trim())) return 'Give every outlet a name, or remove the empty one.';
+        if (!hqName.trim()) return { text: 'Enter a name for the head office.', field: 'wiz-location-name' };
+        const unnamed = branches.findIndex(b => !b.name.trim());
+        if (unnamed >= 0) return { text: 'Give this outlet a name, or remove it.', field: `wiz-outlet-${unnamed}-name` };
       } else if (systemType === 'POS_ONLY') {
-        if (!mainBranchName.trim()) return 'Enter a name for your outlet.';
+        if (!mainBranchName.trim()) return { text: 'Enter a name for your outlet.', field: 'wiz-location-name' };
       }
     }
 
     // Security Step
     if (s === SECURITY_STEP) {
-      if (!adminFullName.trim()) return 'Full name is required.';
-      if (adminUsername.trim().length < 3) return 'Username must be at least 3 characters.';
-      if (!/^\d{4,6}$/.test(adminPin.trim())) return 'Security PIN must be 4 to 6 digits.';
-      if (signupMode && isEasyPin(adminPin.trim())) {
-        return 'Choose a PIN that is harder to guess — not 1234, 0000 or similar.';
+      // In the order the fields appear: about you, the back-office sign-in, then the till sign-in.
+      if (!adminFullName.trim()) return { text: 'Enter your full name.', field: 'wiz-owner-name' };
+      if (signupMode && ownerMobile.replace(/\D/g, '').length < 10) {
+        return { text: 'Enter your mobile number, for example 0300 1234567.', field: 'wiz-owner-mobile' };
       }
       if (signupMode && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
-        return 'A valid email address is required to register the business.';
-      }
-      if (signupMode && ownerMobile.replace(/\D/g, '').length < 10) {
-        return 'Enter your mobile number, for example 0300 1234567.';
+        return { text: 'Enter a valid email address.', field: 'wiz-owner-email' };
       }
       if (signupMode) {
         if (adminPassword.length < 8 || !/[A-Za-z]/.test(adminPassword) || !/\d/.test(adminPassword)) {
-          return 'Choose a password of at least 8 characters, with letters and numbers.';
+          return { text: 'Use at least 8 characters, with letters and numbers.', field: 'wiz-owner-password' };
         }
-        if (adminPassword !== adminPasswordConfirm) return 'The two passwords do not match.';
+        if (adminPassword !== adminPasswordConfirm) return { text: 'The two passwords do not match.', field: 'wiz-owner-password2' };
+      }
+      if (adminUsername.trim().length < 3) return { text: 'Use at least 3 characters.', field: 'wiz-owner-username' };
+      if (!/^\d{4,6}$/.test(adminPin.trim())) return { text: 'Use 4 to 6 digits.', field: 'wiz-owner-pin' };
+      if (signupMode && isEasyPin(adminPin.trim())) {
+        return { text: 'Too easy to guess — avoid 1234, 0000 and the like.', field: 'wiz-owner-pin' };
       }
     }
 
@@ -551,18 +580,19 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const previousStepBefore = (s: number) => [...stepOrder].reverse().find(n => n < s) ?? 1;
 
   const handleNext = () => {
-    const err = validateStep(step);
-    if (err) {
-      setErrorMessage(err);
+    const found = validateStep(step);
+    if (found) {
+      showProblem(found, step);
       return;
     }
     setErrorMessage(null);
+    setProblem(null);
     // A head office with no outlets yet: ask once, rather than warn before they have started.
     if (step === LOCATIONS_STEP && systemType === 'POS_ERP' && !outletsSkipped && branches.every(b => !b.name.trim())) {
       setNoOutletHint(true);
       return;
     }
-    setStep(nextStepAfter(step));
+    goToStep(nextStepAfter(step));
   };
 
   /** "Continue without outlets": a head office alone is fine; outlets can be added later. */
@@ -570,7 +600,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     setOutletsSkipped(true);
     setNoOutletHint(false);
     setBranches(branches.filter(b => b.name.trim()));
-    setStep(nextStepAfter(step));
+    goToStep(nextStepAfter(step));
   };
 
   /** A shop marked "same building as head office" takes the head office's city and address. */
@@ -583,22 +613,20 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const requestCompleteSetup = () => {
     // The stepper lets you jump between steps without validating, so re-check the Admin
     // Security step here too — a cleared verification must not reach Create.
-    const stepError = signupMode ? (validateStep(SECURITY_STEP) ?? validateStep(step)) : validateStep(step);
-    if (stepError) {
-      setErrorMessage(stepError);
-      return;
-    }
+    const securityProblem = signupMode ? validateStep(SECURITY_STEP) : null;
+    if (securityProblem) { showProblem(securityProblem, SECURITY_STEP); return; }
+    const stepProblem = validateStep(step);
+    if (stepProblem) { showProblem(stepProblem, step); return; }
     setErrorMessage(null);
     setConfirmOpen(true);
   };
 
   const handleCompleteSetup = async () => {
     setConfirmOpen(false);
-    const stepError = signupMode ? (validateStep(SECURITY_STEP) ?? validateStep(step)) : validateStep(step);
-    if (stepError) {
-      setErrorMessage(stepError);
-      return;
-    }
+    const securityProblem = signupMode ? validateStep(SECURITY_STEP) : null;
+    if (securityProblem) { showProblem(securityProblem, SECURITY_STEP); return; }
+    const stepProblem = validateStep(step);
+    if (stepProblem) { showProblem(stepProblem, step); return; }
 
     setLoading(true);
     setErrorMessage(null);
@@ -805,20 +833,20 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               {allowance && (
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-[10px] uppercase font-bold text-slate-400">Tills</div>
+                    <div className="text-[11px] uppercase font-bold text-slate-400">Tills</div>
                     <div className="text-lg font-black text-slate-900">{unlimited(allowance.counters)}</div>
                   </div>
                   <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-[10px] uppercase font-bold text-slate-400">Tablets</div>
+                    <div className="text-[11px] uppercase font-bold text-slate-400">Tablets</div>
                     <div className="text-lg font-black text-slate-900">{unlimited(allowance.tablets)}</div>
                   </div>
                   <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="text-[10px] uppercase font-bold text-slate-400">Kitchen screens</div>
+                    <div className="text-[11px] uppercase font-bold text-slate-400">Kitchen screens</div>
                     <div className="text-lg font-black text-slate-900">{allowance.kitchenDisplay ? 'Yes' : 'No'}</div>
                   </div>
                 </div>
               )}
-              <p className="text-[11px] text-slate-400">
+              <p className="text-xs text-slate-400">
                 Head office sets this branch's POS version. To change it, ask head office (Locations & Head Office).
               </p>
             </div>
@@ -891,7 +919,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               {signupMode && adminEmail.trim() && row('Back office email', adminEmail.trim().toLowerCase())}
               {row('Username', <span className="font-mono">{signupSuccess.username}</span>)}
               {row('PIN', <span className="tracking-widest text-slate-400">••••</span>, true)}
-              <p className="mt-3 text-[11px] text-slate-500">
+              <p className="mt-3 text-xs text-slate-500">
                 {signupMode
                   ? <>Back office: your <strong>email and password</strong>. At a till or tablet: your <strong>username and PIN</strong>.</>
                   : 'Sign in with your business name, username and the PIN you chose.'}
@@ -919,7 +947,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     {copiedLink ? <><Check className="w-3.5 h-3.5 text-teal-600" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy</>}
                   </button>
                 </div>
-                <p className="text-[11px] text-slate-500">
+                <p className="text-xs text-slate-500">
                   Send it to your staff (WhatsApp is fine): they open it and sign in with their username and PIN.
                   Tills and tablets connect from the same address with <strong>Connect a till or tablet</strong>.
                 </p>
@@ -1025,24 +1053,72 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       ? (erpMonthly != null ? `${money(erpMonthly)} a month + each outlet, after the free trial` : null)
       : (Number.isFinite(cheapestSingleShop) ? `From ${money(cheapestSingleShop)} a month after the free trial` : null);
 
-  // A step's title block, and a titled card: the same on every form step.
+  // The Version step on a wide screen: one table, a column per version and a row per figure, so
+  // every difference fits on one screen. It needs the server's figures; without them the cards stand in.
+  const comparable = VERSIONS.every(v => packageFor(v.key));
+  const yes = (
+    <span className="w-5 h-5 rounded-full bg-teal-100 flex items-center justify-center" aria-label="Included">
+      <Check className="w-3 h-3 text-teal-700 stroke-[3]" />
+    </span>
+  );
+  const no = <span className="text-slate-300 font-normal" aria-label="Not included">—</span>;
+  const perOutlet = systemType === 'POS_ERP' ? ' per outlet' : '';
+  const compareGroups: { title: string; rows: { label: string; value: (p: PublicPackage) => React.ReactNode }[] }[] = [
+    {
+      title: 'Allowance',
+      rows: [
+        { label: `Tills${perOutlet}`, value: p => countText(p.maxCounters, 1) },
+        { label: `Waiter tablets${perOutlet}`, value: p => ((p.maxOrderTabs ?? 0) === 0 ? no : countText(p.maxOrderTabs, 0)) },
+        {
+          // Screens need the kitchen display switch as well as a count; without either they are an add-on.
+          label: `Kitchen screens${perOutlet}`,
+          value: p => (!p.hasKitchenDisplay || (p.maxKitchenDisplays ?? 0) === 0
+            ? <span className="text-xs font-semibold text-slate-500">Add-on</span>
+            : countText(p.maxKitchenDisplays, 0))
+        },
+        { label: 'Staff logins', value: p => countText(p.maxUsers, 1) },
+        // A head office's messages come from the ERP, not the outlets' version.
+        ...(systemType === 'POS_ONLY'
+          ? [{
+              label: 'WhatsApp messages a month',
+              value: (p: PublicPackage) => (p.whatsAppMessagesPerMonth < 0 ? 'Unlimited' : p.whatsAppMessagesPerMonth === 0 ? no : p.whatsAppMessagesPerMonth.toLocaleString())
+            }]
+          : [])
+      ]
+    },
+    {
+      title: 'Features',
+      rows: OUTLET_FEATURES
+        .filter(feature => feature.flag !== 'hasKitchenDisplay')
+        .map(feature => ({ label: feature.label, value: (p: PublicPackage) => (p[feature.flag] === true ? yes : no) }))
+    }
+  ];
+
+  // A step's title block: the same on every form step.
   const stepHeader = (title: string, subtitle: React.ReactNode) => (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       <h2 className="text-2xl md:text-[28px] font-black text-slate-900 tracking-tight">{title}</h2>
-      <p className="text-sm text-slate-500 max-w-2xl">{subtitle}</p>
+      <p className="text-[15px] text-slate-500 max-w-2xl">{subtitle}</p>
     </div>
   );
-  const sectionCard = (icon: React.ReactNode, title: string, description: string | undefined, body: React.ReactNode) => (
-    <section className="rounded-2xl border border-slate-200 bg-white">
-      <div className="flex items-start gap-3 px-6 pt-5 pb-4 border-b border-slate-100">
-        <span className="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">{icon}</span>
-        <div className="min-w-0">
-          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
-          {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
-        </div>
-      </div>
-      <div className="p-6">{body}</div>
-    </section>
+  // A field's problem, if the last check found one there: a red edge, and the reason beneath it.
+  const fieldProblem = (id: string) => (problem && problem.step === step && problem.field === id ? problem.text : null);
+  const problemEdge = (id: string) => (fieldProblem(id) ? ' border-rose-400! bg-rose-50/30' : '');
+  const problemNote = (id: string) => {
+    const text = fieldProblem(id);
+    return text ? (
+      <p role="alert" className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-rose-600">
+        <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {text}
+      </p>
+    ) : null;
+  };
+
+  // A section's name inside a card, with an optional note beside it.
+  const groupLabel = (title: string, note?: string) => (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-4">
+      <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-500">{title}</h3>
+      {note && <span className="text-xs text-slate-400">{note}</span>}
+    </div>
   );
 
   // The password's strength against the rule the server holds it to (8+, letters and numbers).
@@ -1136,7 +1212,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const nextLabel = step < maxSteps ? wizardSteps.find(s => s.num === nextStepAfter(step))?.label : undefined;
 
   return (
-    <div className="h-screen bg-white text-slate-900 flex flex-col selection:bg-teal-500 selection:text-white overflow-hidden">
+    <div className="h-screen bg-white text-slate-900 flex flex-col selection:bg-teal-500 selection:text-white overflow-hidden [&_button:focus]:outline-none [&_button:focus-visible]:ring-4 [&_button:focus-visible]:ring-teal-500/25">
       {/* Top Banner */}
       <div className="shrink-0 border-b border-slate-200 bg-white backdrop-blur px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -1144,25 +1220,25 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             <UtensilsCrossed className="w-3.5 h-3.5 text-white stroke-[2.5]" />
           </div>
           <h1 className="text-sm font-bold text-slate-900 tracking-tight flex items-center gap-1.5">
-            Cashly POS <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600 font-semibold border border-teal-200">{signupMode ? 'Register' : 'Setup'}</span>
+            Cashly POS <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600 font-semibold border border-teal-200">{signupMode ? 'Register' : 'Setup'}</span>
           </h1>
         </div>
 
         {/* On a phone the step bar below is hidden; this says where they are instead. */}
-        <span className="md:hidden text-[11px] font-semibold text-slate-500">
+        <span className="lg:hidden text-xs font-semibold text-slate-500">
           Step {Math.max(1, wizardSteps.findIndex(s => s.num === step) + 1)} of {wizardSteps.length}
           {' · '}
           <span className="text-teal-700">{wizardSteps.find(s => s.num === step)?.label}</span>
         </span>
         {signupMode && (
-          <button type="button" onClick={() => navigate('/')} className="hidden md:inline text-xs text-slate-500 hover:text-slate-700 cursor-pointer">
+          <button type="button" onClick={() => navigate('/')} className="hidden md:inline text-[13px] text-slate-500 hover:text-slate-700 cursor-pointer">
             Already have an account? <span className="font-bold text-teal-700">Sign in</span>
           </button>
         )}
       </div>
 
       {/* Step bar: its own row, so every step is named in full. A finished step can be clicked to go back to it. */}
-      <nav aria-label="Registration steps" className="hidden md:block shrink-0 border-b border-slate-200 bg-white px-6 py-3">
+      <nav aria-label="Registration steps" className="hidden lg:block shrink-0 border-b border-slate-200 bg-white px-6 py-3">
         <ol className="max-w-5xl mx-auto flex items-center">
           {wizardSteps.map((s, position) => {
             const done = step > s.num;
@@ -1172,7 +1248,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <button
                   type="button"
                   disabled={!done}
-                  onClick={() => { setErrorMessage(null); setStep(s.num); }}
+                  onClick={() => { setErrorMessage(null); goToStep(s.num); }}
                   aria-current={current ? 'step' : undefined}
                   className={`flex items-center gap-2 shrink-0 ${done ? 'cursor-pointer group' : 'cursor-default'}`}
                 >
@@ -1183,7 +1259,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   }`}>
                     {done ? <Check className="w-3.5 h-3.5" /> : position + 1}
                   </span>
-                  <span className={`text-xs whitespace-nowrap ${
+                  <span className={`text-[13px] whitespace-nowrap ${
                     current ? 'font-bold text-teal-700' : done ? 'font-semibold text-slate-700 group-hover:text-teal-700' : 'font-medium text-slate-400'
                   }`}>
                     {s.label}
@@ -1199,16 +1275,13 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       </nav>
 
       {/* Main Content Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto"
+        onInputCapture={(e) => { if (problem?.field && (e.target as HTMLElement).id === problem.field) setProblem(null); }}
+      >
         {/* Step 1 needs room for the two setup cards and the three version cards beneath them. */}
-        <div className={`${step === 1 || step === VERSION_STEP || step === INSTALL_STEP ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto p-6 md:p-8`}>
-          {errorMessage && (
-            <div role="alert" className="mb-6 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-start gap-3">
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span className="flex-1">{errorMessage}</span>
-              <button type="button" onClick={() => setErrorMessage(null)} className="text-rose-400 hover:text-rose-700 text-xs font-bold cursor-pointer">Dismiss</button>
-            </div>
-          )}
+        <div className={`${step === 1 || step === VERSION_STEP || step === INSTALL_STEP ? 'max-w-6xl' : step === REVIEW_STEP ? 'max-w-5xl' : 'max-w-4xl'} w-full mx-auto px-6 md:px-8 py-6`}>
 
           {/* STEP 1: what this business is — one outlet, or a head office over outlets */}
           {step === 1 && (
@@ -1216,12 +1289,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <section className="space-y-6">
                 <div className="space-y-2 text-center md:text-left">
                   {signupMode && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-700 text-[11px] font-bold">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-teal-50 border border-teal-200 text-teal-700 text-xs font-bold">
                       <Sparkles className="w-3 h-3" /> Free for 30 days · no card needed
                     </span>
                   )}
                   <h2 className="text-2xl md:text-[28px] font-black text-slate-900 tracking-tight">How is your business set up?</h2>
-                  <p className="text-sm text-slate-500 max-w-2xl md:mx-0 mx-auto">
+                  <p className="text-[15px] text-slate-500 max-w-2xl md:mx-0 mx-auto">
                     Pick what fits today. A single outlet can add a head office later without starting again.
                   </p>
                 </div>
@@ -1250,7 +1323,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                           </div>
                           <div className="flex-1 min-w-0">
                             <h3 className="text-lg font-bold text-slate-900 leading-tight">{option.title}</h3>
-                            <p className="text-xs font-semibold text-teal-700 mt-1">{option.tagline}</p>
+                            <p className="text-[13px] font-semibold text-teal-700 mt-1">{option.tagline}</p>
                           </div>
                           <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
                             active ? 'border-teal-600 bg-teal-600' : 'border-slate-300 bg-white group-hover:border-slate-400'
@@ -1263,7 +1336,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
                         <ul className="mt-4 pt-4 border-t border-slate-100 grid sm:grid-cols-2 gap-x-4 gap-y-2.5">
                           {option.points.map(point => (
-                            <li key={point} className="flex items-start gap-2 text-xs text-slate-700">
+                            <li key={point} className="flex items-start gap-2 text-[13px] text-slate-700">
                               <span className="mt-px w-4 h-4 rounded-full bg-teal-50 flex items-center justify-center shrink-0">
                                 <Check className="w-2.5 h-2.5 text-teal-600 stroke-[3]" />
                               </span>
@@ -1291,23 +1364,25 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               just a single outlet. */}
           {step === VERSION_STEP && (
             <div className="space-y-12">
-              <section className="space-y-6">
-                <div className="space-y-2 text-center md:text-left">
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-bold">
+              <section className="space-y-5">
+                <div className="flex flex-col-reverse md:flex-row md:items-end md:justify-between gap-2 text-center md:text-left">
+                  <div className="space-y-1">
+                    <h2 className="text-2xl md:text-[28px] font-black text-slate-900 tracking-tight">Which version do you need?</h2>
+                    <p className="text-[15px] text-slate-500">
+                      {systemType === 'POS_ERP'
+                        ? 'Head office and new outlets start on this version — each outlet can have its own.'
+                        : 'The allowance your outlet runs on. Move up or down any time from Plan & Add-ons.'}
+                    </p>
+                  </div>
+                  <span className="self-center md:self-end inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-xs font-bold shrink-0">
                     {systemType === 'POS_ERP' ? <Building2 className="w-3 h-3 text-teal-600" /> : <Store className="w-3 h-3 text-teal-600" />}
                     {systemType === 'POS_ERP' ? 'Cashly POS + ERP' : 'Cashly POS'}
-                    <button type="button" onClick={() => setStep(1)} className="ml-1 text-teal-700 hover:text-teal-800 hover:underline underline-offset-2 cursor-pointer">Change</button>
+                    <button type="button" onClick={() => goToStep(1)} className="ml-1 text-teal-700 hover:text-teal-800 hover:underline underline-offset-2 cursor-pointer">Change</button>
                   </span>
-                  <h2 className="text-2xl md:text-[28px] font-black text-slate-900 tracking-tight">Which version do you need?</h2>
-                  <p className="text-sm text-slate-500 max-w-2xl md:mx-0 mx-auto">
-                    {systemType === 'POS_ERP'
-                      ? 'Head office and new outlets start on this version. Each outlet can have its own, chosen when it is added.'
-                      : 'The till, tablet and kitchen screen allowance your outlet runs on. Move up or down any time from Plan & Add-ons.'}
-                  </p>
                 </div>
 
                 {systemType === 'POS_ERP' && signupMode && erpMonthly != null && (
-                  <div className="flex items-start gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                  <div className={`${comparable ? 'md:hidden ' : ''}flex items-start gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-200`}>
                     <Building2 className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" />
                     <p className="text-xs text-slate-600 leading-relaxed">
                       <strong className="text-slate-900">Head Office ERP — {money(erpMonthly)} a month</strong>, once for the whole business.
@@ -1316,7 +1391,106 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 )}
 
-                <div role="radiogroup" aria-label="Version" className="grid grid-cols-1 md:grid-cols-3 gap-5 pt-2">
+                {comparable && (
+                  <div role="radiogroup" aria-label="Version" className="hidden md:grid grid-cols-[minmax(170px,0.85fr)_repeat(3,minmax(0,1fr))] gap-x-3 pt-3">
+                    {/* The row names. A transparent border keeps them level with the columns' 1px border. */}
+                    <div className="border border-transparent">
+                      <div className="h-[150px] lg:h-[120px] flex flex-col justify-end pb-3 pr-3">
+                        {systemType === 'POS_ERP' && signupMode && erpMonthly != null ? (
+                          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700">
+                              <Building2 className="w-3.5 h-3.5 text-teal-600" /> Head Office ERP
+                            </div>
+                            <div className="mt-1 text-lg font-black text-slate-900 tabular-nums leading-tight">
+                              {money(erpMonthly)}<span className="text-xs font-semibold text-slate-500"> /month</span>
+                            </div>
+                            <div className="hidden lg:block text-xs text-slate-500 leading-snug mt-0.5">Once for the business. Each outlet adds its version’s price.</div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="text-sm font-black text-slate-900">Compare versions</div>
+                            <p className="text-xs text-slate-500 mt-1 leading-snug">
+                              {signupMode ? 'Every version starts with a 30-day free trial.' : 'You can change version later.'}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                      {compareGroups.map(group => (
+                        <React.Fragment key={group.title}>
+                          <div className="h-7 flex items-end pb-1 text-[11px] font-black uppercase tracking-wider text-slate-400">{group.title}</div>
+                          {group.rows.map(row => (
+                            <div key={row.label} className="h-7 flex items-center text-[13px] font-medium text-slate-600 border-b border-slate-100">{row.label}</div>
+                          ))}
+                        </React.Fragment>
+                      ))}
+                    </div>
+
+                    {VERSIONS.map(plan => {
+                      const pkg = packageFor(plan.key);
+                      if (!pkg) return null;
+                      const active = selectedPlan === plan.key;
+                      const price = signupMode ? versionPrice(plan.key) : null;
+                      const saving = price ? yearlySaving(price.monthly, price.yearly) : null;
+                      return (
+                        <button
+                          key={plan.key}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setSelectedPlan(plan.key)}
+                          className={`group relative text-left rounded-2xl border transition-all duration-200 flex flex-col focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/25 cursor-pointer ${
+                            active
+                              ? 'border-teal-500 bg-teal-50/40 ring-4 ring-teal-500/10 shadow-lg shadow-teal-900/5'
+                              : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-md hover:shadow-slate-900/5'
+                          }`}
+                        >
+                          {plan.badge && plan.key === 'Standard' && (
+                            <span className="absolute -top-3 left-5 px-2.5 py-1 rounded-full bg-teal-600 text-white text-[11px] font-bold uppercase tracking-wider shadow-sm">
+                              {plan.badge}
+                            </span>
+                          )}
+                          <div className="h-[150px] lg:h-[120px] px-5 pt-4 pb-3 flex flex-col" title={plan.description}>
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="text-lg font-black text-slate-900 leading-tight">{plan.label}</span>
+                              <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                                active ? 'border-teal-600 bg-teal-600' : 'border-slate-300 bg-white group-hover:border-slate-400'
+                              }`}>
+                                {active && <Check className="w-3 h-3 text-white stroke-[3]" />}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 text-xs text-slate-500 truncate">{plan.tagline}</p>
+                            {price && (
+                              <div className="mt-auto">
+                                <div className="flex items-baseline gap-1 flex-wrap">
+                                  <span className="text-2xl leading-none font-black text-slate-900 tracking-tight tabular-nums">{money(price.monthly)}</span>
+                                  <span className="text-xs font-semibold text-slate-500">{systemType === 'POS_ERP' ? '/mo per outlet' : '/month'}</span>
+                                </div>
+                                {price.yearly > 0 && (
+                                  <div className="mt-1 text-xs text-slate-500">
+                                    or {money(price.yearly)} a year{saving && <span className="font-bold text-teal-700"> · {saving}</span>}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {compareGroups.map(group => (
+                            <React.Fragment key={group.title}>
+                              <div className="h-7" />
+                              {group.rows.map(row => (
+                                <div key={row.label} className="h-7 mx-5 flex items-center justify-center text-sm font-bold text-slate-900 border-b border-slate-100">
+                                  {row.value(pkg)}
+                                </div>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                          <div className="h-2" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div role="radiogroup" aria-label="Version" className={`${comparable ? 'md:hidden ' : ''}grid grid-cols-1 md:grid-cols-3 gap-5 pt-2`}>
                   {VERSIONS.map((plan, index) => {
                     const active = selectedPlan === plan.key;
                     const pkg = packageFor(plan.key);
@@ -1343,7 +1517,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         }`}
                       >
                         {plan.badge && plan.key === 'Standard' && (
-                          <span className="absolute -top-3 left-6 px-2.5 py-1 rounded-full bg-teal-600 text-white text-[10px] font-bold uppercase tracking-wider shadow-sm">
+                          <span className="absolute -top-3 left-6 px-2.5 py-1 rounded-full bg-teal-600 text-white text-[11px] font-bold uppercase tracking-wider shadow-sm">
                             {plan.badge}
                           </span>
                         )}
@@ -1351,7 +1525,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-lg font-black text-slate-900">{plan.label}</div>
-                            <p className="text-xs text-slate-500 leading-snug mt-1">{plan.description}</p>
+                            <p className="text-[13px] text-slate-500 leading-snug mt-1">{plan.description}</p>
                           </div>
                           <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
                             active ? 'border-teal-600 bg-teal-600' : 'border-slate-300 bg-white group-hover:border-slate-400'
@@ -1368,7 +1542,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                               <span className="text-xs font-semibold text-slate-500">{systemType === 'POS_ERP' ? '/month per outlet' : '/month'}</span>
                             </div>
                             {price.yearly > 0 && (
-                              <div className="mt-2 text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap">
+                              <div className="mt-2 text-xs text-slate-500 flex items-center gap-1.5 flex-wrap">
                                 or {money(price.yearly)} a year
                                 {saving && <span className="px-1.5 py-0.5 rounded-md bg-teal-50 text-teal-700 font-bold">{saving}</span>}
                               </div>
@@ -1381,18 +1555,18 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                             {allowances.map(([label, value]) => (
                               <div key={label} className="px-1.5 py-2.5 text-center bg-slate-50/70">
                                 <div className="text-sm font-black text-slate-900 leading-tight">{value}</div>
-                                <div className="text-[9px] font-bold uppercase tracking-wide text-slate-400 mt-0.5 truncate">{label}</div>
+                                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mt-0.5 truncate">{label}</div>
                               </div>
                             ))}
                           </div>
-                          {systemType === 'POS_ERP' && <div className="mt-1.5 text-[10px] text-slate-400 text-center">for each outlet</div>}
+                          {systemType === 'POS_ERP' && <div className="mt-1.5 text-xs text-slate-400 text-center">for each outlet</div>}
                         </div>
 
                         <div className="mt-5 pt-5 border-t border-slate-100 flex-1">
-                          {lead && <div className="text-[11px] font-bold text-slate-500 mb-2.5">{lead}</div>}
+                          {lead && <div className="text-xs font-bold text-slate-500 mb-2.5">{lead}</div>}
                           <ul className="space-y-2.5">
                             {items.map(item => (
-                              <li key={item} className="flex items-start gap-2 text-xs text-slate-700">
+                              <li key={item} className="flex items-start gap-2 text-[13px] text-slate-700">
                                 <span className="mt-px w-4 h-4 rounded-full bg-teal-50 flex items-center justify-center shrink-0">
                                   <Check className="w-2.5 h-2.5 text-teal-600 stroke-[3]" />
                                 </span>
@@ -1442,7 +1616,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       </div>
                       <div>
                         <h3 className="text-base font-bold text-slate-900">Install ERP (Head Office Server)</h3>
-                        <p className="text-[11px] text-teal-600 font-semibold">Master Hub & Central Database</p>
+                        <p className="text-xs text-teal-600 font-semibold">Master Hub & Central Database</p>
                       </div>
                     </div>
 
@@ -1486,7 +1660,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       </div>
                       <div>
                         <h3 className="text-base font-bold text-slate-900">Install POS (Connect to ERP)</h3>
-                        <p className="text-[11px] text-sky-600 font-semibold">Branch Counter / Till Terminal</p>
+                        <p className="text-xs text-sky-600 font-semibold">Branch Counter / Till Terminal</p>
                       </div>
                     </div>
 
@@ -1540,7 +1714,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <span className="text-xs font-bold">Same Computer / Localhost</span>
                         {serverTopology === 'SAME_SERVER' && <CheckCircle2 className="w-4 h-4 text-sky-600" />}
                       </div>
-                      <span className="text-[11px] text-slate-500 block mt-1 font-normal">
+                      <span className="text-xs text-slate-500 block mt-1 font-normal">
                         ERP & POS run together on this same PC (connects to localhost:5288).
                       </span>
                     </button>
@@ -1558,7 +1732,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                         <span className="text-xs font-bold">Different Server / Cloud</span>
                         {serverTopology === 'DIFFERENT_SERVER' && <CheckCircle2 className="w-4 h-4 text-sky-600" />}
                       </div>
-                      <span className="text-[11px] text-slate-500 block mt-1 font-normal">
+                      <span className="text-xs text-slate-500 block mt-1 font-normal">
                         ERP runs on a separate office PC or Cloud server over LAN/Internet.
                       </span>
                     </button>
@@ -1614,56 +1788,61 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             </div>
           )}
 
-          {/* BUSINESS: who it is, and where its staff sign in. */}
+          {/* BUSINESS: who it is, and where its staff sign in — one card, one screen. */}
           {step === BUSINESS_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {stepHeader('Tell us about your business', 'The name your customers know, and the address your staff sign in at.')}
 
-              {sectionCard(<Store className="w-4 h-4" />, 'Business', 'How it appears on receipts, reports and invoices.', (
-                <div className="space-y-5">
-                  <div>
-                    <label htmlFor="wiz-business-name" className={labelCls}>Business name</label>
-                    <input
-                      id="wiz-business-name"
-                      type="text"
-                      value={restaurantName}
-                      onChange={(e) => setRestaurantName(e.target.value)}
-                      autoFocus
-                      placeholder="e.g. Royal Grill & Kitchen"
-                      className={`${inputCls} text-base font-semibold`}
-                    />
-                  </div>
+              <section className="rounded-2xl border border-slate-200 bg-white p-6 space-y-5">
+                <div>
+                  <label htmlFor="wiz-business-name" className={labelCls}>
+                    <span>Business name</span><span className="text-xs font-medium text-slate-400">On receipts, reports and invoices</span>
+                  </label>
+                  <input
+                    id="wiz-business-name"
+                    type="text"
+                    value={restaurantName}
+                    onChange={(e) => setRestaurantName(e.target.value)}
+                    autoFocus
+                    placeholder="e.g. Royal Grill & Kitchen"
+                    className={`${inputCls} text-base font-semibold${problemEdge('wiz-business-name')}`}
+                  />
+                  {problemNote('wiz-business-name')}
+                </div>
 
-                  <div>
-                    <div className={labelCls}>What kind of business is it?</div>
-                    <div role="radiogroup" aria-label="Business type" className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                      {BUSINESS_TYPES.map(t => {
-                        const active = businessType === t.key;
-                        return (
-                          <button
-                            key={t.key}
-                            type="button"
-                            role="radio"
-                            aria-checked={active}
-                            onClick={() => setBusinessType(t.key)}
-                            className={`text-left p-3.5 rounded-xl border transition focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/25 cursor-pointer ${
-                              active ? 'border-teal-500 ring-4 ring-teal-500/10 bg-white' : 'border-slate-200 hover:border-slate-300 bg-white'
-                            }`}
-                          >
-                            <span className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2.5 transition-colors ${
-                              active ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-500'
-                            }`}>
-                              <t.icon className="w-4 h-4" />
-                            </span>
-                            <span className="block text-xs font-bold text-slate-900">{t.label}</span>
-                            <span className="block text-[11px] text-slate-500 mt-0.5">{t.hint}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                <div>
+                  <div className={labelCls}>What kind of business is it?</div>
+                  <div role="radiogroup" aria-label="Business type" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {BUSINESS_TYPES.map(t => {
+                      const active = businessType === t.key;
+                      return (
+                        <button
+                          key={t.key}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setBusinessType(t.key)}
+                          className={`flex items-center gap-3 text-left p-3 rounded-xl border bg-white transition focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/25 cursor-pointer ${
+                            active ? 'border-teal-500 ring-4 ring-teal-500/10' : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <span className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                            active ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            <t.icon className="w-4 h-4" />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-[13px] font-bold text-slate-900 truncate">{t.label}</span>
+                            <span className="block text-xs text-slate-500 truncate">{t.hint}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
+                </div>
 
-                  <div className="max-w-sm">
+                <div className={`grid grid-cols-1 gap-5 ${signupMode ? 'md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]' : 'md:grid-cols-2'}`}>
+                  <div>
                     <label htmlFor="wiz-country" className={labelCls}>Country &amp; currency</label>
                     <select
                       id="wiz-country"
@@ -1676,83 +1855,84 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       ))}
                     </select>
                   </div>
-                </div>
-              ))}
 
-              {/* The business's own sign-in address — where its staff sign in with just username + PIN.
-                  Filled in from the business name, so it is never empty-and-red before they have typed. */}
-              {signupMode && sectionCard(<Globe className="w-4 h-4" />, 'Staff sign-in address', 'Your staff open this address to sign in with their username and PIN.', (
-                <div className="space-y-2">
-                  <div className={`flex items-stretch rounded-xl border overflow-hidden bg-white transition focus-within:ring-4 focus-within:ring-teal-500/10 ${
-                    !webName ? 'border-slate-300 focus-within:border-teal-500'
-                      : webNameLocalProblem || (webCheckNow && !webCheckNow.available) ? 'border-rose-300'
-                      : webCheckNow?.available ? 'border-teal-500' : 'border-slate-300'
-                  }`}>
-                    <span className="px-3.5 flex items-center text-sm text-slate-500 bg-slate-50 border-r border-slate-200 shrink-0">{webLinkParts.prefix}</span>
-                    <input
-                      type="text"
-                      aria-label="Staff sign-in address"
-                      value={webName}
-                      onChange={(e) => {
-                        setWebNameEdited(true);
-                        setWebNameInput(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 30));
-                      }}
-                      spellCheck={false}
-                      autoComplete="off"
-                      placeholder="filled in from your business name"
-                      className="flex-1 min-w-0 bg-transparent px-3 py-2.5 text-sm font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none !shadow-none"
-                    />
-                    {webLinkParts.suffix && (
-                      <span className="px-3.5 flex items-center text-sm text-slate-500 bg-slate-50 border-l border-slate-200 shrink-0">{webLinkParts.suffix}</span>
-                    )}
-                    {webName && (
-                      <span className="px-3 flex items-center shrink-0">
-                        {webNameLocalProblem || webCheckFailed || (webCheckNow && !webCheckNow.available)
-                          ? <AlertCircle className="w-4 h-4 text-rose-500" />
-                          : !webCheckNow ? <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
-                          : <span className="w-5 h-5 rounded-full bg-teal-600 flex items-center justify-center"><Check className="w-3 h-3 text-white stroke-[3]" /></span>}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs">
-                    {!webName ? (
-                      <span className="text-slate-500">Type your business name above and we suggest one.</span>
-                    ) : webNameLocalProblem ? (
-                      <span className="text-rose-600">{webNameLocalProblem}</span>
-                    ) : webCheckFailed ? (
-                      <span className="text-rose-600">
-                        Could not check this address: the Cashly server did not answer.{' '}
-                        <button type="button" className="underline font-semibold cursor-pointer" onClick={() => checkWebNameNow(webName)}>
-                          Try again
-                        </button>
-                      </span>
-                    ) : !webCheckNow ? (
-                      <span className="text-slate-500">Checking it is free…</span>
-                    ) : webCheckNow.available ? (
-                      <span className="text-teal-700 font-semibold">Available. It cannot be changed later without Cashly support, so check the spelling.</span>
-                    ) : (
-                      <span className="text-rose-600">
-                        {webCheckNow.problem}
-                        {webCheckNow.alternative && (
-                          <>
-                            {' '}
-                            <button type="button" className="underline font-semibold cursor-pointer"
-                              onClick={() => { setWebNameEdited(true); setWebNameInput(webCheckNow.alternative!); }}>
-                              Use {webCheckNow.alternative}
-                            </button>
-                          </>
+                  {/* The business's own sign-in address — where its staff sign in with just username + PIN.
+                      Filled in from the business name, so it is never empty-and-red before they have typed. */}
+                  {signupMode && (
+                    <div>
+                      <label htmlFor="wiz-web-name" className={labelCls}>Staff sign-in address</label>
+                      <div className={`flex items-stretch rounded-xl border overflow-hidden bg-white transition focus-within:ring-4 focus-within:ring-teal-500/10${problemEdge('wiz-web-name')} ${
+                        !webName ? 'border-slate-300 focus-within:border-teal-500'
+                          : webNameLocalProblem || (webCheckNow && !webCheckNow.available) ? 'border-rose-300'
+                          : webCheckNow?.available ? 'border-teal-500' : 'border-slate-300'
+                      }`}>
+                        <span className="px-3 flex items-center text-sm text-slate-500 bg-slate-50 border-r border-slate-200 shrink-0">{webLinkParts.prefix}</span>
+                        <input
+                          id="wiz-web-name"
+                          type="text"
+                          value={webName}
+                          onChange={(e) => {
+                            setWebNameEdited(true);
+                            setWebNameInput(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 30));
+                          }}
+                          spellCheck={false}
+                          autoComplete="off"
+                          placeholder="filled in from your business name"
+                          className="flex-1 min-w-0 bg-transparent px-3 py-2.5 text-sm font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none !shadow-none"
+                        />
+                        {webLinkParts.suffix && (
+                          <span className="px-3 flex items-center text-sm text-slate-500 bg-slate-50 border-l border-slate-200 shrink-0">{webLinkParts.suffix}</span>
                         )}
-                      </span>
-                    )}
-                  </p>
+                        {webName && (
+                          <span className="px-3 flex items-center shrink-0">
+                            {webNameLocalProblem || webCheckFailed || (webCheckNow && !webCheckNow.available)
+                              ? <AlertCircle className="w-4 h-4 text-rose-500" />
+                              : !webCheckNow ? <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                              : <span className="w-5 h-5 rounded-full bg-teal-600 flex items-center justify-center"><Check className="w-3 h-3 text-white stroke-[3]" /></span>}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1.5 text-xs leading-snug">
+                        {!webName ? (
+                          <span className="text-slate-500">Your staff open this address to sign in with their username and PIN.</span>
+                        ) : webNameLocalProblem ? (
+                          <span className="text-rose-600">{webNameLocalProblem}</span>
+                        ) : webCheckFailed ? (
+                          <span className="text-rose-600">
+                            Could not check this address: the Cashly server did not answer.{' '}
+                            <button type="button" className="underline font-semibold cursor-pointer" onClick={() => checkWebNameNow(webName)}>
+                              Try again
+                            </button>
+                          </span>
+                        ) : !webCheckNow ? (
+                          <span className="text-slate-500">Checking it is free…</span>
+                        ) : webCheckNow.available ? (
+                          <span className="text-teal-700 font-semibold">Available — your staff sign in here. It cannot be changed later without Cashly support.</span>
+                        ) : (
+                          <span className="text-rose-600">
+                            {webCheckNow.problem}
+                            {webCheckNow.alternative && (
+                              <>
+                                {' '}
+                                <button type="button" className="underline font-semibold cursor-pointer"
+                                  onClick={() => { setWebNameEdited(true); setWebNameInput(webCheckNow.alternative!); }}>
+                                  Use {webCheckNow.alternative}
+                                </button>
+                              </>
+                            )}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
                 </div>
-              ))}
+              </section>
             </div>
           )}
 
           {/* LOCATIONS: its one outlet, or the head office and its outlets. */}
           {step === LOCATIONS_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {stepHeader(
                 systemType === 'POS_ERP' ? 'Your head office & outlets' : 'Where is your outlet?',
                 systemType === 'POS_ERP'
@@ -1761,314 +1941,327 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               )}
 
               {/* The outlet (Cashly POS), or the head office (Cashly POS + ERP): name, then where it is. */}
-              {sectionCard(
-                systemType === 'POS_ERP' ? <Building2 className="w-4 h-4" /> : <Store className="w-4 h-4" />,
-                systemType === 'POS_ERP' ? 'Head office' : 'Outlet',
-                systemType === 'POS_ERP' ? 'Where the ERP runs: menu, buying, stock, accounts and reports.' : 'Printed on receipts and shown on reports.',
-                (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="sm:col-span-2">
-                        <label htmlFor="wiz-location-name" className={labelCls}>{systemType === 'POS_ERP' ? 'Head office name' : 'Outlet name'}</label>
-                        <input
-                          id="wiz-location-name"
-                          type="text"
-                          value={systemType === 'POS_ERP' ? hqName : mainBranchName}
-                          onChange={(e) => {
-                            if (systemType === 'POS_ERP') { setHqNameEdited(true); setHqNameInput(e.target.value); }
-                            else { setMainBranchEdited(true); setMainBranchInput(e.target.value); }
-                          }}
-                          className={inputCls}
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="wiz-city" className={labelCls}><span>City</span>{optionalTag}</label>
-                        <input id="wiz-city" type="text" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Lahore" className={inputCls} />
-                      </div>
-                      <div>
-                        <label htmlFor="wiz-phone" className={labelCls}><span>Phone</span>{optionalTag}</label>
-                        <input id="wiz-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="e.g. 042-111-443-443" className={inputCls} />
-                      </div>
-                      <div className="sm:col-span-2">
-                        <label htmlFor="wiz-address" className={labelCls}><span>Address</span>{optionalTag}</label>
-                        <input id="wiz-address" type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="e.g. 12 MM Alam Road, Gulberg" className={inputCls} />
-                      </div>
-                    </div>
-
-                    {/* The version chosen on its own step, still visible where the outlet is named. */}
-                    {systemType === 'POS_ONLY' && (
-                      <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-                        <p className="text-xs text-slate-600 min-w-0">
-                          Runs on <strong className="text-slate-900">{tierLabel(selectedPlan)}</strong> · {allowanceLine(selectedPlan)}
-                        </p>
-                        <button type="button" onClick={() => setStep(VERSION_STEP)} className="text-xs font-bold text-teal-700 hover:text-teal-800 shrink-0 cursor-pointer">
-                          Change
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Rarely changed, so out of the way until asked for. */}
-                    {systemType === 'POS_ERP' && (
-                      <div className="pt-1">
-                        <button
-                          type="button"
-                          onClick={() => setShowHqOptions(v => !v)}
-                          aria-expanded={showHqOptions}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer"
-                        >
-                          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showHqOptions ? 'rotate-180' : ''}`} /> More options
-                        </button>
-                        {showHqOptions && (
-                          <label className="mt-3 flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50 transition">
-                            <input
-                              type="checkbox"
-                              checked={hqHoldsStock}
-                              onChange={(e) => setHqHoldsStock(e.target.checked)}
-                              className="w-4 h-4 mt-0.5 accent-teal-600"
-                            />
-                            <span className="text-xs text-slate-600">
-                              <strong className="block text-slate-900 text-sm font-semibold">The head office keeps stock</strong>
-                              A central store or kitchen that supplies the outlets.
-                            </span>
-                          </label>
-                        )}
-                      </div>
-                    )}
+              <section className="rounded-2xl border border-slate-200 bg-white p-6 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  {groupLabel(
+                    systemType === 'POS_ERP' ? 'Head office' : 'Outlet',
+                    systemType === 'POS_ERP' ? 'Where the ERP runs — menu, buying, stock, accounts and reports' : 'Printed on receipts and shown on reports'
+                  )}
+                  {/* Rarely changed, so out of the way until asked for. */}
+                  {systemType === 'POS_ERP' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowHqOptions(v => !v)}
+                      aria-expanded={showHqOptions}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer shrink-0"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showHqOptions ? 'rotate-180' : ''}`} /> More options
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] gap-4">
+                  <div>
+                    <label htmlFor="wiz-location-name" className={labelCls}>{systemType === 'POS_ERP' ? 'Head office name' : 'Outlet name'}</label>
+                    <input
+                      id="wiz-location-name"
+                      type="text"
+                      value={systemType === 'POS_ERP' ? hqName : mainBranchName}
+                      onChange={(e) => {
+                        if (systemType === 'POS_ERP') { setHqNameEdited(true); setHqNameInput(e.target.value); }
+                        else { setMainBranchEdited(true); setMainBranchInput(e.target.value); }
+                      }}
+                      className={`${inputCls} font-semibold${problemEdge('wiz-location-name')}`}
+                    />
+                    {problemNote('wiz-location-name')}
                   </div>
-                )
-              )}
+                  <div>
+                    <label htmlFor="wiz-city" className={labelCls}><span>City</span>{optionalTag}</label>
+                    <input id="wiz-city" type="text" value={city} onChange={(e) => setCity(e.target.value)} placeholder="e.g. Lahore" className={inputCls} />
+                  </div>
+                  <div>
+                    <label htmlFor="wiz-address" className={labelCls}><span>Address</span>{optionalTag}</label>
+                    <input id="wiz-address" type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="e.g. 12 MM Alam Road, Gulberg" className={inputCls} />
+                  </div>
+                  <div>
+                    <label htmlFor="wiz-phone" className={labelCls}><span>Phone</span>{optionalTag}</label>
+                    <input id="wiz-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="042-111-443-443" className={inputCls} />
+                  </div>
+                </div>
+
+                {/* The version chosen on its own step, still visible where the outlet is named. */}
+                {systemType === 'POS_ONLY' && (
+                  <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <p className="text-[13px] text-slate-600 min-w-0">
+                      Runs on <strong className="text-slate-900">{tierLabel(selectedPlan)}</strong> · {allowanceLine(selectedPlan)}
+                    </p>
+                    <button type="button" onClick={() => goToStep(VERSION_STEP)} className="text-xs font-bold text-teal-700 hover:text-teal-800 shrink-0 cursor-pointer">
+                      Change
+                    </button>
+                  </div>
+                )}
+
+                {systemType === 'POS_ERP' && showHqOptions && (
+                  <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50 transition">
+                    <input
+                      type="checkbox"
+                      checked={hqHoldsStock}
+                      onChange={(e) => setHqHoldsStock(e.target.checked)}
+                      className="w-4 h-4 mt-0.5 accent-teal-600"
+                    />
+                    <span className="text-xs text-slate-600">
+                      <strong className="block text-sm font-semibold text-slate-900">The head office keeps stock</strong>
+                      A central store or kitchen that supplies the outlets.
+                    </span>
+                  </label>
+                )}
+              </section>
 
               {/* Cashly POS + ERP: the outlets under the head office. */}
-              {systemType === 'POS_ERP' && sectionCard(
-                <Store className="w-4 h-4" />,
-                branches.length > 0 ? `Outlets · ${branches.length}` : 'Outlets',
-                'Each outlet runs its own POS on the version you pick for it.',
-                (
-                  <div className="space-y-3">
-                    {branches.length === 0 && (
-                      <button
-                        type="button"
-                        onClick={addBranchRow}
-                        className="w-full p-6 rounded-xl border-2 border-dashed border-slate-200 hover:border-teal-300 hover:bg-teal-50/40 text-center transition cursor-pointer group"
-                      >
-                        <span className="w-10 h-10 rounded-xl bg-slate-100 group-hover:bg-teal-100 text-slate-500 group-hover:text-teal-700 flex items-center justify-center mx-auto mb-2 transition-colors">
-                          <Plus className="w-5 h-5" />
-                        </span>
+              {systemType === 'POS_ERP' && (
+                <section className="rounded-2xl border border-slate-200 bg-white p-6 space-y-3">
+                  {groupLabel(branches.length > 0 ? `Outlets · ${branches.length}` : 'Outlets', 'Each runs its own POS on the version you pick for it')}
+
+                  {branches.length === 0 && (
+                    <button
+                      type="button"
+                      onClick={addBranchRow}
+                      className="w-full flex items-center gap-4 p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-teal-300 hover:bg-teal-50/40 text-left transition cursor-pointer group"
+                    >
+                      <span className="w-10 h-10 rounded-xl bg-slate-100 group-hover:bg-teal-100 text-slate-500 group-hover:text-teal-700 flex items-center justify-center shrink-0 transition-colors">
+                        <Plus className="w-5 h-5" />
+                      </span>
+                      <span className="min-w-0">
                         <span className="block text-sm font-bold text-slate-900">Add your first outlet</span>
-                        <span className="block text-xs text-slate-500 mt-0.5">Or skip — outlets can be added any time from Locations.</span>
-                      </button>
-                    )}
+                        <span className="block text-xs text-slate-500">Or skip it — outlets can be added any time from Locations.</span>
+                      </span>
+                    </button>
+                  )}
 
-                    {branches.map((b, idx) => {
-                      const edition = b.posEdition ?? selectedPlan;
-                      return (
-                        <div key={idx} className="rounded-xl border border-slate-200 p-4 space-y-3.5">
-                          <div className="flex items-center gap-3">
-                            <span className="w-8 h-8 rounded-lg bg-teal-50 text-teal-700 text-xs font-black flex items-center justify-center shrink-0">{idx + 1}</span>
-                            <input
-                              type="text"
-                              aria-label={`Outlet ${idx + 1} name`}
-                              value={b.name}
-                              onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
-                              autoFocus={idx === branches.length - 1 && !b.name}
-                              placeholder="Outlet name, e.g. Gulberg"
-                              className={`${inputCls} font-semibold`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => removeBranchRow(idx)}
-                              className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shrink-0 cursor-pointer"
-                              title="Remove this outlet"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:pl-11">
-                            <input
-                              type="text"
-                              aria-label={`Outlet ${idx + 1} city`}
-                              value={b.sameAddressAsHq ? hqCity : b.city}
-                              onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
-                              disabled={!!b.sameAddressAsHq}
-                              placeholder="City (optional)"
-                              className={inputCls}
-                            />
-                            <input
-                              type="text"
-                              aria-label={`Outlet ${idx + 1} address`}
-                              value={b.sameAddressAsHq ? hqAddress : b.address}
-                              onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
-                              disabled={!!b.sameAddressAsHq}
-                              placeholder={b.sameAddressAsHq ? 'Same as head office' : 'Address (optional)'}
-                              className={inputCls}
-                            />
-                            <label className="sm:col-span-2 inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer w-fit">
-                              <input
-                                type="checkbox"
-                                checked={!!b.sameAddressAsHq}
-                                onChange={(e) => updateBranchField(idx, 'sameAddressAsHq', e.target.checked)}
-                                className="w-4 h-4 accent-teal-600"
-                              />
-                              Same building as the head office
-                            </label>
-                          </div>
-
-                          {/* This outlet's POS version: what its tills can do, and what it is billed for. */}
-                          <div className="sm:pl-11 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-                            <div role="radiogroup" aria-label={`Outlet ${idx + 1} POS version`} className="inline-flex p-1 rounded-xl bg-slate-100 w-fit shrink-0">
-                              {POS_EDITIONS.map(option => {
-                                const active = edition === option;
-                                return (
-                                  <button
-                                    key={option}
-                                    type="button"
-                                    role="radio"
-                                    aria-checked={active}
-                                    onClick={() => updateBranchField(idx, 'posEdition', option)}
-                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                                      active ? 'bg-white text-teal-700 shadow-sm ring-1 ring-teal-500/50' : 'text-slate-500 hover:text-slate-800'
-                                    }`}
-                                  >
-                                    {tierLabel(option)}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <span className="text-[11px] text-slate-500">{outletLine(edition)}</span>
-                          </div>
+                  {branches.map((b, idx) => {
+                    const edition = b.posEdition ?? selectedPlan;
+                    return (
+                      <div key={idx} className="rounded-xl border border-slate-200 p-4 space-y-3">
+                        <div className="flex items-center gap-3">
+                          <span className="w-8 h-8 rounded-lg bg-teal-50 text-teal-700 text-xs font-black flex items-center justify-center shrink-0">{idx + 1}</span>
+                          <input
+                            id={`wiz-outlet-${idx}-name`}
+                            type="text"
+                            aria-label={`Outlet ${idx + 1} name`}
+                            value={b.name}
+                            onChange={(e) => updateBranchField(idx, 'name', e.target.value)}
+                            autoFocus={idx === branches.length - 1 && !b.name}
+                            placeholder="Outlet name, e.g. Gulberg"
+                            className={`${inputCls} font-semibold${problemEdge(`wiz-outlet-${idx}-name`)}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeBranchRow(idx)}
+                            className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shrink-0 cursor-pointer"
+                            title="Remove this outlet"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
-                      );
-                    })}
 
-                    {branches.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={addBranchRow}
-                        className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 hover:border-teal-400 hover:bg-teal-50/40 text-xs font-bold text-teal-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> Add another outlet
-                      </button>
-                    )}
+                        {fieldProblem(`wiz-outlet-${idx}-name`) && <div className="sm:pl-11 -mt-1">{problemNote(`wiz-outlet-${idx}-name`)}</div>}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto] items-center gap-3 sm:pl-11">
+                          <input
+                            type="text"
+                            aria-label={`Outlet ${idx + 1} city`}
+                            value={b.sameAddressAsHq ? hqCity : b.city}
+                            onChange={(e) => updateBranchField(idx, 'city', e.target.value)}
+                            disabled={!!b.sameAddressAsHq}
+                            placeholder="City (optional)"
+                            className={inputCls}
+                          />
+                          <input
+                            type="text"
+                            aria-label={`Outlet ${idx + 1} address`}
+                            value={b.sameAddressAsHq ? hqAddress : b.address}
+                            onChange={(e) => updateBranchField(idx, 'address', e.target.value)}
+                            disabled={!!b.sameAddressAsHq}
+                            placeholder={b.sameAddressAsHq ? 'Same as head office' : 'Address (optional)'}
+                            className={inputCls}
+                          />
+                          <label className="inline-flex items-center gap-2 text-[13px] text-slate-600 cursor-pointer whitespace-nowrap">
+                            <input
+                              type="checkbox"
+                              checked={!!b.sameAddressAsHq}
+                              onChange={(e) => updateBranchField(idx, 'sameAddressAsHq', e.target.checked)}
+                              className="w-4 h-4 accent-teal-600"
+                            />
+                            Same building as head office
+                          </label>
+                        </div>
 
-                    {/* Asked only when they try to go on with no outlets, never before they start. */}
-                    {noOutletHint && (
-                      <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-3">
-                        <p>
-                          <strong>No outlets yet.</strong> That's fine — add them later from Locations &amp; Head Office.
-                          If you have no separate head office, <strong>Cashly POS</strong> already includes the back office.
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          <button type="button" onClick={addBranchRow}
-                            className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold transition cursor-pointer">
-                            Add an outlet
-                          </button>
-                          <button type="button" onClick={continueWithoutOutlets}
-                            className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold hover:bg-amber-100 transition cursor-pointer">
-                            Continue without outlets
-                          </button>
-                          <button type="button"
-                            onClick={() => { setNoOutletHint(false); setSystemType('POS_ONLY'); setErrorMessage(null); setStep(1); }}
-                            className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold hover:bg-amber-100 transition cursor-pointer">
-                            Switch to Cashly POS
-                          </button>
+                        {/* This outlet's POS version: what its tills can do, and what it is billed for. */}
+                        <div className="sm:pl-11 flex flex-wrap items-center gap-x-3 gap-y-2">
+                          <div role="radiogroup" aria-label={`Outlet ${idx + 1} POS version`} className="inline-flex p-1 rounded-xl bg-slate-100 shrink-0">
+                            {POS_EDITIONS.map(option => {
+                              const active = edition === option;
+                              return (
+                                <button
+                                  key={option}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={active}
+                                  onClick={() => updateBranchField(idx, 'posEdition', option)}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                                    active ? 'bg-white text-teal-700 shadow-sm ring-1 ring-teal-500/50' : 'text-slate-500 hover:text-slate-800'
+                                  }`}
+                                >
+                                  {tierLabel(option)}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <span className="text-xs text-slate-500">{outletLine(edition)}</span>
                         </div>
                       </div>
-                    )}
-                  </div>
-                )
+                    );
+                  })}
+
+                  {branches.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={addBranchRow}
+                      className="w-full py-2.5 rounded-xl border border-dashed border-slate-300 hover:border-teal-400 hover:bg-teal-50/40 text-xs font-bold text-teal-700 flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add another outlet
+                    </button>
+                  )}
+
+                  {/* Asked only when they try to go on with no outlets, never before they start. */}
+                  {noOutletHint && (
+                    <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-3">
+                      <p>
+                        <strong>No outlets yet.</strong> That's fine — add them later from Locations &amp; Head Office.
+                        If you have no separate head office, <strong>Cashly POS</strong> already includes the back office.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={addBranchRow}
+                          className="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold transition cursor-pointer">
+                          Add an outlet
+                        </button>
+                        <button type="button" onClick={continueWithoutOutlets}
+                          className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold hover:bg-amber-100 transition cursor-pointer">
+                          Continue without outlets
+                        </button>
+                        <button type="button"
+                          onClick={() => { setNoOutletHint(false); setSystemType('POS_ONLY'); setErrorMessage(null); goToStep(1); }}
+                          className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 font-bold hover:bg-amber-100 transition cursor-pointer">
+                          Switch to Cashly POS
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </section>
               )}
             </div>
           )}
 
-          {/* SECURITY: the owner's account — back-office sign-in, and the PIN for tills. */}
+          {/* SECURITY: the owner's account — back-office sign-in, and the PIN for tills — in one card. */}
           {step === SECURITY_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {stepHeader('Create your owner account', 'You get every permission. Your staff get their own logins later, with only what they need.')}
 
-              {sectionCard(<User className="w-4 h-4" />, 'About you', signupMode ? 'One free trial per mobile number.' : undefined, (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="wiz-owner-name" className={labelCls}>Full name</label>
-                    <input id="wiz-owner-name" type="text" value={adminFullName} onChange={(e) => setAdminFullName(e.target.value)}
-                      autoComplete="name" placeholder="e.g. Muhammad Ali" className={inputCls} />
-                  </div>
-                  {signupMode && (
+              <section className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100">
+                <div className="p-6">
+                  {groupLabel('About you', signupMode ? 'One free trial per mobile number' : undefined)}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label htmlFor="wiz-owner-mobile" className={labelCls}>Mobile number</label>
-                      <input id="wiz-owner-mobile" type="tel" value={ownerMobile} onChange={(e) => setOwnerMobile(e.target.value)}
-                        autoComplete="tel" placeholder="e.g. 0300 1234567" className={inputCls} />
+                      <label htmlFor="wiz-owner-name" className={labelCls}>Full name</label>
+                      <input id="wiz-owner-name" type="text" value={adminFullName} onChange={(e) => setAdminFullName(e.target.value)}
+                        autoComplete="name" placeholder="e.g. Muhammad Ali" className={inputCls + problemEdge('wiz-owner-name')} />
+                      {problemNote('wiz-owner-name')}
                     </div>
-                  )}
-                </div>
-              ))}
-
-              {/* The back-office sign-in, the way Toast does it: email + password. The PIN is for the tills. */}
-              {signupMode && sectionCard(<Mail className="w-4 h-4" />, 'Back office sign-in', 'Reports, menu and settings — sign in with your email and password.', (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="sm:col-span-2">
-                    <label htmlFor="wiz-owner-email" className={labelCls}><span>Email address</span><span className="text-[10px] font-medium text-slate-400">One business per email</span></label>
-                    <input id="wiz-owner-email" type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)}
-                      autoComplete="email" placeholder="owner@example.com" className={inputCls} />
-                  </div>
-                  <div>
-                    <label htmlFor="wiz-owner-password" className={labelCls}>Password</label>
-                    <div className="relative">
-                      <input id="wiz-owner-password" type={showPassword ? 'text' : 'password'} value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)}
-                        autoComplete="new-password" placeholder="8+ characters, letters and numbers" className={`${inputCls} pr-10`} />
-                      <button type="button" onClick={() => setShowPassword(v => !v)} title={showPassword ? 'Hide' : 'Show'}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer">
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                    {adminPassword && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <div className="flex-1 grid grid-cols-3 gap-1">
-                          {[1, 2, 3].map(n => (
-                            <span key={n} className={`h-1 rounded-full ${n <= passwordStrength.bars ? passwordStrength.bar : 'bg-slate-200'}`} />
-                          ))}
-                        </div>
-                        <span className={`text-[11px] font-semibold ${passwordStrength.text}`}>{passwordStrength.label}</span>
+                    {signupMode && (
+                      <div>
+                        <label htmlFor="wiz-owner-mobile" className={labelCls}>Mobile number</label>
+                        <input id="wiz-owner-mobile" type="tel" value={ownerMobile} onChange={(e) => setOwnerMobile(e.target.value)}
+                          autoComplete="tel" placeholder="e.g. 0300 1234567" className={inputCls + problemEdge('wiz-owner-mobile')} />
+                      {problemNote('wiz-owner-mobile')}
                       </div>
                     )}
                   </div>
-                  <div>
-                    <label htmlFor="wiz-owner-password2" className={labelCls}>Confirm password</label>
-                    <input id="wiz-owner-password2" type={showPassword ? 'text' : 'password'} value={adminPasswordConfirm} onChange={(e) => setAdminPasswordConfirm(e.target.value)}
-                      autoComplete="new-password" className={inputCls} />
-                    {adminPasswordConfirm && (
-                      <p className={`mt-2 text-[11px] font-semibold ${adminPasswordConfirm === adminPassword ? 'text-teal-700' : 'text-rose-600'}`}>
-                        {adminPasswordConfirm === adminPassword ? 'Passwords match' : 'The two passwords do not match yet'}
-                      </p>
-                    )}
-                  </div>
                 </div>
-              ))}
 
-              {sectionCard(<KeyRound className="w-4 h-4" />, 'Till & tablet sign-in', 'At a till or tablet you sign in with your username and PIN.', (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="wiz-owner-username" className={labelCls}>Username</label>
-                    <input id="wiz-owner-username" type="text" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)}
-                      autoComplete="username" spellCheck={false} placeholder="e.g. ali.owner" className={inputCls} />
-                  </div>
-                  <div>
-                    <label htmlFor="wiz-owner-pin" className={labelCls}><span>PIN</span><span className="text-[10px] font-medium text-slate-400">4 to 6 digits</span></label>
-                    <div className="relative">
-                      <input id="wiz-owner-pin" type={showPin ? 'text' : 'password'} inputMode="numeric" maxLength={6} value={adminPin}
-                        onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                        autoComplete="off" placeholder="••••" className={`${inputCls} pr-10 tracking-[0.3em] font-semibold`} />
-                      <button type="button" onClick={() => setShowPin(v => !v)} title={showPin ? 'Hide' : 'Show'}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer">
-                        {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
+                {/* The back-office sign-in, the way Toast does it: email + password. The PIN is for the tills. */}
+                {signupMode && (
+                  <div className="p-6">
+                    {groupLabel('Back office sign-in', 'Reports, menu and settings — your email and password')}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div>
+                        <label htmlFor="wiz-owner-email" className={labelCls}><span>Email address</span><span className="text-xs font-medium text-slate-400">One business each</span></label>
+                        <input id="wiz-owner-email" type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)}
+                          autoComplete="email" placeholder="owner@example.com" className={inputCls + problemEdge('wiz-owner-email')} />
+                      {problemNote('wiz-owner-email')}
+                      </div>
+                      <div>
+                        <label htmlFor="wiz-owner-password" className={labelCls}>Password</label>
+                        <div className="relative">
+                          <input id="wiz-owner-password" type={showPassword ? 'text' : 'password'} value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)}
+                            autoComplete="new-password" placeholder="8+ letters & numbers" className={`${inputCls} pr-10${problemEdge('wiz-owner-password')}`} />
+                          <button type="button" onClick={() => setShowPassword(v => !v)} title={showPassword ? 'Hide' : 'Show'}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer">
+                            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        {problemNote('wiz-owner-password')}
+                        {adminPassword && !fieldProblem('wiz-owner-password') && (
+                          <div className="mt-2 flex items-center gap-2">
+                            <div className="flex-1 grid grid-cols-3 gap-1">
+                              {[1, 2, 3].map(n => (
+                                <span key={n} className={`h-1 rounded-full ${n <= passwordStrength.bars ? passwordStrength.bar : 'bg-slate-200'}`} />
+                              ))}
+                            </div>
+                            <span className={`text-xs font-semibold whitespace-nowrap ${passwordStrength.text}`}>{passwordStrength.label}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <label htmlFor="wiz-owner-password2" className={labelCls}>Confirm password</label>
+                        <input id="wiz-owner-password2" type={showPassword ? 'text' : 'password'} value={adminPasswordConfirm} onChange={(e) => setAdminPasswordConfirm(e.target.value)}
+                          autoComplete="new-password" className={inputCls + problemEdge('wiz-owner-password2')} />
+                      {problemNote('wiz-owner-password2')}
+                        {adminPasswordConfirm && !fieldProblem('wiz-owner-password2') && (
+                          <p className={`mt-2 text-xs font-semibold ${adminPasswordConfirm === adminPassword ? 'text-teal-700' : 'text-rose-600'}`}>
+                            {adminPasswordConfirm === adminPassword ? 'Passwords match' : 'The two passwords do not match yet'}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    {signupMode && adminPin.length >= 4 && isEasyPin(adminPin) && (
-                      <p className="mt-2 text-[11px] font-semibold text-rose-600">Too easy to guess — avoid 1234, 0000 and the like.</p>
-                    )}
+                  </div>
+                )}
+
+                <div className="p-6">
+                  {groupLabel('Till & tablet sign-in', 'At a till or tablet you sign in with your username and PIN')}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label htmlFor="wiz-owner-username" className={labelCls}>Username</label>
+                      <input id="wiz-owner-username" type="text" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)}
+                        autoComplete="username" spellCheck={false} placeholder="e.g. ali.owner" className={inputCls + problemEdge('wiz-owner-username')} />
+                      {problemNote('wiz-owner-username')}
+                    </div>
+                    <div>
+                      <label htmlFor="wiz-owner-pin" className={labelCls}><span>PIN</span><span className="text-xs font-medium text-slate-400">4 to 6 digits</span></label>
+                      <div className="relative">
+                        <input id="wiz-owner-pin" type={showPin ? 'text' : 'password'} inputMode="numeric" maxLength={6} value={adminPin}
+                          onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          autoComplete="off" placeholder="••••" className={`${inputCls} pr-10 tracking-[0.3em] font-semibold${problemEdge('wiz-owner-pin')}`} />
+                        <button type="button" onClick={() => setShowPin(v => !v)} title={showPin ? 'Hide' : 'Show'}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer">
+                          {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      {problemNote('wiz-owner-pin')}
+                      {signupMode && adminPin.length >= 4 && isEasyPin(adminPin) && !fieldProblem('wiz-owner-pin') && (
+                        <p className="mt-2 text-xs font-semibold text-rose-600">Too easy to guess — avoid 1234, 0000 and the like.</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              ))}
+              </section>
 
               <p className="flex items-start gap-2 text-xs text-slate-500">
                 <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0" />
@@ -2077,31 +2270,31 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
             </div>
           )}
 
-          {/* REVIEW: everything once, with a way back to each part. */}
+          {/* REVIEW: everything once, with a way back to each part — a two-by-two summary. */}
           {step === REVIEW_STEP && (systemType === 'POS_ONLY' || erpRole === 'ERP_SERVER') && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               {stepHeader(
                 signupMode ? 'Review & create' : 'Review & deploy',
                 'Check everything once. Most of it can be changed later in Settings.'
               )}
 
-              <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {reviewSections.map(section => (
-                  <div key={section.title} className="px-6 py-5">
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                  <div key={section.title} className="rounded-2xl border border-slate-200 bg-white px-5 py-4">
+                    <div className="flex items-center justify-between gap-3 mb-2.5">
+                      <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-2">
                         <section.icon className="w-4 h-4 text-teal-600" /> {section.title}
                       </h3>
-                      <button type="button" onClick={() => setStep(section.step)}
+                      <button type="button" onClick={() => goToStep(section.step)}
                         className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer">
                         <Pencil className="w-3 h-3" /> Edit
                       </button>
                     </div>
-                    <dl className="space-y-2">
+                    <dl className="space-y-1.5">
                       {section.rows.map(([term, value]) => (
-                        <div key={term} className="grid grid-cols-3 gap-4">
-                          <dt className="text-xs text-slate-500 pt-0.5">{term}</dt>
-                          <dd className="col-span-2 text-sm text-slate-900 font-medium min-w-0 break-words">{value}</dd>
+                        <div key={term} className="grid grid-cols-[88px_minmax(0,1fr)] gap-3">
+                          <dt className="text-xs text-slate-500 pt-px">{term}</dt>
+                          <dd className="text-sm text-slate-900 font-medium break-words">{value}</dd>
                         </div>
                       ))}
                     </dl>
@@ -2109,56 +2302,75 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 ))}
               </div>
 
-              {/* A few items to try a sale with straight away; one click removes them later. */}
-              {signupMode && (
-                <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200 bg-white cursor-pointer hover:bg-slate-50 transition">
-                  <input
-                    type="checkbox"
-                    checked={wantsSampleMenu}
-                    onChange={(e) => setSampleMenuChoice(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 accent-teal-600"
-                  />
-                  <span className="text-xs text-slate-600">
-                    <strong className="block text-sm font-semibold text-slate-900">Start with a sample menu</strong>
-                    Five food items so you can try a sale straight away. Remove them with one click from Getting started.
-                  </span>
-                </label>
-              )}
+              <div className={`grid grid-cols-1 gap-4 ${signupMode ? 'md:grid-cols-2' : ''}`}>
+                {/* A few items to try a sale with straight away; one click removes them later. */}
+                {signupMode && (
+                  <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200 bg-white cursor-pointer hover:bg-slate-50 transition">
+                    <input
+                      type="checkbox"
+                      checked={wantsSampleMenu}
+                      onChange={(e) => setSampleMenuChoice(e.target.checked)}
+                      className="w-4 h-4 mt-0.5 accent-teal-600"
+                    />
+                    <span className="text-xs text-slate-600">
+                      <strong className="block text-sm font-semibold text-slate-900">Start with a sample menu</strong>
+                      Five food items to try a sale straight away; remove them in one click from Getting started.
+                    </span>
+                  </label>
+                )}
 
-              <div className="flex items-start gap-3 p-4 rounded-2xl bg-teal-50 border border-teal-200">
-                <Sparkles className="w-5 h-5 text-teal-600 shrink-0" />
-                <p className="text-xs text-teal-900 leading-relaxed">
-                  {signupMode ? (
-                    <><strong>Your 30-day free trial starts today</strong> — no card needed. Press <strong>Create Business Account</strong> when you are ready.</>
-                  ) : (
-                    <>Everything is ready. Press <strong>Complete Setup &amp; Launch</strong> to create the database and open Cashly.</>
-                  )}
-                </p>
+                <div className="flex items-start gap-3 p-4 rounded-2xl bg-teal-50 border border-teal-200">
+                  <Sparkles className="w-5 h-5 text-teal-600 shrink-0" />
+                  <p className="text-xs text-teal-900 leading-relaxed">
+                    {signupMode ? (
+                      <><strong className="block text-sm">Your 30-day free trial starts today</strong>No card needed. Press <strong>Create Business Account</strong> when you are ready.</>
+                    ) : (
+                      <>Everything is ready. Press <strong>Complete Setup &amp; Launch</strong> to create the database and open Cashly.</>
+                    )}
+                  </p>
+                </div>
               </div>
             </div>
           )}
         </div>
       </div>
 
+      {/* A problem that is not one field's: floats over the page, so nothing below it moves. */}
+      {errorMessage && (
+        <div
+          role="alert"
+          className="fixed z-40 top-16 lg:top-28 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-lg flex items-start gap-3 p-3.5 rounded-2xl bg-white border border-rose-200 shadow-2xl shadow-slate-900/15"
+        >
+          <span className="w-8 h-8 rounded-xl bg-rose-50 flex items-center justify-center shrink-0">
+            <AlertCircle className="w-4 h-4 text-rose-600" />
+          </span>
+          <p className="flex-1 min-w-0 pt-1.5 text-sm text-slate-800">{errorMessage}</p>
+          <button type="button" onClick={() => setErrorMessage(null)} title="Dismiss"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Bottom Navigation Bar */}
       <div className="shrink-0 border-t border-slate-200 bg-white px-6 md:px-10 py-4">
-        <div className={`${step === 1 || step === VERSION_STEP || step === INSTALL_STEP ? 'max-w-6xl' : 'max-w-4xl'} w-full mx-auto flex items-center justify-between gap-4`}>
+        <div className={`${step === 1 || step === VERSION_STEP || step === INSTALL_STEP ? 'max-w-6xl' : step === REVIEW_STEP ? 'max-w-5xl' : 'max-w-4xl'} w-full mx-auto flex items-center justify-between gap-4`}>
           {step > 1 ? (
             <button
               type="button"
-              onClick={() => setStep(previousStepBefore(step))}
-              className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs flex items-center gap-2 transition cursor-pointer"
+              onClick={() => goToStep(previousStepBefore(step))}
+              className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-sm flex items-center gap-2 transition cursor-pointer"
             >
               <ArrowLeft className="w-4 h-4" /> Back
             </button>
           ) : <div />}
 
           <div className="hidden md:block text-center min-w-0">
-            <div className="text-xs font-bold text-slate-900 truncate">
+            <div className="text-[13px] font-bold text-slate-900 truncate">
               {systemType === 'POS_ERP' ? 'Cashly POS + ERP' : 'Cashly POS'}{step > 1 ? ` · ${selectedVersionLabel}` : ''}
             </div>
             {(step === 1 ? setupFrom : stepOneCost) && (
-              <div className="text-[11px] text-slate-500 truncate">{step === 1 ? setupFrom : stepOneCost}</div>
+              <div className="text-xs text-slate-500 truncate">{step === 1 ? setupFrom : stepOneCost}</div>
             )}
           </div>
 
@@ -2170,7 +2382,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               <button
                 type="button"
                 onClick={handleNext}
-                className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-teal-500/20 transition cursor-pointer"
+                className="px-6 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-sm flex items-center gap-2 shadow-lg shadow-teal-500/20 transition cursor-pointer"
               >
                 <span>Continue{nextLabel && <span className="hidden sm:inline"> to {nextLabel}</span>}</span> <ArrowRight className="w-4 h-4" />
               </button>
