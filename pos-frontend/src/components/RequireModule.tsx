@@ -42,7 +42,7 @@ export const RequireModule: React.FC<RequireModuleProps> = ({ module, action = '
           <ShieldAlert className="w-7 h-7" />
         </div>
         <div className="space-y-1.5">
-          <h2 className="text-lg font-black text-slate-900">Access Denied</h2>
+          <h2 className="text-lg font-bold text-slate-900">Access Denied</h2>
           <p className="text-xs text-slate-500 leading-relaxed">
             {superAdminOnly ? (
               <>This screen is reserved for the platform administrator and is not available to restaurant accounts.</>

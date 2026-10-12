@@ -89,7 +89,7 @@ export const DeliveryIntegrationSettings: React.FC = () => {
     isSecret = false
   ) => (
     <div>
-      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</label>
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</label>
       <input
         type={isSecret ? 'password' : 'text'}
         value={(config[key] as string) || ''}
@@ -109,7 +109,7 @@ export const DeliveryIntegrationSettings: React.FC = () => {
             <Bike className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Delivery Integrations</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Delivery Integrations</h1>
             <p className="text-[11px] text-slate-500 mt-1">Connect aggregator platforms to the delivery board</p>
           </div>
         </div>
@@ -152,7 +152,7 @@ export const DeliveryIntegrationSettings: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-black text-slate-900">{active.label}</h2>
+            <h2 className="text-sm font-bold text-slate-900">{active.label}</h2>
             <p className="text-[11px] text-slate-500 leading-snug mt-1 max-w-lg">{active.blurb}</p>
           </div>
           <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border ${

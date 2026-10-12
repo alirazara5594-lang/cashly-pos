@@ -81,7 +81,7 @@ export const DirectorDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight">Dashboard</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight">Dashboard</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Today at {atHeadOffice ? 'your outlets' : selectedTenant?.name ?? 'your business'}. Updates every 10 seconds.
           </p>
@@ -133,13 +133,13 @@ export const DirectorDashboard: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-sm h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Today's Sales</span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Today's Sales</span>
             <div className="w-7 h-7 rounded-lg bg-teal-50 text-teal-600 flex items-center justify-center">
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
           <div>
-            <div className="text-xl font-black text-slate-900 leading-tight">{money(kpis?.todaySalesPKR)}</div>
+            <div className="text-xl font-bold text-slate-900 leading-tight">{money(kpis?.todaySalesPKR)}</div>
             {sales.text && (
               <div className={`text-[10px] flex items-center gap-1 mt-0.5 font-semibold ${
                 sales.up === null ? 'text-slate-500' : sales.up ? 'text-teal-600' : 'text-rose-600'
@@ -154,13 +154,13 @@ export const DirectorDashboard: React.FC = () => {
 
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-sm h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Orders</span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Orders</span>
             <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
               <ShoppingBag className="w-4 h-4" />
             </div>
           </div>
           <div>
-            <div className="text-xl font-black text-slate-900 leading-tight">{kpis?.totalOrders ?? 0}</div>
+            <div className="text-xl font-bold text-slate-900 leading-tight">{kpis?.totalOrders ?? 0}</div>
             <div className="text-[10px] text-slate-500 mt-0.5">
               <strong className="text-teal-600">{kpis?.completedOrders ?? 0} completed</strong> • {kpis?.activeOrders ?? 0} open
             </div>
@@ -169,26 +169,26 @@ export const DirectorDashboard: React.FC = () => {
 
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-sm h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Average Order</span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Average Order</span>
             <div className="w-7 h-7 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center">
               <BarChart3 className="w-4 h-4" />
             </div>
           </div>
           <div>
-            <div className="text-xl font-black text-slate-900 leading-tight">{money(kpis?.avgBasketPKR)}</div>
+            <div className="text-xl font-bold text-slate-900 leading-tight">{money(kpis?.avgBasketPKR)}</div>
             <div className="text-[10px] text-slate-500 mt-0.5">Per order today</div>
           </div>
         </div>
 
         <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-sm h-[115px] flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Cash in Open Tills</span>
+            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Cash in Open Tills</span>
             <div className="w-7 h-7 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
               <Wallet className="w-4 h-4" />
             </div>
           </div>
           <div>
-            <div className="text-xl font-black text-slate-900 leading-tight">{money(kpis?.cashInOpenTillsPKR)}</div>
+            <div className="text-xl font-bold text-slate-900 leading-tight">{money(kpis?.cashInOpenTillsPKR)}</div>
             <div className="text-[10px] text-slate-500 mt-0.5">
               {openShifts.length === 0 ? 'No till open right now' : `${openShifts.length} till${openShifts.length === 1 ? '' : 's'} open`}
             </div>
@@ -200,7 +200,7 @@ export const DirectorDashboard: React.FC = () => {
       {showBranches && (
         <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-4 shadow-sm">
           <div>
-            <h2 className="text-base font-black text-slate-900 flex items-center gap-2">
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <Layers className="w-4 h-4 text-teal-600" />
               <span>Outlets Today</span>
             </h2>
@@ -233,7 +233,7 @@ export const DirectorDashboard: React.FC = () => {
                       <td className="py-3 text-slate-700">{branch.city || '—'}</td>
                       <td className="py-3 text-center font-mono font-bold text-slate-700">{branch.activeCounters}</td>
                       <td className="py-3 text-center font-bold text-slate-900">{branch.ordersCount}</td>
-                      <td className="py-3 text-right font-black text-teal-600 text-sm">{money(branch.todaySalesPKR)}</td>
+                      <td className="py-3 text-right font-bold text-teal-600 text-sm">{money(branch.todaySalesPKR)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -260,7 +260,7 @@ export const DirectorDashboard: React.FC = () => {
                     <span className="font-bold text-xs text-slate-900">{item.name}</span>
                     <div className="text-[10px] text-slate-500">{item.quantity} sold</div>
                   </div>
-                  <span className="font-black text-xs text-teal-600">{money(item.revenuePKR)}</span>
+                  <span className="font-bold text-xs text-teal-600">{money(item.revenuePKR)}</span>
                 </div>
               ))}
             </div>
@@ -288,7 +288,7 @@ export const DirectorDashboard: React.FC = () => {
                   </div>
                   <div className="flex justify-between pt-1 border-t border-slate-200">
                     <span className="text-slate-500 font-bold">Should be in the drawer</span>
-                    <span className="text-teal-600 font-black">{money(s.expectedCashPKR)}</span>
+                    <span className="text-teal-600 font-bold">{money(s.expectedCashPKR)}</span>
                   </div>
                 </div>
               ))}

@@ -480,7 +480,7 @@ export const SupplyChainManagement: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <Truck className="w-6 h-6 text-teal-500" />
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Transfers & Purchasing</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Transfers & Purchasing</h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
             {isMultiBranchChain
@@ -566,17 +566,17 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-white border border-slate-200">
                 <span className="text-xs text-slate-500 block">Total Transfers</span>
-                <span className="text-lg font-black text-slate-900">{transfers.length}</span>
+                <span className="text-lg font-bold text-slate-900">{transfers.length}</span>
               </div>
               <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200">
                 <span className="text-xs text-amber-600 block">In-Transit On Road</span>
-                <span className="text-lg font-black text-amber-600">
+                <span className="text-lg font-bold text-amber-600">
                   {transfers.filter(t => t.status === 'InTransit').length}
                 </span>
               </div>
               <div className="p-2.5 rounded-xl bg-teal-50 border border-teal-200">
                 <span className="text-xs text-teal-600 block">Received at Outlets</span>
-                <span className="text-lg font-black text-teal-600">
+                <span className="text-lg font-bold text-teal-600">
                   {transfers.filter(t => t.status === 'Received').length}
                 </span>
               </div>
@@ -584,7 +584,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleOpenNewTransfer}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               <Plus className="w-4 h-4" />
               <span>New Transfer</span>
@@ -593,7 +593,7 @@ export const SupplyChainManagement: React.FC = () => {
 
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Transfer Requisitions & Dispatch Logistics</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Transfer Requisitions & Dispatch Logistics</span>
               <span className="text-xs text-slate-400">{transfers.length} records</span>
             </div>
 
@@ -683,7 +683,7 @@ export const SupplyChainManagement: React.FC = () => {
                                   setDispatchOrder(tr);
                                   setDispatchDriver(tr.vehicleOrDriver || '');
                                 }}
-                                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-md transition"
+                                className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-md transition"
                               >
                                 Dispatch Order
                               </button>
@@ -692,7 +692,7 @@ export const SupplyChainManagement: React.FC = () => {
                             {tr.status === 'InTransit' && (
                               <button
                                 onClick={() => setReceiveOrder(tr)}
-                                className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
+                                className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
                               >
                                 <PackageCheck className="w-3.5 h-3.5" />
                                 <span>Receive & Stock-In</span>
@@ -723,17 +723,17 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-white border border-slate-200">
                 <span className="text-xs text-slate-500 block">Total Purchase Orders</span>
-                <span className="text-lg font-black text-slate-900">{purchaseOrders.length}</span>
+                <span className="text-lg font-bold text-slate-900">{purchaseOrders.length}</span>
               </div>
               <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200">
                 <span className="text-xs text-blue-600 block">Pending Delivery</span>
-                <span className="text-lg font-black text-blue-600">
+                <span className="text-lg font-bold text-blue-600">
                   {purchaseOrders.filter(p => p.status === 'Ordered').length}
                 </span>
               </div>
               <div className="p-2.5 rounded-xl bg-teal-50 border border-teal-200">
                 <span className="text-xs text-teal-600 block">Received GRNs</span>
-                <span className="text-lg font-black text-teal-600">
+                <span className="text-lg font-bold text-teal-600">
                   {purchaseOrders.filter(p => p.status === 'Received').length}
                 </span>
               </div>
@@ -741,7 +741,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleOpenNewPO}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               <Plus className="w-4 h-4" />
               <span>Issue New Vendor PO</span>
@@ -750,7 +750,7 @@ export const SupplyChainManagement: React.FC = () => {
 
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Vendor Purchase Orders & Goods Receipt Notes</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Vendor Purchase Orders & Goods Receipt Notes</span>
               <span className="text-xs text-slate-400">{purchaseOrders.length} records</span>
             </div>
 
@@ -794,7 +794,7 @@ export const SupplyChainManagement: React.FC = () => {
                               ))}
                             </div>
                           </td>
-                          <td className="p-3 font-mono font-black text-teal-600 text-sm">
+                          <td className="p-3 font-mono font-bold text-teal-600 text-sm">
                             {po.totalCostPKR.toLocaleString()}
                           </td>
                           <td className="p-3">
@@ -818,7 +818,7 @@ export const SupplyChainManagement: React.FC = () => {
                             {po.status === 'Ordered' && (
                               <button
                                 onClick={() => handleReceivePO(po)}
-                                className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
+                                className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
                               >
                                 <ArrowRightLeft className="w-3.5 h-3.5" />
                                 <span>Inward GRN (Stock-In)</span>
@@ -848,18 +848,18 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-white border border-slate-200">
                 <span className="text-xs text-slate-500 block">Total Suppliers</span>
-                <span className="text-lg font-black text-slate-900">{suppliers.length}</span>
+                <span className="text-lg font-bold text-slate-900">{suppliers.length}</span>
               </div>
               <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
                 <span className="text-xs text-rose-600 block">Total Payable</span>
-                <span className="text-lg font-black text-rose-600">
+                <span className="text-lg font-bold text-rose-600">
                   {suppliers.reduce((s, x) => s + x.currentBalancePKR, 0).toLocaleString()}
                 </span>
               </div>
             </div>
             <button
               onClick={openNewSupplier}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               <Plus className="w-4 h-4" />
               <span>Add Supplier</span>
@@ -868,7 +868,7 @@ export const SupplyChainManagement: React.FC = () => {
 
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Supplier Directory</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Supplier Directory</span>
               <span className="text-xs text-slate-400">{suppliers.length} records</span>
             </div>
 
@@ -902,7 +902,7 @@ export const SupplyChainManagement: React.FC = () => {
                           {s.email && <div className="flex items-center gap-1 text-[11px] text-slate-500"><Mail className="w-3 h-3" />{s.email}</div>}
                         </td>
                         <td className="p-3 text-slate-700">{s.paymentTerms || <span className="text-slate-400">—</span>}</td>
-                        <td className="p-3 text-right font-mono font-black text-rose-600">{s.currentBalancePKR.toLocaleString()}</td>
+                        <td className="p-3 text-right font-mono font-bold text-rose-600">{s.currentBalancePKR.toLocaleString()}</td>
                         <td className="p-3">
                           <span className={`px-2 py-1 rounded-md text-[10px] font-bold border ${
                             s.isActive ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'
@@ -944,7 +944,7 @@ export const SupplyChainManagement: React.FC = () => {
         <div className="space-y-6">
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Stock Movement History — {selectedBranch?.name || 'This Branch'} (last 30 days)
               </span>
               <span className="text-xs text-slate-400">{stockLedger.length} records</span>
@@ -981,7 +981,7 @@ export const SupplyChainManagement: React.FC = () => {
                             {e.movementType}
                           </span>
                         </td>
-                        <td className={`p-3 text-right font-mono font-black ${e.quantityChange >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
+                        <td className={`p-3 text-right font-mono font-bold ${e.quantityChange >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
                           {e.quantityChange > 0 ? '+' : ''}{e.quantityChange}
                         </td>
                         <td className="p-3 text-right font-mono text-slate-700">{e.balanceAfter}</td>
@@ -1004,12 +1004,12 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-white border border-slate-200">
                 <span className="text-xs text-slate-500 block">Storage Locations — {selectedBranch?.name || 'This Branch'}</span>
-                <span className="text-lg font-black text-slate-900">{warehouses.length}</span>
+                <span className="text-lg font-bold text-slate-900">{warehouses.length}</span>
               </div>
             </div>
             <button
               onClick={() => setIsNewWarehouseOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               <Plus className="w-4 h-4" />
               <span>Add Warehouse</span>
@@ -1018,7 +1018,7 @@ export const SupplyChainManagement: React.FC = () => {
 
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Most restaurants only need one — add more if you split storage (e.g. a walk-in freezer separate from dry store).
               </span>
             </div>
@@ -1081,13 +1081,13 @@ export const SupplyChainManagement: React.FC = () => {
               </button>
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Name</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Name</label>
               <input type="text" value={newWarehouseName} onChange={(e) => setNewWarehouseName(e.target.value)}
                 placeholder="e.g. Walk-in Freezer" autoFocus
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Code (optional)</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Code (optional)</label>
               <input type="text" value={newWarehouseCode} onChange={(e) => setNewWarehouseCode(e.target.value)}
                 placeholder="e.g. FRZ-1"
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
@@ -1095,7 +1095,7 @@ export const SupplyChainManagement: React.FC = () => {
             <button
               onClick={handleCreateWarehouse}
               disabled={warehouseSaving || !newWarehouseName.trim()}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-bold text-xs shadow-lg transition"
             >
               {warehouseSaving ? 'Saving…' : 'Add Warehouse'}
             </button>
@@ -1117,13 +1117,13 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
             <p className="text-[11px] text-slate-500">Owed: <span className="font-mono font-bold text-rose-600">{paymentSupplier.currentBalancePKR.toLocaleString()} PKR</span></p>
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Amount (PKR)</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Amount (PKR)</label>
               <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
                 max={paymentSupplier.currentBalancePKR}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Payment Method</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Payment Method</label>
               <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
                 <option>Bank Transfer</option>
@@ -1134,7 +1134,7 @@ export const SupplyChainManagement: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Reference # (optional)</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Reference # (optional)</label>
               <input type="text" value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)}
                 placeholder="Cheque #, transaction ID..."
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
@@ -1142,7 +1142,7 @@ export const SupplyChainManagement: React.FC = () => {
             <button
               onClick={handleRecordPayment}
               disabled={paymentSaving || !paymentAmount || Number(paymentAmount) <= 0}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-bold text-xs shadow-lg transition"
             >
               {paymentSaving ? 'Recording…' : 'Record Payment'}
             </button>
@@ -1166,45 +1166,45 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Supplier / Vendor Name</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Supplier / Vendor Name</label>
                 <input type="text" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })}
                   placeholder="e.g. Dawn Bread Bakeries" autoFocus
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Contact Person</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Contact Person</label>
                 <input type="text" value={supplierForm.contactName} onChange={(e) => setSupplierForm({ ...supplierForm, contactName: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Phone</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Phone</label>
                 <input type="text" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Email</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Email</label>
                 <input type="email" value={supplierForm.email} onChange={(e) => setSupplierForm({ ...supplierForm, email: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Tax / NTN Number</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Tax / NTN Number</label>
                 <input type="text" value={supplierForm.taxNumber} onChange={(e) => setSupplierForm({ ...supplierForm, taxNumber: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div className="col-span-2">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Address</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Address</label>
                 <input type="text" value={supplierForm.address} onChange={(e) => setSupplierForm({ ...supplierForm, address: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Payment Terms</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Payment Terms</label>
                 <input type="text" value={supplierForm.paymentTerms} onChange={(e) => setSupplierForm({ ...supplierForm, paymentTerms: e.target.value })}
                   placeholder="e.g. Net 30, Cash on Delivery"
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               {supplierModal === 'new' && (
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Opening Balance Owed (PKR)</label>
+                  <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Opening Balance Owed (PKR)</label>
                   <input type="number" value={supplierForm.openingBalancePKR}
                     onChange={(e) => setSupplierForm({ ...supplierForm, openingBalancePKR: Number(e.target.value) || 0 })}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
@@ -1215,7 +1215,7 @@ export const SupplyChainManagement: React.FC = () => {
             <button
               onClick={handleSaveSupplier}
               disabled={supplierSaving}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-50 text-white font-bold text-xs shadow-lg transition"
             >
               {supplierSaving ? 'Saving…' : supplierModal === 'new' ? 'Add Supplier' : 'Save Changes'}
             </button>
@@ -1239,7 +1239,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Source (Dispatch Commissary)</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Source (Dispatch Commissary)</label>
                 <select
                   value={transferSourceBranchId}
                   onChange={(e) => setTransferSourceBranchId(e.target.value)}
@@ -1254,7 +1254,7 @@ export const SupplyChainManagement: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Destination (Receiving Branch)</label>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Destination (Receiving Branch)</label>
                 <select
                   value={transferDestBranchId}
                   onChange={(e) => setTransferDestBranchId(e.target.value)}
@@ -1270,7 +1270,7 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Logistics / Assigned Vehicle</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Logistics / Assigned Vehicle</label>
               <input
                 type="text"
                 value={transferVehicle}
@@ -1282,7 +1282,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">Items to Move (ingredients or products)</label>
+                <label className="text-[11px] font-semibold text-slate-500 uppercase">Items to Move (ingredients or products)</label>
                 <button
                   type="button"
                   onClick={handleAddTransferLine}
@@ -1343,7 +1343,7 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Requisition Notes</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Requisition Notes</label>
               <input
                 type="text"
                 value={transferNotes}
@@ -1354,7 +1354,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleCreateTransfer}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               Create Transfer
             </button>
@@ -1397,7 +1397,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleDispatch}
-              className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-lg transition"
             >
               Confirm Dispatch & Set In-Transit
             </button>
@@ -1438,7 +1438,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleReceive}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               Verify Goods & Stock-In to Branch
             </button>
@@ -1461,7 +1461,7 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Vendor / Supplier</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Vendor / Supplier</label>
               {suppliers.length > 0 ? (
                 <select
                   value={poSupplierId}
@@ -1494,7 +1494,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <div>
               <div className="flex justify-between items-center mb-1">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">Items Ordered (ingredients or products)</label>
+                <label className="text-[11px] font-semibold text-slate-500 uppercase">Items Ordered (ingredients or products)</label>
                 <button
                   type="button"
                   onClick={handleAddPOLine}
@@ -1568,7 +1568,7 @@ export const SupplyChainManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">Purchase Order Notes</label>
+              <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Purchase Order Notes</label>
               <input
                 type="text"
                 value={poNotes}
@@ -1580,7 +1580,7 @@ export const SupplyChainManagement: React.FC = () => {
 
             <button
               onClick={handleCreatePO}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg transition"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
             >
               Issue Purchase Order
             </button>

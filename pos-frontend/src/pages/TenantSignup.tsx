@@ -350,7 +350,7 @@ export const TenantSignup: React.FC = () => {
             <CheckCircle2 className="w-8 h-8 text-teal-500" />
           </div>
           <div>
-            <h1 className="text-2xl font-black text-slate-900 mb-2">You're all set!</h1>
+            <h1 className="text-2xl font-bold text-slate-900 mb-2">You're all set!</h1>
             <p className="text-sm text-slate-600">
               <span className="font-bold text-slate-900">{form.restaurantName}</span> is now live on Cashly POS
               {selectedPackage ? <> on the <span className="font-bold text-slate-900">{selectedPackage.displayName}</span> plan</> : null}.
@@ -389,7 +389,7 @@ export const TenantSignup: React.FC = () => {
           <div className="w-12 h-12 rounded-2xl bg-teal-500 flex items-center justify-center mx-auto shadow-lg shadow-teal-500/25">
             <Store className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-2xl font-black text-slate-900">Register Your Business</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Register Your Business</h1>
           <p className="text-sm text-slate-600">Start your 30-day free trial. No credit card required.</p>
         </div>
 
@@ -420,7 +420,7 @@ export const TenantSignup: React.FC = () => {
         {step === 1 && (
           <div className="space-y-4 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
-              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">How many locations?</h2>
+              <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">How many locations?</h2>
               <p className="text-sm text-slate-500">
                 You can add more later — this just sets up the right structure from day one.
               </p>
@@ -481,7 +481,7 @@ export const TenantSignup: React.FC = () => {
             {form.deploymentMode === 'MultiBranch' && (
               <div className="space-y-2.5 pt-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider">
+                  <span className="text-[10px] uppercase font-semibold text-slate-400 tracking-wider">
                     Branches under head office
                   </span>
                   <span className="text-[11px] font-semibold text-slate-500">
@@ -492,7 +492,7 @@ export const TenantSignup: React.FC = () => {
                 {form.branches.map((b, i) => (
                   <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-black text-slate-400 w-8 shrink-0">
+                      <span className="text-[10px] font-bold text-slate-400 w-8 shrink-0">
                         BR-{String(i + 1).padStart(2, '0')}
                       </span>
                       <input
@@ -554,7 +554,7 @@ export const TenantSignup: React.FC = () => {
             the number of locations described at step 1. */}
         {step === 2 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
+            <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">Choose Your Plan</h2>
             <p className="text-sm text-slate-500">
               Every plan gets the full 30-day trial and every plan supports a head office —
               this just sets your location, device and user limits. Switch anytime.
@@ -600,7 +600,7 @@ export const TenantSignup: React.FC = () => {
                     >
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`text-sm font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
+                          <span className={`text-sm font-bold ${active ? 'text-teal-700' : 'text-slate-900'}`}>{pkg.displayName}</span>
                           {active && <Check className="w-4 h-4 text-teal-600" />}
                           {form.deploymentMode === 'MultiBranch' && (
                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
@@ -626,7 +626,7 @@ export const TenantSignup: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className={`text-base font-black ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
+                        <div className={`text-base font-bold ${active ? 'text-teal-700' : 'text-slate-900'}`}>₨{pkg.monthlyPricePKR.toLocaleString()}</div>
                         <div className="text-xs text-slate-400">/month</div>
                       </div>
                     </button>
@@ -658,7 +658,7 @@ export const TenantSignup: React.FC = () => {
         {step === 3 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
-              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Business Details</h2>
+              <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">Business Details</h2>
               <p className="text-sm text-slate-500">Your trade, your name, and where you operate.</p>
             </div>
 
@@ -788,7 +788,7 @@ export const TenantSignup: React.FC = () => {
         {step === 4 && (
           <div className="space-y-3.5 p-6 rounded-2xl bg-white border border-slate-200">
             <div className="space-y-1">
-              <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Owner Account</h2>
+              <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">Owner Account</h2>
               <p className="text-sm text-slate-500">This becomes your Owner/Admin login — full access to everything.</p>
             </div>
 
@@ -899,7 +899,7 @@ export const TenantSignup: React.FC = () => {
         {/* Step 5: Review & Create */}
         {step === 5 && (
           <div className="space-y-2.5 p-5 rounded-2xl bg-white border border-slate-200">
-            <h2 className="text-base font-black text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
+            <h2 className="text-base font-bold text-slate-900 uppercase tracking-wider">Review &amp; Create</h2>
 
             <div className="grid grid-cols-2 gap-x-5 gap-y-0.5">
               {[

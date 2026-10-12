@@ -50,10 +50,10 @@ export const ConnectDevice: React.FC = () => {
     <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-5">
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-teal-700/25">
             C
           </div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">
+          <h1 className="text-xl font-bold text-slate-900 tracking-tight">
             Cashly <span className="text-teal-600">POS</span>
           </h1>
         </div>
@@ -62,7 +62,7 @@ export const ConnectDevice: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4 text-center">
             <CheckCircle2 className="w-10 h-10 text-teal-600 mx-auto" />
             <div>
-              <h2 className="text-base font-black text-slate-900">This device is connected</h2>
+              <h2 className="text-base font-bold text-slate-900">This device is connected</h2>
               <p className="text-xs text-slate-600 mt-1">
                 {connected.terminalName ? <><strong>{connected.terminalName}</strong> at </> : 'Connected to '}
                 <strong>{connected.branchName ?? 'your branch'}</strong>
@@ -92,7 +92,7 @@ export const ConnectDevice: React.FC = () => {
             </p>
 
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+              <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
                 Pairing code
               </label>
               <input

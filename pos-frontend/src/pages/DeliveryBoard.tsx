@@ -172,7 +172,7 @@ export const DeliveryBoard: React.FC = () => {
             <Bike className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 flex items-center gap-2">
+            <h1 className="text-lg font-bold text-slate-900 flex items-center gap-2">
               <span>Delivery Dispatch & COD Control Board</span>
             </h1>
             <p className="text-xs text-slate-500">
@@ -197,7 +197,7 @@ export const DeliveryBoard: React.FC = () => {
           {/* Settle Rider COD Action Button */}
           <button
             onClick={() => handleOpenSettlement()}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25 transition"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
           >
             <DollarSign className="w-4 h-4" />
             <span>Rider COD Settlement</span>
@@ -236,10 +236,10 @@ export const DeliveryBoard: React.FC = () => {
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                 <div className="flex justify-between items-start">
                   <div>
-                    <span className="font-black text-xs text-slate-900">{order.orderNumber}</span>
+                    <span className="font-bold text-xs text-slate-900">{order.orderNumber}</span>
                     <div className="text-[10px] text-amber-600 font-semibold">{order.orderType}</div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()}</span>
+                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()}</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -282,10 +282,10 @@ export const DeliveryBoard: React.FC = () => {
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-blue-200 space-y-2">
                 <div className="flex justify-between items-start">
                   <div>
-                    <span className="font-black text-xs text-slate-900">{order.orderNumber}</span>
+                    <span className="font-bold text-xs text-slate-900">{order.orderNumber}</span>
                     <div className="text-[10px] text-blue-600 font-semibold">Packed & Ready</div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()}</span>
+                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()}</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -331,13 +331,13 @@ export const DeliveryBoard: React.FC = () => {
               <div key={order.id} className="p-3 rounded-xl bg-slate-50 border border-purple-200 space-y-2">
                 <div className="flex justify-between items-start">
                   <div>
-                    <span className="font-black text-xs text-slate-900">{order.orderNumber}</span>
+                    <span className="font-bold text-xs text-slate-900">{order.orderNumber}</span>
                     <div className="text-[10px] text-purple-600 font-semibold flex items-center gap-1">
                       <Bike className="w-3 h-3 text-purple-500" />
                       <span>{order.assignedRider?.name || 'Rider En Route'}</span>
                     </div>
                   </div>
-                  <span className="text-xs font-black text-teal-600">{order.totalPKR.toLocaleString()} (COD)</span>
+                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()} (COD)</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -433,7 +433,7 @@ export const DeliveryBoard: React.FC = () => {
             <button
               onClick={handleAssignRider}
               disabled={!selectedRiderId}
-              className="w-full py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-black text-xs shadow-lg shadow-blue-500/25 transition disabled:opacity-40"
+              className="w-full py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs shadow-lg shadow-blue-500/25 transition disabled:opacity-40"
             >
               Confirm Dispatch
             </button>
@@ -486,7 +486,7 @@ export const DeliveryBoard: React.FC = () => {
                     </div>
                     <div className="flex justify-between text-slate-500">
                       <span>Expected Cash Collection:</span>
-                      <strong className="text-teal-600 font-black text-sm">{expectedCOD.toLocaleString()}</strong>
+                      <strong className="text-teal-600 font-bold text-sm">{expectedCOD.toLocaleString()}</strong>
                     </div>
 
                     <div className="pt-2 border-t border-slate-200 space-y-1">
@@ -497,7 +497,7 @@ export const DeliveryBoard: React.FC = () => {
                         type="number"
                         value={cashCollectedInput || ''}
                         onChange={(e) => setCashCollectedInput(Number(e.target.value) || 0)}
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-right font-black text-slate-900 text-sm focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-right font-bold text-slate-900 text-sm focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                       />
                     </div>
 
@@ -520,7 +520,7 @@ export const DeliveryBoard: React.FC = () => {
                 <button
                   onClick={handleConfirmSettlement}
                   disabled={isSettling}
-                  className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25 transition"
+                  className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
                 >
                   {isSettling ? 'Reconciling...' : 'Confirm Reconciliation & Close Rider Shift'}
                 </button>

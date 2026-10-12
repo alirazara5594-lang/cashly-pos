@@ -43,8 +43,8 @@ export const MessageLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }>
       <div className="grid grid-cols-3 gap-3 max-w-xl">
         {[['sent', 'Sent (30 days)', 'text-teal-700'], ['failed', 'Failed', 'text-rose-600'], ['skipped', 'Not sent (nothing set up)', 'text-slate-500']].map(([s, label, tone]) => (
           <div key={s} className="p-3 rounded-2xl bg-white border border-slate-200">
-            <div className="text-[10px] font-bold uppercase text-slate-500">{label}</div>
-            <div className={`text-xl font-black ${tone}`}>{count(s)}</div>
+            <div className="text-[10px] font-semibold uppercase text-slate-500">{label}</div>
+            <div className={`text-xl font-bold ${tone}`}>{count(s)}</div>
           </div>
         ))}
       </div>
@@ -75,7 +75,7 @@ export const MessageLog: React.FC<{ onOpenTenant?: (tenantId: string) => void }>
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 border-b border-slate-200">
-            <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+            <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
               <th className="px-4 py-2.5 w-8"></th>
               <th className="px-4 py-2.5">When</th>
               <th className="px-4 py-2.5">Business</th>

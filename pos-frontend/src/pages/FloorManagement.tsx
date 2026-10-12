@@ -201,7 +201,7 @@ export const FloorManagement: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <Building2 className="w-6 h-6 text-teal-500" />
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Floors & Tables</h1>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Floors & Tables</h1>
             {!atHeadOffice && selectedBranch && (
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold border border-slate-200">
                 {selectedBranch.name}
@@ -244,7 +244,7 @@ export const FloorManagement: React.FC = () => {
           </button>
           <button
             onClick={handleOpenAdd}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25 transition"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
           >
             <Plus className="w-4 h-4" />
             <span>Add Dining Table</span>
@@ -265,7 +265,7 @@ export const FloorManagement: React.FC = () => {
           onClick={() => setSelectedFloor('all')}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
             selectedFloor === 'all'
-              ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25 font-black'
+              ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25 font-bold'
               : 'bg-slate-100 text-slate-600 hover:bg-teal-50 border border-slate-200'
           }`}
         >
@@ -282,7 +282,7 @@ export const FloorManagement: React.FC = () => {
               onClick={() => setSelectedFloor(fl)}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
                 selectedFloor === fl
-                  ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25 font-black'
+                  ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25 font-bold'
                   : 'bg-slate-100 text-slate-600 hover:bg-teal-50 border border-slate-200'
               }`}
             >
@@ -308,7 +308,7 @@ export const FloorManagement: React.FC = () => {
           </p>
           <button
             onClick={handleOpenAdd}
-            className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25"
+            className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25"
           >
             Create Table Now
           </button>
@@ -360,7 +360,7 @@ export const FloorManagement: React.FC = () => {
 
               {/* Table Name / Number */}
               <div className="my-2 text-center">
-                <div className="text-xl font-black text-slate-900 tracking-tight">{t.tableNumber}</div>
+                <div className="text-xl font-bold text-slate-900 tracking-tight">{t.tableNumber}</div>
                 <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-1">
                   <Users className="w-3.5 h-3.5 text-blue-500" />
                   <span>{t.capacity} Seats</span>
@@ -415,7 +415,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Table Identifier / Number
               </label>
               <input
@@ -429,7 +429,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Floor / Dining Section
               </label>
               <select
@@ -444,7 +444,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Or Create New Custom Floor / Hall Name
               </label>
               <input
@@ -457,7 +457,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Seating Capacity (Guests)
               </label>
               <input
@@ -473,7 +473,7 @@ export const FloorManagement: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs shadow-lg shadow-teal-500/25 transition mt-2"
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition mt-2"
             >
               Add Table to Floor
             </button>
@@ -503,7 +503,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Table Identifier / Number
               </label>
               <input
@@ -516,7 +516,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Floor / Dining Section
               </label>
               <select
@@ -531,7 +531,7 @@ export const FloorManagement: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
                 Seating Capacity (Guests)
               </label>
               <input
@@ -560,7 +560,7 @@ export const FloorManagement: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-black text-xs shadow-lg transition mt-2"
+              className="w-full py-3 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs shadow-lg transition mt-2"
             >
               Save Table Changes
             </button>

@@ -39,10 +39,10 @@ export const ConfirmEmail: React.FC = () => {
     <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-5">
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-teal-700/25">
             C
           </div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">
+          <h1 className="text-xl font-bold text-slate-900 tracking-tight">
             Cashly <span className="text-teal-600">POS</span>
           </h1>
         </div>
@@ -50,7 +50,7 @@ export const ConfirmEmail: React.FC = () => {
         {confirmedEmail !== null ? (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4 text-center">
             <CheckCircle2 className="w-10 h-10 text-teal-600 mx-auto" />
-            <h2 className="text-base font-black text-slate-900">Your email is confirmed</h2>
+            <h2 className="text-base font-bold text-slate-900">Your email is confirmed</h2>
             {confirmedEmail && <p className="text-xs text-slate-500">{confirmedEmail}</p>}
             <button
               type="button"
@@ -70,7 +70,7 @@ export const ConfirmEmail: React.FC = () => {
         ) : (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4 text-center">
             <MailCheck className="w-10 h-10 text-teal-600 mx-auto" />
-            <h2 className="text-base font-black text-slate-900">Confirm your email</h2>
+            <h2 className="text-base font-bold text-slate-900">Confirm your email</h2>
             <p className="text-xs text-slate-500">One click and your Cashly account email is confirmed.</p>
             {error && <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold text-left">{error}</div>}
             <button

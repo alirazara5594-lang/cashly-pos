@@ -277,7 +277,7 @@ export const SuperAdmin: React.FC = () => {
       <div className="p-6 flex justify-center">
         <div className="max-w-md w-full rounded-2xl border border-teal-200 bg-white p-6 space-y-4 text-center shadow-sm">
           <ShieldCheck className="w-10 h-10 text-teal-600 mx-auto" />
-          <h1 className="text-lg font-black text-slate-900">Turn on 2-step sign-in first</h1>
+          <h1 className="text-lg font-bold text-slate-900">Turn on 2-step sign-in first</h1>
           <p className="text-xs text-slate-600">
             This console can change every business on Cashly, so everyone on the team protects their account with a code from an
             authenticator app (Google Authenticator, Microsoft Authenticator…). It takes a minute.
@@ -349,7 +349,7 @@ export const SuperAdmin: React.FC = () => {
             {React.createElement(TAB_ICONS[activeTab], { className: "w-5 h-5 text-teal-700" })}
           </div>
           <div className="min-w-0">
-            <h1 className="text-lg font-black text-slate-900">{TAB_TITLES[activeTab].title}</h1>
+            <h1 className="text-lg font-bold text-slate-900">{TAB_TITLES[activeTab].title}</h1>
             <p className="text-xs text-slate-500 truncate">{TAB_TITLES[activeTab].subtitle}</p>
           </div>
         </div>
@@ -403,8 +403,8 @@ export const SuperAdmin: React.FC = () => {
             {pills.map(pill => (
               <button key={pill.key} onClick={() => { setFilterStatus(pill.key); setPage(1); }}
                 className={`p-3.5 rounded-2xl border text-left transition hover:shadow-sm ${pill.color} ${filterStatus === pill.key ? 'ring-2 ring-teal-500' : ''}`}>
-                <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{pill.label}</div>
-                <div className="text-2xl font-black mt-0.5 leading-tight">{tenantStats[pill.key]}</div>
+                <div className="text-[10px] uppercase font-semibold tracking-wider opacity-70">{pill.label}</div>
+                <div className="text-2xl font-bold mt-0.5 leading-tight">{tenantStats[pill.key]}</div>
                 <div className="text-[10px] font-semibold opacity-70 mt-0.5 truncate" title={pill.sub}>{pill.sub}</div>
               </button>
             ))}
@@ -456,7 +456,7 @@ export const SuperAdmin: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[980px] text-xs">
                 <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200 select-none text-[10px] uppercase text-slate-500 font-bold">
+                  <tr className="bg-slate-50/80 border-b border-slate-200 select-none text-[10px] uppercase text-slate-500 font-semibold">
                     <th onClick={() => handleSort('name')} className="text-left px-4 py-3 cursor-pointer hover:text-slate-800">Business {sortIcon('name')}</th>
                     <th className="text-left px-4 py-3">Owner</th>
                     <th className="text-left px-4 py-3">Setup</th>
@@ -537,7 +537,7 @@ export const SuperAdmin: React.FC = () => {
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           {t.monthlyPKR ? (
                             <>
-                              <div className="font-mono font-black text-slate-900">{pkr(t.monthlyPKR)}</div>
+                              <div className="font-mono font-bold text-slate-900">{pkr(t.monthlyPKR)}</div>
                               <div className="text-[10px] text-slate-500">{t.status === 'Trial' ? 'a month after the trial' : 'a month'}</div>
                             </>
                           ) : (
@@ -637,7 +637,7 @@ export const SuperAdmin: React.FC = () => {
           <div className="absolute inset-0 bg-slate-900/60" onClick={() => setQuickExtendTenant(null)} />
           <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-black text-slate-900 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-600" /> Extend trial: {quickExtendTenant.name}</h3>
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-600" /> Extend trial: {quickExtendTenant.name}</h3>
               <button onClick={() => setQuickExtendTenant(null)} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400"><X className="w-4 h-4" /></button>
             </div>
             <div className="flex gap-2">
@@ -666,7 +666,7 @@ export const SuperAdmin: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/60" onClick={() => setQuickImpersonateTenant(null)} />
           <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl p-5 space-y-4">
-            <h3 className="text-sm font-black text-slate-900 flex items-center gap-2"><Eye className="w-5 h-5" /> Support session</h3>
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><Eye className="w-5 h-5" /> Support session</h3>
             <p className="text-xs text-slate-500">Open <strong>{quickImpersonateTenant.name}</strong> read-only, for 30 minutes, written to their audit log.</p>
             <textarea value={impersonateReason} onChange={(e) => setImpersonateReason(e.target.value)} placeholder="Why are you opening this customer's account?" rows={3}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs resize-none" />
@@ -756,7 +756,7 @@ const ProvisionModal: React.FC<{ onClose: () => void; onDone: (tenantId?: string
       <div className="absolute inset-0 bg-slate-900/60" onClick={onClose} />
       <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
-          <h3 className="text-sm font-black text-slate-900 flex items-center gap-2"><UserPlus className="w-4 h-4 text-teal-600" /> {result ? 'Business created' : 'New business'}</h3>
+          <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2"><UserPlus className="w-4 h-4 text-teal-600" /> {result ? 'Business created' : 'New business'}</h3>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"><X className="w-4 h-4" /></button>
         </div>
 
@@ -764,7 +764,7 @@ const ProvisionModal: React.FC<{ onClose: () => void; onDone: (tenantId?: string
           <div className="p-5 space-y-3">
             <div className="px-3 py-2 rounded-xl bg-teal-50 border border-teal-200 text-xs font-semibold text-teal-700">{businessName} is live on {tierLabel(result.tier)}.</div>
             <div>
-              <div className="text-[10px] uppercase font-black text-slate-500 mb-1">Owner invite link (shown once)</div>
+              <div className="text-[10px] uppercase font-semibold text-slate-500 mb-1">Owner invite link (shown once)</div>
               <div className="p-3 rounded-xl bg-slate-900 text-teal-300 font-mono text-[11px] break-all select-all">{inviteLink}</div>
               <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
                 The owner opens it, chooses a username and PIN, and signs in. It works once, until {dateOf(result.ownerInviteExpiresAt)}, and cannot be shown again.
@@ -808,7 +808,7 @@ const ProvisionModal: React.FC<{ onClose: () => void; onDone: (tenantId?: string
               <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country" className={inputCls} />
             </div>
             <label className="block">
-              <span className="text-[10px] uppercase font-bold text-slate-500">Shape</span>
+              <span className="text-[10px] uppercase font-semibold text-slate-500">Shape</span>
               <select value={structure} onChange={(e) => setStructure(e.target.value)} className={`mt-0.5 ${inputCls}`}>
                 <option value="SingleShop">Single shop (POS and back office together)</option>
                 <option value="SingleShopWithHeadOffice">One shop with a separate head office</option>
@@ -820,19 +820,19 @@ const ProvisionModal: React.FC<{ onClose: () => void; onDone: (tenantId?: string
             )}
             <div className="grid grid-cols-3 gap-2">
               <label className="block">
-                <span className="text-[10px] uppercase font-bold text-slate-500">{structure === 'SingleShop' ? 'Plan' : 'Outlet POS'}</span>
+                <span className="text-[10px] uppercase font-semibold text-slate-500">{structure === 'SingleShop' ? 'Plan' : 'Outlet POS'}</span>
                 <select value={packageKey} onChange={(e) => setPackageKey(e.target.value)} className={`mt-0.5 ${inputCls}`}>
                   <option value="Starter">Starter</option><option value="Standard">Standard</option><option value="Professional">{tierLabel('Professional')}</option>
                 </select>
               </label>
               <label className="block">
-                <span className="text-[10px] uppercase font-bold text-slate-500">Sector</span>
+                <span className="text-[10px] uppercase font-semibold text-slate-500">Sector</span>
                 <select value={verticalPack} onChange={(e) => setVerticalPack(e.target.value)} className={`mt-0.5 ${inputCls}`}>
                   {['restaurant', 'retail', 'grocery', 'pharmacy', 'salon', 'wholesale', 'apparel', 'services'].map(v => <option key={v} value={v} className="capitalize">{v[0].toUpperCase() + v.slice(1)}</option>)}
                 </select>
               </label>
               <label className="block">
-                <span className="text-[10px] uppercase font-bold text-slate-500">Trial days</span>
+                <span className="text-[10px] uppercase font-semibold text-slate-500">Trial days</span>
                 <input type="number" min={0} value={trialDays} onChange={(e) => setTrialDays(e.target.value)} className={`mt-0.5 ${inputCls}`} />
               </label>
             </div>
@@ -902,7 +902,7 @@ const DashboardTab: React.FC<{
               <c.icon className={`w-4 h-4 ${c.color}`} />
               <span className="text-[10px] font-semibold text-slate-500 uppercase">{c.label}</span>
             </div>
-            <div className={`text-xl font-black ${c.color} truncate`}>{c.value}</div>
+            <div className={`text-xl font-bold ${c.color} truncate`}>{c.value}</div>
             {c.sub && <div className="text-[10px] text-slate-400 mt-0.5 truncate">{c.sub}</div>}
           </button>
         ))}
@@ -911,7 +911,7 @@ const DashboardTab: React.FC<{
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Renewals needing attention</div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Renewals needing attention</div>
             <button onClick={() => onGo('renewals')} className="text-[11px] font-bold text-teal-700 hover:text-teal-900">See all</button>
           </div>
           {renewalCounts && (
@@ -919,7 +919,7 @@ const DashboardTab: React.FC<{
               {([['ERP', renewalCounts.erp], ['POS', renewalCounts.pos], ['Tablets', renewalCounts.tablet], ['Add-ons', renewalCounts.addOn]] as const).map(([label, counts]) => (
                 <div key={label} className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
                   <div className="text-[10px] font-bold text-slate-500">{label}</div>
-                  <div className="text-base font-black text-amber-600">{counts.expiring}</div>
+                  <div className="text-base font-bold text-amber-600">{counts.expiring}</div>
                   <div className={`text-[10px] ${counts.overdue > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}`}>{counts.overdue} overdue</div>
                 </div>
               ))}
@@ -939,7 +939,7 @@ const DashboardTab: React.FC<{
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
-          <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Follow-ups (next 7 days)</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Follow-ups (next 7 days)</div>
           {followUps.length === 0 && <p className="text-xs text-slate-500">No follow-ups due. Add them from a business's Activity tab.</p>}
           {followUps.slice(0, 6).map(f => (
             <button key={f.id} onClick={() => onOpenTenant(f.tenantId, 'activity')}
@@ -953,7 +953,7 @@ const DashboardTab: React.FC<{
           ))}
 
           <div className="pt-2 border-t border-slate-100 space-y-2">
-            <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Plan mix</div>
+            <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Plan mix</div>
             {stats.planMix.map(p => (
               <div key={p.tier} className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
@@ -971,7 +971,7 @@ const DashboardTab: React.FC<{
 
       {stale.length > 0 && (
         <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-2">
-          <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Tills quiet for over a day</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Tills quiet for over a day</div>
           {stale.map(d => (
             <button key={d.terminalId} onClick={() => onOpenTenant(d.tenantId, 'locations')}
               className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-rose-50 border border-rose-100 hover:border-rose-300 text-left">

@@ -240,7 +240,7 @@ export const WhatsAppConfig: React.FC = () => {
               <MessageSquare className="w-5 h-5 text-teal-500" />
             </div>
             <div>
-              <h1 className="text-lg font-black text-slate-900">WhatsApp Configuration</h1>
+              <h1 className="text-lg font-bold text-slate-900">WhatsApp Configuration</h1>
               <p className="text-xs text-slate-500">Configure WhatsApp notifications for order updates</p>
             </div>
           </div>
@@ -300,21 +300,21 @@ export const WhatsAppConfig: React.FC = () => {
             <CheckCircle2 className="w-4 h-4 text-teal-500" />
             <span className="text-[10px] font-semibold text-slate-500 uppercase">Sent / Delivered</span>
           </div>
-          <div className="text-2xl font-black text-teal-600">{statusCounts.sent}</div>
+          <div className="text-2xl font-bold text-teal-600">{statusCounts.sent}</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
           <div className="flex items-center gap-2 mb-2">
             <Clock className="w-4 h-4 text-amber-500" />
             <span className="text-[10px] font-semibold text-slate-500 uppercase">Pending</span>
           </div>
-          <div className="text-2xl font-black text-amber-600">{statusCounts.pending}</div>
+          <div className="text-2xl font-bold text-amber-600">{statusCounts.pending}</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
           <div className="flex items-center gap-2 mb-2">
             <XCircle className="w-4 h-4 text-rose-500" />
             <span className="text-[10px] font-semibold text-slate-500 uppercase">Failed</span>
           </div>
-          <div className="text-2xl font-black text-rose-600">{statusCounts.failed}</div>
+          <div className="text-2xl font-bold text-rose-600">{statusCounts.failed}</div>
         </div>
       </div>
 
@@ -323,7 +323,7 @@ export const WhatsAppConfig: React.FC = () => {
         <h2 className="text-sm font-bold text-slate-900">Provider Settings</h2>
 
         <div>
-          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Provider</label>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">Provider</label>
           <div className="relative">
             <select
               value={config.provider}
@@ -341,7 +341,7 @@ export const WhatsAppConfig: React.FC = () => {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">
               API Key {secretStatus.hasApiKey && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
             </label>
             <input
@@ -353,7 +353,7 @@ export const WhatsAppConfig: React.FC = () => {
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">
               API Secret {secretStatus.hasApiSecret && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
             </label>
             <input
@@ -368,7 +368,7 @@ export const WhatsAppConfig: React.FC = () => {
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Phone Number ID</label>
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">Phone Number ID</label>
             <input
               value={config.phoneNumberId}
               onChange={(e) => setConfig({ ...config, phoneNumberId: e.target.value })}
@@ -377,7 +377,7 @@ export const WhatsAppConfig: React.FC = () => {
             />
           </div>
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">
               Access Token {secretStatus.hasAccessToken && <span className="text-teal-600 normal-case font-semibold">(saved — leave blank to keep it)</span>}
             </label>
             <input
@@ -391,7 +391,7 @@ export const WhatsAppConfig: React.FC = () => {
         </div>
 
         <div>
-          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1.5">Webhook URL</label>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1.5">Webhook URL</label>
           <input
             value={config.webhookUrl}
             onChange={(e) => setConfig({ ...config, webhookUrl: e.target.value })}
@@ -497,10 +497,10 @@ export const WhatsAppConfig: React.FC = () => {
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Phone</th>
-                  <th className="text-left px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Type</th>
-                  <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Status</th>
-                  <th className="text-center px-4 py-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Sent At</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] tracking-wider">Phone</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] tracking-wider">Type</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] tracking-wider">Status</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] tracking-wider">Sent At</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">

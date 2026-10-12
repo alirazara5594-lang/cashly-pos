@@ -58,7 +58,7 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({ title, subtitle, url, 
       <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl text-center" onClick={e => e.stopPropagation()}>
         <div className="flex items-start justify-between text-left">
           <div>
-            <h3 className="text-base font-extrabold text-slate-900">{title}</h3>
+            <h3 className="text-base font-bold text-slate-900">{title}</h3>
             {subtitle && <p className="text-xs text-slate-500">{subtitle}</p>}
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-4 h-4" /></button>

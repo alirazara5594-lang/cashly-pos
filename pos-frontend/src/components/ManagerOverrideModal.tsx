@@ -89,7 +89,7 @@ export const ManagerOverrideModal: React.FC<ManagerOverrideModalProps> = ({
               <KeyRound className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-black text-slate-900">Manager Override Required</h3>
+              <h3 className="text-sm font-bold text-slate-900">Manager Override Required</h3>
               <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{actionLabel}</p>
             </div>
           </div>
@@ -111,7 +111,7 @@ export const ManagerOverrideModal: React.FC<ManagerOverrideModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
               Authorizing Username
             </label>
             <input
@@ -125,7 +125,7 @@ export const ManagerOverrideModal: React.FC<ManagerOverrideModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
               PIN
             </label>
             <input

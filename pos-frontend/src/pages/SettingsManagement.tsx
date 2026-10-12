@@ -368,11 +368,11 @@ export const SettingsManagement: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
           <div>
             <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-teal-500 to-teal-400 flex items-center justify-center text-white font-black shadow-lg shadow-teal-500/20">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-teal-500 to-teal-400 flex items-center justify-center text-white font-bold shadow-lg shadow-teal-500/20">
                 <Sliders className="w-5 h-5 stroke-[2.5]" />
               </div>
               <div>
-                <h1 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+                <h1 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
                   System Settings & Device Provisioning
                 </h1>
                 <p className="text-xs text-slate-500">
@@ -635,7 +635,7 @@ export const SettingsManagement: React.FC = () => {
                           : cap.terminalType === 'BackOffice' ? 'Office PCs'
                           : 'Kitchen Displays'}
                       </div>
-                      <div className="text-lg font-black text-slate-900">
+                      <div className="text-lg font-bold text-slate-900">
                         {cap.inUse}
                         <span className="text-sm font-bold text-slate-400">
                           {cap.limit === null ? ' / unlimited' : ` / ${cap.limit}`}
@@ -748,10 +748,10 @@ export const SettingsManagement: React.FC = () => {
                 <div className="p-5 rounded-xl bg-teal-50 border-2 border-teal-300 space-y-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="space-y-1">
-                      <div className="text-[10px] uppercase font-bold text-teal-700">
+                      <div className="text-[10px] uppercase font-semibold text-teal-700">
                         Enter this on the {issuedCode.terminalType === 'OrderTab' ? 'tablet' : 'device'}
                       </div>
-                      <div className="text-3xl font-black text-teal-700 font-mono tracking-[0.3em]">
+                      <div className="text-3xl font-bold text-teal-700 font-mono tracking-[0.3em]">
                         {issuedCode.pairingCode}
                       </div>
                       <div className="text-[11px] text-teal-700">

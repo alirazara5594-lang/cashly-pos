@@ -108,7 +108,7 @@ export const PlatformTeam: React.FC = () => {
 
       {secret && (
         <div className="p-4 rounded-2xl border border-teal-300 bg-teal-50 space-y-2">
-          <div className="text-[10px] font-black uppercase text-teal-800">Temporary password for {secret.who} — shown once</div>
+          <div className="text-[10px] font-semibold uppercase text-teal-800">Temporary password for {secret.who} — shown once</div>
           <div className="flex items-center gap-2">
             <code className="flex-1 px-3 py-2 rounded-lg bg-white border border-teal-200 text-sm font-mono font-bold tracking-wider select-all">{secret.password}</code>
             <button onClick={() => { navigator.clipboard?.writeText(secret.password).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {}); }}
@@ -129,7 +129,7 @@ export const PlatformTeam: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 border-b border-slate-200">
-            <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+            <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
               <th className="px-4 py-2.5">Person</th>
               <th className="px-4 py-2.5">Role</th>
               <th className="px-4 py-2.5">2-step</th>

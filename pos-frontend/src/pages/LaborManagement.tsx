@@ -450,7 +450,7 @@ export const LaborManagement: React.FC = () => {
             <CalendarClock className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Shifts & Time Clock</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Shifts & Time Clock</h1>
             <p className="text-[11px] text-slate-500 mt-1">
               Shift rota and time clock for {selectedBranch?.name || 'this branch'}
             </p>
@@ -518,7 +518,7 @@ export const LaborManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     <th className="px-4 py-2.5">Staff</th>
                     <th className="px-4 py-2.5">Position</th>
                     <th className="px-4 py-2.5">Start</th>
@@ -582,7 +582,7 @@ export const LaborManagement: React.FC = () => {
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div className="flex items-end gap-2">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">From</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">From</label>
                 <input
                   type="date"
                   value={from}
@@ -591,7 +591,7 @@ export const LaborManagement: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">To</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">To</label>
                 <input
                   type="date"
                   value={to}
@@ -622,16 +622,16 @@ export const LaborManagement: React.FC = () => {
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <div className="bg-white border border-slate-200 rounded-2xl p-4">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">On the Clock</p>
-              <p className="text-xl font-black text-teal-600 mt-1">{clockedInNow.length}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">On the Clock</p>
+              <p className="text-xl font-bold text-teal-600 mt-1">{clockedInNow.length}</p>
             </div>
             <div className="bg-white border border-slate-200 rounded-2xl p-4">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Hours in Range</p>
-              <p className="text-xl font-black text-slate-900 mt-1">{totalHours.toFixed(1)}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Hours in Range</p>
+              <p className="text-xl font-bold text-slate-900 mt-1">{totalHours.toFixed(1)}</p>
             </div>
             <div className="bg-white border border-slate-200 rounded-2xl p-4">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Entries</p>
-              <p className="text-xl font-black text-slate-900 mt-1">{timesheet.length}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Entries</p>
+              <p className="text-xl font-bold text-slate-900 mt-1">{timesheet.length}</p>
             </div>
           </div>
 
@@ -639,7 +639,7 @@ export const LaborManagement: React.FC = () => {
             <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-2">
               <div className="flex items-center gap-2">
                 <Users className="w-3.5 h-3.5 text-teal-600" />
-                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Clock In / Out</span>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Clock In / Out</span>
               </div>
               {staff.length === 0 ? (
                 <p className="text-xs text-slate-400">No staff members found for this branch.</p>
@@ -687,7 +687,7 @@ export const LaborManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     <th className="px-4 py-2.5">Staff</th>
                     <th className="px-4 py-2.5">Clock In</th>
                     <th className="px-4 py-2.5">Clock Out</th>
@@ -749,7 +749,7 @@ export const LaborManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     <th className="px-4 py-2.5">Staff</th>
                     <th className="px-4 py-2.5">Type</th>
                     <th className="px-4 py-2.5">Dates</th>
@@ -806,18 +806,18 @@ export const LaborManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">Request Leave</h2>
+              <h2 className="text-sm font-bold text-slate-900">Request Leave</h2>
               <button onClick={() => setIsNewLeaveOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Staff Member</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Staff Member</label>
               <select value={leaveForm.userId} onChange={(e) => setLeaveForm({ ...leaveForm, userId: e.target.value })}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
                 {staff.map(s => <option key={s.id} value={s.id}>{s.fullName}</option>)}
               </select>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Leave Type</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Leave Type</label>
               <select value={leaveForm.leaveType} onChange={(e) => setLeaveForm({ ...leaveForm, leaveType: e.target.value as LeaveType })}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
                 {LEAVE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -825,18 +825,18 @@ export const LaborManagement: React.FC = () => {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Start</label>
                 <input type="date" value={leaveForm.startDate} onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">End</label>
                 <input type="date" value={leaveForm.endDate} onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Reason (optional)</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Reason (optional)</label>
               <input type="text" value={leaveForm.reason} onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
@@ -908,7 +908,7 @@ export const LaborManagement: React.FC = () => {
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="bg-slate-50 border-b border-slate-200">
-                    <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                       <th className="px-4 py-2.5">Staff</th>
                       <th className="px-4 py-2.5 text-right">Hours</th>
                       <th className="px-4 py-2.5 text-right">Basic Pay</th>
@@ -933,7 +933,7 @@ export const LaborManagement: React.FC = () => {
                         <td className="px-4 py-2.5 text-right text-xs font-mono text-slate-700">{p.basicPayPKR.toLocaleString()}</td>
                         <td className="px-4 py-2.5 text-right text-xs font-mono text-teal-600">{p.totalAllowancesPKR.toLocaleString()}</td>
                         <td className="px-4 py-2.5 text-right text-xs font-mono text-rose-600">{p.totalDeductionsPKR.toLocaleString()}</td>
-                        <td className="px-4 py-2.5 text-right text-xs font-mono font-black text-slate-900">{p.netPayPKR.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right text-xs font-mono font-bold text-slate-900">{p.netPayPKR.toLocaleString()}</td>
                         <td className="px-4 py-2.5">
                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${
                             p.status === 'Paid' ? 'bg-teal-50 text-teal-700 border-teal-200'
@@ -983,17 +983,17 @@ export const LaborManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">New Payroll Period</h2>
+              <h2 className="text-sm font-bold text-slate-900">New Payroll Period</h2>
               <button onClick={() => setIsNewPeriodOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Start</label>
                 <input type="date" value={newPeriodStart} onChange={(e) => setNewPeriodStart(e.target.value)}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">End</label>
                 <input type="date" value={newPeriodEnd} onChange={(e) => setNewPeriodEnd(e.target.value)}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
@@ -1014,11 +1014,11 @@ export const LaborManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">Add Line — {lineModalPayslip.userName}</h2>
+              <h2 className="text-sm font-bold text-slate-900">Add Line — {lineModalPayslip.userName}</h2>
               <button onClick={() => setLineModalPayslip(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Type</label>
               <select value={lineType} onChange={(e) => setLineType(e.target.value as PayslipLineType)}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
                 <option value="Allowance">Allowance</option>
@@ -1027,13 +1027,13 @@ export const LaborManagement: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Description</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Description</label>
               <input type="text" value={lineDesc} onChange={(e) => setLineDesc(e.target.value)}
                 placeholder="e.g. Transport allowance, Late deduction"
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
               <input type="number" value={lineAmount} onChange={(e) => setLineAmount(e.target.value)}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
@@ -1053,7 +1053,7 @@ export const LaborManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900">
                 {editingId ? 'Edit Shift' : 'Schedule Shift'}
               </h2>
               <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-700">
@@ -1063,7 +1063,7 @@ export const LaborManagement: React.FC = () => {
 
             <div className="space-y-3">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Staff Member</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Staff Member</label>
                 <select
                   value={form.userId}
                   onChange={(e) => setForm({ ...form, userId: e.target.value })}
@@ -1075,7 +1075,7 @@ export const LaborManagement: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Position</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Position</label>
                 <select
                   value={form.position}
                   onChange={(e) => setForm({ ...form, position: e.target.value })}
@@ -1087,7 +1087,7 @@ export const LaborManagement: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Start</label>
                   <input
                     type="datetime-local"
                     value={form.scheduledStart}
@@ -1096,7 +1096,7 @@ export const LaborManagement: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">End</label>
                   <input
                     type="datetime-local"
                     value={form.scheduledEnd}
@@ -1107,7 +1107,7 @@ export const LaborManagement: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Notes (optional)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Notes (optional)</label>
                 <input
                   value={form.notes}
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}

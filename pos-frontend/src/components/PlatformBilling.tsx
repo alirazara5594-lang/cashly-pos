@@ -15,7 +15,7 @@ import type {
 // ============================================================
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500';
-const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1';
+const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
 
 export const InvoiceStatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const look = INVOICE_STATUS[status] ?? { label: status, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
@@ -34,8 +34,8 @@ export const BillingSummaryCards: React.FC<{ summary: BillingSummary | null }> =
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {cards.map(c => (
         <div key={c.label} className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{c.label}</div>
-          <div className={`text-xl font-black mt-1 ${c.tone}`}>{c.value}</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{c.label}</div>
+          <div className={`text-xl font-bold mt-1 ${c.tone}`}>{c.value}</div>
           {c.sub && <div className="text-[10px] text-slate-400 mt-0.5">{c.sub}</div>}
         </div>
       ))}
@@ -140,7 +140,7 @@ export const IssueInvoiceModal: React.FC<{
     <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3.5 flex items-center justify-between z-10">
-          <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
+          <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
             <Receipt className="w-4 h-4 text-teal-600" /> New invoice{chosenName ? ` — ${chosenName}` : ''}
           </h2>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"><X className="w-4 h-4" /></button>
@@ -236,7 +236,7 @@ export const IssueInvoiceModal: React.FC<{
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-xs">
                 <div className="flex justify-between"><span className="text-slate-600">Subtotal</span><span className="font-mono">{pkr(subtotal)}</span></div>
                 {tax > 0 && <div className="flex justify-between"><span className="text-slate-600">{taxLabel} {taxRate}%</span><span className="font-mono">{pkr(tax)}</span></div>}
-                <div className="flex justify-between pt-1 border-t border-slate-200 font-black text-slate-900"><span>Total</span><span className="font-mono">{pkr(subtotal + tax)}</span></div>
+                <div className="flex justify-between pt-1 border-t border-slate-200 font-bold text-slate-900"><span>Total</span><span className="font-mono">{pkr(subtotal + tax)}</span></div>
               </div>
             </>
           )}
@@ -275,7 +275,7 @@ export const InvoicePrintView: React.FC<{ detail: SubscriptionInvoiceDetail; fro
     <div className="print-area paper bg-white p-6 sm:p-8 space-y-6 text-slate-900">
       <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <h1 className="text-2xl font-black tracking-tight">{from?.companyName ?? 'Cashly'}</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{from?.companyName ?? 'Cashly'}</h1>
           {from?.legalName && <p className="text-xs text-slate-600">{from.legalName}</p>}
           {(from?.address || from?.city) && <p className="text-[11px] text-slate-500">{[from?.address, from?.city].filter(Boolean).join(', ')}</p>}
           {(from?.phone || from?.email) && <p className="text-[11px] text-slate-500">{[from?.phone, from?.email].filter(Boolean).join(' · ')}</p>}
@@ -284,8 +284,8 @@ export const InvoicePrintView: React.FC<{ detail: SubscriptionInvoiceDetail; fro
           )}
         </div>
         <div className="text-right">
-          <div className="text-[10px] font-bold uppercase text-slate-400">{invoice.taxPKR ? 'Tax invoice' : 'Invoice'}</div>
-          <div className="text-lg font-mono font-black">{invoice.invoiceNumber}</div>
+          <div className="text-[10px] font-semibold uppercase text-slate-400">{invoice.taxPKR ? 'Tax invoice' : 'Invoice'}</div>
+          <div className="text-lg font-mono font-bold">{invoice.invoiceNumber}</div>
           <div className="mt-1"><InvoiceStatusBadge status={invoice.status} /></div>
           <div className="text-[11px] text-slate-500 mt-1">Issued {dateOf(invoice.issuedAt)}</div>
           <div className="text-[11px] text-slate-500">Due {dateOf(invoice.dueAt)}</div>
@@ -294,20 +294,20 @@ export const InvoicePrintView: React.FC<{ detail: SubscriptionInvoiceDetail; fro
 
       <div className="grid grid-cols-2 gap-4 text-xs">
         <div>
-          <div className="text-[10px] font-bold uppercase text-slate-400">Billed to</div>
+          <div className="text-[10px] font-semibold uppercase text-slate-400">Billed to</div>
           <div className="font-bold text-sm mt-0.5">{billedTo?.name ?? invoice.tenantName ?? '—'}</div>
           {billedTo?.contactName && <div className="text-slate-600">{billedTo.contactName}</div>}
           {(billedTo?.address || billedTo?.city) && <div className="text-slate-500">{[billedTo?.address, billedTo?.city].filter(Boolean).join(', ')}</div>}
           {(billedTo?.phone || billedTo?.contactEmail) && <div className="text-slate-500">{[billedTo?.phone, billedTo?.contactEmail].filter(Boolean).join(' · ')}</div>}
         </div>
         <div className="text-right">
-          <div className="text-[10px] font-bold uppercase text-slate-400">Period</div>
+          <div className="text-[10px] font-semibold uppercase text-slate-400">Period</div>
           <div className="font-mono mt-0.5">{dateOf(invoice.billingPeriodStart)} – {dateOf(invoice.billingPeriodEnd)}</div>
         </div>
       </div>
 
       <table className="w-full text-xs border border-slate-200 rounded-xl overflow-hidden">
-        <thead className="bg-slate-50 text-[10px] uppercase text-slate-500 font-bold">
+        <thead className="bg-slate-50 text-[10px] uppercase text-slate-500 font-semibold">
           <tr><th className="px-4 py-2 text-left">Description</th><th className="px-4 py-2 text-right">Amount (PKR)</th></tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -328,7 +328,7 @@ export const InvoicePrintView: React.FC<{ detail: SubscriptionInvoiceDetail; fro
               <tr><td className="px-4 py-1.5 text-right text-slate-600">{from?.taxLabel ?? 'Tax'} {invoice.taxRatePercent}%</td><td className="px-4 py-1.5 text-right font-mono">{Math.round(invoice.taxPKR).toLocaleString()}</td></tr>
             </>
           )}
-          <tr className="font-black"><td className="px-4 py-2 text-right">Total</td><td className="px-4 py-2 text-right font-mono">{pkr(invoice.amountPKR)}</td></tr>
+          <tr className="font-bold"><td className="px-4 py-2 text-right">Total</td><td className="px-4 py-2 text-right font-mono">{pkr(invoice.amountPKR)}</td></tr>
           {received > 0 && <tr><td className="px-4 py-1.5 text-right text-teal-700">Received</td><td className="px-4 py-1.5 text-right font-mono text-teal-700">{pkr(received)}</td></tr>}
           {invoice.status !== 'Cancelled' && <tr className="font-bold"><td className="px-4 py-2 text-right">Balance due</td><td className="px-4 py-2 text-right font-mono">{pkr(balance)}</td></tr>}
         </tfoot>
@@ -429,7 +429,7 @@ export const InvoiceDrawer: React.FC<{
       <div className="relative w-full max-w-2xl bg-white h-full overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-white border-b border-slate-200 px-5 py-3.5 flex items-center justify-between z-10 no-print">
           <div className="min-w-0">
-            <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Receipt className="w-4 h-4 text-teal-600" /> {invoice?.invoiceNumber ?? 'Invoice'}
               {invoice && <InvoiceStatusBadge status={invoice.status} />}
             </h2>
@@ -466,9 +466,9 @@ export const InvoiceDrawer: React.FC<{
             ) : (
               <>
                 <div className="grid grid-cols-3 gap-2">
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-bold text-slate-500">Total</div><div className="text-sm font-black">{pkr(invoice.amountPKR)}</div></div>
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-bold text-slate-500">Received</div><div className="text-sm font-black text-teal-700">{pkr(invoice.paidPKR)}</div></div>
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-bold text-slate-500">Balance</div><div className={`text-sm font-black ${balance > 0 && invoice.status === 'Overdue' ? 'text-rose-600' : ''}`}>{pkr(balance)}</div></div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-semibold text-slate-500">Total</div><div className="text-sm font-semibold">{pkr(invoice.amountPKR)}</div></div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-semibold text-slate-500">Received</div><div className="text-sm font-semibold text-teal-700">{pkr(invoice.paidPKR)}</div></div>
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200"><div className="text-[10px] uppercase font-semibold text-slate-500">Balance</div><div className={`text-sm font-semibold ${balance > 0 && invoice.status === 'Overdue' ? 'text-rose-600' : ''}`}>{pkr(balance)}</div></div>
                 </div>
                 <div className="text-[11px] text-slate-500">
                   Issued {dateOf(invoice.issuedAt)} · due {dateOf(invoice.dueAt)} · for {dateOf(invoice.billingPeriodStart)} – {dateOf(invoice.billingPeriodEnd)}
@@ -527,7 +527,7 @@ export const InvoiceDrawer: React.FC<{
 
                 {(mode === 'pay' || mode === 'refund') && (
                   <div className={`p-4 rounded-xl border space-y-3 ${mode === 'pay' ? 'bg-teal-50/40 border-teal-200' : 'bg-amber-50/40 border-amber-200'}`}>
-                    <div className="text-xs font-black text-slate-900">{mode === 'pay' ? 'Money received' : 'Money given back'}</div>
+                    <div className="text-xs font-bold text-slate-900">{mode === 'pay' ? 'Money received' : 'Money given back'}</div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className={labelCls}>Amount (PKR)</label>
@@ -574,7 +574,7 @@ export const InvoiceDrawer: React.FC<{
 
                 {mode === 'cancel' && (
                   <div className="p-4 rounded-xl border border-rose-200 bg-rose-50/40 space-y-2">
-                    <div className="text-xs font-black text-rose-700 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Cancel {invoice.invoiceNumber}?</div>
+                    <div className="text-xs font-bold text-rose-700 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Cancel {invoice.invoiceNumber}?</div>
                     <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Why (recorded)" className={inputCls} />
                     <button disabled={busy} onClick={() => act(() => posApi.cancelSubscriptionInvoice(invoice.id, notes.trim() || undefined), 'Invoice cancelled.')}
                       className="w-full py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-xs font-bold">
@@ -587,7 +587,7 @@ export const InvoiceDrawer: React.FC<{
                 {error && <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">{error}</div>}
 
                 <div className="space-y-1.5">
-                  <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Money on this invoice</div>
+                  <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Money on this invoice</div>
                   {detail.payments.length === 0 && <p className="text-[11px] text-slate-500">Nothing received yet.</p>}
                   {detail.payments.map(p => (
                     <div key={p.id} className={`px-3 py-2 rounded-lg border text-[11px] ${p.voidedAt ? 'bg-slate-50 border-slate-200 opacity-60' : p.kind === 'Refund' ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
@@ -617,7 +617,7 @@ export const InvoiceDrawer: React.FC<{
 
                 {detail.messages && detail.messages.length > 0 && (
                   <div className="space-y-1.5">
-                    <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider">Sent to the customer</div>
+                    <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Sent to the customer</div>
                     {detail.messages.map(m => (
                       <div key={m.id} className="px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-[10px] text-slate-600">
                         <span className="font-bold capitalize">{m.channel}</span> · {m.kind} · {new Date(m.createdAt).toLocaleString()} ·{' '}
@@ -658,7 +658,7 @@ export const InvoiceList: React.FC<{
             <div className="text-[10px] text-slate-500 truncate">{showTenant && i.tenantName ? `${i.tenantName} · ` : ''}{i.tier} · due {dateOf(i.dueAt)}</div>
           </div>
           <div className="text-right shrink-0">
-            <div className="text-xs font-black font-mono">{pkr(i.amountPKR)}</div>
+            <div className="text-xs font-bold font-mono">{pkr(i.amountPKR)}</div>
             {(i.balancePKR ?? 0) > 0 && i.status !== 'Cancelled' && <div className="text-[10px] text-rose-600 font-bold">{pkr(i.balancePKR)} due</div>}
           </div>
         </button>

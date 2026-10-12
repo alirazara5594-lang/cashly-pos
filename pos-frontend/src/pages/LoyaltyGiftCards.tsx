@@ -146,7 +146,7 @@ export const LoyaltyGiftCards: React.FC = () => {
     hint?: string
   ) => (
     <div>
-      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</label>
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</label>
       <input
         type="number"
         min="0"
@@ -167,7 +167,7 @@ export const LoyaltyGiftCards: React.FC = () => {
           <Star className="w-4.5 h-4.5" />
         </div>
         <div>
-          <h1 className="text-lg font-black text-slate-900 leading-none">Loyalty & Gift Cards</h1>
+          <h1 className="text-lg font-bold text-slate-900 leading-none">Loyalty & Gift Cards</h1>
           <p className="text-[11px] text-slate-500 mt-1">Points program rules and stored-value cards</p>
         </div>
       </div>
@@ -187,7 +187,7 @@ export const LoyaltyGiftCards: React.FC = () => {
         {/* ── Loyalty program configuration */}
         <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-black text-slate-900">Loyalty Program</h2>
+            <h2 className="text-sm font-bold text-slate-900">Loyalty Program</h2>
             <button
               onClick={() => canEdit && setConfig({ ...config, isEnabled: !config.isEnabled })}
               disabled={!canEdit}
@@ -245,12 +245,12 @@ export const LoyaltyGiftCards: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
             <div className="flex items-center gap-2">
               <Gift className="w-4 h-4 text-teal-600" />
-              <h2 className="text-sm font-black text-slate-900">Issue Gift Card</h2>
+              <h2 className="text-sm font-bold text-slate-900">Issue Gift Card</h2>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Starting Balance (PKR)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Starting Balance (PKR)</label>
                 <input
                   type="number"
                   min="0"
@@ -261,7 +261,7 @@ export const LoyaltyGiftCards: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Expires On (optional)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Expires On (optional)</label>
                 <input
                   type="date"
                   value={issueExpiry}
@@ -271,7 +271,7 @@ export const LoyaltyGiftCards: React.FC = () => {
                 />
               </div>
               <div className="sm:col-span-2">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Assign to Customer ID (optional)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Assign to Customer ID (optional)</label>
                 <input
                   value={issueCustomerId}
                   disabled={!canEdit}
@@ -295,8 +295,8 @@ export const LoyaltyGiftCards: React.FC = () => {
 
             {lastIssued && (
               <div className="p-3 rounded-xl bg-teal-50 border border-teal-200">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-teal-600">New card code</p>
-                <p className="text-base font-black text-teal-800 tracking-widest">{lastIssued.cardCode}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-teal-600">New card code</p>
+                <p className="text-base font-bold text-teal-800 tracking-widest">{lastIssued.cardCode}</p>
                 <p className="text-[11px] text-teal-700">
                   Balance {(lastIssued.currentBalancePKR ?? lastIssued.initialBalancePKR ?? 0).toLocaleString()} PKR
                 </p>
@@ -307,7 +307,7 @@ export const LoyaltyGiftCards: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-3">
             <div className="flex items-center gap-2">
               <Search className="w-4 h-4 text-teal-600" />
-              <h2 className="text-sm font-black text-slate-900">Check Balance</h2>
+              <h2 className="text-sm font-bold text-slate-900">Check Balance</h2>
             </div>
             <div className="flex gap-2">
               <input
@@ -340,7 +340,7 @@ export const LoyaltyGiftCards: React.FC = () => {
                     {lookupResult.isActive ? 'Active' : 'Inactive'}
                   </span>
                 </div>
-                <p className="text-lg font-black text-slate-900">
+                <p className="text-lg font-bold text-slate-900">
                   {(lookupResult.currentBalancePKR ?? 0).toLocaleString()} <span className="text-xs text-slate-400">PKR</span>
                 </p>
                 <p className="text-[10px] text-slate-400">
@@ -357,12 +357,12 @@ export const LoyaltyGiftCards: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
             <CreditCard className="w-3.5 h-3.5 text-teal-600" />
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Recent Gift Cards</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Recent Gift Cards</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-slate-50 border-b border-slate-200">
-                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <th className="px-4 py-2.5">Code</th>
                   <th className="px-4 py-2.5 text-right">Initial</th>
                   <th className="px-4 py-2.5 text-right">Balance</th>

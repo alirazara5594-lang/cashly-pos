@@ -373,7 +373,7 @@ export const PricingAdmin: React.FC = () => {
   const groupRow = (title: string, note?: string) => (
     <tr className="bg-slate-50 border-t border-slate-200">
       <td colSpan={packages.length + 1} className="px-5 py-2">
-        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">{title}</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{title}</span>
         {note && <span className="ml-2 text-[11px] text-slate-400">{note}</span>}
       </td>
     </tr>
@@ -413,7 +413,7 @@ export const PricingAdmin: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-sm font-black text-slate-900">{erpPrice.displayName || 'Head Office ERP'}</h2>
+                  <h2 className="text-sm font-bold text-slate-900">{erpPrice.displayName || 'Head Office ERP'}</h2>
                   <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold">{reach(headOffices, 'head office')}</span>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
@@ -423,13 +423,13 @@ export const PricingAdmin: React.FC = () => {
             </div>
             <div className="flex-1 grid sm:grid-cols-3 gap-4 min-w-0">
               <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Monthly</label>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Monthly</label>
                 <MoneyInput label="Head Office ERP monthly price" per="month" value={erpPrice.monthlyPricePKR}
                   onChange={(n) => setErpPrice({ ...erpPrice, monthlyPricePKR: n })} />
                 <Was show={savedErp.monthlyPricePKR !== erpPrice.monthlyPricePKR} text={pkr(savedErp.monthlyPricePKR)} />
               </div>
               <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Yearly</label>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Yearly</label>
                 <MoneyInput label="Head Office ERP yearly price" per="year" value={erpPrice.yearlyPricePKR}
                   onChange={(n) => setErpPrice({ ...erpPrice, yearlyPricePKR: n })} />
                 {(() => {
@@ -439,7 +439,7 @@ export const PricingAdmin: React.FC = () => {
                 <Was show={savedErp.yearlyPricePKR !== erpPrice.yearlyPricePKR} text={pkr(savedErp.yearlyPricePKR)} />
               </div>
               <div>
-                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">WhatsApp messages a month</label>
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">WhatsApp messages a month</label>
                 <LimitInput label="Head Office ERP WhatsApp messages a month" value={erpPrice.includedWhatsAppMessages} unlimitedValue={-1} fallback={1000}
                   onChange={(n) => setErpPrice({ ...erpPrice, includedWhatsAppMessages: n })} />
                 <Was show={savedErp.includedWhatsAppMessages !== erpPrice.includedWhatsAppMessages} text={limitText(savedErp.includedWhatsAppMessages, -1)} />
@@ -469,7 +469,7 @@ export const PricingAdmin: React.FC = () => {
             <thead>
               <tr>
                 <th className="px-5 py-4 text-left align-bottom">
-                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">POS versions</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">POS versions</div>
                   <div className="text-[11px] font-medium text-slate-400 mt-1">Every shop runs one of these.</div>
                 </th>
                 {packages.map(pkg => {
@@ -478,10 +478,10 @@ export const PricingAdmin: React.FC = () => {
                     <th key={pkg.id} className="px-5 py-4 text-left align-top border-l border-slate-100 font-normal">
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${PLAN_DOT[pkg.slug] ?? 'bg-slate-400'}`} />
-                        <span className="text-sm font-black text-slate-900">{pkg.name === pkg.slug ? tierLabel(pkg.slug) : pkg.name}</span>
+                        <span className="text-sm font-bold text-slate-900">{pkg.name === pkg.slug ? tierLabel(pkg.slug) : pkg.name}</span>
                       </div>
                       <div className="mt-2 flex items-baseline gap-1">
-                        <span className="text-xl font-black tabular-nums text-slate-900">{pkr(pkg.monthlyPricePKR)}</span>
+                        <span className="text-xl font-bold tabular-nums text-slate-900">{pkr(pkg.monthlyPricePKR)}</span>
                         <span className="text-[11px] text-slate-500">/month</span>
                       </div>
                       <div className="text-[11px] text-slate-500">or {pkr(pkg.yearlyPricePKR)} a year</div>
@@ -585,7 +585,7 @@ export const PricingAdmin: React.FC = () => {
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="px-5 pt-5 pb-3 flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-sm font-black text-slate-900">Save {changeCount} change{changeCount === 1 ? '' : 's'}?</h3>
+                <h3 className="text-sm font-bold text-slate-900">Save {changeCount} change{changeCount === 1 ? '' : 's'}?</h3>
                 <p className="text-[11px] text-slate-500 mt-0.5">Check them once — they reach every business on these versions.</p>
               </div>
               <button onClick={() => setConfirming(false)} disabled={saving} className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"><X className="w-4 h-4" /></button>
@@ -593,7 +593,7 @@ export const PricingAdmin: React.FC = () => {
             <div className="px-5 pb-4 overflow-y-auto space-y-4">
               {priceChanges.length > 0 && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                  <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-amber-700 mb-2">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-700 mb-2">
                     <AlertTriangle className="w-3.5 h-3.5" /> Prices — from each business’s next invoice
                   </div>
                   <ul className="space-y-1.5">
@@ -608,7 +608,7 @@ export const PricingAdmin: React.FC = () => {
               )}
               {otherChanges.length > 0 && (
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-2">Limits &amp; features</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">Limits &amp; features</div>
                   <ul className="space-y-1.5">
                     {otherChanges.map(c => <li key={c} className="text-xs text-slate-700">{c}</li>)}
                   </ul>

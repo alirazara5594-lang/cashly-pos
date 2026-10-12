@@ -723,7 +723,7 @@ export const PosTerminal: React.FC = () => {
           {/* Optional customer / promo / gift-card attachments. Everything here can be
               skipped — the checkout below works exactly as it always has. */}
           <div className="p-4 border-t border-slate-100 space-y-2.5">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Customer & Offers (optional)</div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Customer & Offers (optional)</div>
 
             <div className="flex gap-1.5">
               <div className="relative flex-1">
@@ -795,7 +795,7 @@ export const PosTerminal: React.FC = () => {
           </div>
 
           <div className="p-4 border-t border-slate-100">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               {visiblePaymentMethods.map(({ key, label, icon: Icon }) => (
                 <button
@@ -821,7 +821,7 @@ export const PosTerminal: React.FC = () => {
                     type="number"
                     value={cashTendered || ''}
                     onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
-                    className="w-28 px-2 py-1 bg-white border border-slate-200 rounded-lg text-right font-black text-slate-900 text-xs focus:outline-none focus:border-teal-500"
+                    className="w-28 px-2 py-1 bg-white border border-slate-200 rounded-lg text-right font-bold text-slate-900 text-xs focus:outline-none focus:border-teal-500"
                   />
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
@@ -838,7 +838,7 @@ export const PosTerminal: React.FC = () => {
                 {cashTendered > 0 && (
                   <div className="flex justify-between items-center pt-1.5 border-t border-slate-200">
                     <span className="text-[11px] font-semibold text-slate-500">Change Due:</span>
-                    <span className="text-sm font-black text-teal-600">{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
+                    <span className="text-sm font-bold text-teal-600">{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
                   </div>
                 )}
               </div>

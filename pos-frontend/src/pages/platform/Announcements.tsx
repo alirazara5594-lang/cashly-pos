@@ -7,7 +7,7 @@ import { dateOf } from '../../utils/renewals';
 import type { AdminTenantRow, Announcement } from '../../types';
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500';
-const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1';
+const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
 const TONE: Record<Announcement['tone'], string> = {
   info: 'bg-sky-50 border-sky-200 text-sky-900',
   warning: 'bg-amber-50 border-amber-200 text-amber-900',
@@ -114,7 +114,7 @@ export const Announcements: React.FC = () => {
       {draft && (
         <div className="p-5 rounded-2xl border border-teal-200 bg-white space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-black text-slate-900">{draft.id ? 'Edit announcement' : 'New announcement'}</h3>
+            <h3 className="text-sm font-bold text-slate-900">{draft.id ? 'Edit announcement' : 'New announcement'}</h3>
             <button onClick={() => setDraft(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
           </div>
           <div><label className={labelCls}>Title</label><input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="e.g. Maintenance tonight 2–3 AM" className={inputCls} /></div>
@@ -192,7 +192,7 @@ export const Announcements: React.FC = () => {
           <div key={a.id} className={`p-4 rounded-2xl border ${TONE[a.tone]} ${live(a) ? '' : 'opacity-60'}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-sm font-black">{a.title}</div>
+                <div className="text-sm font-bold">{a.title}</div>
                 <div className="text-xs mt-0.5 whitespace-pre-line">{a.body}</div>
                 <div className="text-[10px] mt-1.5 opacity-80">
                   {live(a) ? 'Showing now' : a.isActive ? (new Date(a.startsAt).getTime() > now ? 'Scheduled' : 'Ended') : 'Not published'}

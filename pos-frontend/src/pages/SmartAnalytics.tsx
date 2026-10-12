@@ -102,10 +102,10 @@ export const SmartAnalytics: React.FC = () => {
         <div>
           <div className="flex items-center gap-2">
             <Brain className="w-6 h-6 text-teal-500" />
-            <h1 className="text-xl md:text-2xl font-black text-gradient tracking-tight">
+            <h1 className="text-xl md:text-2xl font-bold text-gradient tracking-tight">
               Smart Analytics
             </h1>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 font-bold uppercase">
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 font-semibold uppercase">
               AI Powered
             </span>
           </div>
@@ -148,7 +148,7 @@ export const SmartAnalytics: React.FC = () => {
         <div className="flex items-center justify-center py-14">
           <div className="max-w-md w-full bg-amber-50 border border-amber-200 rounded-2xl p-6 text-center space-y-3">
             <AlertCircle className="w-8 h-8 text-amber-500 mx-auto" />
-            <p className="text-xs font-black text-amber-800 uppercase tracking-wider">
+            <p className="text-xs font-semibold text-amber-800 uppercase tracking-wider">
               {needsUpgrade ? 'Not on your plan' : 'Analytics unavailable'}
             </p>
             <p className="text-xs text-amber-700 leading-relaxed">{error}</p>
@@ -178,10 +178,10 @@ export const SmartAnalytics: React.FC = () => {
                   <DollarSign className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     Total Revenue
                   </div>
-                  <div className="text-lg font-black text-slate-900">
+                  <div className="text-lg font-bold text-slate-900">
                     {data.summary.totalRevenue.toLocaleString()}
                   </div>
                 </div>
@@ -193,10 +193,10 @@ export const SmartAnalytics: React.FC = () => {
                   <ShoppingBag className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     Total Orders
                   </div>
-                  <div className="text-lg font-black text-slate-900">
+                  <div className="text-lg font-bold text-slate-900">
                     {data.summary.totalOrders.toLocaleString()}
                   </div>
                 </div>
@@ -208,10 +208,10 @@ export const SmartAnalytics: React.FC = () => {
                   <Target className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     Avg Order Value
                   </div>
-                  <div className="text-lg font-black text-slate-900">
+                  <div className="text-lg font-bold text-slate-900">
                     {data.summary.avgOrderValue.toLocaleString()}
                   </div>
                 </div>
@@ -223,10 +223,10 @@ export const SmartAnalytics: React.FC = () => {
                   <Clock className="w-5 h-5 text-teal-500" />
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     Busiest Hour
                   </div>
-                  <div className="text-lg font-black text-slate-900">
+                  <div className="text-lg font-bold text-slate-900">
                     {data.summary.busiestHour || 'N/A'}
                   </div>
                 </div>
@@ -276,15 +276,15 @@ export const SmartAnalytics: React.FC = () => {
               </div>
               <div className="space-y-4">
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
                     Avg Daily Sales
                   </div>
-                  <div className="text-xl font-black text-slate-900 mt-1">
+                  <div className="text-xl font-bold text-slate-900 mt-1">
                     {data.predictions.avgDailySales.toLocaleString()}
                   </div>
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                  <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
                     Predicted Next 3 Days
                   </div>
                   <div className="flex gap-2 mt-2">
@@ -321,16 +321,16 @@ export const SmartAnalytics: React.FC = () => {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-200">
-                      <th className="text-left py-2 px-2 text-[10px] font-bold uppercase text-slate-500">
+                      <th className="text-left py-2 px-2 text-[10px] font-semibold uppercase text-slate-500">
                         #
                       </th>
-                      <th className="text-left py-2 px-2 text-[10px] font-bold uppercase text-slate-500">
+                      <th className="text-left py-2 px-2 text-[10px] font-semibold uppercase text-slate-500">
                         Product
                       </th>
-                      <th className="text-right py-2 px-2 text-[10px] font-bold uppercase text-slate-500">
+                      <th className="text-right py-2 px-2 text-[10px] font-semibold uppercase text-slate-500">
                         Qty
                       </th>
-                      <th className="text-right py-2 px-2 text-[10px] font-bold uppercase text-slate-500">
+                      <th className="text-right py-2 px-2 text-[10px] font-semibold uppercase text-slate-500">
                         Revenue
                       </th>
                     </tr>

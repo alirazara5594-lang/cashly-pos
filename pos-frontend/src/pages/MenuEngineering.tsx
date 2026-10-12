@@ -141,7 +141,7 @@ export const MenuEngineering: React.FC = () => {
     <th className={`px-4 py-2.5 ${alignRight ? 'text-right' : ''}`}>
       <button
         onClick={() => toggleSort(key)}
-        className={`inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider transition ${
+        className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider transition ${
           sortKey === key ? 'text-teal-600' : 'text-slate-500 hover:text-slate-700'
         }`}
       >
@@ -159,7 +159,7 @@ export const MenuEngineering: React.FC = () => {
             <TrendingUp className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Menu Engineering</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Menu Engineering</h1>
             <p className="text-[11px] text-slate-500 mt-1">
               Profitability vs popularity for {selectedBranch?.name || 'this branch'}
             </p>
@@ -168,7 +168,7 @@ export const MenuEngineering: React.FC = () => {
 
         <div className="flex items-end gap-2">
           <div>
-            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">From</label>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">From</label>
             <input
               type="date"
               value={from}
@@ -177,7 +177,7 @@ export const MenuEngineering: React.FC = () => {
             />
           </div>
           <div>
-            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">To</label>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">To</label>
             <input
               type="date"
               value={to}
@@ -217,7 +217,7 @@ export const MenuEngineering: React.FC = () => {
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${style.badge}`}>
                 {style.label}
               </span>
-              <p className="text-xl font-black text-slate-900 mt-2">{counts[key]}</p>
+              <p className="text-xl font-bold text-slate-900 mt-2">{counts[key]}</p>
               <p className="text-[10px] text-slate-400 leading-snug mt-0.5">{style.blurb}</p>
             </div>
           );
@@ -232,10 +232,10 @@ export const MenuEngineering: React.FC = () => {
                 {sortHeader('name', 'Product')}
                 {sortHeader('unitsSold', 'Units Sold', true)}
                 {sortHeader('revenuePKR', 'Revenue', true)}
-                <th className="px-4 py-2.5 text-right text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Cost</th>
+                <th className="px-4 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cost</th>
                 {sortHeader('grossProfitPKR', 'Gross Profit', true)}
                 {sortHeader('marginPercent', 'Margin', true)}
-                <th className="px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Class</th>
+                <th className="px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Class</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -271,7 +271,7 @@ export const MenuEngineering: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-          <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Slow Movers</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Slow Movers</span>
         </div>
         {slowMovers.length === 0 ? (
           <p className="px-4 py-6 text-center text-xs text-slate-400">
@@ -281,7 +281,7 @@ export const MenuEngineering: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-slate-50 border-b border-slate-200">
-                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <th className="px-4 py-2.5">Product</th>
                   <th className="px-4 py-2.5 text-right">Units Sold</th>
                   <th className="px-4 py-2.5 text-right">Revenue</th>

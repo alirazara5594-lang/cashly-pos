@@ -167,7 +167,7 @@ export const ModulePermissions: React.FC = () => {
             <Shield className="w-5 h-5 text-teal-500" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900">Module Permissions</h1>
+            <h1 className="text-lg font-bold text-slate-900">Module Permissions</h1>
             <p className="text-xs text-slate-500">
               Control what each staff member can access. The <strong>Whole Module</strong> row is what
               gates the sidebar and screens; sub-modules refine it.
@@ -195,7 +195,7 @@ export const ModulePermissions: React.FC = () => {
 
       {/* User Selector */}
       <div className="p-5 rounded-2xl bg-white border border-slate-200">
-        <label className="flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase mb-2">
+        <label className="flex items-center gap-2 text-[10px] font-semibold text-slate-500 uppercase mb-2">
           <Users className="w-3.5 h-3.5" /> Select Staff Member
         </label>
         <div className="relative">

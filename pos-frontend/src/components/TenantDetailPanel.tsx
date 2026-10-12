@@ -256,7 +256,7 @@ const OverviewTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run }> =
       <Section icon={<Server className="w-3.5 h-3.5" />} title="Usage — each outlet against its own POS version">
         <div className="rounded-xl border border-slate-200 overflow-hidden">
           <table className="w-full text-[11px]">
-            <thead className="bg-slate-50 text-[10px] uppercase text-slate-500 font-bold">
+            <thead className="bg-slate-50 text-[10px] uppercase text-slate-500 font-semibold">
               <tr><th className="px-3 py-2 text-left">Outlet</th><th className="px-3 py-2 text-left">Version</th><th className="px-3 py-2 text-center">Tills</th><th className="px-3 py-2 text-center">Tablets</th></tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -371,7 +371,7 @@ const OverviewTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run }> =
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/60" onClick={() => setImpersonateOpen(false)} />
           <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl p-5 space-y-3">
-            <div className="flex items-center gap-2"><Eye className="w-4 h-4 text-slate-700" /><h3 className="text-sm font-black text-slate-900">Open a support session</h3></div>
+            <div className="flex items-center gap-2"><Eye className="w-4 h-4 text-slate-700" /><h3 className="text-sm font-bold text-slate-900">Open a support session</h3></div>
             <p className="text-[11px] text-slate-500 leading-snug">Read-only, time-limited, and written to this customer's audit log.</p>
             <textarea value={impersonateReason} onChange={(e) => setImpersonateReason(e.target.value)} placeholder="Why are you opening this customer's account?" rows={3} className={`${inputCls} resize-none`} />
             <div className="flex gap-2">
@@ -541,7 +541,7 @@ const OwnerSignIn: React.FC<{ tenantId: string; invitePending: boolean; webName:
             </button>
             {issued?.userId === o.id && (
               <div className="p-2.5 rounded-lg bg-teal-50 border border-teal-200 space-y-1.5">
-                <div className="text-[10px] font-bold text-teal-800 uppercase">Temporary password — shown once</div>
+                <div className="text-[10px] font-semibold text-teal-800 uppercase">Temporary password — shown once</div>
                 <code className="block px-2 py-1 rounded bg-white border border-teal-200 text-sm font-mono font-bold text-slate-900 tracking-wider select-all">{issued.password}</code>
                 <p className="text-[10px] text-teal-800 leading-snug">
                   Read it to the owner. They sign in with <strong>{issued.email}</strong> and this password, then set their own from the shield button at the top.
@@ -699,7 +699,7 @@ const PlanAndFeaturesTab: React.FC<{ data: TenantOverview; plans: PlanOption[]; 
     <div className="space-y-5">
       <Section icon={<CreditCard className="w-3.5 h-3.5" />} title="Plan">
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-          <span className="text-sm font-black text-slate-900">{currentPlan?.displayName ?? tierLabel(tenant.tier)}</span>
+          <span className="text-sm font-bold text-slate-900">{currentPlan?.displayName ?? tierLabel(tenant.tier)}</span>
           <span className="text-xs font-bold text-slate-700">{pkr(currentPlan?.monthlyPricePKR)}/mo list</span>
         </div>
         <div className="flex gap-2">
@@ -715,7 +715,7 @@ const PlanAndFeaturesTab: React.FC<{ data: TenantOverview; plans: PlanOption[]; 
         {preview && (
           <div className="p-3 rounded-xl border space-y-2.5 bg-white border-slate-200">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-black text-slate-900">{tierLabel(preview.currentTier)} <ArrowRight className="w-3 h-3 inline" /> {tierLabel(preview.targetTier)}</span>
+              <span className="text-xs font-bold text-slate-900">{tierLabel(preview.currentTier)} <ArrowRight className="w-3 h-3 inline" /> {tierLabel(preview.targetTier)}</span>
               {preview.isDowngrade && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700 font-bold">Downgrade</span>}
             </div>
             <div className="text-[11px] font-mono text-slate-600">
@@ -723,7 +723,7 @@ const PlanAndFeaturesTab: React.FC<{ data: TenantOverview; plans: PlanOption[]; 
             </div>
             {preview.blockers.length > 0 && (
               <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 space-y-1">
-                <div className="text-[10px] font-black text-rose-700 uppercase">Over the new limits</div>
+                <div className="text-[10px] font-semibold text-rose-700 uppercase">Over the new limits</div>
                 {preview.blockers.map((b, i) => <div key={i} className="text-[11px] text-rose-700">{b}</div>)}
               </div>
             )}
@@ -864,7 +864,7 @@ const LocationsTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run; se
     <div className="space-y-5">
       <Section icon={<Rocket className="w-3.5 h-3.5" />} title="Shape">
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
-          <span className="text-sm font-black text-slate-900">{isHQ ? 'Head office with outlets' : 'Single shop'}</span>
+          <span className="text-sm font-bold text-slate-900">{isHQ ? 'Head office with outlets' : 'Single shop'}</span>
           <p className="mt-1">{isHQ
             ? 'The head office runs the ERP; each outlet pays for its own POS version.'
             : 'One shop: POS and back office together. A head office adds outlets that report into it.'}</p>
@@ -917,7 +917,7 @@ const LocationsTab: React.FC<{ data: TenantOverview; busy: boolean; run: Run; se
         </div>
 
         <div className="p-3 rounded-xl border border-dashed border-slate-300 space-y-2">
-          <div className="text-[10px] uppercase font-black text-slate-500">Add a location</div>
+          <div className="text-[10px] uppercase font-semibold text-slate-500">Add a location</div>
           {!isHQ && <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">Add a head office first — outlets and warehouses sit beneath it.</p>}
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (required)" className={inputCls} />
           <div className="grid grid-cols-3 gap-2">
@@ -1057,12 +1057,12 @@ const ActivityTab: React.FC<{ tenantId: string }> = ({ tenantId }) => {
           <textarea rows={2} value={body} onChange={(e) => setBody(e.target.value)} placeholder={kind === 'Promise' ? 'e.g. Owner will transfer on Friday' : 'What happened?'} className={`${inputCls} bg-white resize-none`} />
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">{kind === 'Promise' ? 'Promised by' : 'Follow up on (optional)'}</label>
+              <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">{kind === 'Promise' ? 'Promised by' : 'Follow up on (optional)'}</label>
               <input type="date" value={followUp} onChange={(e) => setFollowUp(e.target.value)} className={`${inputCls} bg-white`} />
             </div>
             {kind === 'Promise' && (
               <div>
-                <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">Amount (PKR)</label>
+                <label className="block text-[10px] font-semibold uppercase text-slate-500 mb-1">Amount (PKR)</label>
                 <input type="number" min={0} value={promised} onChange={(e) => setPromised(e.target.value)} className={`${inputCls} bg-white`} />
               </div>
             )}
@@ -1143,7 +1143,7 @@ const Shell: React.FC<{ title: string; subtitle?: string; nav?: React.ReactNode;
       <div className="sticky top-0 bg-white border-b border-slate-200 z-10">
         <div className="px-5 py-3.5 flex items-center justify-between">
           <div className="min-w-0">
-            <h2 className="text-sm font-black text-slate-900 truncate">{title}</h2>
+            <h2 className="text-sm font-bold text-slate-900 truncate">{title}</h2>
             {subtitle && <p className="text-[10px] text-slate-500 truncate">{subtitle}</p>}
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 transition"><X className="w-4 h-4" /></button>
@@ -1157,7 +1157,7 @@ const Shell: React.FC<{ title: string; subtitle?: string; nav?: React.ReactNode;
 
 const Section: React.FC<{ icon: React.ReactNode; title: string; children: React.ReactNode }> = ({ icon, title, children }) => (
   <div className="space-y-2">
-    <div className="text-[10px] uppercase font-black text-slate-500 tracking-wider flex items-center gap-1.5">{icon} {title}</div>
+    <div className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider flex items-center gap-1.5">{icon} {title}</div>
     {children}
   </div>
 );
@@ -1165,6 +1165,6 @@ const Section: React.FC<{ icon: React.ReactNode; title: string; children: React.
 const Stat: React.FC<{ label: string; value: React.ReactNode; tone?: 'good' | 'warn' | 'bad' }> = ({ label, value, tone }) => (
   <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200">
     <div className="text-[10px] uppercase font-semibold text-slate-500">{label}</div>
-    <div className={`text-sm font-black capitalize ${tone === 'bad' ? 'text-rose-600' : tone === 'warn' ? 'text-amber-600' : tone === 'good' ? 'text-teal-600' : 'text-slate-900'}`}>{value}</div>
+    <div className={`text-sm font-bold capitalize ${tone === 'bad' ? 'text-rose-600' : tone === 'warn' ? 'text-amber-600' : tone === 'good' ? 'text-teal-600' : 'text-slate-900'}`}>{value}</div>
   </div>
 );

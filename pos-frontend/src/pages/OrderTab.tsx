@@ -153,7 +153,7 @@ export const OrderTab: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Tablet className="w-5 h-5 text-purple-500" />
-              <span className="font-bold text-xs uppercase tracking-wider text-slate-600">Select Dining Table:</span>
+              <span className="font-semibold text-xs uppercase tracking-wider text-slate-600">Select Dining Table:</span>
             </div>
             {tables.length > 0 && (
               <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[50vw]">
@@ -248,8 +248,8 @@ export const OrderTab: React.FC = () => {
       <div className="w-full md:w-80 flex flex-col bg-white border-l border-slate-200">
         <div className="p-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <div className="text-xs font-bold text-purple-600 uppercase tracking-wider">Captain Order Mode</div>
-            <div className="text-sm font-black text-slate-900">Table: {activeTable}</div>
+            <div className="text-xs font-semibold text-purple-600 uppercase tracking-wider">Captain Order Mode</div>
+            <div className="text-sm font-bold text-slate-900">Table: {activeTable}</div>
           </div>
           <span className="text-[10px] px-2 py-0.5 rounded bg-teal-50 text-teal-600 border border-teal-200 font-mono">
             MODE 1 DISPATCH
@@ -309,12 +309,12 @@ export const OrderTab: React.FC = () => {
           </div>
           <div className="flex justify-between items-center text-xs">
             <span className="text-slate-500">Items Total:</span>
-            <span className="text-base font-black text-teal-600">{totalTabPKR.toLocaleString()}</span>
+            <span className="text-base font-bold text-teal-600">{totalTabPKR.toLocaleString()}</span>
           </div>
           <button
             onClick={handleSendOrderMode1}
             disabled={tabCart.length === 0 || isSending}
-            className="w-full py-3 rounded-xl bg-purple-500 hover:bg-purple-600 text-white font-black text-xs shadow-lg shadow-purple-500/25 transition flex items-center justify-center gap-2 disabled:opacity-40"
+            className="w-full py-3 rounded-xl bg-purple-500 hover:bg-purple-600 text-white font-bold text-xs shadow-lg shadow-purple-500/25 transition flex items-center justify-center gap-2 disabled:opacity-40"
           >
             {isSending ? (
               <span>Firing to Kitchen...</span>

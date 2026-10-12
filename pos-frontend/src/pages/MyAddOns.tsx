@@ -143,7 +143,7 @@ export const MyAddOns: React.FC = () => {
             <Puzzle className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Plan &amp; Add-ons</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Plan &amp; Add-ons</h1>
             <p className="text-[11px] text-slate-500 mt-1">Your subscription, your invoices, and what else you can switch on.</p>
           </div>
         </div>
@@ -184,7 +184,7 @@ export const MyAddOns: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Layers className="w-4 h-4 text-teal-600" /> Your plan
             </h2>
-            <p className="text-2xl font-black text-slate-900">{subscription.plan.name}</p>
+            <p className="text-2xl font-bold text-slate-900">{subscription.plan.name}</p>
             <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded-lg border ${INVOICE_STATUS[subscription.status] ?? 'bg-slate-100 text-slate-600 border-slate-200'}`}>
               {subscription.status}
             </span>
@@ -213,14 +213,14 @@ export const MyAddOns: React.FC = () => {
                 return (
                   <div key={plan.code} className={`p-3 rounded-xl border space-y-1.5 ${mine ? 'border-teal-300 bg-teal-50/50' : 'border-slate-200'}`}>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-black text-slate-900">{plan.name}</span>
+                      <span className="text-sm font-bold text-slate-900">{plan.name}</span>
                       {mine && (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">Yours</span>
                       )}
                     </div>
                     <p className="text-[10px] text-slate-500 leading-snug line-clamp-3">{plan.description}</p>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-base font-black text-teal-700">{price.toLocaleString()}</span>
+                      <span className="text-base font-bold text-teal-700">{price.toLocaleString()}</span>
                       <span className="text-[10px] text-slate-400">PKR / {annual ? 'year' : 'month'}</span>
                     </div>
                     <button
@@ -343,7 +343,7 @@ export const MyAddOns: React.FC = () => {
             </table>
             <div className="flex justify-between items-baseline pt-2 border-t border-slate-200">
               <span className="text-xs font-bold text-slate-700">Total per month</span>
-              <span className="text-lg font-black text-teal-700">PKR {Math.round(charges.monthlyTotalPKR).toLocaleString()}</span>
+              <span className="text-lg font-bold text-teal-700">PKR {Math.round(charges.monthlyTotalPKR).toLocaleString()}</span>
             </div>
             <p className="text-[11px] text-slate-400">Or PKR {Math.round(charges.yearlyTotalPKR).toLocaleString()} paid yearly.</p>
           </div>
@@ -356,7 +356,7 @@ export const MyAddOns: React.FC = () => {
               <p className="text-xs text-slate-600">{charges.whatsApp.used.toLocaleString()} sent · unlimited</p>
             ) : (
               <>
-                <div className="text-2xl font-black text-slate-900">
+                <div className="text-2xl font-bold text-slate-900">
                   {charges.whatsApp.used.toLocaleString()} <span className="text-sm font-semibold text-slate-400">/ {charges.whatsApp.allowance.toLocaleString()}</span>
                 </div>
                 <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
@@ -378,7 +378,7 @@ export const MyAddOns: React.FC = () => {
 
       {active.length > 0 && (
         <div className="space-y-2">
-          <h2 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Active on Your Account</h2>
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Active on Your Account</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {active.map(item => (
               <div key={item.id} className="p-4 rounded-2xl bg-white border border-teal-200 space-y-1.5">
@@ -397,7 +397,7 @@ export const MyAddOns: React.FC = () => {
       )}
 
       <div className="space-y-2">
-        <h2 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Available Add-ons</h2>
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Available Add-ons</h2>
         {loading ? (
           <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-xs text-slate-400">Loading…</div>
         ) : available.length === 0 ? (
@@ -412,7 +412,7 @@ export const MyAddOns: React.FC = () => {
                 {item.description && <p className="text-[11px] text-slate-500">{item.description}</p>}
                 {item.unlocksModule && <p className="text-[10px] font-semibold text-slate-500">Unlocks: {item.unlocksModule}</p>}
                 <div className="flex items-baseline gap-1 pt-1">
-                  <span className="text-base font-black text-teal-600">
+                  <span className="text-base font-bold text-teal-600">
                     {(annual ? item.yearlyPricePKR : item.monthlyPricePKR).toLocaleString()}
                   </span>
                   <span className="text-[10px] text-slate-400">PKR / {annual ? 'year' : 'month'}</span>
@@ -437,7 +437,7 @@ export const MyAddOns: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
             <div className="sticky top-0 bg-slate-50 border-b border-slate-200 px-5 py-3 flex items-center justify-between no-print">
-              <span className="text-xs font-black text-slate-900">{viewing.invoice.invoiceNumber}</span>
+              <span className="text-xs font-bold text-slate-900">{viewing.invoice.invoiceNumber}</span>
               <div className="flex items-center gap-2">
                 <button onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold"><Printer className="w-3.5 h-3.5" /> Print / save PDF</button>
                 <button onClick={() => setViewing(null)} className="p-1 rounded-lg hover:bg-slate-200 text-slate-500"><X className="w-4 h-4" /></button>

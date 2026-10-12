@@ -90,7 +90,7 @@ export const PublicOrder: React.FC = () => {
         <div className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl p-6 text-center space-y-4 shadow-sm">
           <CheckCircle2 className="w-12 h-12 text-teal-500 mx-auto" />
           <div>
-            <h1 className="text-xl font-black text-slate-900">Order {result.orderNumber}</h1>
+            <h1 className="text-xl font-bold text-slate-900">Order {result.orderNumber}</h1>
             <p className="text-sm text-slate-600 mt-1">{result.message}</p>
           </div>
           <div className="text-left text-sm space-y-1 border-t border-slate-100 pt-3">
@@ -124,7 +124,7 @@ export const PublicOrder: React.FC = () => {
     <div className="min-h-screen bg-slate-50 pb-40">
       <header className="bg-white border-b border-slate-200 px-4 py-3 sticky top-0 z-10">
         <div className="max-w-2xl mx-auto">
-          <div className="text-base font-black text-slate-900">{menu.businessName || menu.branchName}</div>
+          <div className="text-base font-bold text-slate-900">{menu.businessName || menu.branchName}</div>
           <div className="text-xs text-slate-500">
             {menu.branchName}{menu.tableNumber ? ` · Table ${menu.tableNumber}` : ' · Order for pickup'}
           </div>

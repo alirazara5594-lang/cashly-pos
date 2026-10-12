@@ -327,7 +327,7 @@ export const AccountingManagement: React.FC = () => {
             <Landmark className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Accounting</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Accounting</h1>
             <p className="text-[11px] text-slate-500 mt-1">
               Double-entry bookkeeping — sales, purchases, and payroll post here automatically.
             </p>
@@ -408,7 +408,7 @@ export const AccountingManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     <th className="px-4 py-2.5">Code</th>
                     <th className="px-4 py-2.5">Name</th>
                     <th className="px-4 py-2.5">Type</th>
@@ -529,7 +529,7 @@ export const AccountingManagement: React.FC = () => {
       {activeTab === 'trial-balance' && (
         <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Trial Balance {trialBalance ? `as of ${new Date(trialBalance.asOf).toLocaleDateString()}` : ''}</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Trial Balance {trialBalance ? `as of ${new Date(trialBalance.asOf).toLocaleDateString()}` : ''}</span>
             <button onClick={loadReports} className="text-teal-600 hover:text-teal-700"><RefreshCw className={`w-3.5 h-3.5 ${loadingReport ? 'animate-spin' : ''}`} /></button>
           </div>
           {loadingReport || !trialBalance ? (
@@ -537,7 +537,7 @@ export const AccountingManagement: React.FC = () => {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <tr>
                     <th className="px-4 py-2.5">Code</th>
                     <th className="px-4 py-2.5">Account</th>
@@ -558,7 +558,7 @@ export const AccountingManagement: React.FC = () => {
                   ))}
                 </tbody>
                 <tfoot className="border-t-2 border-slate-300">
-                  <tr className="font-black text-slate-900">
+                  <tr className="font-bold text-slate-900">
                     <td className="px-4 py-2.5" colSpan={2}>Total</td>
                     <td className="px-4 py-2.5 text-right font-mono">{trialBalance.totalDebits.toLocaleString()}</td>
                     <td className="px-4 py-2.5 text-right font-mono">{trialBalance.totalCredits.toLocaleString()}</td>
@@ -575,12 +575,12 @@ export const AccountingManagement: React.FC = () => {
         <div className="space-y-3">
           <div className="flex items-end gap-2">
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">From</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">From</label>
               <input type="date" value={plFrom} onChange={(e) => setPlFrom(e.target.value)}
                 className="mt-1 block px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">To</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">To</label>
               <input type="date" value={plTo} onChange={(e) => setPlTo(e.target.value)}
                 className="mt-1 block px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
@@ -595,36 +595,36 @@ export const AccountingManagement: React.FC = () => {
           ) : (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   {new Date(profitLoss.periodStart).toLocaleDateString()} – {new Date(profitLoss.periodEnd).toLocaleDateString()}
                 </span>
               </div>
               <div className="p-4 space-y-4 text-xs">
                 <div>
-                  <div className="font-bold text-slate-500 uppercase text-[10px] mb-1.5">Revenue</div>
+                  <div className="font-semibold text-slate-500 uppercase text-[10px] mb-1.5">Revenue</div>
                   {profitLoss.revenue.length === 0 ? <p className="text-slate-400">No revenue posted.</p> : profitLoss.revenue.map(r => (
                     <div key={r.code} className="flex justify-between py-1 border-b border-slate-50">
                       <span className="text-slate-700">{r.name}</span>
                       <span className="font-mono font-bold text-teal-600">{r.amountPKR.toLocaleString()}</span>
                     </div>
                   ))}
-                  <div className="flex justify-between pt-1.5 font-black text-slate-900">
+                  <div className="flex justify-between pt-1.5 font-bold text-slate-900">
                     <span>Total Revenue</span><span className="font-mono">{profitLoss.totalRevenuePKR.toLocaleString()}</span>
                   </div>
                 </div>
                 <div>
-                  <div className="font-bold text-slate-500 uppercase text-[10px] mb-1.5">Expenses</div>
+                  <div className="font-semibold text-slate-500 uppercase text-[10px] mb-1.5">Expenses</div>
                   {profitLoss.expenses.length === 0 ? <p className="text-slate-400">No expenses posted.</p> : profitLoss.expenses.map(r => (
                     <div key={r.code} className="flex justify-between py-1 border-b border-slate-50">
                       <span className="text-slate-700">{r.name}</span>
                       <span className="font-mono font-bold text-rose-600">{r.amountPKR.toLocaleString()}</span>
                     </div>
                   ))}
-                  <div className="flex justify-between pt-1.5 font-black text-slate-900">
+                  <div className="flex justify-between pt-1.5 font-bold text-slate-900">
                     <span>Total Expenses</span><span className="font-mono">{profitLoss.totalExpensesPKR.toLocaleString()}</span>
                   </div>
                 </div>
-                <div className={`flex justify-between pt-3 border-t-2 border-slate-300 text-sm font-black ${profitLoss.netProfitPKR >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
+                <div className={`flex justify-between pt-3 border-t-2 border-slate-300 text-sm font-bold ${profitLoss.netProfitPKR >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
                   <span>Net Profit</span><span className="font-mono">{profitLoss.netProfitPKR.toLocaleString()}</span>
                 </div>
               </div>
@@ -637,7 +637,7 @@ export const AccountingManagement: React.FC = () => {
       {activeTab === 'balance-sheet' && (
         <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Balance Sheet {balanceSheet ? `as of ${new Date(balanceSheet.asOf).toLocaleDateString()}` : ''}</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Balance Sheet {balanceSheet ? `as of ${new Date(balanceSheet.asOf).toLocaleDateString()}` : ''}</span>
             <button onClick={loadReports} className="text-teal-600 hover:text-teal-700"><RefreshCw className={`w-3.5 h-3.5 ${loadingReport ? 'animate-spin' : ''}`} /></button>
           </div>
           {loadingReport || !balanceSheet ? (
@@ -645,32 +645,32 @@ export const AccountingManagement: React.FC = () => {
           ) : (
             <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
               <div>
-                <div className="font-bold text-slate-500 uppercase text-[10px] mb-1.5">Assets</div>
+                <div className="font-semibold text-slate-500 uppercase text-[10px] mb-1.5">Assets</div>
                 {balanceSheet.assets.map(r => (
                   <div key={r.code} className="flex justify-between py-1 border-b border-slate-50">
                     <span className="text-slate-700">{r.name}</span>
                     <span className="font-mono font-bold text-slate-900">{r.amountPKR.toLocaleString()}</span>
                   </div>
                 ))}
-                <div className="flex justify-between pt-1.5 font-black text-slate-900">
+                <div className="flex justify-between pt-1.5 font-bold text-slate-900">
                   <span>Total Assets</span><span className="font-mono">{balanceSheet.totalAssetsPKR.toLocaleString()}</span>
                 </div>
               </div>
               <div className="space-y-4">
                 <div>
-                  <div className="font-bold text-slate-500 uppercase text-[10px] mb-1.5">Liabilities</div>
+                  <div className="font-semibold text-slate-500 uppercase text-[10px] mb-1.5">Liabilities</div>
                   {balanceSheet.liabilities.map(r => (
                     <div key={r.code} className="flex justify-between py-1 border-b border-slate-50">
                       <span className="text-slate-700">{r.name}</span>
                       <span className="font-mono font-bold text-slate-900">{r.amountPKR.toLocaleString()}</span>
                     </div>
                   ))}
-                  <div className="flex justify-between pt-1.5 font-black text-slate-900">
+                  <div className="flex justify-between pt-1.5 font-bold text-slate-900">
                     <span>Total Liabilities</span><span className="font-mono">{balanceSheet.totalLiabilitiesPKR.toLocaleString()}</span>
                   </div>
                 </div>
                 <div>
-                  <div className="font-bold text-slate-500 uppercase text-[10px] mb-1.5">Equity</div>
+                  <div className="font-semibold text-slate-500 uppercase text-[10px] mb-1.5">Equity</div>
                   {balanceSheet.equity.map(r => (
                     <div key={r.code} className="flex justify-between py-1 border-b border-slate-50">
                       <span className="text-slate-700">{r.name}</span>
@@ -681,11 +681,11 @@ export const AccountingManagement: React.FC = () => {
                     <span className="text-slate-700">Retained Earnings</span>
                     <span className="font-mono font-bold text-slate-900">{balanceSheet.retainedEarningsPKR.toLocaleString()}</span>
                   </div>
-                  <div className="flex justify-between pt-1.5 font-black text-slate-900">
+                  <div className="flex justify-between pt-1.5 font-bold text-slate-900">
                     <span>Total Equity</span><span className="font-mono">{balanceSheet.totalEquityPKR.toLocaleString()}</span>
                   </div>
                 </div>
-                <div className={`flex justify-between pt-2 border-t-2 border-slate-300 font-black ${balanceSheet.balances ? 'text-teal-600' : 'text-rose-600'}`}>
+                <div className={`flex justify-between pt-2 border-t-2 border-slate-300 font-bold ${balanceSheet.balances ? 'text-teal-600' : 'text-rose-600'}`}>
                   <span>Liabilities + Equity {balanceSheet.balances ? '(Balanced)' : '(OUT OF BALANCE)'}</span>
                   <span className="font-mono">{balanceSheet.totalLiabilitiesAndEquityPKR.toLocaleString()}</span>
                 </div>
@@ -714,7 +714,7 @@ export const AccountingManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     <th className="px-4 py-2.5">Period</th>
                     <th className="px-4 py-2.5">Status</th>
                     <th className="px-4 py-2.5">Closed</th>
@@ -772,7 +772,7 @@ export const AccountingManagement: React.FC = () => {
           {unreconciled && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
                   {unreconciled.accountName} — book balance {unreconciled.bookBalancePKR.toLocaleString()} PKR
                 </span>
                 <span className="text-[11px] text-slate-500">Selected: {selectedLinesTotal.toLocaleString()} PKR</span>
@@ -806,12 +806,12 @@ export const AccountingManagement: React.FC = () => {
               {isOwner && unreconciled.unreconciledLines.length > 0 && (
                 <div className="p-4 border-t border-slate-200 flex flex-wrap items-end gap-2">
                   <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Statement Date</label>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Statement Date</label>
                     <input type="date" value={statementDate} onChange={(e) => setStatementDate(e.target.value)}
                       className="mt-1 block px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Statement Balance (PKR)</label>
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Statement Balance (PKR)</label>
                     <input type="number" value={statementBalance} onChange={(e) => setStatementBalance(e.target.value)}
                       className="mt-1 block px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
                   </div>
@@ -831,7 +831,7 @@ export const AccountingManagement: React.FC = () => {
           {reconHistory.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Reconciliation History</span>
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Reconciliation History</span>
               </div>
               <table className="w-full text-left text-xs">
                 <tbody className="divide-y divide-slate-100">
@@ -854,17 +854,17 @@ export const AccountingManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">New Accounting Period</h2>
+              <h2 className="text-sm font-bold text-slate-900">New Accounting Period</h2>
               <button onClick={() => setIsNewPeriodOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Start</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Start</label>
                 <input type="date" value={newPeriodStart} onChange={(e) => setNewPeriodStart(e.target.value)}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">End</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">End</label>
                 <input type="date" value={newPeriodEnd} onChange={(e) => setNewPeriodEnd(e.target.value)}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
@@ -886,18 +886,18 @@ export const AccountingManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">Add Account</h2>
+              <h2 className="text-sm font-bold text-slate-900">Add Account</h2>
               <button onClick={() => setIsNewAccountOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Code</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Code</label>
                 <input type="text" value={newAccount.code} onChange={(e) => setNewAccount({ ...newAccount, code: e.target.value })}
                   placeholder="e.g. 5400"
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-teal-500" />
               </div>
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Type</label>
                 <select value={newAccount.type} onChange={(e) => setNewAccount({ ...newAccount, type: e.target.value as AccountType })}
                   className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500">
                   {ACCOUNT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -905,13 +905,13 @@ export const AccountingManagement: React.FC = () => {
               </div>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Name</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Name</label>
               <input type="text" value={newAccount.name} onChange={(e) => setNewAccount({ ...newAccount, name: e.target.value })}
                 placeholder="e.g. Utilities Expense"
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Sub-Type (optional)</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Sub-Type (optional)</label>
               <input type="text" value={newAccount.subType} onChange={(e) => setNewAccount({ ...newAccount, subType: e.target.value })}
                 placeholder="e.g. Operating Expense"
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
@@ -933,11 +933,11 @@ export const AccountingManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-lg p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">New Journal Entry</h2>
+              <h2 className="text-sm font-bold text-slate-900">New Journal Entry</h2>
               <button onClick={() => setIsNewEntryOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Description</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Description</label>
               <input type="text" value={entryDesc} onChange={(e) => setEntryDesc(e.target.value)}
                 placeholder="e.g. Office rent for the month"
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500" />
@@ -945,7 +945,7 @@ export const AccountingManagement: React.FC = () => {
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Lines (must balance)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Lines (must balance)</label>
                 <button onClick={addEntryLine} className="text-[11px] font-bold text-teal-600 hover:text-teal-700 flex items-center gap-1">
                   <Plus className="w-3 h-3" /> Add Line
                 </button>

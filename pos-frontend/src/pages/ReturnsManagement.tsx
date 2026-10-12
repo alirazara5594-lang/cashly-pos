@@ -154,7 +154,7 @@ export const ReturnsManagement: React.FC = () => {
               <RotateCcw className="w-5 h-5 stroke-[2.5]" />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">Returns & Refunds</h1>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Returns & Refunds</h1>
               <p className="text-xs text-slate-500">
                 Take back part or all of a paid sale at {selectedBranch?.name ?? 'this branch'}. The original sale stays as it was.
               </p>
@@ -196,7 +196,7 @@ export const ReturnsManagement: React.FC = () => {
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
               />
             </div>
-            <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Recent paid sales</div>
+            <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Recent paid sales</div>
             <div className="max-h-[60vh] overflow-y-auto space-y-1.5">
               {returnable.length === 0 && (
                 <p className="text-xs text-slate-400 py-6 text-center">
@@ -287,7 +287,7 @@ export const ReturnsManagement: React.FC = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Refund by</label>
+                    <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Refund by</label>
                     <select
                       value={refundMethod}
                       onChange={(e) => setRefundMethod(e.target.value as PaymentMethod)}
@@ -297,7 +297,7 @@ export const ReturnsManagement: React.FC = () => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Reason</label>
+                    <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Reason</label>
                     <input
                       type="text"
                       value={reason}
@@ -330,7 +330,7 @@ export const ReturnsManagement: React.FC = () => {
 
                 {selected.returns.length > 0 && (
                   <div className="text-[11px] text-slate-500 space-y-0.5">
-                    <div className="font-bold uppercase tracking-wider text-[10px]">Earlier returns on this sale</div>
+                    <div className="font-semibold uppercase tracking-wider text-[10px]">Earlier returns on this sale</div>
                     {selected.returns.map(r => (
                       <div key={r.id}>
                         {r.returnNumber} · {money(r.totalRefundedPKR)} by {r.refundMethod} · {new Date(r.createdAt).toLocaleString()} · {r.createdBy}

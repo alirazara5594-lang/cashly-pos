@@ -127,7 +127,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </span>
               <span>{order.taxPKR.toLocaleString()}</span>
             </div>
-            <div className="flex justify-between text-xs font-black pt-1 border-t border-gray-300">
+            <div className="flex justify-between text-xs font-bold pt-1 border-t border-gray-300">
               <span>TOTAL:</span>
               <span>{order.totalPKR.toLocaleString()}</span>
             </div>

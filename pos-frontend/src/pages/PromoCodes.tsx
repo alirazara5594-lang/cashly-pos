@@ -153,7 +153,7 @@ export const PromoCodes: React.FC = () => {
             <Percent className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Promo Codes</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Promo Codes</h1>
             <p className="text-[11px] text-slate-500 mt-1">Discount campaigns applied at checkout</p>
           </div>
         </div>
@@ -193,7 +193,7 @@ export const PromoCodes: React.FC = () => {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-slate-50 border-b border-slate-200">
-              <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+              <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 <th className="px-4 py-2.5">Code</th>
                 <th className="px-4 py-2.5">Discount</th>
                 <th className="px-4 py-2.5 text-right">Min Order</th>
@@ -210,7 +210,7 @@ export const PromoCodes: React.FC = () => {
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-400">No promo codes yet.</td></tr>
               ) : codes.map(promo => (
                 <tr key={promo.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-2.5 text-xs font-black text-slate-900 tracking-wider">{promo.code}</td>
+                  <td className="px-4 py-2.5 text-xs font-bold text-slate-900 tracking-wider">{promo.code}</td>
                   <td className="px-4 py-2.5 text-xs text-slate-700">
                     {promo.discountType === 'Percent'
                       ? `${promo.discountValue}%`
@@ -271,7 +271,7 @@ export const PromoCodes: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-lg p-5 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900">
                 {editingId ? 'Edit Promo Code' : 'New Promo Code'}
               </h2>
               <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-700">
@@ -281,7 +281,7 @@ export const PromoCodes: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="sm:col-span-2">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Code</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Code</label>
                 <input
                   value={form.code}
                   onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
@@ -291,7 +291,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Discount Type</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Discount Type</label>
                 <select
                   value={form.discountType}
                   onChange={(e) => setForm({ ...form, discountType: e.target.value as PromoDiscountType })}
@@ -303,7 +303,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Discount Value</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Discount Value</label>
                 <input
                   type="number"
                   min="0"
@@ -314,7 +314,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Minimum Order (PKR)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Minimum Order (PKR)</label>
                 <input
                   type="number"
                   min="0"
@@ -325,7 +325,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Max Uses (total)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Max Uses (total)</label>
                 <input
                   type="number"
                   min="0"
@@ -337,7 +337,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Max Uses per Customer</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Max Uses per Customer</label>
                 <input
                   type="number"
                   min="0"
@@ -349,7 +349,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Valid From</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Valid From</label>
                 <input
                   type="date"
                   value={form.validFrom}
@@ -359,7 +359,7 @@ export const PromoCodes: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Valid Until (optional)</label>
+                <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Valid Until (optional)</label>
                 <input
                   type="date"
                   value={form.validUntil}

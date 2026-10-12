@@ -210,7 +210,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               <div className="text-left">
                 <div className="text-slate-900 font-semibold flex items-center gap-1.5">
                   {selectedTenant?.name || 'Restaurant'}
-                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase tracking-wider ${
+                  <span className={`text-[9px] px-1.5 py-0.2 rounded font-semibold uppercase tracking-wider ${
                     activePackage === 'Professional' ? 'bg-purple-100 text-purple-700 border border-purple-200' :
                     activePackage === 'Standard' ? 'bg-blue-100 text-blue-700 border border-blue-200' :
                     'bg-amber-100 text-amber-700 border border-amber-200'
@@ -229,7 +229,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
             {showTenantDropdown && isPinned && (
               <div className="absolute left-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 z-50 text-sm">
-                <div className="px-2 py-1 text-xs font-bold text-slate-500 uppercase tracking-wider">Work at another branch</div>
+                <div className="px-2 py-1 text-xs font-semibold text-slate-500 uppercase tracking-wider">Work at another branch</div>
                 <div className="mt-1 space-y-1">
                   {myBranches.map(b => {
                     const isCurrent = b.id === currentUser?.branchId;
@@ -263,7 +263,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
             {showTenantDropdown && !isPinned && (
               <div className="absolute left-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 z-50 text-sm">
-                <div className="px-2 py-1 text-xs font-bold text-slate-500 uppercase tracking-wider">Switch Business / Branch</div>
+                <div className="px-2 py-1 text-xs font-semibold text-slate-500 uppercase tracking-wider">Switch Business / Branch</div>
                 <div className="mt-1 space-y-1">
                   {tenants.map(t => (
                     <div key={t.id} className="p-1.5 rounded-lg hover:bg-slate-50">
@@ -328,7 +328,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
             {showModeDropdown && (
               <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-2xl p-2 z-50">
-                <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Terminal Mode</div>
+                <div className="px-2 py-1 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Terminal Mode</div>
                 {[
                   { mode: 'CounterPOS' as const, icon: Monitor, label: 'Cashier Counter', desc: 'POS checkout only', color: 'teal' },
                   { mode: 'OwnerAdmin' as const, icon: Laptop, label: 'Owner / Back Office', desc: 'Full access — reports, menu, staff', color: 'teal' },
@@ -366,7 +366,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               >
                 <User className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">{currentUser.fullName || currentUser.username}</span>
-                <span className="hidden lg:inline text-[9px] px-1.5 py-0.5 rounded bg-white text-teal-600 border border-slate-200 font-bold uppercase tracking-wider">
+                <span className="hidden lg:inline text-[9px] px-1.5 py-0.5 rounded bg-white text-teal-600 border border-slate-200 font-semibold uppercase tracking-wider">
                   {currentUser.role === 'SuperAdmin' && currentUser.platformRole && !currentUser.isSetupAccount
                     ? `Platform ${currentUser.platformRole.toLowerCase()}`
                     : ROLE_LABELS[normalizeRole(currentUser.role) ?? ''] ?? 'Staff'}

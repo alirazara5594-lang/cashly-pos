@@ -83,7 +83,7 @@ export const PaymentSettings: React.FC = () => {
             <CreditCard className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Payment Gateways</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Payment Gateways</h1>
             <p className="text-[11px] text-slate-500 mt-1">Connection status for digital payment providers</p>
           </div>
         </div>
@@ -138,12 +138,12 @@ export const PaymentSettings: React.FC = () => {
               </div>
 
               <div>
-                <h2 className="text-sm font-black text-slate-900">{label}</h2>
+                <h2 className="text-sm font-bold text-slate-900">{label}</h2>
                 <p className="text-[11px] text-slate-500 leading-snug mt-1">{description}</p>
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
-                <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Server setting</p>
+                <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-400">Server setting</p>
                 <p className="text-[10px] font-mono text-slate-600 break-all mt-0.5">{envHint}</p>
               </div>
 
@@ -158,7 +158,7 @@ export const PaymentSettings: React.FC = () => {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl p-5">
-        <h2 className="text-sm font-black text-slate-900">Cash</h2>
+        <h2 className="text-sm font-bold text-slate-900">Cash</h2>
         <p className="text-[11px] text-slate-500 leading-snug mt-1">
           Cash needs no gateway. It is always available at the till and settles through the
           cash shift and Z-report, not through a payment provider.

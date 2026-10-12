@@ -4,7 +4,7 @@ import { posApi, getApiErrorMessage } from '../services/api';
 import { restaurantSignInLink } from '../services/restaurantAddress';
 
 const inputCls = 'w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20';
-const labelCls = 'block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1';
+const labelCls = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
 
 /**
  * Where a business set up by Cashly gets its owner: the invite link Cashly sent opens here, and the
@@ -44,8 +44,8 @@ export const RedeemInvite: React.FC = () => {
     <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-5">
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">C</div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">Welcome to Cashly <span className="text-teal-600">POS</span></h1>
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-teal-700/25">C</div>
+          <h1 className="text-xl font-bold text-slate-900 tracking-tight">Welcome to Cashly <span className="text-teal-600">POS</span></h1>
           <p className="text-xs text-slate-500">Set up your owner account. Only you will know your PIN.</p>
         </div>
 

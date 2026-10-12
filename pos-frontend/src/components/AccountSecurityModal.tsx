@@ -5,7 +5,7 @@ import { posApi, getApiErrorMessage } from '../services/api';
 import type { AccountSecurity } from '../types';
 
 const inputClass = 'w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500';
-const labelClass = 'block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1';
+const labelClass = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
 
 type TwoFactorStep =
   | { kind: 'idle' }

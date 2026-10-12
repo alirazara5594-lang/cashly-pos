@@ -114,7 +114,7 @@ export const OpenOrders: React.FC = () => {
               <Wallet className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold tracking-tight">Open Orders</h1>
+              <h1 className="text-xl font-bold tracking-tight">Open Orders</h1>
               <p className="text-xs text-slate-500">
                 Waiter-tablet, QR-code and pickup orders at {selectedBranch?.name ?? 'this branch'} waiting for payment.
               </p>
@@ -152,7 +152,7 @@ export const OpenOrders: React.FC = () => {
                 <div key={o.id} className="bg-white border border-slate-200 rounded-2xl p-4 space-y-2">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="text-sm font-black font-mono">{o.orderNumber}</div>
+                      <div className="text-sm font-bold font-mono">{o.orderNumber}</div>
                       <div className="text-xs text-slate-500 flex items-center gap-1.5">
                         <Icon className="w-3.5 h-3.5" /> {source.label}
                         {o.tableNumber && <span>· Table {o.tableNumber}</span>}
@@ -161,7 +161,7 @@ export const OpenOrders: React.FC = () => {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-base font-black">{Math.round(o.totalPKR).toLocaleString()}</div>
+                      <div className="text-base font-bold">{Math.round(o.totalPKR).toLocaleString()}</div>
                       <div className="text-[10px] text-slate-400">{new Date(o.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                     </div>
                   </div>
@@ -185,7 +185,7 @@ export const OpenOrders: React.FC = () => {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setPaying(null)}>
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl" onClick={e => e.stopPropagation()}>
             <div>
-              <h3 className="text-lg font-extrabold">Payment for {paying.orderNumber}</h3>
+              <h3 className="text-lg font-bold">Payment for {paying.orderNumber}</h3>
               <p className="text-sm text-slate-500">Total {Math.round(paying.totalPKR).toLocaleString()}</p>
             </div>
             <div className="grid grid-cols-3 gap-2">
@@ -201,7 +201,7 @@ export const OpenOrders: React.FC = () => {
             </div>
             {method === 'Cash' && (
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Cash received</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Cash received</label>
                 <input
                   type="number"
                   value={tendered}

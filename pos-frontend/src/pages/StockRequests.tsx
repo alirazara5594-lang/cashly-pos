@@ -286,7 +286,7 @@ export const StockRequests: React.FC = () => {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl md:text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+          <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
             {isInbox ? <Inbox className="w-6 h-6 text-teal-600" /> : <Package className="w-6 h-6 text-teal-600" />}
             {isInbox ? 'Outlet Requests' : 'Stock Requests'}
             {isInbox && waitingCount > 0 && (

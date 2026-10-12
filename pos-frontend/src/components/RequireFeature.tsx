@@ -33,7 +33,7 @@ export const RequireFeature: React.FC<RequireFeatureProps> = ({ flag, label, chi
             <Lock className="w-7 h-7" />
           </div>
           <div className="space-y-1.5">
-            <h2 className="text-lg font-black text-slate-900">Not on your plan</h2>
+            <h2 className="text-lg font-bold text-slate-900">Not on your plan</h2>
             <p className="text-xs text-slate-500 leading-relaxed">
               <strong className="text-slate-700">{label}</strong> isn't included in your current subscription.
               An owner can upgrade the plan, or buy it standalone as an add-on.

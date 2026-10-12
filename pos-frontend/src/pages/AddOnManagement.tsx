@@ -5,7 +5,7 @@ import { pkr } from '../utils/renewals';
 import type { AddOnCatalogItem, AddOnHolder, AddOnKeyOption } from '../types';
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500';
-const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1';
+const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
 
 /**
  * The add-on catalogue — what can be sold, at what price — and who has each one now. Granting an
@@ -153,7 +153,7 @@ export const AddOnManagement: React.FC<{ onOpenTenant?: (tenantId: string) => vo
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200">
-                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <th className="px-4 py-2.5">Add-on</th>
                   <th className="px-4 py-2.5">Switches on</th>
                   <th className="px-4 py-2.5 text-right">Monthly</th>
@@ -211,7 +211,7 @@ export const AddOnManagement: React.FC<{ onOpenTenant?: (tenantId: string) => vo
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200">
-                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <th className="px-4 py-2.5">Business</th>
                   <th className="px-4 py-2.5">Add-on</th>
                   <th className="px-4 py-2.5">Where</th>
@@ -248,7 +248,7 @@ export const AddOnManagement: React.FC<{ onOpenTenant?: (tenantId: string) => vo
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">Edit {editing.displayName}</h2>
+              <h2 className="text-sm font-bold text-slate-900">Edit {editing.displayName}</h2>
               <button onClick={() => setEditing(null)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             <div><label className={labelCls}>Name</label><input value={editForm.displayName} onChange={(e) => setEditForm({ ...editForm, displayName: e.target.value })} className={inputCls} /></div>
@@ -274,7 +274,7 @@ export const AddOnManagement: React.FC<{ onOpenTenant?: (tenantId: string) => vo
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">New add-on</h2>
+              <h2 className="text-sm font-bold text-slate-900">New add-on</h2>
               <button onClick={() => setCreateOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
             </div>
             {createError && <div className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700">{createError}</div>}

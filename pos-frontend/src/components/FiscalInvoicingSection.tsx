@@ -31,7 +31,7 @@ const draftFor = (row: FiscalShopRow): Draft => ({
 });
 
 const inputClass = 'w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500';
-const labelClass = 'block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1';
+const labelClass = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
 
 /**
  * Each shop's connection to its tax authority. Once switched on, every paid sale at the shop is

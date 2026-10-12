@@ -55,29 +55,29 @@ export const RevenueReports: React.FC = () => {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase text-slate-500">Recurring revenue now</div>
-          <div className="text-xl font-black text-teal-700">{pkr(last?.recurringPKR)}</div>
+          <div className="text-[10px] font-semibold uppercase text-slate-500">Recurring revenue now</div>
+          <div className="text-xl font-bold text-teal-700">{pkr(last?.recurringPKR)}</div>
           <div className="text-[10px] text-slate-400">a month, from everything installed</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase text-slate-500 flex items-center justify-between">Collected in {months} months
+          <div className="text-[10px] font-semibold uppercase text-slate-500 flex items-center justify-between">Collected in {months} months
             <button onClick={() => navigate('/super-admin?tab=billing')} className="text-teal-700 normal-case font-bold">Billing →</button></div>
-          <div className="text-xl font-black">{pkr(totalCollected)}</div>
+          <div className="text-xl font-bold">{pkr(totalCollected)}</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase text-slate-500">Businesses won / lost</div>
-          <div className="text-xl font-black"><span className="text-teal-700">+{won}</span> <span className="text-rose-600">−{lost}</span></div>
+          <div className="text-[10px] font-semibold uppercase text-slate-500">Businesses won / lost</div>
+          <div className="text-xl font-bold"><span className="text-teal-700">+{won}</span> <span className="text-rose-600">−{lost}</span></div>
           <div className="text-[10px] text-slate-400">{last?.businessesAtEnd ?? 0} open now · average {pkr(data.averageMonthlyPKR)} a month each</div>
         </div>
         <div className="p-4 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[10px] font-bold uppercase text-slate-500">Trials that became paying</div>
-          <div className="text-xl font-black">{conversion == null ? '—' : `${conversion}%`}</div>
+          <div className="text-[10px] font-semibold uppercase text-slate-500">Trials that became paying</div>
+          <div className="text-xl font-bold">{conversion == null ? '—' : `${conversion}%`}</div>
           <div className="text-[10px] text-slate-400">{data.trialConverted} of {data.trialCohort} that started 1–12 months ago</div>
         </div>
       </div>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-        <h2 className="text-sm font-black text-slate-900 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-teal-600" /> Month by month</h2>
+        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-teal-600" /> Month by month</h2>
         <div className="flex items-end gap-2 h-44 border-b border-slate-200 pb-1">
           {data.months.map(m => (
             <div key={m.month} className="flex-1 flex flex-col items-center justify-end gap-1 min-w-0" title={`${monthName(m.month)}: collected ${pkr(m.collectedPKR)}, recurring ${pkr(m.recurringPKR)}`}>
@@ -97,7 +97,7 @@ export const RevenueReports: React.FC = () => {
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="text-[10px] uppercase text-slate-500 font-bold">
+            <thead className="text-[10px] uppercase text-slate-500 font-semibold">
               <tr className="border-b border-slate-200">
                 <th className="py-2 text-left">Month</th>
                 <th className="py-2 text-right">Collected</th>
@@ -130,7 +130,7 @@ export const RevenueReports: React.FC = () => {
           const max = Math.max(1, ...rows.map(r => r.monthlyPKR));
           return (
             <section key={title} className="rounded-2xl border border-slate-200 bg-white p-5 space-y-2">
-              <h2 className="text-sm font-black text-slate-900 flex items-center gap-2"><Icon className="w-4 h-4 text-teal-600" /> {title}</h2>
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2"><Icon className="w-4 h-4 text-teal-600" /> {title}</h2>
               {rows.length === 0 && <p className="text-xs text-slate-500">No businesses yet.</p>}
               {rows.map(r => (
                 <button key={r.label} className="w-full text-left space-y-1 rounded-lg px-1 -mx-1 py-0.5 hover:bg-slate-50"

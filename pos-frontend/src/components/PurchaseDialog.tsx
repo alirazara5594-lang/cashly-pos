@@ -129,7 +129,7 @@ export const PurchaseDialog: React.FC<{
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
       <DialogContent className="bg-white border-slate-200">
         <DialogHeader>
-          <DialogTitle className="text-base font-black text-slate-900">{title}</DialogTitle>
+          <DialogTitle className="text-base font-bold text-slate-900">{title}</DialogTitle>
           <DialogDescription className="text-xs text-slate-500">
             {step === 'quote' && 'Check the price before anything is charged.'}
             {step === 'invoice' && 'This invoice is raised but unpaid — nothing has changed yet.'}
@@ -160,7 +160,7 @@ export const PurchaseDialog: React.FC<{
                   </div>
                   <div className="flex justify-between px-3 py-2 bg-slate-50">
                     <span className="font-bold text-slate-700">{request?.annual ? 'Per year' : 'Per month'}</span>
-                    <span className="font-black text-teal-700 text-sm">{pkr(quote.totalPKR)}</span>
+                    <span className="font-bold text-teal-700 text-sm">{pkr(quote.totalPKR)}</span>
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-400">
@@ -176,7 +176,7 @@ export const PurchaseDialog: React.FC<{
             <div className="flex items-start gap-3 p-3 rounded-xl bg-teal-50 border border-teal-200">
               <FileText className="w-4 h-4 text-teal-600 mt-0.5" />
               <div className="text-xs text-teal-800">
-                <p className="font-black">{invoice.invoiceNumber} · {pkr(invoice.amountPKR)}</p>
+                <p className="font-bold">{invoice.invoiceNumber} · {pkr(invoice.amountPKR)}</p>
                 <p className="mt-1 text-teal-700">{invoice.description}</p>
                 <p className="mt-1 text-teal-700">Due {new Date(invoice.dueAt).toLocaleDateString()}</p>
               </div>
@@ -195,7 +195,7 @@ export const PurchaseDialog: React.FC<{
           <div className="space-y-3">
             <div className="rounded-xl border border-slate-200 px-3 py-2.5 flex items-center justify-between text-xs">
               <span className="text-slate-500">{invoice.invoiceNumber}</span>
-              <span className="font-black text-slate-900">{pkr(invoice.amountPKR)}</span>
+              <span className="font-bold text-slate-900">{pkr(invoice.amountPKR)}</span>
             </div>
 
             {noneConfigured ? (
@@ -205,7 +205,7 @@ export const PurchaseDialog: React.FC<{
               </p>
             ) : (
               <div className="space-y-2">
-                <p className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Pay with</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Pay with</p>
                 {(configurable.length > 0 ? configurable : providers).map(p => (
                   <button
                     key={p.provider}

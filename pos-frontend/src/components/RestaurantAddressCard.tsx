@@ -15,7 +15,7 @@ export const RestaurantAddressCard: React.FC<{ webName: string }> = ({ webName }
       <div className="flex items-center gap-2.5 min-w-0 flex-1">
         <Globe className="w-5 h-5 text-teal-600 shrink-0" />
         <div className="min-w-0">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-teal-800">Your restaurant's sign-in address</div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-teal-800">Your restaurant's sign-in address</div>
           <div className="text-sm font-mono font-bold text-slate-900 truncate">{link.replace(/^https?:\/\//, '')}</div>
           <div className="text-[11px] text-teal-800">
             Send it to your staff — they sign in there with just their username and PIN.

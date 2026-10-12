@@ -64,7 +64,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           <span className="text-4xl">{getEmoji(product.name, categoryName)}</span>
         )}
         {hasModifiers && (
-          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-amber-100 text-amber-700 text-[10px] font-bold uppercase">
+          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-lg bg-amber-100 text-amber-700 text-[10px] font-semibold uppercase">
             Custom
           </span>
         )}

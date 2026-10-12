@@ -50,7 +50,7 @@ interface PendingBranchChoice {
 }
 
 const inputClass = 'w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20';
-const labelClass = 'block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1';
+const labelClass = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
 
 /**
  * Mandatory full-screen sign-in. The first screen for anyone signed out — including a visitor
@@ -436,17 +436,17 @@ export const LoginGate: React.FC = () => {
       <div className="w-full max-w-sm space-y-5">
         {/* Brand */}
         <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-teal-700/25">
+          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-teal-700/25">
             C
           </div>
           <div>
-            <h1 className="text-xl font-black text-slate-900 tracking-tight">
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">
               Cashly <span className="text-teal-600">POS</span>
             </h1>
             {address ? (
               // This restaurant's own sign-in address.
               <div className="mt-2 space-y-0.5">
-                <p className="text-base font-black text-slate-800 flex items-center justify-center gap-1.5">
+                <p className="text-base font-bold text-slate-800 flex items-center justify-center gap-1.5">
                   <Store className="w-4 h-4 text-teal-600" />
                   {restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')}
                 </p>

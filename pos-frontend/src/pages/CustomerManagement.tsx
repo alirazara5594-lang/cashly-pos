@@ -146,7 +146,7 @@ export const CustomerManagement: React.FC = () => {
             <Users className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Customers</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Customers</h1>
             <p className="text-[11px] text-slate-500 mt-1">Profiles, loyalty balances and visit history</p>
           </div>
         </div>
@@ -197,7 +197,7 @@ export const CustomerManagement: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-slate-50 border-b border-slate-200">
-                <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   <th className="px-4 py-2.5">Customer</th>
                   <th className="px-4 py-2.5">Phone</th>
                   <th className="px-4 py-2.5 text-right">Points</th>
@@ -257,7 +257,7 @@ export const CustomerManagement: React.FC = () => {
           ) : (
             <div className="space-y-4">
               <div>
-                <h2 className="text-sm font-black text-slate-900">{selected.fullName}</h2>
+                <h2 className="text-sm font-bold text-slate-900">{selected.fullName}</h2>
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-1">
                   <Phone className="w-3 h-3" />{selected.phone}
                 </div>
@@ -271,16 +271,16 @@ export const CustomerManagement: React.FC = () => {
               <div className="grid grid-cols-3 gap-2">
                 <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-center">
                   <Star className="w-3.5 h-3.5 text-amber-600 mx-auto" />
-                  <p className="text-sm font-black text-amber-700 mt-1">{(selected.loyaltyPoints ?? 0).toLocaleString()}</p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-amber-600">Points</p>
+                  <p className="text-sm font-bold text-amber-700 mt-1">{(selected.loyaltyPoints ?? 0).toLocaleString()}</p>
+                  <p className="text-[9px] font-semibold uppercase tracking-wider text-amber-600">Points</p>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-center">
-                  <p className="text-sm font-black text-slate-900 mt-4">{selected.totalVisits ?? 0}</p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Visits</p>
+                  <p className="text-sm font-bold text-slate-900 mt-4">{selected.totalVisits ?? 0}</p>
+                  <p className="text-[9px] font-semibold uppercase tracking-wider text-slate-500">Visits</p>
                 </div>
                 <div className="p-2.5 rounded-xl bg-teal-50 border border-teal-200 text-center">
-                  <p className="text-sm font-black text-teal-700 mt-4">{(selected.totalSpentPKR ?? 0).toLocaleString()}</p>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-teal-600">Spent PKR</p>
+                  <p className="text-sm font-bold text-teal-700 mt-4">{(selected.totalSpentPKR ?? 0).toLocaleString()}</p>
+                  <p className="text-[9px] font-semibold uppercase tracking-wider text-teal-600">Spent PKR</p>
                 </div>
               </div>
 
@@ -293,8 +293,8 @@ export const CustomerManagement: React.FC = () => {
               {selected.currentBalancePKR > 0 && (
                 <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between">
                   <div>
-                    <p className="text-[9px] font-bold uppercase tracking-wider text-rose-600">Owed on Tab (CustomerKhata)</p>
-                    <p className="text-sm font-black text-rose-700">{selected.currentBalancePKR.toLocaleString()} PKR</p>
+                    <p className="text-[9px] font-semibold uppercase tracking-wider text-rose-600">Owed on Tab (CustomerKhata)</p>
+                    <p className="text-sm font-bold text-rose-700">{selected.currentBalancePKR.toLocaleString()} PKR</p>
                   </div>
                   {canEdit && (
                     <button
@@ -308,7 +308,7 @@ export const CustomerManagement: React.FC = () => {
               )}
 
               <div className="pt-2 border-t border-slate-100">
-                <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
                   Recent Visits
                 </div>
                 {visitsUnavailable ? (
@@ -349,7 +349,7 @@ export const CustomerManagement: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">
+              <h2 className="text-sm font-bold text-slate-900">
                 {editingId ? 'Edit Customer' : 'New Customer'}
               </h2>
               <button onClick={() => setIsFormOpen(false)} className="text-slate-400 hover:text-slate-700">
@@ -364,7 +364,7 @@ export const CustomerManagement: React.FC = () => {
                 { key: 'email' as const, label: 'Email (optional)', placeholder: 'name@example.com' }
               ]).map(f => (
                 <div key={f.key}>
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{f.label}</label>
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{f.label}</label>
                   <input
                     value={form[f.key]}
                     onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
@@ -391,12 +391,12 @@ export const CustomerManagement: React.FC = () => {
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-black text-slate-900">Pay Down — {paymentCustomer.fullName}</h2>
+              <h2 className="text-sm font-bold text-slate-900">Pay Down — {paymentCustomer.fullName}</h2>
               <button onClick={() => setPaymentCustomer(null)} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
             </div>
             <p className="text-[11px] text-slate-500">Owed: <span className="font-mono font-bold text-rose-600">{paymentCustomer.currentBalancePKR.toLocaleString()} PKR</span></p>
             <div>
-              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Amount (PKR)</label>
               <input type="number" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
                 max={paymentCustomer.currentBalancePKR}
                 className="mt-1 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500" />

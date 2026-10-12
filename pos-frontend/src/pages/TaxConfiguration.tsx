@@ -168,7 +168,7 @@ export const TaxConfiguration: React.FC = () => {
           <Percent className="w-5 h-5 text-amber-600" />
         </div>
         <div>
-          <h1 className="text-lg font-black text-slate-900">Tax Configuration</h1>
+          <h1 className="text-lg font-bold text-slate-900">Tax Configuration</h1>
           <p className="text-xs text-slate-500">Tax rates, jurisdictions, and the branch tax region.</p>
         </div>
       </div>

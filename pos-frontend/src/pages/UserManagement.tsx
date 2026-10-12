@@ -442,7 +442,7 @@ export const UserManagement: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <Users className="w-6 h-6 text-teal-500" />
-              <h1 className="text-xl font-black text-slate-900 tracking-tight">Staff Accounts & Role Permissions</h1>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Staff Accounts & Role Permissions</h1>
             </div>
             <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-teal-500" />
@@ -459,7 +459,7 @@ export const UserManagement: React.FC = () => {
                 setAddError('');
                 setIsAddUserOpen(true);
               }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-black transition shadow-lg shadow-teal-500/25"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold transition shadow-lg shadow-teal-500/25"
             >
               <UserPlus className="w-4 h-4" />
               <span>Add Staff Account</span>
@@ -497,7 +497,7 @@ export const UserManagement: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                   <th className="py-3 px-4">Staff Name & Username</th>
                   <th className="py-3 px-3">Role</th>
                   <th className="py-3 px-3 text-center">Quick PIN</th>
@@ -829,7 +829,7 @@ export const UserManagement: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 transition shadow-lg shadow-teal-500/25"
+                  className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 transition shadow-lg shadow-teal-500/25"
                 >
                   Save Staff Account
                 </button>
@@ -933,7 +933,7 @@ export const UserManagement: React.FC = () => {
                 type="button"
                 onClick={handleSaveSignIn}
                 disabled={signInSaving}
-                className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition flex items-center gap-1.5"
+                className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 disabled:opacity-50 transition flex items-center gap-1.5"
               >
                 <Save className="w-3.5 h-3.5" /> {signInSaving ? 'Saving…' : 'Save'}
               </button>
@@ -966,7 +966,7 @@ export const UserManagement: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Department</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Department</label>
                 <div className="flex gap-1">
                   <select value={payrollForm.departmentId} onChange={(e) => setPayrollForm({ ...payrollForm, departmentId: e.target.value })}
                     className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
@@ -978,7 +978,7 @@ export const UserManagement: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Designation</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Designation</label>
                 <div className="flex gap-1">
                   <select value={payrollForm.designationId} onChange={(e) => setPayrollForm({ ...payrollForm, designationId: e.target.value })}
                     className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
@@ -990,7 +990,7 @@ export const UserManagement: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Employment Type</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Employment Type</label>
                 <select value={payrollForm.employmentType} onChange={(e) => setPayrollForm({ ...payrollForm, employmentType: e.target.value as any })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none">
                   <option value="FullTime">Full-Time</option>
@@ -999,18 +999,18 @@ export const UserManagement: React.FC = () => {
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Bank Account</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Bank Account</label>
                 <input type="text" value={payrollForm.bankAccountNumber} onChange={(e) => setPayrollForm({ ...payrollForm, bankAccountNumber: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Monthly Rate (PKR)</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Monthly Rate (PKR)</label>
                 <input type="number" value={payrollForm.monthlyRatePKR} onChange={(e) => setPayrollForm({ ...payrollForm, monthlyRatePKR: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
                 <p className="text-[10px] text-slate-400 mt-0.5">Used when hourly rate is 0.</p>
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Hourly Rate (PKR)</label>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Hourly Rate (PKR)</label>
                 <input type="number" value={payrollForm.hourlyRatePKR} onChange={(e) => setPayrollForm({ ...payrollForm, hourlyRatePKR: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none" />
                 <p className="text-[10px] text-slate-400 mt-0.5">Takes precedence — pays actual clocked hours.</p>
@@ -1025,7 +1025,7 @@ export const UserManagement: React.FC = () => {
               <button
                 onClick={handleSavePayroll}
                 disabled={payrollSaving}
-                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
               >
                 <Save className="w-3.5 h-3.5" />
                 <span>{payrollSaving ? 'Saving…' : 'Save Payroll Details'}</span>
@@ -1111,7 +1111,7 @@ export const UserManagement: React.FC = () => {
               <button
                 onClick={handleSaveAccess}
                 disabled={accessSaving || accessLoading}
-                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-black hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 disabled:opacity-50 transition shadow-lg shadow-teal-500/25"
               >
                 <Save className="w-3.5 h-3.5" />
                 <span>{accessSaving ? 'Saving…' : 'Save'}</span>

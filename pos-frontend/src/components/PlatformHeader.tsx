@@ -173,7 +173,7 @@ export const PlatformHeader: React.FC<{
         <nav className="hidden md:flex items-center gap-1.5 text-xs min-w-0" aria-label="Breadcrumb">
           <button onClick={() => go('')} className="font-semibold text-slate-500 hover:text-teal-700 transition whitespace-nowrap">Cashly platform</button>
           <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-          <span className="flex items-center gap-1.5 font-black text-slate-900 whitespace-nowrap">
+          <span className="flex items-center gap-1.5 font-bold text-slate-900 whitespace-nowrap">
             <SectionIcon className="w-4 h-4 text-teal-600" /> {section.label}
           </span>
         </nav>
@@ -214,7 +214,7 @@ export const PlatformHeader: React.FC<{
                     <span className="block text-xs font-bold text-slate-900 truncate">{r.title}</span>
                     <span className="block text-[11px] text-slate-500 truncate">{r.detail}</span>
                   </span>
-                  <span className="ml-auto text-[10px] font-bold uppercase text-slate-400">{r.kind === 'business' ? 'Business' : 'Invoice'}</span>
+                  <span className="ml-auto text-[10px] font-semibold uppercase text-slate-400">{r.kind === 'business' ? 'Business' : 'Invoice'}</span>
                 </button>
               ))}
             </div>
@@ -256,14 +256,14 @@ export const PlatformHeader: React.FC<{
           <button onClick={() => setBellOpen(v => !v)} className={iconBtn} title="What needs attention">
             <Bell className="w-5 h-5" />
             {needsAction > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-black flex items-center justify-center ring-2 ring-white">
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center ring-2 ring-white">
                 {needsAction > 99 ? '99+' : needsAction}
               </span>
             )}
           </button>
           {bellOpen && (
             <div className={`${panel} w-80`}>
-              <div className="px-3 pt-2 pb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Needs attention</div>
+              <div className="px-3 pt-2 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Needs attention</div>
               {!attention ? (
                 <div className="px-3 py-3 text-xs text-slate-400">Checking…</div>
               ) : needsAction === 0 && attention.renewalsSoon === 0 ? (
@@ -298,7 +298,7 @@ export const PlatformHeader: React.FC<{
         <div className="relative" ref={userRef}>
           <button onClick={() => setUserOpen(v => !v)}
             className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl hover:bg-slate-100 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500">
-            <span className="w-8 h-8 rounded-full bg-gradient-to-br from-teal-500 to-teal-700 text-white text-xs font-black flex items-center justify-center shadow-sm">
+            <span className="w-8 h-8 rounded-full bg-gradient-to-br from-teal-500 to-teal-700 text-white text-xs font-bold flex items-center justify-center shadow-sm">
               {initials(currentUser?.fullName)}
             </span>
             <span className="hidden lg:block text-left leading-tight">
@@ -310,7 +310,7 @@ export const PlatformHeader: React.FC<{
           {userOpen && (
             <div className={`${panel} w-64`}>
               <div className="px-3 py-2.5 border-b border-slate-100 mb-1">
-                <div className="text-xs font-black text-slate-900 truncate">{currentUser?.fullName}</div>
+                <div className="text-xs font-bold text-slate-900 truncate">{currentUser?.fullName}</div>
                 <div className="text-[11px] text-slate-500 truncate">{currentUser?.email ?? (currentUser?.isSetupAccount ? 'Shared setup PIN' : '')}</div>
                 <span className="inline-flex mt-1.5 px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-teal-700 text-[10px] font-bold">{roleText}</span>
               </div>

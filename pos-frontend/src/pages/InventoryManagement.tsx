@@ -288,7 +288,7 @@ export const InventoryManagement: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <Boxes className="w-6 h-6 text-teal-500" />
-              <h1 className="text-xl font-black text-slate-900 tracking-tight">Kitchen & Store Inventory</h1>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Kitchen & Store Inventory</h1>
             </div>
             <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-teal-500" />
@@ -327,13 +327,13 @@ export const InventoryManagement: React.FC = () => {
           <div className="flex items-center gap-3">
             <div className="px-3.5 py-2 bg-rose-50 border border-rose-200 rounded-xl text-right">
               <div className="text-[10px] text-rose-500 font-medium">Low Stock Alerts</div>
-              <div className="text-sm font-black text-rose-600">
+              <div className="text-sm font-bold text-rose-600">
                 {activeTab === 'ingredients' ? rawLowStockCount : finishedLowStockCount} Items
               </div>
             </div>
             <div className="px-3.5 py-2 bg-teal-50 border border-teal-200 rounded-xl text-right">
               <div className="text-[10px] text-teal-500 font-medium">Stock Value</div>
-              <div className="text-sm font-black text-teal-600">
+              <div className="text-sm font-bold text-teal-600">
                 {Math.round(activeTab === 'ingredients' ? rawTotalValuationPKR : finishedTotalValuationPKR).toLocaleString()}
               </div>
             </div>
@@ -391,7 +391,7 @@ export const InventoryManagement: React.FC = () => {
             {activeTab === 'ingredients' && (
               <button
                 onClick={() => setIsNewIngOpen(true)}
-                className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-amber-500/25"
+                className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-amber-500/25"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Add New Ingredient</span>
@@ -414,7 +414,7 @@ export const InventoryManagement: React.FC = () => {
             {hasHeadOffice && !atHeadOffice && (
               <button
                 onClick={() => navigate('/stock-requests', { state: { newRequest: 'ToHQ' } })}
-                className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-black text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-teal-500/25"
+                className="px-3.5 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs transition flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-teal-500/25"
                 title="Ask head office to send stock"
               >
                 <Truck className="w-3.5 h-3.5" />
@@ -453,7 +453,7 @@ export const InventoryManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Raw Ingredient</th>
                     <th className="py-3 px-3">Classification</th>
                     <th className="py-3 px-3 text-right">Cost Per Unit (PKR)</th>
@@ -487,7 +487,7 @@ export const InventoryManagement: React.FC = () => {
                           {ing.costPerUnitPKR.toLocaleString()} / {ing.unit}
                         </td>
                         <td className="py-3 px-3 text-center font-bold">
-                          <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
+                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono ${
                             ing.isLowStock
                               ? 'bg-rose-50 text-rose-600 border border-rose-200'
                               : 'bg-teal-50 text-teal-600 border border-teal-200'
@@ -558,7 +558,7 @@ export const InventoryManagement: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-4">Item & Category</th>
                     <th className="py-3 px-3">Barcode / SKU</th>
                     <th className="py-3 px-3 text-right">Cost Price (PKR)</th>
@@ -601,7 +601,7 @@ export const InventoryManagement: React.FC = () => {
                             </span>
                           ) : (
                             <>
-                              <span className={`px-2.5 py-1 rounded-lg text-xs font-black font-mono ${
+                              <span className={`px-2.5 py-1 rounded-lg text-xs font-bold font-mono ${
                                 item.isLowStock
                                   ? 'bg-rose-50 text-rose-600 border border-rose-200'
                                   : 'bg-teal-50 text-teal-600 border border-teal-200'
@@ -753,7 +753,7 @@ export const InventoryManagement: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-black hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Inwarding...' : 'Confirm Inward'}
                 </button>
@@ -881,7 +881,7 @@ export const InventoryManagement: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-black hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold hover:bg-amber-600 transition shadow-lg shadow-amber-500/25 disabled:opacity-50"
                 >
                   {isSubmitting ? 'Saving...' : 'Save Ingredient'}
                 </button>

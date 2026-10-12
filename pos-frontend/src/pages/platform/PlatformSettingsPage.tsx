@@ -5,12 +5,12 @@ import { usePosStore } from '../../store/posStore';
 import type { PlatformMessageRow, PlatformSettingsData } from '../../types';
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500 disabled:bg-slate-50';
-const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1';
+const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
 
 const Card: React.FC<{ icon: React.ReactNode; title: string; hint?: string; children: React.ReactNode }> = ({ icon, title, hint, children }) => (
   <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
     <div>
-      <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">{icon}{title}</h2>
+      <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">{icon}{title}</h2>
       {hint && <p className="text-[11px] text-slate-500 mt-0.5">{hint}</p>}
     </div>
     {children}

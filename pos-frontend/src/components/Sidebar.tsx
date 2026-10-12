@@ -472,16 +472,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
       >
         <div className="flex items-center justify-between px-4 h-14 border-b border-white/10">
           <Link to="/" className="flex items-center gap-2.5 overflow-hidden">
-            <div className="w-8 h-8 rounded-xl bg-white flex items-center justify-center text-teal-700 font-black shadow-lg shadow-black/10 shrink-0">
+            <div className="w-8 h-8 rounded-xl bg-white flex items-center justify-center text-teal-700 font-bold shadow-lg shadow-black/10 shrink-0">
               C
             </div>
             {!isCollapsed && (
               <div className="flex flex-col">
-                <span className="font-black text-base text-white tracking-tight leading-none">
+                <span className="font-bold text-base text-white tracking-tight leading-none">
                   {/* The head office runs the ERP; every outlet runs the POS. */}
                   Cashly <span className="text-white font-semibold text-xs px-1.5 py-0.5 rounded bg-white/15 border border-white/20">{isPlatformSuperAdmin ? 'Admin' : isErpOnly ? 'ERP' : 'POS'}</span>
                 </span>
-                <span className="text-[10px] text-teal-200 font-bold uppercase tracking-wider mt-0.5">
+                <span className="text-[10px] text-teal-200 font-semibold uppercase tracking-wider mt-0.5">
                   {isPlatformSuperAdmin ? 'Platform' : atHeadOffice ? 'Head Office' : isOwnerOrUnlocked ? 'Owner' : 'Branch'}
                 </span>
               </div>
@@ -501,7 +501,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {navSections.map((section, sIdx) => (
             <div key={sIdx} className="space-y-1">
               {!isCollapsed && section.title && (
-                <div className="px-3 text-[10px] font-extrabold uppercase tracking-wider text-teal-200 mb-1.5">
+                <div className="px-3 text-[10px] font-semibold uppercase tracking-wider text-teal-200 mb-1.5">
                   {section.title}
                 </div>
               )}
@@ -562,7 +562,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         </div>
                         {/* A count that needs attention, e.g. renewals due. */}
                         {!isCollapsed && item.badge && (
-                          <span className="min-w-[1.25rem] px-1.5 py-0.5 rounded-full bg-amber-400 text-amber-950 text-[10px] font-black text-center shrink-0">
+                          <span className="min-w-[1.25rem] px-1.5 py-0.5 rounded-full bg-amber-400 text-amber-950 text-[10px] font-bold text-center shrink-0">
                             {item.badge}
                           </span>
                         )}

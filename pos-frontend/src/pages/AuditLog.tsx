@@ -57,7 +57,7 @@ export const AuditLog: React.FC = () => {
             <History className="w-4.5 h-4.5" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-slate-900 leading-none">Audit Log</h1>
+            <h1 className="text-lg font-bold text-slate-900 leading-none">Audit Log</h1>
             <p className="text-[11px] text-slate-500 mt-1">
               Every privileged change — price edits, permission changes, voids, stock adjustments, payroll, accounting postings — {total} total.
             </p>
@@ -94,7 +94,7 @@ export const AuditLog: React.FC = () => {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-slate-50 border-b border-slate-200">
-              <tr className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+              <tr className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 <th className="px-4 py-2.5">When</th>
                 <th className="px-4 py-2.5">Who</th>
                 <th className="px-4 py-2.5">Action</th>

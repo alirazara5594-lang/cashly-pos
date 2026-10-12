@@ -91,7 +91,7 @@ const TYPE_LABEL: Record<LocationType, string> = {
 
 const inputClass =
   'w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20';
-const labelClass = 'block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1';
+const labelClass = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
 /** Every list the page shows. Each stands alone: one failing (a missing permission, say) must not blank the rest. */
 const fetchPageData = () => Promise.allSettled([
   posApi.getBranches(),
@@ -422,7 +422,7 @@ export const LocationsManagement: React.FC = () => {
               <Building2 className="w-5 h-5 stroke-[2.5]" />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">Locations & Head Office</h1>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Locations & Head Office</h1>
               <p className="text-xs text-slate-500">
                 Where you sell, where you keep stock, which company each location trades under, and who decides what.
               </p>
@@ -861,7 +861,7 @@ export const LocationsManagement: React.FC = () => {
                       <div className="flex items-start justify-between gap-2">
                         <div className="text-sm font-bold text-slate-900">
                           {c.legalName}
-                          {c.isDefault && <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-bold uppercase">Main</span>}
+                          {c.isDefault && <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-semibold uppercase">Main</span>}
                         </div>
                         {canEdit && (
                           <button

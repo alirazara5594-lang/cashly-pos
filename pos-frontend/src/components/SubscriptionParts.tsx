@@ -156,7 +156,7 @@ export const SubscriptionPartsTable: React.FC<SubscriptionPartsTableProps> = ({
       )}
       <table className="w-full text-left text-xs">
         <thead>
-          <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+          <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
             {showTenant && <th className="py-3 px-4">Business</th>}
             <th className="py-3 px-4">What</th>
             <th className="py-3 px-4">Installed</th>
