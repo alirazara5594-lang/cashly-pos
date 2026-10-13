@@ -413,6 +413,52 @@ export interface Product {
   isActive: boolean;
   modifiers?: ProductModifier[];
   recipeItems?: ProductRecipeItem[];
+  // A medicine's details (a pharmacy's products). Empty for anything that is not a medicine.
+  genericName?: string | null;
+  strength?: string | null;
+  dosageForm?: string | null;
+  manufacturer?: string | null;
+  drapRegistrationNo?: string | null;
+  rackLocation?: string | null;
+  schedule?: MedicineSchedule;
+}
+
+/** How a medicine may be sold; 'None' means the product is not a medicine. */
+export type MedicineSchedule = 'None' | 'OverTheCounter' | 'Prescription' | 'Controlled';
+
+export interface MedicineDetails {
+  genericName?: string;
+  strength?: string;
+  dosageForm?: string;
+  manufacturer?: string;
+  drapRegistrationNo?: string;
+  rackLocation?: string;
+  schedule?: MedicineSchedule;
+}
+
+/** Stock of one product received under one batch number and expiry date. */
+export interface StockBatch {
+  id: string;
+  productId: string;
+  productName: string;
+  batchNumber: string;
+  expiryDate: string | null;
+  /** Negative once expired. */
+  daysToExpiry: number | null;
+  quantityOnHand: number;
+  quantityReceived: number;
+  unitCostPKR: number;
+  retailPricePKR: number | null;
+  supplierName: string | null;
+  receivedAt: string;
+}
+
+/** What the till knows about a product's batches at this location. */
+export interface ExpirySummary {
+  productId: string;
+  sellableQty: number;
+  expiredQty: number;
+  nearestExpiry: string | null;
 }
 
 export interface Category {
@@ -728,6 +774,10 @@ export interface BranchStockItem {
   minAlertLevel: number;
   batchNumber?: string;
   expiryDate?: string;
+  /** Batches with stock here, the nearest expiry still sellable, and what has expired. */
+  batchCount?: number;
+  nearestExpiry?: string | null;
+  expiredQty?: number;
   isLowStock: boolean;
   /** False for a product this branch has never received or counted: it sells without a count
    *  until Stock In or Adjust creates one. */

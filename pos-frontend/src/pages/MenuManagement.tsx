@@ -22,7 +22,7 @@ import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { toUrdu } from '../utils/urduTransliterate';
-import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo } from '../types';
+import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo, MedicineDetails, MedicineSchedule } from '../types';
 
 /** Mirrors CreateProductDto on the server. */
 interface ProductForm {
@@ -38,13 +38,27 @@ interface ProductForm {
   station: KitchenStation;
   imageUrl: string;
   modifiers: { name: string; pricePKR: number }[];
+  /** A pharmacy's medicine details; ignored by every other kind of business. */
+  medicine: Required<MedicineDetails>;
 }
+
+const EMPTY_MEDICINE: Required<MedicineDetails> = {
+  genericName: '', strength: '', dosageForm: '', manufacturer: '', drapRegistrationNo: '', rackLocation: '',
+  schedule: 'OverTheCounter'
+};
 
 const EMPTY_PRODUCT_FORM: ProductForm = {
   categoryId: '', name: '', urduName: '', sku: '', barcode: '', description: '',
   costPricePKR: 0, sellingPricePKR: 0, unit: 'Piece', station: 'MainKitchen',
-  imageUrl: '', modifiers: []
+  imageUrl: '', modifiers: [], medicine: EMPTY_MEDICINE
 };
+
+const DOSAGE_FORMS = ['Tablet', 'Capsule', 'Syrup', 'Suspension', 'Injection', 'Drops', 'Cream / Ointment', 'Inhaler', 'Sachet', 'Other'];
+const SCHEDULES: { value: MedicineSchedule; label: string }[] = [
+  { value: 'OverTheCounter', label: 'Over the counter' },
+  { value: 'Prescription', label: 'Prescription only' },
+  { value: 'Controlled', label: 'Controlled (narcotic / psychotropic)' }
+];
 
 const STATIONS: { value: KitchenStation; label: string }[] = [
   { value: 'MainKitchen', label: 'Main Kitchen' },
@@ -64,7 +78,7 @@ const CREATE_ONLY_FIELDS = 'SKU, description, unit, image and modifiers';
 export const MenuManagement: React.FC = () => {
   // Kitchen stations, recipes and modifiers are a restaurant's; a shop or a pharmacy keeps a plain
   // list of what it sells, called what its trade calls it (hooks/useSector.ts).
-  const { kitchenRouting, recipes, modifiers: hasModifiers, catalogNoun } = useSector();
+  const { kitchenRouting, recipes, modifiers: hasModifiers, catalogNoun, medicines } = useSector();
   const sells = catalogNoun === 'Catalog' ? 'products' : catalogNoun.toLowerCase();
   const {
     selectedTenant,
@@ -275,6 +289,8 @@ export const MenuManagement: React.FC = () => {
     const matchesSearch = !searchTerm || 
       p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
       (p.urduName && p.urduName.includes(searchTerm)) ||
+      // A medicine is looked for by its formula as often as by its brand.
+      (!!p.genericName && p.genericName.toLowerCase().includes(searchTerm.toLowerCase())) ||
       p.barcode.includes(searchTerm);
     return matchesCat && matchesSearch;
   });
@@ -386,7 +402,13 @@ export const MenuManagement: React.FC = () => {
       unit: product.unit || 'Piece',
       station: product.station,
       imageUrl: product.imageUrl || '',
-      modifiers: (product.modifiers || []).map(m => ({ name: m.name, pricePKR: m.pricePKR }))
+      modifiers: (product.modifiers || []).map(m => ({ name: m.name, pricePKR: m.pricePKR })),
+      medicine: {
+        genericName: product.genericName || '', strength: product.strength || '', dosageForm: product.dosageForm || '',
+        manufacturer: product.manufacturer || '', drapRegistrationNo: product.drapRegistrationNo || '',
+        rackLocation: product.rackLocation || '',
+        schedule: product.schedule && product.schedule !== 'None' ? product.schedule : 'OverTheCounter'
+      }
     });
     setShowProductModal(true);
   };
@@ -406,7 +428,8 @@ export const MenuManagement: React.FC = () => {
           barcode: prodForm.barcode.trim() || undefined,
           costPricePKR: prodForm.costPricePKR,
           sellingPricePKR: prodForm.sellingPricePKR,
-          station: prodForm.station
+          station: prodForm.station,
+          medicine: medicines ? prodForm.medicine : undefined
         });
       } else {
         await posApi.createProduct({
@@ -425,7 +448,8 @@ export const MenuManagement: React.FC = () => {
           imageUrl: prodForm.imageUrl.trim() || undefined,
           modifiers: prodForm.modifiers
             .filter(m => m.name.trim())
-            .map(m => ({ name: m.name.trim(), pricePKR: m.pricePKR }))
+            .map(m => ({ name: m.name.trim(), pricePKR: m.pricePKR })),
+          medicine: medicines ? prodForm.medicine : undefined
         });
       }
       await fetchCatalog();
@@ -632,6 +656,13 @@ export const MenuManagement: React.FC = () => {
                       <td className="py-3">
                         <div className="font-bold text-slate-900 text-sm">{p.name}</div>
                         {p.urduName && <div className="text-[11px] text-slate-500 font-sans">{p.urduName}</div>}
+                        {medicines && (p.genericName || (p.schedule && p.schedule !== 'None' && p.schedule !== 'OverTheCounter')) && (
+                          <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-500">
+                            {p.genericName && <span>{[p.genericName, p.strength, p.dosageForm].filter(Boolean).join(' · ')}</span>}
+                            {p.schedule === 'Prescription' && <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold">Rx</span>}
+                            {p.schedule === 'Controlled' && <span className="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold">Controlled</span>}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 text-slate-700">{p.category?.name || 'Category'}</td>
                       <td className="py-3 font-mono text-slate-500">{p.barcode}</td>
@@ -1369,6 +1400,73 @@ export const MenuManagement: React.FC = () => {
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed resize-none"
                 />
               </div>
+
+              {/* A medicine's details: how a substitute is found, and how it may be sold. A pharmacy's only. */}
+              {medicines && (
+              <div className="pt-1 space-y-3">
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Medicine details</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {([
+                    ['genericName', 'Formula (generic name)', 'e.g. Paracetamol'],
+                    ['strength', 'Strength', 'e.g. 500 mg'],
+                    ['manufacturer', 'Company', 'e.g. GSK'],
+                    ['drapRegistrationNo', 'DRAP registration no.', 'e.g. 012345'],
+                    ['rackLocation', 'Rack / shelf', 'e.g. Rack B-3']
+                  ] as const).map(([key, label, placeholder]) => (
+                    <div key={key}>
+                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">{label}</label>
+                      <input
+                        type="text"
+                        value={prodForm.medicine[key]}
+                        onChange={(e) => setProdField('medicine', { ...prodForm.medicine, [key]: e.target.value })}
+                        placeholder={placeholder}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                      />
+                    </div>
+                  ))}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Form</label>
+                    <select
+                      value={prodForm.medicine.dosageForm}
+                      onChange={(e) => setProdField('medicine', { ...prodForm.medicine, dosageForm: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    >
+                      <option value="">Choose…</option>
+                      {DOSAGE_FORMS.map(form => <option key={form} value={form}>{form}</option>)}
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-500 mb-1.5">Sold as</label>
+                    <div role="radiogroup" aria-label="Sold as" className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {SCHEDULES.map(option => {
+                        const active = prodForm.medicine.schedule === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => setProdField('medicine', { ...prodForm.medicine, schedule: option.value })}
+                            className={`px-3 py-2 rounded-xl border text-xs font-semibold text-left transition cursor-pointer ${
+                              active ? 'border-teal-500 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {prodForm.medicine.schedule !== 'OverTheCounter' && (
+                      <p className="mt-1.5 text-[11px] text-slate-500">
+                        {prodForm.medicine.schedule === 'Controlled'
+                          ? 'Each sale will need a prescription, the patient\'s CNIC and the doctor\'s registration, and goes into the controlled-medicine register.'
+                          : 'Each sale will need a prescription recorded with it.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+              )}
 
               {/* Modifiers — these are what put the CUSTOM badge on the POS tile. A restaurant's only. */}
               {hasModifiers && (

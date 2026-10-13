@@ -18,6 +18,8 @@ export interface Sector {
   modifiers: boolean;
   /** Batch numbers and expiry dates on stock (pharmacy, grocery). */
   batchExpiry: boolean;
+  /** Sells medicines: formula, strength, schedule (prescription / controlled) on each product. */
+  medicines: boolean;
   /** What the product list is called: "Menu", "Medicines", "Catalog"... */
   catalogNoun: string;
   /** What one sale is called: "Order", "Sale", "Ticket"... */
@@ -49,6 +51,7 @@ export function useSector(): Sector {
     recipes: items ? items.recipeBom : restaurantLike,
     modifiers: items ? items.modifiers : restaurantLike,
     batchExpiry: items ? items.batchExpiry : false,
+    medicines: items ? items.prescriptionRequired : false,
     catalogNoun: info?.catalogNoun ?? (restaurantLike ? 'Menu' : 'Catalog'),
     saleNoun: info?.saleNoun ?? (restaurantLike ? 'Order' : 'Sale'),
     sectorModules: info?.sectorModules ?? []

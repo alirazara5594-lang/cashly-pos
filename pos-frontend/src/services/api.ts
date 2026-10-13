@@ -12,6 +12,8 @@ import type {
   OrderType, 
   PaymentMethod,
   BranchStockItem,
+  StockBatch,
+  ExpirySummary,
   ZReportSummary,
   CategorySalesReport,
   ItemPerformanceReport,
@@ -1078,8 +1080,22 @@ export const posApi = {
     costPricePKR?: number;
     batchNumber?: string;
     expiryDate?: string;
+    /** Free units from the distributor (10 + 1): received, not paid for. */
+    bonusQuantity?: number;
+    /** The retail price printed on this batch's pack. */
+    retailPricePKR?: number;
   }) => {
     const res = await api.post('/api/inventory/stock-in', data);
+    return res.data;
+  },
+  /** One location's batches with stock, earliest expiry first. */
+  getStockBatches: async (branchId: string, productId?: string) => {
+    const res = await api.get<StockBatch[]>('/api/inventory/batches', { params: { branchId, productId } });
+    return res.data;
+  },
+  /** For the till: per product with batches, what is sellable and what has expired. */
+  getExpirySummary: async (branchId: string) => {
+    const res = await api.get<ExpirySummary[]>('/api/pos/expiry-summary', { params: { branchId } });
     return res.data;
   },
   adjustStock: async (data: {
@@ -1250,7 +1266,12 @@ export const posApi = {
     const res = await api.post<PurchaseOrder>('/api/procurement/purchase-orders', data);
     return res.data;
   },
-  receivePurchaseOrder: async (id: string, data: { receivedBy?: string; notes?: string; }) => {
+  receivePurchaseOrder: async (id: string, data: {
+    receivedBy?: string;
+    notes?: string;
+    /** Each product line's batch, expiry and bonus, for a business whose stock has batches. */
+    lines?: { itemId: string; batchNumber?: string; expiryDate?: string; bonusQuantity?: number; retailPricePKR?: number }[];
+  }) => {
     const res = await api.post<PurchaseOrder>(`/api/procurement/purchase-orders/${id}/receive`, data);
     return res.data;
   },

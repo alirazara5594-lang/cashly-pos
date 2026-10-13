@@ -12,14 +12,17 @@ import {
   Wheat,
   Plus,
   Truck,
-  X
+  X,
+  Layers,
+  CalendarClock
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
 import { useBusinessShape } from '../hooks/useBusinessShape';
-import type { BranchStockItem, RawIngredient, IngredientMasterRow } from '../types';
+import { daysUntil, formatDay, expiryChip, today, thisMonth, expiryToIso, expiryPassed } from '../utils/expiry';
+import type { BranchStockItem, RawIngredient, IngredientMasterRow, StockBatch } from '../types';
 
 export const InventoryManagement: React.FC = () => {
   const { selectedBranch, selectedTenant } = usePosStore();
@@ -30,7 +33,9 @@ export const InventoryManagement: React.FC = () => {
 
   // Ingredients are what recipes consume, so only a business with recipes has them; a shop or a
   // pharmacy opens straight on the stock it sells (hooks/useSector.ts).
-  const { recipes } = useSector();
+  // A business whose stock carries batches (a pharmacy, a grocery) receives every delivery into a
+  // batch with its own expiry, and sees what it holds batch by batch.
+  const { recipes, batchExpiry, medicines, catalogNoun } = useSector();
   const [activeTab, setActiveTab] = useState<'ingredients' | 'finished'>(
     location.state?.tab || (recipes ? 'ingredients' : 'finished')
   );
@@ -59,6 +64,15 @@ export const InventoryManagement: React.FC = () => {
   const [newCostPrice, setNewCostPrice] = useState<number>(0);
   const [batchNo, setBatchNo] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
+  const [bonusQty, setBonusQty] = useState<number>(0);
+  const [retailPrice, setRetailPrice] = useState('');
+  const [stockInError, setStockInError] = useState<string | null>(null);
+
+  // Batches: one product's, or (no product) everything at this location.
+  const [batchView, setBatchView] = useState<{ title: string; productId?: string } | null>(null);
+  const [batchRows, setBatchRows] = useState<StockBatch[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   // Raw Ingredient Inward Modal
   const [restockIng, setRestockIng] = useState<RawIngredient | null>(null);
@@ -151,11 +165,41 @@ export const InventoryManagement: React.FC = () => {
     fetchInventory();
   }, [selectedBranch?.id]);
 
+  const openBatches = async (title: string, productId?: string) => {
+    if (!selectedBranch?.id) return;
+    setBatchView({ title, productId });
+    setBatchRows([]);
+    setBatchError(null);
+    setBatchLoading(true);
+    try {
+      setBatchRows(await posApi.getStockBatches(selectedBranch.id, productId));
+    } catch (err) {
+      setBatchError(getApiErrorMessage(err, 'Could not load the batches.'));
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
   // Handle Finished Product Stock-In
   const handleStockInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stockInItem || !selectedBranch?.id || stockInQty <= 0) return;
+    if (batchExpiry && (!batchNo.trim() || !expiryDate)) {
+      setStockInError('Enter the batch number and expiry printed on the pack.');
+      return;
+    }
+    if (expiryDate && expiryPassed(expiryDate)) {
+      setStockInError('That batch has already expired. Return it to the supplier instead of receiving it.');
+      return;
+    }
+    if (bonusQty < 0) {
+      setStockInError('Bonus units cannot be negative.');
+      return;
+    }
+    const bonus = batchExpiry ? bonusQty : 0;
+    const printedPrice = Number(retailPrice);
     setIsSubmitting(true);
+    setStockInError(null);
     try {
       await posApi.addStockIn({
         branchId: selectedBranch.id,
@@ -163,16 +207,19 @@ export const InventoryManagement: React.FC = () => {
         quantity: stockInQty,
         supplierName: supplierName || undefined,
         costPricePKR: newCostPrice > 0 ? newCostPrice : undefined,
-        batchNumber: batchNo || undefined,
-        expiryDate: expiryDate ? new Date(expiryDate).toISOString() : undefined
+        batchNumber: batchNo.trim() || undefined,
+        expiryDate: expiryDate ? expiryToIso(expiryDate) : undefined,
+        bonusQuantity: bonus > 0 ? bonus : undefined,
+        retailPricePKR: batchExpiry && printedPrice > 0 ? printedPrice : undefined
       });
-      setActionSuccess(`Added +${stockInQty} ${stockInItem.unit} to ${stockInItem.productName}`);
+      setActionSuccess(bonus > 0
+        ? `Added +${stockInQty + bonus} ${stockInItem.unit} (${stockInQty} + ${bonus} bonus) to ${stockInItem.productName}`
+        : `Added +${stockInQty} ${stockInItem.unit} to ${stockInItem.productName}`);
       setStockInItem(null);
       await fetchInventory();
       setTimeout(() => setActionSuccess(null), 3500);
     } catch (err) {
-      console.error(err);
-      alert('Failed to update stock');
+      setStockInError(getApiErrorMessage(err, 'Could not receive the stock.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -283,6 +330,9 @@ export const InventoryManagement: React.FC = () => {
   const rawTotalValuationPKR = ingredients.reduce((sum, i) => sum + i.totalValuationPKR, 0);
 
   const finishedLowStockCount = stocks.filter(s => s.isLowStock).length;
+  // Products holding expired stock, or whose next batch expires within three months.
+  const expiryAlertCount = stocks.filter(s =>
+    (s.expiredQty ?? 0) > 0 || (s.nearestExpiry != null && daysUntil(s.nearestExpiry) <= 90)).length;
   const finishedTotalValuationPKR = stocks.reduce((sum, s) => sum + (s.quantityOnHand * s.costPricePKR), 0);
 
   return (
@@ -293,7 +343,9 @@ export const InventoryManagement: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <Boxes className="w-6 h-6 text-teal-500" />
-              <h1 className="text-xl font-bold text-slate-900 tracking-tight">Kitchen & Store Inventory</h1>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                {recipes ? 'Kitchen & Store Inventory' : medicines ? 'Medicine Stock' : 'Stock & Inventory'}
+              </h1>
             </div>
             <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-teal-500" />
@@ -332,6 +384,19 @@ export const InventoryManagement: React.FC = () => {
 
           {/* Quick Stats Pills */}
           <div className="flex items-center gap-3">
+            {batchExpiry && activeTab === 'finished' && (
+              <button
+                type="button"
+                onClick={() => openBatches(`All batches at ${selectedBranch?.name || 'this location'}`)}
+                className={`px-3.5 py-2 rounded-xl text-right border transition ${
+                  expiryAlertCount > 0 ? 'bg-amber-50 border-amber-200 hover:bg-amber-100' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                }`}
+                title="Every batch here, earliest expiry first"
+              >
+                <div className={`text-[10px] font-medium ${expiryAlertCount > 0 ? 'text-amber-600' : 'text-slate-500'}`}>Expiry Alerts</div>
+                <div className={`text-sm font-bold ${expiryAlertCount > 0 ? 'text-amber-700' : 'text-slate-700'}`}>{expiryAlertCount} Items</div>
+              </button>
+            )}
             <div className="px-3.5 py-2 bg-rose-50 border border-rose-200 rounded-xl text-right">
               <div className="text-[10px] text-rose-500 font-medium">Low Stock Alerts</div>
               <div className="text-sm font-bold text-rose-600">
@@ -393,6 +458,17 @@ export const InventoryManagement: React.FC = () => {
               <AlertTriangle className="w-3.5 h-3.5" />
               <span>Low Stock ({activeTab === 'ingredients' ? rawLowStockCount : finishedLowStockCount})</span>
             </button>
+
+            {/* Every batch at this location, earliest expiry first */}
+            {batchExpiry && activeTab === 'finished' && (
+              <button
+                onClick={() => openBatches(`All batches at ${selectedBranch?.name || 'this location'}`)}
+                className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition flex items-center gap-1.5 whitespace-nowrap border border-slate-200"
+              >
+                <Layers className="w-3.5 h-3.5 text-teal-600" />
+                <span>Batches & Expiry</span>
+              </button>
+            )}
 
             {/* Add New Raw Ingredient Button (when in ingredients tab) */}
             {activeTab === 'ingredients' && (
@@ -553,10 +629,14 @@ export const InventoryManagement: React.FC = () => {
               <div>
                 <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                   <Boxes className="w-4 h-4 text-teal-500" />
-                  <span>Finished Product Stock on Hand</span>
+                  <span>{recipes ? 'Finished Product Stock on Hand' : `${catalogNoun === 'Catalog' ? 'Product' : catalogNoun} Stock on Hand`}</span>
                 </h3>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Stock levels for ready items, mart grocery items, and packaging cartons.
+                  {batchExpiry
+                    ? 'Each delivery is kept as its own batch with its own expiry. Sales take the earliest expiry first; expired stock cannot be sold.'
+                    : recipes
+                      ? 'Stock levels for ready items, mart grocery items, and packaging cartons.'
+                      : 'What each product has on hand at this location.'}
                 </p>
               </div>
               <span className="text-xs text-teal-600 font-mono font-bold">{filteredStocks.length} Items</span>
@@ -620,16 +700,49 @@ export const InventoryManagement: React.FC = () => {
                           )}
                         </td>
                         <td className="py-3 px-3 text-slate-600">
-                          {item.batchNumber ? (
-                            <div className="font-mono text-[11px] text-purple-600 font-semibold">{item.batchNumber}</div>
-                          ) : (
+                          {(item.batchCount ?? 0) > 0 ? (() => {
+                            const chip = expiryChip(item.nearestExpiry ? daysUntil(item.nearestExpiry) : null);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => openBatches(item.productName, item.productId)}
+                                className="text-left group"
+                                title="See this product's batches"
+                              >
+                                <div className="flex items-center gap-1 text-[11px] font-semibold text-purple-600 group-hover:underline">
+                                  <Layers className="w-3 h-3" />
+                                  <span>{item.batchCount} {item.batchCount === 1 ? 'batch' : 'batches'}</span>
+                                </div>
+                                {item.nearestExpiry && (
+                                  <div className="text-[10px] text-slate-500 flex items-center gap-1 mt-0.5">
+                                    <Calendar className="w-2.5 h-2.5" />
+                                    <span>Next exp: {formatDay(item.nearestExpiry)}</span>
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap gap-1 mt-1 empty:hidden">
+                                  {chip && (
+                                    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${chip.cls}`}>{chip.label}</span>
+                                  )}
+                                  {(item.expiredQty ?? 0) > 0 && (
+                                    <span className="px-1.5 py-0.5 rounded border bg-rose-100 border-rose-300 text-rose-700 text-[10px] font-bold">
+                                      {item.expiredQty} expired
+                                    </span>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })() : batchExpiry || !item.batchNumber ? (
                             <span className="text-[10px] text-slate-400">No Batch</span>
-                          )}
-                          {item.expiryDate && (
-                            <div className="text-[10px] text-amber-600 flex items-center gap-1">
-                              <Calendar className="w-2.5 h-2.5" />
-                              <span>Exp: {item.expiryDate}</span>
-                            </div>
+                          ) : (
+                            <>
+                              <div className="font-mono text-[11px] text-purple-600 font-semibold">{item.batchNumber}</div>
+                              {item.expiryDate && (
+                                <div className="text-[10px] text-amber-600 flex items-center gap-1">
+                                  <Calendar className="w-2.5 h-2.5" />
+                                  <span>Exp: {item.expiryDate}</span>
+                                </div>
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="py-3 px-3 text-center">
@@ -657,8 +770,12 @@ export const InventoryManagement: React.FC = () => {
                                 setStockInQty(10);
                                 setSupplierName('');
                                 setNewCostPrice(item.costPricePKR);
-                                setBatchNo(item.batchNumber || '');
-                                setExpiryDate(item.expiryDate || '');
+                                // Each delivery is a new batch for a business with batches; others keep the last one.
+                                setBatchNo(batchExpiry ? '' : item.batchNumber || '');
+                                setExpiryDate(batchExpiry ? '' : item.expiryDate || '');
+                                setBonusQty(0);
+                                setRetailPrice('');
+                                setStockInError(null);
                               }}
                               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-600 border border-teal-200 text-[11px] font-bold transition"
                             >
@@ -915,19 +1032,63 @@ export const InventoryManagement: React.FC = () => {
               <div className="text-xs text-slate-500 mt-0.5">Current Stock: <span className="font-bold text-slate-900">{stockInItem.quantityOnHand} {stockInItem.unit}</span></div>
             </div>
 
-            <form onSubmit={handleStockInSubmit} className="space-y-3">
-              <div>
-                <label className="block text-xs text-slate-500 font-medium mb-1">Quantity to Inward ({stockInItem.unit}) *</label>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  required
-                  value={stockInQty}
-                  onChange={(e) => setStockInQty(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
-                />
+            <form onSubmit={handleStockInSubmit} onInput={() => setStockInError(null)} className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className={batchExpiry ? '' : 'col-span-2'}>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">
+                    {batchExpiry ? `Quantity bought (${stockInItem.unit}) *` : `Quantity to Inward (${stockInItem.unit}) *`}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    value={stockInQty}
+                    onChange={(e) => setStockInQty(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                  />
+                </div>
+                {batchExpiry && (
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">Bonus units (free)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={bonusQty || ''}
+                      placeholder="e.g. 1 on 10"
+                      onChange={(e) => setBonusQty(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 placeholder-slate-400 placeholder:font-normal focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    />
+                  </div>
+                )}
               </div>
+
+              {batchExpiry && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">Batch number *</label>
+                    <input
+                      type="text"
+                      placeholder="As printed, e.g. B-9901"
+                      value={batchNo}
+                      onChange={(e) => setBatchNo(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">{medicines ? 'Expiry (month on pack) *' : 'Expiry date *'}</label>
+                    <input
+                      type={medicines ? 'month' : 'date'}
+                      min={medicines ? thisMonth() : today()}
+                      placeholder={medicines ? 'YYYY-MM' : undefined}
+                      value={expiryDate}
+                      onChange={(e) => setExpiryDate(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -942,11 +1103,11 @@ export const InventoryManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-500 font-medium mb-1">Unit Cost Price (PKR)</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">{batchExpiry ? 'Price paid per unit (PKR)' : 'Unit Cost Price (PKR)'}</label>
                   <input
                     type="number"
                     min="0"
-                    step="10"
+                    step="any"
                     value={newCostPrice}
                     onChange={(e) => setNewCostPrice(Number(e.target.value))}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
@@ -954,6 +1115,36 @@ export const InventoryManagement: React.FC = () => {
                 </div>
               </div>
 
+              {batchExpiry && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">Retail price on pack (PKR)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder={`Now selling at ${stockInItem.sellingPricePKR.toLocaleString()}`}
+                      value={retailPrice}
+                      onChange={(e) => setRetailPrice(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div className="px-3 py-2 rounded-xl bg-teal-50/60 border border-teal-100 text-[11px] text-slate-600 flex flex-col justify-center">
+                    <div>
+                      Receiving <span className="font-bold text-slate-900">{(stockInQty || 0) + (bonusQty > 0 ? bonusQty : 0)} {stockInItem.unit}</span>
+                    </div>
+                    {bonusQty > 0 && stockInQty > 0 && newCostPrice > 0 && (
+                      <div>
+                        Each costs <span className="font-bold text-teal-700 font-mono">
+                          Rs {(stockInQty * newCostPrice / (stockInQty + bonusQty)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </span> after the bonus
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {!batchExpiry && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-slate-500 font-medium mb-1">Batch Number</label>
@@ -976,6 +1167,14 @@ export const InventoryManagement: React.FC = () => {
                   />
                 </div>
               </div>
+              )}
+
+              {stockInError && (
+                <div role="alert" className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>{stockInError}</span>
+                </div>
+              )}
 
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
@@ -994,6 +1193,110 @@ export const InventoryManagement: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batches: one product's, or everything at this location — earliest expiry first */}
+      {batchView && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setBatchView(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={batchView.title}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[85vh]"
+          >
+            <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-200">
+              <div className="min-w-0">
+                <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-teal-500 shrink-0" />
+                  <span className="truncate">{batchView.title}</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Earliest expiry first — the order the till sells them in. Expired batches cannot be sold.
+                </p>
+              </div>
+              <button onClick={() => setBatchView(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition" aria-label="Close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-auto flex-1">
+              {batchLoading ? (
+                <div className="py-14 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading batches…
+                </div>
+              ) : batchError ? (
+                <div className="m-5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">{batchError}</div>
+              ) : batchRows.length === 0 ? (
+                <div className="py-14 text-center">
+                  <CalendarClock className="w-8 h-8 text-slate-300 mx-auto" />
+                  <div className="text-sm font-semibold text-slate-700 mt-2">No batches with stock here</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Stock received with a batch number and expiry shows up here.</div>
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
+                      {!batchView.productId && <th className="py-2.5 px-4">Product</th>}
+                      <th className={`py-2.5 ${batchView.productId ? 'px-4' : 'px-3'}`}>Batch</th>
+                      <th className="py-2.5 px-3">Expiry</th>
+                      <th className="py-2.5 px-3 text-right">On hand</th>
+                      <th className="py-2.5 px-3 text-right">Cost / unit</th>
+                      <th className="py-2.5 px-3 text-right">Pack price</th>
+                      <th className="py-2.5 px-3">Supplier</th>
+                      <th className="py-2.5 px-4">Received</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {batchRows.map((b) => {
+                      const chip = expiryChip(b.daysToExpiry);
+                      const expired = b.daysToExpiry != null && b.daysToExpiry < 0;
+                      return (
+                        <tr key={b.id} className={expired ? 'bg-rose-50/50' : 'hover:bg-slate-50'}>
+                          {!batchView.productId && <td className="py-2.5 px-4 font-semibold text-slate-900">{b.productName}</td>}
+                          <td className={`py-2.5 ${batchView.productId ? 'px-4' : 'px-3'} font-mono font-semibold text-purple-600`}>
+                            {b.batchNumber || <span className="font-sans font-normal text-slate-400">No number</span>}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className={expired ? 'text-rose-700 font-semibold' : 'text-slate-700'}>{formatDay(b.expiryDate)}</div>
+                            {chip && (
+                              <span className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-bold ${chip.cls}`}>{chip.label}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono">
+                            <span className="font-bold text-slate-900">{b.quantityOnHand.toLocaleString()}</span>
+                            <span className="text-slate-400"> / {b.quantityReceived.toLocaleString()}</span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                            {b.unitCostPKR.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                            {b.retailPricePKR != null ? b.retailPricePKR.toLocaleString() : '—'}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-600">{b.supplierName || '—'}</td>
+                          <td className="py-2.5 px-4 text-slate-500">{formatDay(b.receivedAt)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {!batchLoading && !batchError && batchRows.length > 0 && (() => {
+              const expiredUnits = batchRows.filter(b => b.daysToExpiry != null && b.daysToExpiry < 0).reduce((n, b) => n + b.quantityOnHand, 0);
+              const soonUnits = batchRows.filter(b => b.daysToExpiry != null && b.daysToExpiry >= 0 && b.daysToExpiry <= 90).reduce((n, b) => n + b.quantityOnHand, 0);
+              return (
+                <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                  <span><span className="font-bold text-slate-900">{batchRows.length}</span> {batchRows.length === 1 ? 'batch' : 'batches'}</span>
+                  <span><span className="font-bold text-slate-900">{batchRows.reduce((n, b) => n + b.quantityOnHand, 0).toLocaleString()}</span> units on hand</span>
+                  {soonUnits > 0 && <span className="text-amber-700"><span className="font-bold">{soonUnits.toLocaleString()}</span> expiring within 3 months</span>}
+                  {expiredUnits > 0 && <span className="text-rose-700"><span className="font-bold">{expiredUnits.toLocaleString()}</span> expired — return or write off</span>}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

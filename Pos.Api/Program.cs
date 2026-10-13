@@ -9066,12 +9066,23 @@ api.MapGet("/pos/expiry-summary", async (AppDbContext db, HttpContext http, Guid
     if (scopeError != null) return scopeError;
     var today = DateTime.UtcNow.Date;
     var batches = await db.StockBatches.Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0).ToListAsync();
-    return Results.Ok(batches.GroupBy(b => b.ProductId).Select(g => new
+    var productIds = batches.Select(b => b.ProductId).Distinct().ToList();
+    var onHand = await db.BranchStocks.Where(s => s.BranchId == scopedBranchId!.Value && productIds.Contains(s.ProductId))
+        .ToDictionaryAsync(s => s.ProductId, s => s.QuantityOnHand);
+    return Results.Ok(batches.GroupBy(b => b.ProductId).Select(g =>
     {
-        productId = g.Key,
-        sellableQty = g.Where(b => b.ExpiryDate == null || b.ExpiryDate.Value.Date >= today).Sum(b => b.QuantityOnHand),
-        expiredQty = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date < today).Sum(b => b.QuantityOnHand),
-        nearestExpiry = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date >= today).Min(b => b.ExpiryDate)?.ToString("yyyy-MM-dd")
+        var good = g.Where(b => b.ExpiryDate == null || b.ExpiryDate.Value.Date >= today).Sum(b => b.QuantityOnHand);
+        var expired = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date < today).Sum(b => b.QuantityOnHand);
+        // Units the count holds beyond its batches (stock from before batches) carry no expiry and sell.
+        var count = Math.Max(0, onHand.GetValueOrDefault(g.Key));
+        var unbatched = Math.Max(0, count - good - expired);
+        return new
+        {
+            productId = g.Key,
+            sellableQty = Math.Min(count, good + unbatched),
+            expiredQty = expired,
+            nearestExpiry = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date >= today).Min(b => b.ExpiryDate)?.ToString("yyyy-MM-dd")
+        };
     }));
 }).RequireAuthorization();
 
@@ -10344,7 +10355,8 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     return Results.Ok(po);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to raise purchase orders."));
 
-api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db, HttpContext http, Guid id, ReceivePODto dto) =>
+api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db, HttpContext http,
+    Pos.Api.Services.IEntitlementService entitlements, Guid id, ReceivePODto dto) =>
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
@@ -10352,6 +10364,26 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
         .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
     if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
+
+    // The same rules as receiving stock by hand: a business whose stock carries batches names each
+    // product's batch and expiry as it arrives, and an expired batch is sent back, not received.
+    var productItems = po.Items.Where(i => i.ProductId != null).ToList();
+    if (productItems.Count > 0)
+    {
+        var ent = await entitlements.GetAsync(po.TenantId);
+        var (packItems, _, _, _) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
+        foreach (var item in productItems)
+        {
+            var line = dto.Lines?.FirstOrDefault(l => l.ItemId == item.Id);
+            if (packItems.BatchExpiry && (line == null || string.IsNullOrWhiteSpace(line.BatchNumber) || !line.ExpiryDate.HasValue))
+                return Results.BadRequest(new { message = $"Enter the batch number and expiry for {item.IngredientName}." });
+            if (line?.ExpiryDate is DateTime expiry && expiry.Date < DateTime.UtcNow.Date)
+                return Results.BadRequest(new { message = $"{item.IngredientName}: that batch has already expired. Return it to the supplier instead of receiving it." });
+            if (line?.BonusQuantity is < 0)
+                return Results.BadRequest(new { message = "Bonus units cannot be negative." });
+        }
+    }
+
     var receivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
     foreach (var item in po.Items)
     {

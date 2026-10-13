@@ -14,12 +14,15 @@ import {
   Mail,
   Edit,
   Ban,
+  AlertTriangle,
   Warehouse as WarehouseIcon
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import { useBusinessShape } from '../hooks/useBusinessShape';
+import { useSector } from '../hooks/useSector';
+import { today, thisMonth, expiryToIso, expiryPassed } from '../utils/expiry';
 import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse, Product, Branch } from '../types';
 
 /**
@@ -114,6 +117,14 @@ export const SupplyChainManagement: React.FC = () => {
     unit: string;
     unitCostPKR: number;
   }>>([]);
+
+  // Receiving a PO for a business whose stock carries batches: each product line's batch, expiry
+  // (a medicine's as the month on its pack), free bonus units and printed retail price.
+  const { batchExpiry, medicines } = useSector();
+  const [grnPo, setGrnPo] = useState<PurchaseOrder | null>(null);
+  const [grnLines, setGrnLines] = useState<Record<string, { batchNumber: string; expiryDate: string; bonusQuantity: number; retailPrice: string }>>({});
+  const [grnError, setGrnError] = useState<string | null>(null);
+  const [grnSaving, setGrnSaving] = useState(false);
 
   // Status message
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -380,6 +391,13 @@ export const SupplyChainManagement: React.FC = () => {
   };
 
   const handleReceivePO = async (po: PurchaseOrder) => {
+    if (batchExpiry && po.items?.some(it => it.productId)) {
+      setGrnLines(Object.fromEntries(po.items.filter(it => it.productId)
+        .map(it => [it.id, { batchNumber: '', expiryDate: '', bonusQuantity: 0, retailPrice: '' }])));
+      setGrnError(null);
+      setGrnPo(po);
+      return;
+    }
     if (!window.confirm(`Inward GRN for PO #${po.poNumber}? This will increment physical stock for all ordered raw ingredients.`)) {
       return;
     }
@@ -393,6 +411,57 @@ export const SupplyChainManagement: React.FC = () => {
     } catch (err) {
       console.error(err);
       alert('Failed to receive PO');
+    }
+  };
+
+  const setGrnLine = (itemId: string, patch: Partial<{ batchNumber: string; expiryDate: string; bonusQuantity: number; retailPrice: string }>) => {
+    setGrnLines(prev => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
+    setGrnError(null);
+  };
+
+  const submitGrn = async () => {
+    if (!grnPo) return;
+    const productLines = grnPo.items.filter(it => it.productId);
+    for (const it of productLines) {
+      const line = grnLines[it.id];
+      if (!line?.batchNumber.trim() || !line.expiryDate) {
+        setGrnError(`Enter the batch number and expiry for ${it.ingredientName}.`);
+        return;
+      }
+      if (expiryPassed(line.expiryDate)) {
+        setGrnError(`${it.ingredientName}: that batch has already expired. Return it to the supplier instead of receiving it.`);
+        return;
+      }
+      if (line.bonusQuantity < 0) {
+        setGrnError('Bonus units cannot be negative.');
+        return;
+      }
+    }
+    setGrnSaving(true);
+    setGrnError(null);
+    try {
+      await posApi.receivePurchaseOrder(grnPo.id, {
+        receivedBy: me || undefined,
+        lines: productLines.map(it => {
+          const line = grnLines[it.id];
+          const printed = Number(line.retailPrice);
+          return {
+            itemId: it.id,
+            batchNumber: line.batchNumber.trim(),
+            expiryDate: expiryToIso(line.expiryDate),
+            bonusQuantity: line.bonusQuantity > 0 ? line.bonusQuantity : undefined,
+            retailPricePKR: printed > 0 ? printed : undefined
+          };
+        })
+      });
+      setStatusMsg(`PO #${grnPo.poNumber} received. Each batch is now in stock with its expiry.`);
+      setTimeout(() => setStatusMsg(null), 4000);
+      setGrnPo(null);
+      fetchData();
+    } catch (err) {
+      setGrnError(getApiErrorMessage(err, 'Could not receive the purchase order.'));
+    } finally {
+      setGrnSaving(false);
     }
   };
 
@@ -1442,6 +1511,147 @@ export const SupplyChainManagement: React.FC = () => {
             >
               Verify Goods & Stock-In to Branch
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: RECEIVE A PURCHASE ORDER INTO BATCHES */}
+      {grnPo && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div role="dialog" aria-modal="true" aria-label={`Receive PO ${grnPo.poNumber}`} className="bg-white border border-slate-200 rounded-2xl max-w-4xl w-full shadow-2xl flex flex-col max-h-[88vh]">
+            <div className="flex justify-between items-start gap-3 px-5 py-4 border-b border-slate-200">
+              <div>
+                <div className="flex items-center gap-2 text-teal-600 font-bold text-sm">
+                  <PackageCheck className="w-5 h-5" />
+                  <span>Receive PO #{grnPo.poNumber}</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  From <span className="font-semibold text-slate-700">{grnPo.supplierName}</span>. Copy each batch number and expiry from the pack; add any free bonus units.
+                </p>
+              </div>
+              <button onClick={() => setGrnPo(null)} className="p-1 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition" aria-label="Close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-auto flex-1">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
+                    <th className="py-2.5 px-4">Item</th>
+                    <th className="py-2.5 px-2 w-36">Batch no. *</th>
+                    <th className="py-2.5 px-2 w-40">{medicines ? 'Expiry (month) *' : 'Expiry *'}</th>
+                    <th className="py-2.5 px-2 w-24">Bonus</th>
+                    <th className="py-2.5 px-2 w-28">Pack price</th>
+                    <th className="py-2.5 px-4 text-right w-28">Receiving</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {grnPo.items.map(it => {
+                    const line = grnLines[it.id];
+                    if (!it.productId || !line) {
+                      return (
+                        <tr key={it.id} className="text-slate-500">
+                          <td className="py-2.5 px-4">
+                            <div className="font-semibold text-slate-700">{it.ingredientName}</div>
+                            <div className="text-[10px]">{it.quantity} {it.unit} @ {it.unitCostPKR.toLocaleString()}</div>
+                          </td>
+                          <td colSpan={4} className="py-2.5 px-2 text-[11px] italic">Received as ordered — not batch tracked</td>
+                          <td className="py-2.5 px-4 text-right font-mono">{it.quantity}</td>
+                        </tr>
+                      );
+                    }
+                    const costEach = line.bonusQuantity > 0 ? it.quantity * it.unitCostPKR / (it.quantity + line.bonusQuantity) : null;
+                    return (
+                      <tr key={it.id} className="align-top">
+                        <td className="py-2.5 px-4">
+                          <div className="font-semibold text-slate-900">{it.ingredientName}</div>
+                          <div className="text-[10px] text-slate-500">{it.quantity} {it.unit} @ {it.unitCostPKR.toLocaleString()}</div>
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={line.batchNumber}
+                            onChange={(e) => setGrnLine(it.id, { batchNumber: e.target.value })}
+                            placeholder="e.g. B-9901"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type={medicines ? 'month' : 'date'}
+                            min={medicines ? thisMonth() : today()}
+                            placeholder={medicines ? 'YYYY-MM' : undefined}
+                            value={line.expiryDate}
+                            onChange={(e) => setGrnLine(it.id, { expiryDate: e.target.value })}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={line.bonusQuantity || ''}
+                            onChange={(e) => setGrnLine(it.id, { bonusQuantity: Number(e.target.value) })}
+                            placeholder="0"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={line.retailPrice}
+                            onChange={(e) => setGrnLine(it.id, { retailPrice: e.target.value })}
+                            placeholder="Optional"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none font-mono"
+                          />
+                        </td>
+                        <td className="py-2.5 px-4 text-right">
+                          <div className="font-mono font-bold text-slate-900">{it.quantity + (line.bonusQuantity > 0 ? line.bonusQuantity : 0)} {it.unit}</div>
+                          {costEach != null && (
+                            <div className="text-[10px] text-teal-700">Rs {costEach.toLocaleString(undefined, { maximumFractionDigits: 2 })} each</div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-5 py-3 border-t border-slate-200 space-y-2">
+              {grnError && (
+                <div role="alert" className="px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>{grnError}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[11px] text-slate-500">
+                  Received by <span className="font-semibold text-slate-700">{me || 'you'}</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setGrnPo(null)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 text-slate-600 text-xs font-semibold hover:bg-slate-200 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitGrn}
+                    disabled={grnSaving}
+                    className="px-5 py-2 rounded-xl bg-teal-500 text-white text-xs font-bold hover:bg-teal-600 transition shadow-lg shadow-teal-500/25 disabled:opacity-50"
+                  >
+                    {grnSaving ? 'Receiving…' : 'Receive into stock'}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -20,7 +20,9 @@ import {
   UserRound,
   Gift,
   Percent,
-  Star
+  Star,
+  AlertTriangle,
+  CalendarClock
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
@@ -28,7 +30,8 @@ import { useSector } from '../hooks/useSector';
 import { posApi } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import { getStoredTerminal } from '../services/deviceLicense';
-import type { Product, Category, PaymentMethod, OrderType, Order, Customer } from '../types';
+import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary } from '../types';
+import { daysUntil, formatDay } from '../utils/expiry';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { ProductCard } from '../components/ProductCard';
@@ -72,7 +75,8 @@ export const PosTerminal: React.FC = () => {
 
   // Only a business with table service has dine-in tables (hooks/useSector.ts); everywhere else
   // — a shop, a pharmacy — a counter sale is always an immediate "take it with you" transaction.
-  const noTables = !useSector().tableService;
+  const { tableService, batchExpiry } = useSector();
+  const noTables = !tableService;
   const orderTypeOptions = (noTables ? ['Takeaway', 'Delivery'] : ['DineIn', 'Takeaway', 'Delivery']) as OrderType[];
 
   useEffect(() => {
@@ -144,6 +148,65 @@ export const PosTerminal: React.FC = () => {
   const [itemNote, setItemNote] = useState('');
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+
+  // A business whose stock has batches (a pharmacy, a grocery): per product, what can still be sold
+  // before expiry and what already has expired. Expired stock is never rung up; stock within a month
+  // of expiry is flagged as it goes in the cart. Offline, the till keeps what it last knew.
+  const branchId = selectedBranch?.id;
+  const [expiryByProduct, setExpiryByProduct] = useState<Map<string, ExpirySummary>>(() => new Map());
+  const [expiryRefresh, setExpiryRefresh] = useState(0);
+  const [expiryNotice, setExpiryNotice] = useState<{ tone: 'block' | 'warn'; text: string } | null>(null);
+  const noticeTimer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    if (!batchExpiry || !branchId || !isOnline) return;
+    let cancelled = false;
+    const load = () => posApi.getExpirySummary(branchId)
+      .then(rows => { if (!cancelled) setExpiryByProduct(new Map(rows.map(r => [r.productId, r]))); })
+      .catch(() => { /* keeps what it last knew */ });
+    load();
+    const revalidate = () => { if (!document.hidden) load(); };
+    window.addEventListener('focus', revalidate);
+    document.addEventListener('visibilitychange', revalidate);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', revalidate);
+      document.removeEventListener('visibilitychange', revalidate);
+    };
+  }, [batchExpiry, branchId, isOnline, expiryRefresh]);
+
+  const showExpiryNotice = (tone: 'block' | 'warn', text: string) => {
+    setExpiryNotice({ tone, text });
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setExpiryNotice(null), tone === 'block' ? 7000 : 4500);
+  };
+
+  const cartQtyOf = (productId: string) => cart.filter(i => i.productId === productId).reduce((n, i) => n + i.quantity, 0);
+
+  /** False (with the reason shown) when the cart would hold more than can be sold before expiry. */
+  const expiryAllows = (productId: string, productName: string, wanted: number, alreadyInCart: boolean) => {
+    const info = expiryByProduct.get(productId);
+    if (!info) return true;
+    if (info.expiredQty > 0 && wanted > info.sellableQty) {
+      showExpiryNotice('block', info.sellableQty <= 0
+        ? `${productName}: all the stock here has expired (${info.expiredQty}). It cannot be sold — take it off the shelf.`
+        : `${productName}: only ${info.sellableQty} can be sold. The other ${info.expiredQty} have expired.`);
+      return false;
+    }
+    if (!alreadyInCart && info.nearestExpiry) {
+      const days = daysUntil(info.nearestExpiry);
+      if (days <= 30) {
+        showExpiryNotice('warn', `${productName} expires ${days === 0 ? 'today' : `in ${days} day${days === 1 ? '' : 's'}`} (${formatDay(info.nearestExpiry)}). Tell the customer.`);
+      }
+    }
+    return true;
+  };
+
+  const addProduct = (product: Product, modifiers?: any[], notes?: string) => {
+    const inCart = cartQtyOf(product.id);
+    if (!expiryAllows(product.id, product.name, inCart + 1, inCart > 0)) return;
+    addToCart(product, modifiers, notes);
+  };
 
   useEffect(() => {
     const tenantId = selectedTenant?.id;
@@ -229,7 +292,7 @@ export const PosTerminal: React.FC = () => {
 
     const matched = products.find(p => p.barcode === barcodeInput.trim() || p.sku.toLowerCase() === barcodeInput.trim().toLowerCase());
     if (matched) {
-      addToCart(matched);
+      addProduct(matched);
       setBarcodeInput('');
     } else {
       alert(`Barcode ${barcodeInput} not found in catalog.`);
@@ -328,6 +391,7 @@ export const PosTerminal: React.FC = () => {
         };
 
         setCompletedOrder(newOrder);
+        setExpiryRefresh(n => n + 1);
       } else {
         const offlineId = `OFFLINE-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const capturedAt = new Date().toISOString();
@@ -413,6 +477,22 @@ export const PosTerminal: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-hidden bg-slate-50">
+      {expiryNotice && (
+        <div
+          role={expiryNotice.tone === 'block' ? 'alert' : 'status'}
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-40 w-[min(92vw,520px)] px-4 py-3 rounded-xl border shadow-xl flex items-start gap-2.5 text-sm ${
+            expiryNotice.tone === 'block' ? 'bg-rose-50 border-rose-300 text-rose-800' : 'bg-amber-50 border-amber-300 text-amber-800'
+          }`}
+        >
+          {expiryNotice.tone === 'block'
+            ? <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            : <CalendarClock className="w-4 h-4 mt-0.5 shrink-0" />}
+          <span className="flex-1 font-medium">{expiryNotice.text}</span>
+          <button onClick={() => setExpiryNotice(null)} className="opacity-60 hover:opacity-100 transition" aria-label="Dismiss">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3">
@@ -493,7 +573,7 @@ export const PosTerminal: React.FC = () => {
                     setSelectedModifiers([]);
                     setItemNote('');
                   } else {
-                    addToCart(p);
+                    addProduct(p);
                   }
                 }}
               />
@@ -628,6 +708,16 @@ export const PosTerminal: React.FC = () => {
                       <div className="flex items-center gap-2 mt-1">
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-teal-50 text-teal-600 font-semibold border border-teal-200">Order Received</span>
                         <span className="text-[9px] text-slate-400">Counter 1</span>
+                        {(() => {
+                          const next = expiryByProduct.get(item.productId)?.nearestExpiry;
+                          if (!next || daysUntil(next) > 30) return null;
+                          return (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold border border-amber-200 inline-flex items-center gap-1">
+                              <CalendarClock className="w-2.5 h-2.5" />
+                              Exp {formatDay(next)}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <button
@@ -638,7 +728,12 @@ export const PosTerminal: React.FC = () => {
                         </button>
                         <span className="text-xs font-bold w-4 text-center text-slate-900">{item.quantity}</span>
                         <button
-                          onClick={() => updateQuantity(item.productId, 1)}
+                          onClick={() => {
+                            const lines = cart.filter(i => i.productId === item.productId).length;
+                            if (expiryAllows(item.productId, item.productName, cartQtyOf(item.productId) + lines, true)) {
+                              updateQuantity(item.productId, 1);
+                            }
+                          }}
                           className="w-6 h-6 rounded-full bg-teal-500 flex items-center justify-center text-white hover:bg-teal-600 transition"
                         >
                           <Plus className="w-3 h-3" />
@@ -1038,7 +1133,7 @@ export const PosTerminal: React.FC = () => {
 
             <button
               onClick={() => {
-                addToCart(activeProductForModifier, selectedModifiers, itemNote);
+                addProduct(activeProductForModifier, selectedModifiers, itemNote);
                 setActiveProductForModifier(null);
               }}
               className="w-full py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
