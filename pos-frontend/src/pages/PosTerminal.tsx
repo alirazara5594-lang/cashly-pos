@@ -168,8 +168,14 @@ export const PosTerminal: React.FC = () => {
     const revalidate = () => { if (!document.hidden) load(); };
     window.addEventListener('focus', revalidate);
     document.addEventListener('visibilitychange', revalidate);
+    // Batches expire at midnight. A till left open overnight reloads then (and schedules the next
+    // midnight), so yesterday's last-day stock is stopped from the first sale of the new day.
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    const midnightTimer = window.setTimeout(() => setExpiryRefresh(n => n + 1), nextMidnight.getTime() - now.getTime());
     return () => {
       cancelled = true;
+      window.clearTimeout(midnightTimer);
       window.removeEventListener('focus', revalidate);
       document.removeEventListener('visibilitychange', revalidate);
     };
@@ -202,7 +208,7 @@ export const PosTerminal: React.FC = () => {
     return true;
   };
 
-  const addProduct = (product: Product, modifiers?: any[], notes?: string) => {
+  const addProduct = (product: Product, modifiers?: Parameters<typeof addToCart>[1], notes?: string) => {
     const inCart = cartQtyOf(product.id);
     if (!expiryAllows(product.id, product.name, inCart + 1, inCart > 0)) return;
     addToCart(product, modifiers, notes);

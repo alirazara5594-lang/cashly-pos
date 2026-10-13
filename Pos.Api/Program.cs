@@ -3415,8 +3415,10 @@ static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, Bat
     }
 
     // Stock out. What the count held beyond its batches before this movement had no batch.
+    if (!batches.Any(b => b.QuantityOnHand > 0)) return;
     var need = -change;
-    var today = DateTime.UtcNow.Date;
+    // A batch expires at the end of its last day where the shop is, not in UTC.
+    var today = BusinessToday(await TenantTimeZoneAsync(db, entry.TenantId));
     bool Expired(StockBatch b) => b.ExpiryDate.HasValue && b.ExpiryDate.Value.Date < today;
     var unbatched = Math.Max(0, (entry.BalanceAfter - change) - batches.Where(b => b.QuantityOnHand > 0).Sum(b => b.QuantityOnHand));
 
@@ -8994,7 +8996,7 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
         .OrderBy(p => p.Name).ToListAsync();
 
     // Each product's batches here: how many, the nearest expiry still sellable, and what has expired.
-    var today = DateTime.UtcNow.Date;
+    var today = BusinessToday(await TenantTimeZoneAsync(db, tenantId));
     var batchesHere = await db.StockBatches.Where(b => b.BranchId == branchId && b.QuantityOnHand > 0).ToListAsync();
     var batchPicture = batchesHere.GroupBy(b => b.ProductId).ToDictionary(g => g.Key, g => new
     {
@@ -9037,9 +9039,9 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
 // One location's batches, earliest expiry first — for the stock screen.
 api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid branchId, Guid? productId) =>
 {
-    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
-    var today = DateTime.UtcNow.Date;
+    var today = BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId!.Value));
     var batches = await db.StockBatches
         .Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0 && (productId == null || b.ProductId == productId))
         .Join(db.Products, b => b.ProductId, p => p.Id, (b, p) => new { b, p.Name })
@@ -9062,9 +9064,9 @@ api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid 
 // Open to the counter (no inventory permission): a cashier rings these up.
 api.MapGet("/pos/expiry-summary", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
-    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
-    var today = DateTime.UtcNow.Date;
+    var today = BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId!.Value));
     var batches = await db.StockBatches.Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0).ToListAsync();
     var productIds = batches.Select(b => b.ProductId).Distinct().ToList();
     var onHand = await db.BranchStocks.Where(s => s.BranchId == scopedBranchId!.Value && productIds.Contains(s.ProductId))
@@ -9113,7 +9115,7 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
     var (packItems, _, _, _) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
     if (packItems.BatchExpiry && (string.IsNullOrWhiteSpace(dto.BatchNumber) || !dto.ExpiryDate.HasValue))
         return Results.BadRequest(new { message = "Enter the batch number and expiry date printed on the pack." });
-    if (dto.ExpiryDate.HasValue && dto.ExpiryDate.Value.Date < DateTime.UtcNow.Date)
+    if (dto.ExpiryDate.HasValue && dto.ExpiryDate.Value.Date < BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId.Value)))
         return Results.BadRequest(new { message = "That batch has already expired. Return it to the supplier instead of receiving it." });
     if (dto.BonusQuantity is < 0) return Results.BadRequest(new { message = "Bonus units cannot be negative." });
 
@@ -10372,12 +10374,13 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     {
         var ent = await entitlements.GetAsync(po.TenantId);
         var (packItems, _, _, _) = Pos.Api.Data.VerticalPacks.Merge(ent.PackKeys, ent.PrimaryPackKey);
+        var today = BusinessToday(await TenantTimeZoneAsync(db, po.TenantId));
         foreach (var item in productItems)
         {
             var line = dto.Lines?.FirstOrDefault(l => l.ItemId == item.Id);
             if (packItems.BatchExpiry && (line == null || string.IsNullOrWhiteSpace(line.BatchNumber) || !line.ExpiryDate.HasValue))
                 return Results.BadRequest(new { message = $"Enter the batch number and expiry for {item.IngredientName}." });
-            if (line?.ExpiryDate is DateTime expiry && expiry.Date < DateTime.UtcNow.Date)
+            if (line?.ExpiryDate is DateTime expiry && expiry.Date < today)
                 return Results.BadRequest(new { message = $"{item.IngredientName}: that batch has already expired. Return it to the supplier instead of receiving it." });
             if (line?.BonusQuantity is < 0)
                 return Results.BadRequest(new { message = "Bonus units cannot be negative." });
