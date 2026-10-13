@@ -6,7 +6,9 @@
       "PowerShell(npm --version)",
       "PowerShell(npx tsc -b --noEmit 2>&1 | Select-Object -First 30; \"TSC EXIT: $LASTEXITCODE\")",
       "PowerShell(npx tsc -b --noEmit 2>&1 | Select-Object -First 20; \"TSC EXIT: $LASTEXITCODE\")",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "PowerShell(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 5288, 5173, 5432 } | Select-Object LocalAddress, LocalPort, OwningProcess, @{n='Process';e={\\(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue\\).ProcessName}} | Format-Table -AutoSize)",
+      "PowerShell(Get-Process -Name dotnet, Pos.Api -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, StartTime, @{n='Path';e={$_.Path}} | Format-Table -AutoSize; if \\(-not \\(Get-Process -Name dotnet, Pos.Api -ErrorAction SilentlyContinue\\)\\) { 'No dotnet / Pos.Api process is running.' })"
     ]
   }
 }
