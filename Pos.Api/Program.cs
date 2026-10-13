@@ -6455,7 +6455,8 @@ api.MapGet("/catalog/products", async (AppDbContext db, HttpContext http, Guid? 
     if (!string.IsNullOrWhiteSpace(search))
     {
         var s = search.Trim().ToLower();
-        query = query.Where(p => p.Name.ToLower().Contains(s) || (p.UrduName != null && p.UrduName.Contains(s)) || p.Barcode.Contains(s) || p.SKU.ToLower().Contains(s));
+        query = query.Where(p => p.Name.ToLower().Contains(s) || (p.UrduName != null && p.UrduName.Contains(s)) || p.Barcode.Contains(s) || p.SKU.ToLower().Contains(s)
+                              || (p.GenericName != null && p.GenericName.ToLower().Contains(s)));
     }
     var products = await query.ToListAsync();
     if (branchId == null || branchId == Guid.Empty) return Results.Ok(products);
@@ -9059,28 +9060,31 @@ api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid 
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
-// What the till needs to stop expired stock and warn about stock close to expiry: per product with
-// batches here, how much is still sellable, how much has expired, and the nearest sellable expiry.
+// What the till needs to stop expired stock and warn about stock close to expiry: per product this
+// location counts, how much is still sellable, how much has expired, and the nearest sellable expiry.
+// A pharmacy's till also reads it to tell a medicine that is out of stock and offer one in stock.
+// A product with no row here is not counted and sells without one, as everywhere else.
 // Open to the counter (no inventory permission): a cashier rings these up.
 api.MapGet("/pos/expiry-summary", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
     var today = BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId!.Value));
-    var batches = await db.StockBatches.Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0).ToListAsync();
-    var productIds = batches.Select(b => b.ProductId).Distinct().ToList();
-    var onHand = await db.BranchStocks.Where(s => s.BranchId == scopedBranchId!.Value && productIds.Contains(s.ProductId))
+    var batches = (await db.StockBatches.Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0).ToListAsync())
+        .ToLookup(b => b.ProductId);
+    var onHand = await db.BranchStocks.Where(s => s.BranchId == scopedBranchId!.Value)
         .ToDictionaryAsync(s => s.ProductId, s => s.QuantityOnHand);
-    return Results.Ok(batches.GroupBy(b => b.ProductId).Select(g =>
+    return Results.Ok(onHand.Keys.Union(batches.Select(g => g.Key)).Select(productId =>
     {
+        var g = batches[productId];
         var good = g.Where(b => b.ExpiryDate == null || b.ExpiryDate.Value.Date >= today).Sum(b => b.QuantityOnHand);
         var expired = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date < today).Sum(b => b.QuantityOnHand);
         // Units the count holds beyond its batches (stock from before batches) carry no expiry and sell.
-        var count = Math.Max(0, onHand.GetValueOrDefault(g.Key));
+        var count = Math.Max(0, onHand.GetValueOrDefault(productId));
         var unbatched = Math.Max(0, count - good - expired);
         return new
         {
-            productId = g.Key,
+            productId,
             sellableQty = Math.Min(count, good + unbatched),
             expiredQty = expired,
             nearestExpiry = g.Where(b => b.ExpiryDate != null && b.ExpiryDate.Value.Date >= today).Min(b => b.ExpiryDate)?.ToString("yyyy-MM-dd")

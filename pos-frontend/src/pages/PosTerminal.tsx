@@ -32,9 +32,11 @@ import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCached
 import { getStoredTerminal } from '../services/deviceLicense';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary } from '../types';
 import { daysUntil, formatDay } from '../utils/expiry';
+import { isSubstitute } from '../utils/medicine';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { ProductCard } from '../components/ProductCard';
+import { SubstitutesPanel, type SubstitutesReason } from '../components/SubstitutesPanel';
 import { getEmoji } from '../utils/productEmoji';
 
 export const PosTerminal: React.FC = () => {
@@ -75,7 +77,7 @@ export const PosTerminal: React.FC = () => {
 
   // Only a business with table service has dine-in tables (hooks/useSector.ts); everywhere else
   // — a shop, a pharmacy — a counter sale is always an immediate "take it with you" transaction.
-  const { tableService, batchExpiry } = useSector();
+  const { tableService, batchExpiry, medicines } = useSector();
   const noTables = !tableService;
   const orderTypeOptions = (noTables ? ['Takeaway', 'Delivery'] : ['DineIn', 'Takeaway', 'Delivery']) as OrderType[];
 
@@ -149,9 +151,9 @@ export const PosTerminal: React.FC = () => {
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  // A business whose stock has batches (a pharmacy, a grocery): per product, what can still be sold
-  // before expiry and what already has expired. Expired stock is never rung up; stock within a month
-  // of expiry is flagged as it goes in the cart. Offline, the till keeps what it last knew.
+  // A business whose stock has batches (a pharmacy, a grocery): per product counted here, what can
+  // still be sold before expiry and what already has expired. Expired stock is never rung up; stock
+  // within a month of expiry is flagged as it goes in the cart. Offline, the till keeps what it last knew.
   const branchId = selectedBranch?.id;
   const [expiryByProduct, setExpiryByProduct] = useState<Map<string, ExpirySummary>>(() => new Map());
   const [expiryRefresh, setExpiryRefresh] = useState(0);
@@ -208,8 +210,32 @@ export const PosTerminal: React.FC = () => {
     return true;
   };
 
-  const addProduct = (product: Product, modifiers?: Parameters<typeof addToCart>[1], notes?: string) => {
+  // A pharmacy offers another brand of the same medicine (utils/medicine.ts): asked for from a card,
+  // or by itself when the one picked has expired or shows no stock here.
+  type Modifiers = Parameters<typeof addToCart>[1];
+  const [substitutesFor, setSubstitutesFor] = useState<{
+    product: Product; reason: SubstitutesReason; modifiers?: Modifiers; notes?: string;
+  } | null>(null);
+
+  /** What can still be sold here beyond what the cart holds; null when this location does not count it. */
+  const availableQty = (productId: string) => {
+    const info = expiryByProduct.get(productId);
+    return info ? info.sellableQty - cartQtyOf(productId) : null;
+  };
+
+  /** Same formula, strength and form, in stock here, cheapest first. */
+  const substitutesOf = (product: Product) => products
+    .filter(p => isSubstitute(product, p) && (availableQty(p.id) ?? 0) > 0)
+    .sort((a, b) => a.sellingPricePKR - b.sellingPricePKR);
+
+  const addProduct = (product: Product, modifiers?: Modifiers, notes?: string, anyway = false) => {
     const inCart = cartQtyOf(product.id);
+    const left = availableQty(product.id);
+    if (medicines && !anyway && left != null && left < 1 && substitutesOf(product).length > 0) {
+      const expired = (expiryByProduct.get(product.id)?.expiredQty ?? 0) > 0;
+      setSubstitutesFor({ product, reason: expired ? 'expired' : 'out', modifiers, notes });
+      return;
+    }
     if (!expiryAllows(product.id, product.name, inCart + 1, inCart > 0)) return;
     addToCart(product, modifiers, notes);
   };
@@ -310,7 +336,9 @@ export const PosTerminal: React.FC = () => {
     const matchesSearch = !searchTerm ||
       p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (p.urduName && p.urduName.includes(searchTerm)) ||
-      p.barcode.includes(searchTerm);
+      p.barcode.includes(searchTerm) ||
+      // A medicine is asked for by its formula as often as by its brand.
+      (p.genericName && p.genericName.toLowerCase().includes(searchTerm.toLowerCase()));
     return matchesCategory && matchesSearch;
   });
 
@@ -506,7 +534,7 @@ export const PosTerminal: React.FC = () => {
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
                 type="text"
-                placeholder="Search product name, local name, or SKU..."
+                placeholder={medicines ? 'Search medicine, formula or barcode...' : 'Search product name, local name, or SKU...'}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition"
@@ -582,6 +610,7 @@ export const PosTerminal: React.FC = () => {
                     addProduct(p);
                   }
                 }}
+                onSubstitutes={medicines && product.genericName ? (p) => setSubstitutesFor({ product: p, reason: 'asked' }) : undefined}
               />
             ))}
           </div>
@@ -1148,6 +1177,24 @@ export const PosTerminal: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {substitutesFor && (
+        <SubstitutesPanel
+          product={substitutesFor.product}
+          reason={substitutesFor.reason}
+          options={substitutesOf(substitutesFor.product)}
+          stockOf={(id) => ({ available: availableQty(id), nearestExpiry: expiryByProduct.get(id)?.nearestExpiry ?? null })}
+          onAdd={(sub) => {
+            setSubstitutesFor(null);
+            addProduct(sub);
+          }}
+          onAddAnyway={() => {
+            setSubstitutesFor(null);
+            addProduct(substitutesFor.product, substitutesFor.modifiers, substitutesFor.notes, true);
+          }}
+          onClose={() => setSubstitutesFor(null)}
+        />
       )}
 
       <ThermalReceiptModal

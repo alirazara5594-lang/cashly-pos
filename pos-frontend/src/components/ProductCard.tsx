@@ -1,5 +1,7 @@
 import React from 'react';
+import { ArrowLeftRight } from 'lucide-react';
 import { getEmoji } from '../utils/productEmoji';
+import { strengthAndForm } from '../utils/medicine';
 import type { Product } from '../types';
 
 /**
@@ -36,6 +38,8 @@ interface ProductCardProps {
   onSelect: (product: Product) => void;
   /** Label for the action button. The tablet uses a bare "+" for a smaller touch target row. */
   actionLabel?: React.ReactNode;
+  /** A medicine's other brands with the same formula. The button shows only when this is given. */
+  onSubstitutes?: (product: Product) => void;
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({
@@ -44,9 +48,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   accent = 'teal',
   onSelect,
   actionLabel = 'Add',
+  onSubstitutes,
 }) => {
   const theme = ACCENTS[accent];
   const hasModifiers = !!product.modifiers && product.modifiers.length > 0;
+  const medicineLine = strengthAndForm(product);
 
   return (
     <div
@@ -68,27 +74,51 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             Custom
           </span>
         )}
+        {product.rackLocation && (
+          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-lg bg-white/90 border border-slate-200 text-slate-600 text-[10px] font-semibold" title="Rack">
+            {product.rackLocation}
+          </span>
+        )}
       </div>
 
       <h3 className="text-sm font-semibold text-slate-900 truncate">{product.name}</h3>
       {product.urduName && (
         <p className="text-[11px] text-slate-400 text-right truncate mt-0.5">{product.urduName}</p>
       )}
-      <p className="text-xs text-slate-400 mt-0.5">{product.sku || product.barcode.slice(-4)}</p>
+      {medicineLine ? (
+        <p className="text-xs text-slate-500 mt-0.5 truncate" title={product.genericName ?? undefined}>{medicineLine}</p>
+      ) : (
+        <p className="text-xs text-slate-400 mt-0.5">{product.sku || product.barcode.slice(-4)}</p>
+      )}
 
-      <div className="flex items-center justify-between mt-auto pt-2">
+      <div className="flex items-center justify-between gap-1.5 mt-auto pt-2">
         <span className={`text-sm font-bold ${theme.price}`}>
           {product.sellingPricePKR.toLocaleString()}
         </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onSelect(product);
-          }}
-          className={`px-3 py-1 rounded-lg ${theme.button} text-white text-xs font-bold transition shadow-sm`}
-        >
-          {actionLabel}
-        </button>
+        <div className="flex items-center gap-1">
+          {onSubstitutes && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onSubstitutes(product);
+              }}
+              title="Substitutes: same formula, strength and form"
+              aria-label={`Substitutes for ${product.name}`}
+              className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition"
+            >
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(product);
+            }}
+            className={`px-3 py-1 rounded-lg ${theme.button} text-white text-xs font-bold transition shadow-sm`}
+          >
+            {actionLabel}
+          </button>
+        </div>
       </div>
     </div>
   );
