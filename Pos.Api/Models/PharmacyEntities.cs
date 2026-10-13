@@ -27,6 +27,43 @@ public enum MedicineSchedule
 }
 
 /// <summary>
+/// The prescription a sale of prescription-only or controlled medicines was made against: one per sale,
+/// covering every such medicine on it. A controlled medicine also needs the patient's CNIC and the
+/// doctor's registration number, and its sales make up the controlled-medicine register.
+/// </summary>
+public class Prescription
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public Guid BranchId { get; set; }
+    public Guid OrderId { get; set; }
+    public string PatientName { get; set; } = string.Empty;
+    public string? PatientPhone { get; set; }
+    /// <summary>13 digits, without dashes.</summary>
+    public string? PatientCnic { get; set; }
+    public string DoctorName { get; set; } = string.Empty;
+    /// <summary>The doctor's PMDC registration number.</summary>
+    public string? DoctorRegistrationNo { get; set; }
+    /// <summary>The date written on the prescription (date only).</summary>
+    public DateTime PrescribedOn { get; set; }
+    public string? Notes { get; set; }
+    /// <summary>Whether a photo of it is kept (<see cref="PrescriptionPhoto"/>).</summary>
+    public bool HasPhoto { get; set; }
+    public string? RecordedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>A prescription's photo, kept apart so lists and the register never load the picture.</summary>
+public class PrescriptionPhoto
+{
+    public Guid PrescriptionId { get; set; }
+    public Guid TenantId { get; set; }
+    public string ContentType { get; set; } = "image/jpeg";
+    public byte[] Data { get; set; } = Array.Empty<byte>();
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// How a medicine with packing (Product.PackUnits) is sold on one line: the whole box, a strip, or one
 /// tablet (capsule, ampoule...). See Services/MedicinePacking.cs.
 /// </summary>

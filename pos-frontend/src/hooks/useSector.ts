@@ -1,7 +1,8 @@
 import { usePosStore } from '../store/posStore';
 
-/** The restaurant-only parts of the app, each tied to a capability of the business's kind. */
-export type SectorFeature = 'tableService' | 'kitchenRouting' | 'recipes';
+/** The parts of the app that belong to one kind of business, each tied to a capability of its kind:
+ *  restaurants' tables, kitchen and recipes; pharmacies' medicines. */
+export type SectorFeature = 'tableService' | 'kitchenRouting' | 'recipes' | 'medicines';
 
 export interface Sector {
   /** The server has said what kind of business this is (before that, the business type stands in). */

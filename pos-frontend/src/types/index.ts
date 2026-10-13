@@ -437,6 +437,61 @@ export type MedicineSchedule = 'None' | 'OverTheCounter' | 'Prescription' | 'Con
 /** What one of a cart line's quantity is, for a medicine sold loose. */
 export type SaleUnit = 'Pack' | 'Strip' | 'Unit';
 
+/** The prescription a sale of prescription-only or controlled medicines is made against (utils/prescription.ts). */
+export interface PrescriptionInput {
+  patientName: string;
+  patientPhone: string;
+  /** Required for a controlled medicine: 13 digits, dashes allowed. */
+  patientCnic: string;
+  doctorName: string;
+  /** Required for a controlled medicine: the doctor's PMDC number. */
+  doctorRegistrationNo: string;
+  /** The date written on it, YYYY-MM-DD. */
+  prescribedOn: string;
+  /** Its photo, shrunk on this device (a JPEG data: URL). */
+  photoDataUrl?: string;
+}
+
+/** One movement of a controlled medicine in its register. Quantities are in the medicine's stock unit. */
+export interface ControlledRegisterRow {
+  id: string;
+  at: string;
+  kind: string;
+  reference: string | null;
+  supplierName: string | null;
+  batches: { batchNumber: string; expiryDate: string | null; quantity: number }[];
+  patientName: string | null;
+  patientCnic: string | null;
+  doctorName: string | null;
+  doctorRegistrationNo: string | null;
+  prescribedOn: string | null;
+  prescriptionId: string | null;
+  hasPhoto: boolean;
+  quantityIn: number;
+  quantityOut: number;
+  balance: number;
+  notes: string | null;
+  by: string;
+}
+
+export interface ControlledRegister {
+  productId: string;
+  productName: string;
+  genericName: string | null;
+  strength: string | null;
+  dosageForm: string | null;
+  manufacturer: string | null;
+  drapRegistrationNo: string | null;
+  schedule: MedicineSchedule;
+  packUnits: number | null;
+  looseUnitName: string | null;
+  from: string;
+  to: string;
+  opening: number;
+  closing: number;
+  rows: ControlledRegisterRow[];
+}
+
 export interface MedicineDetails {
   genericName?: string;
   strength?: string;

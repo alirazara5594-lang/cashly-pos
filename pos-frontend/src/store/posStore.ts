@@ -23,7 +23,7 @@ import type {
 } from '../types';
 import type { SaleUnitOption } from '../utils/medicine';
 
-import { offlineDb, saveSetting, getSetting } from '../services/offlineDb';
+import { offlineDb, saveSetting, getSetting, type OfflineOrder } from '../services/offlineDb';
 import { posApi } from '../services/api';
 import { getStoredTerminal, isActivated } from '../services/deviceLicense';
 // The signed-in session: one tab's in the back office, the device's on a connected till.
@@ -199,6 +199,50 @@ async function syncWithRetry(
     }
   }
   return { success: false, error: 'Unreachable' };
+}
+
+// Offline sales go up a few at a time, not all at once: a pharmacy's sale carries its prescription
+// photo, and a day of them in one request would be refused for its size. The server keeps each sale
+// once (by its clientLocalId), so a batch that fails part-way is safe to send again.
+const SYNC_BATCH_SALES = 20;
+const SYNC_BATCH_CHARS = 4_000_000;
+
+function inSyncBatches(sales: OfflineOrder[]): OfflineOrder[][] {
+  const batches: OfflineOrder[][] = [];
+  let current: OfflineOrder[] = [];
+  let size = 0;
+  for (const sale of sales) {
+    const chars = JSON.stringify(sale.orderData).length;
+    if (current.length > 0 && (current.length >= SYNC_BATCH_SALES || size + chars > SYNC_BATCH_CHARS)) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(sale);
+    size += chars;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+/**
+ * Sends offline sales batch by batch, marking each batch synced as it lands. Stops at the first batch
+ * that fails, and returns it with the batches after it as still unsent.
+ */
+async function sendOfflineSales(sales: OfflineOrder[]): Promise<{ synced: number; error?: string; unsent: OfflineOrder[] }> {
+  const batches = inSyncBatches(sales);
+  let synced = 0;
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const result = await syncWithRetry(() => posApi.syncBatchOrders(batch.map(o => o.orderData)));
+    if (!result.success) return { synced, error: result.error, unsent: batches.slice(i).flat() };
+    for (const sale of batch) {
+      // Stored as 1/0, not true/false: the offline database indexes it, and booleans cannot be indexed.
+      if (sale.id) await offlineDb.offlineOrders.update(sale.id, { isSynced: 1 as unknown as boolean });
+    }
+    synced += result.data?.count || batch.length;
+  }
+  return { synced, unsent: [] };
 }
 
 export interface ParkedBill {
@@ -695,21 +739,14 @@ export const usePosStore = create<PosState>((set, get) => ({
         return 0;
       }
 
-      const payload = offlineOrders.map(o => o.orderData);
-      const result = await syncWithRetry(() => posApi.syncBatchOrders(payload));
+      const result = await sendOfflineSales(offlineOrders);
 
-      if (result.success) {
-        for (const order of offlineOrders) {
-          if (order.id) {
-            await offlineDb.offlineOrders.update(order.id, { isSynced: 1 as any });
-          }
-        }
-        const syncedCount = result.data?.count || offlineOrders.length;
-        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${syncedCount} orders` });
-        return syncedCount;
+      if (!result.error) {
+        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${result.synced} orders` });
+        return result.synced;
       } else {
-        // Update retry count on failed orders
-        for (const order of offlineOrders) {
+        // Update retry count on the orders still waiting
+        for (const order of result.unsent) {
           if (order.id) {
             const retries = (order.syncRetries || 0) + 1;
             await offlineDb.offlineOrders.update(order.id, {
@@ -718,8 +755,8 @@ export const usePosStore = create<PosState>((set, get) => ({
             });
           }
         }
-        set({ isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
-        return 0;
+        set({ offlinePendingCount: result.unsent.length, isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
+        return result.synced;
       }
     } catch (err) {
       console.error('Auto-sync failed:', err);
@@ -740,21 +777,14 @@ export const usePosStore = create<PosState>((set, get) => ({
         return 0;
       }
 
-      const payload = offlineOrders.map(o => o.orderData);
-      const result = await syncWithRetry(() => posApi.syncBatchOrders(payload));
+      const result = await sendOfflineSales(offlineOrders);
 
-      if (result.success) {
-        for (const order of offlineOrders) {
-          if (order.id) {
-            await offlineDb.offlineOrders.update(order.id, { isSynced: 1 as any });
-          }
-        }
-        const syncedCount = result.data?.count || offlineOrders.length;
-        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${syncedCount} orders` });
-        return syncedCount;
+      if (!result.error) {
+        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${result.synced} orders` });
+        return result.synced;
       } else {
-        set({ isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
-        return 0;
+        set({ offlinePendingCount: result.unsent.length, isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
+        return result.synced;
       }
     } catch (err) {
       console.error('Failed to sync offline orders:', err);

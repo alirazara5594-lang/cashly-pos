@@ -115,6 +115,8 @@ public class AppDbContext : DbContext
     // --- Batches and medicines (Models/PharmacyEntities.cs) ---
     public DbSet<StockBatch> StockBatches => Set<StockBatch>();
     public DbSet<StockBatchMovement> StockBatchMovements => Set<StockBatchMovement>();
+    public DbSet<Prescription> Prescriptions => Set<Prescription>();
+    public DbSet<PrescriptionPhoto> PrescriptionPhotos => Set<PrescriptionPhoto>();
 
     // --- Subscription / entitlements ---
     public DbSet<Plan> Plans => Set<Plan>();
@@ -657,6 +659,9 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<StockBatch>().HasIndex(b => b.TenantId);
         modelBuilder.Entity<StockBatchMovement>().HasIndex(m => m.StockLedgerEntryId);
         modelBuilder.Entity<StockBatchMovement>().HasIndex(m => new { m.BatchId, m.RestoresReferenceId });
+        modelBuilder.Entity<Prescription>().HasIndex(p => p.OrderId).IsUnique();
+        modelBuilder.Entity<Prescription>().HasIndex(p => p.TenantId);
+        modelBuilder.Entity<PrescriptionPhoto>().HasKey(p => p.PrescriptionId);
 
         modelBuilder.Entity<TenantNote>().HasIndex(n => new { n.TenantId, n.CreatedAt });
         modelBuilder.Entity<TenantNote>().HasIndex(n => n.FollowUpAt);

@@ -45,7 +45,8 @@ import {
   Package,
   Megaphone,
   MessageCircle,
-  Settings2
+  Settings2,
+  BookLock
 } from 'lucide-react';
 import { usePosStore, hasModuleAccess, normalizeRole } from '../store/posStore';
 import { getDeviceSurface } from '../services/deviceLicense';
@@ -123,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const isErpOnly = getDeviceSurface() === 'Erp' || packageInfo?.appSurface === 'Erp';
   // What kind of business this is decides which screens it has at all: tables, the kitchen and
   // recipes belong to a restaurant; a pharmacy or a shop never sees them (hooks/useSector.ts).
-  const { tableService, kitchenRouting, recipes, catalogNoun } = useSector();
+  const { tableService, kitchenRouting, recipes, catalogNoun, medicines } = useSector();
   // Platform-vendor screens (Tenant Management, Package Pricing) manage every
   // tenant on the platform, not just this one — they must never show for a
   // restaurant Owner, even though Owner otherwise bypasses module checks.
@@ -320,6 +321,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       });
       // Outlets ask for stock here; head office is where those requests arrive and are answered.
       stockItems.push({ id: 'stockRequests', label: isErpOnly ? 'Outlet Requests' : 'Stock Requests', path: '/stock-requests', icon: Send });
+      // A pharmacy's register of controlled medicines, built from its stock movements.
+      if (medicines) stockItems.push({ id: 'controlledRegister', label: 'Controlled Register', path: '/controlled-register', icon: BookLock });
     }
     if (can('supplychain')) {
       // One page with two tabs; it opens on transfers when there is somewhere to transfer to, and
@@ -441,7 +444,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (settingsItems.length > 0) sections.push({ title: 'Settings', items: settingsItems });
 
     return sections;
-  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, tableService, kitchenRouting, recipes, catalogNoun, isErpOnly, renewalsDue, invoicesOverdue, currentUser?.platformRole]);
+  }, [severalLocations, terminalMode, can, has, isPlatformSuperAdmin, tableService, kitchenRouting, recipes, catalogNoun, medicines, isErpOnly, renewalsDue, invoicesOverdue, currentUser?.platformRole]);
 
   // Several entries open different tabs of one page (Transfers / Purchase Orders, the reports),
   // so "you are here" is the page AND its tab — or the page's opening tab when none was named.

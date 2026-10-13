@@ -22,21 +22,24 @@ import {
   Percent,
   Star,
   AlertTriangle,
-  CalendarClock
+  CalendarClock,
+  FileText
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorMessage } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import { getStoredTerminal } from '../services/deviceLicense';
-import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary } from '../types';
+import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary, PrescriptionInput } from '../types';
 import { daysUntil, formatDay } from '../utils/expiry';
 import { isSubstitute, saleUnitOptions, formatPacked, looseUnitName } from '../utils/medicine';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { ProductCard } from '../components/ProductCard';
 import { SubstitutesPanel, type SubstitutesReason } from '../components/SubstitutesPanel';
+import { PrescriptionModal } from '../components/PrescriptionModal';
+import { emptyPrescription, prescriptionNeeds, prescriptionProblem } from '../utils/prescription';
 import { getEmoji } from '../utils/productEmoji';
 
 export const PosTerminal: React.FC = () => {
@@ -117,6 +120,12 @@ export const PosTerminal: React.FC = () => {
     }
   };
 
+  // A pharmacy's prescription for this bill (utils/prescription.ts): one per sale, covering every
+  // prescription-only and controlled medicine on it. It belongs to this customer, so it goes with
+  // the sale, and is dropped when the bill is held or the next one starts.
+  const [prescription, setPrescription] = useState<PrescriptionInput | null>(null);
+  const [rxDialog, setRxDialog] = useState<{ charge: boolean; error?: string } | null>(null);
+
   const resetCheckoutExtras = () => {
     setLookupPhone('');
     setMatchedCustomer(null);
@@ -124,6 +133,7 @@ export const PosTerminal: React.FC = () => {
     setPromoCodeInput('');
     setGiftCardCode('');
     setGiftCardRedeemAmount(0);
+    setPrescription(null);
   };
 
   // Discounts are a gated action. If this cashier lacks the flag they can still
@@ -357,8 +367,19 @@ export const PosTerminal: React.FC = () => {
   const tax = getTaxAmount();
   const grandTotal = getTotal();
 
-  const handleCompleteSale = async () => {
+  const rxNeeds = medicines ? prescriptionNeeds(cart, products) : { any: false, names: [], controlledNames: [] };
+  const rxMissing = rxNeeds.any ? prescriptionProblem(prescription, rxNeeds.controlledNames.length > 0) : null;
+
+  /** `rxGiven`: the prescription just saved, when it is what opened the way to charging. */
+  const handleCompleteSale = async (rxGiven?: PrescriptionInput) => {
     if (cart.length === 0) return;
+    // A prescription-only or controlled medicine is sold against a prescription — asked for here,
+    // so it is taken even when the till is offline.
+    const rx = rxGiven ?? prescription;
+    if (rxNeeds.any && prescriptionProblem(rx, rxNeeds.controlledNames.length > 0)) {
+      setRxDialog({ charge: true });
+      return;
+    }
     setIsSubmitting(true);
 
     const orderPayload = {
@@ -394,7 +415,9 @@ export const PosTerminal: React.FC = () => {
         specialNotes: i.specialNotes,
         station: i.station || 'MainKitchen',
         saleUnit: i.saleUnit
-      }))
+      })),
+      // With its photo: an offline sale carries both until it syncs.
+      prescription: rxNeeds.any && rx ? rx : undefined
     };
 
     try {
@@ -498,7 +521,13 @@ export const PosTerminal: React.FC = () => {
       resetCheckoutExtras();
     } catch (err) {
       console.error('Order submission error:', err);
-      alert('Failed to submit order. Please check network.');
+      // The server asks for the same prescription the till does; when it still refuses, say why there.
+      const refusal = (err as { response?: { data?: { prescriptionRequired?: boolean } } }).response?.data;
+      if (refusal?.prescriptionRequired) {
+        setRxDialog({ charge: true, error: getApiErrorMessage(err, 'This sale needs a prescription.') });
+      } else {
+        alert(getApiErrorMessage(err, 'Failed to submit order. Please check network.'));
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -970,6 +999,36 @@ export const PosTerminal: React.FC = () => {
           </div>
 
           <div className="p-4 border-t border-slate-100">
+            {rxNeeds.any && (
+              <div className={`mb-3 px-3 py-2 rounded-xl border text-xs flex items-center gap-2 ${
+                rxMissing ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-teal-50 border-teal-200 text-teal-900'
+              }`}>
+                <FileText className="w-4 h-4 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  {rxMissing || !prescription ? (
+                    <>
+                      <span className="font-semibold">Prescription needed</span>
+                      <span className="block text-[11px] opacity-80 truncate">
+                        {rxNeeds.controlledNames.length > 0 ? 'Controlled: with CNIC and doctor reg. no.' : rxNeeds.names.join(', ')}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-semibold truncate block">{prescription.patientName}</span>
+                      <span className="block text-[11px] opacity-80 truncate">
+                        {prescription.doctorName}{prescription.photoDataUrl ? ' · photo taken' : ''}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <button
+                  onClick={() => setRxDialog({ charge: false })}
+                  className="px-2 py-1 rounded-lg bg-white/70 border border-slate-200 font-bold hover:bg-white transition"
+                >
+                  {prescription ? 'Edit' : 'Add'}
+                </button>
+              </div>
+            )}
             <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
             <div className="grid grid-cols-3 gap-2 mb-3">
               {visiblePaymentMethods.map(({ key, label, icon: Icon }) => (
@@ -1021,7 +1080,10 @@ export const PosTerminal: React.FC = () => {
 
             <div className="grid grid-cols-3 gap-2 mb-3">
               <button
-                onClick={() => parkCurrentBill()}
+                onClick={() => {
+                  parkCurrentBill();
+                  setPrescription(null);
+                }}
                 disabled={cart.length === 0}
                 className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
               >
@@ -1144,6 +1206,7 @@ export const PosTerminal: React.FC = () => {
                       <button
                         onClick={() => {
                           resumeParkedBill(bill.id);
+                          setPrescription(null);
                           setShowParkedModal(false);
                         }}
                         className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-purple-500 hover:bg-purple-600 text-white text-xs font-bold shadow transition"
@@ -1221,6 +1284,23 @@ export const PosTerminal: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {rxDialog && (
+        <PrescriptionModal
+          initial={prescription ?? emptyPrescription()}
+          names={rxNeeds.names}
+          controlledNames={rxNeeds.controlledNames}
+          saveLabel={rxDialog.charge ? `Save and charge ${grandTotal.toLocaleString()}` : 'Save'}
+          initialError={rxDialog.error}
+          onSave={(rx) => {
+            setPrescription(rx);
+            const charge = rxDialog.charge;
+            setRxDialog(null);
+            if (charge) void handleCompleteSale(rx);
+          }}
+          onClose={() => setRxDialog(null)}
+        />
       )}
 
       {substitutesFor && (

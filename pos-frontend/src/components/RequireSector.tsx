@@ -13,13 +13,15 @@ interface RequireSectorProps {
 
 /**
  * Route guard for screens that belong to one kind of business — tables and the kitchen to a
- * restaurant, never to a pharmacy or a shop. Unlike a plan feature, this is not something to buy:
- * the screen simply is not part of this business, so the way out is back to its own work.
+ * restaurant, the controlled-medicine register to a pharmacy. Unlike a plan feature, this is not
+ * something to buy: the screen simply is not part of this business, so the way out is back to its
+ * own work.
  *
  * UI feedback, not security: the server's SectorGuard refuses the same changes (Program.cs).
  */
 export const RequireSector: React.FC<RequireSectorProps> = ({ feature, label, children }) => {
   const sector = useSector();
+  const belongsTo = feature === 'medicines' ? 'pharmacies' : 'restaurants';
 
   if (!sector[feature]) {
     return (
@@ -31,7 +33,7 @@ export const RequireSector: React.FC<RequireSectorProps> = ({ feature, label, ch
           <div className="space-y-1.5">
             <h2 className="text-lg font-semibold text-slate-900">Not part of this business</h2>
             <p className="text-[13px] text-slate-500 leading-relaxed">
-              <strong className="text-slate-700">{label}</strong> belongs to restaurants, so it isn't part of
+              <strong className="text-slate-700">{label}</strong> belongs to {belongsTo}, so it isn't part of
               a {sector.name.toLowerCase()} business.
             </p>
           </div>

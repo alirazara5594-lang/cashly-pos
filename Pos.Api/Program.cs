@@ -1619,7 +1619,8 @@ using (var scope = app.Services.CreateScope())
         ("Plan prices follow the price list", SyncPlanPricesFromPackagesAsync),
         ("Batches and medicines", EnsureBatchSchemaAsync),
         ("Existing batch numbers into batches", MoveBranchStockBatchesAsync),
-        ("Medicine packing and loose sale", EnsurePackingSchemaAsync)
+        ("Medicine packing and loose sale", EnsurePackingSchemaAsync),
+        ("Prescriptions", EnsurePrescriptionSchemaAsync)
     })
     {
         try
@@ -1923,6 +1924,36 @@ static Task EnsurePackingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlR
     ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""LooseUnitPricePKR"" numeric NULL;
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""SaleUnit"" integer NULL;
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""UnitsPerSaleUnit"" numeric NOT NULL DEFAULT 1;
+");
+
+/// <summary>The prescriptions sales of prescription-only and controlled medicines are made against.</summary>
+static Task EnsurePrescriptionSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    CREATE TABLE IF NOT EXISTS ""Prescriptions"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""BranchId"" uuid NOT NULL,
+        ""OrderId"" uuid NOT NULL,
+        ""PatientName"" text NOT NULL DEFAULT '',
+        ""PatientPhone"" text NULL,
+        ""PatientCnic"" text NULL,
+        ""DoctorName"" text NOT NULL DEFAULT '',
+        ""DoctorRegistrationNo"" text NULL,
+        ""PrescribedOn"" timestamp with time zone NOT NULL,
+        ""Notes"" text NULL,
+        ""HasPhoto"" boolean NOT NULL DEFAULT FALSE,
+        ""RecordedBy"" text NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_Prescriptions_OrderId"" ON ""Prescriptions"" (""OrderId"");
+    CREATE INDEX IF NOT EXISTS ""IX_Prescriptions_TenantId"" ON ""Prescriptions"" (""TenantId"");
+
+    CREATE TABLE IF NOT EXISTS ""PrescriptionPhotos"" (
+        ""PrescriptionId"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""ContentType"" text NOT NULL DEFAULT 'image/jpeg',
+        ""Data"" bytea NOT NULL,
+        ""CreatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
 ");
 
 /// <summary>
@@ -3287,6 +3318,107 @@ static void ApplyMedicineDetails(Product product, MedicineDetailsDto? medicine)
     product.StripPricePKR = medicine.StripPricePKR is > 0 ? medicine.StripPricePKR : null;
     product.LooseUnitPricePKR = medicine.LooseUnitPricePKR is > 0 ? medicine.LooseUnitPricePKR : null;
 }
+
+/// <summary>A CNIC as its 13 digits, or null when what was entered is not one.</summary>
+static string? NormalizeCnic(string? cnic)
+{
+    if (string.IsNullOrWhiteSpace(cnic) || !cnic.All(c => char.IsDigit(c) || c is '-' or ' ')) return null;
+    var digits = new string(cnic.Where(char.IsDigit).ToArray());
+    return digits.Length == 13 ? digits : null;
+}
+
+/// <summary>
+/// Why a sale at the counter cannot go through as it stands, or null. A prescription-only medicine is
+/// sold against a prescription: the patient, the doctor and the date on it. A controlled one also needs
+/// the patient's CNIC and the doctor's registration number, for the controlled-medicine register.
+/// Checked at the counter only — a sale made offline already happened, and is kept with whatever the
+/// till took (the till asks for the same before it rings one up).
+/// </summary>
+static async Task<string?> PrescriptionProblemAsync(AppDbContext db, Guid tenantId, CreateOrderDto dto)
+{
+    var productIds = dto.Items.Select(i => i.ProductId).Distinct().ToList();
+    var needing = await db.Products
+        .Where(p => productIds.Contains(p.Id) && p.TenantId == tenantId && p.Schedule >= MedicineSchedule.Prescription)
+        .Select(p => new { p.Name, p.Schedule }).ToListAsync();
+    if (needing.Count == 0) return null;
+
+    var rx = dto.Prescription;
+    if (rx == null || string.IsNullOrWhiteSpace(rx.PatientName) || string.IsNullOrWhiteSpace(rx.DoctorName) || rx.PrescribedOn == null)
+        return $"{string.Join(", ", needing.Select(n => n.Name))} {(needing.Count == 1 ? "is" : "are")} sold on prescription: "
+             + "enter the patient, the doctor and the date on it.";
+    if (rx.PrescribedOn.Value.Date > BusinessToday(await TenantTimeZoneAsync(db, tenantId)))
+        return "The prescription's date cannot be after today.";
+
+    var controlled = needing.Where(n => n.Schedule == MedicineSchedule.Controlled).Select(n => n.Name).ToList();
+    if (controlled.Count == 0) return null;
+    if (NormalizeCnic(rx.PatientCnic) == null)
+        return $"{string.Join(", ", controlled)} {(controlled.Count == 1 ? "is a controlled medicine" : "are controlled medicines")}: enter the patient's CNIC (13 digits).";
+    if (string.IsNullOrWhiteSpace(rx.DoctorRegistrationNo))
+        return $"{string.Join(", ", controlled)} {(controlled.Count == 1 ? "is a controlled medicine" : "are controlled medicines")}: enter the doctor's registration number.";
+    return null;
+}
+
+/// <summary>
+/// Records the prescription a sale was made against, with its photo when the till sent one. A photo
+/// that is not a picture, or is too big to be one the till shrank, is left out rather than costing the
+/// sale. Nothing is recorded when no prescription came. The caller saves.
+/// </summary>
+static void AttachPrescription(AppDbContext db, Order order, PrescriptionDto? rx, string? recordedBy)
+{
+    if (rx == null || (string.IsNullOrWhiteSpace(rx.PatientName) && string.IsNullOrWhiteSpace(rx.DoctorName))) return;
+    static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+    var prescription = new Prescription
+    {
+        TenantId = order.TenantId, BranchId = order.BranchId, OrderId = order.Id,
+        PatientName = rx.PatientName?.Trim() ?? string.Empty, PatientPhone = Clean(rx.PatientPhone),
+        PatientCnic = NormalizeCnic(rx.PatientCnic) ?? Clean(rx.PatientCnic),
+        DoctorName = rx.DoctorName?.Trim() ?? string.Empty, DoctorRegistrationNo = Clean(rx.DoctorRegistrationNo),
+        PrescribedOn = DateTime.SpecifyKind((rx.PrescribedOn ?? order.CapturedAt ?? order.CreatedAt).Date, DateTimeKind.Utc),
+        Notes = Clean(rx.Notes), RecordedBy = recordedBy
+    };
+    if (ReadPrescriptionPhoto(rx.PhotoDataUrl) is { } photo)
+    {
+        db.PrescriptionPhotos.Add(new PrescriptionPhoto { PrescriptionId = prescription.Id, TenantId = order.TenantId, ContentType = photo.ContentType, Data = photo.Data });
+        prescription.HasPhoto = true;
+    }
+    db.Prescriptions.Add(prescription);
+}
+
+/// <summary>A data: URL's picture (JPEG, PNG or WebP, at most 2 MB), or null.</summary>
+static (string ContentType, byte[] Data)? ReadPrescriptionPhoto(string? dataUrl)
+{
+    const int maxBytes = 2 * 1024 * 1024;
+    const string marker = ";base64,";
+    if (string.IsNullOrWhiteSpace(dataUrl) || !dataUrl.StartsWith("data:", StringComparison.Ordinal)) return null;
+    var at = dataUrl.IndexOf(marker, StringComparison.Ordinal);
+    if (at < 0) return null;
+    var contentType = dataUrl[5..at].ToLowerInvariant();
+    if (contentType is not ("image/jpeg" or "image/png" or "image/webp")) return null;
+    var base64 = dataUrl[(at + marker.Length)..];
+    if (base64.Length > (maxBytes / 3 + 1) * 4) return null;
+    try
+    {
+        var data = Convert.FromBase64String(base64);
+        return data.Length is > 0 and <= maxBytes ? (contentType, data) : null;
+    }
+    catch (FormatException) { return null; }
+}
+
+/// <summary>What one stock movement was, as the controlled-medicine register says it.</summary>
+static string RegisterKind(StockLedgerEntry e) => e.MovementType switch
+{
+    StockMovementType.PurchaseReceipt => "Received",
+    StockMovementType.SaleConsumption => "Sold",
+    StockMovementType.SaleReturn => "Returned by customer",
+    StockMovementType.TransferIn => "Transfer in",
+    StockMovementType.TransferOut => "Transfer out",
+    StockMovementType.Adjustment when e.ReferenceType == "Order" => "Sale voided",
+    StockMovementType.Adjustment when e.ReferenceType == "StockTransfer" => "Transfer cancelled",
+    StockMovementType.Waste => "Written off",
+    StockMovementType.OpeningBalance => "Opening balance",
+    StockMovementType.StockCount => "Counted",
+    _ => "Adjusted"
+};
 
 /// <summary>
 /// A medicine's packing onto its product (Services/MedicinePacking.cs). When the unit its stock is
@@ -5800,6 +5932,8 @@ api.MapPost("/sync/batch-orders", async (
         // The goods left the shop while it was offline; take them off the books now. This path
         // used to skip stock entirely, so every offline sale left the counts overstated.
         await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "Offline sync");
+        // The prescription (and its photo) taken when the sale was made offline travels with it.
+        AttachPrescription(db, order, dto.Prescription, order.CashierName);
 
         db.Orders.Add(order);
         createdOrders.Add(order);
@@ -6884,6 +7018,10 @@ api.MapPost("/orders", async (
             billingAction = true
         }, statusCode: StatusCodes.Status402PaymentRequired);
 
+    // A prescription-only or controlled medicine is sold against a prescription (Models/PharmacyEntities.cs).
+    var prescriptionProblem = await PrescriptionProblemAsync(db, branch.TenantId, dto);
+    if (prescriptionProblem != null) return Results.BadRequest(new { message = prescriptionProblem, prescriptionRequired = true });
+
     var actingUser = await accessor.GetCurrentUserAsync(http);
     var (error, order, priced) = await CreateOrderCoreAsync(db, branch, dto, actingUser, fiscal, waResolver);
     if (error != null) return error;
@@ -7022,6 +7160,7 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     // an estimate, and blocking a burger over a sauce count stops real trade. Anything that goes
     // below zero raises an alert for the branch.
     await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "System");
+    AttachPrescription(db, order, dto.Prescription, order.CashierName);
 
     db.Orders.Add(order);
     await db.SaveChangesAsync();
@@ -8538,6 +8677,7 @@ api.MapPost("/sync/offline-batch", async (
         // Same stock rule as the other sync path. The old clamp at zero hid an oversell: selling 5
         // of 2 left 0, and the next delivery of 10 then showed 10 on the shelf instead of 7.
         await ConsumeStockForSaleAsync(db, order, order.CashierName ?? "Offline sync");
+        AttachPrescription(db, order, dto.Prescription, order.CashierName);
 
         db.Orders.Add(order);
         createdOrders.Add(order);
@@ -9133,6 +9273,116 @@ api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid 
     }));
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// The controlled-medicine register: every movement of one controlled medicine at one location over a
+// span of days, with the running balance — what came in (the distributor, the batch) and what went out
+// to whom (the patient and CNIC, the doctor and registration number), as a pharmacy keeps it on paper.
+// Built from the stock ledger, so nothing is entered twice and it always agrees with the count.
+api.MapGet("/pharmacy/controlled-register", async (AppDbContext db, HttpContext http, Guid branchId, Guid productId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var tenantId = scopedTenantId!.Value;
+    var branch = scopedBranchId!.Value;
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.TenantId == tenantId);
+    if (product == null) return Results.NotFound(new { message = "Medicine not found." });
+
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var lastDay = (to ?? BusinessToday(zone)).Date;
+    var firstDay = (from ?? lastDay.AddDays(-30)).Date;
+    if (firstDay > lastDay) return Results.BadRequest(new { message = "The first day must not be after the last." });
+    var startUtc = BusinessDayUtc(firstDay, zone).StartUtc;
+    var endUtc = BusinessDayUtc(lastDay, zone).EndUtc;
+
+    // The balance the register opens with: today's count, less everything that moved since it opens.
+    var ledger = db.StockLedgerEntries.Where(e => e.BranchId == branch && e.ProductId == productId);
+    var onHandNow = await db.BranchStocks.Where(s => s.BranchId == branch && s.ProductId == productId)
+        .Select(s => (decimal?)s.QuantityOnHand).FirstOrDefaultAsync() ?? 0m;
+    var movedSince = await ledger.Where(e => e.CreatedAt >= startUtc).SumAsync(e => (decimal?)e.QuantityChange) ?? 0m;
+    var opening = onHandNow - movedSince;
+    var entries = await ledger.Where(e => e.CreatedAt >= startUtc && e.CreatedAt < endUtc)
+        .OrderBy(e => e.CreatedAt).ToListAsync();
+
+    var entryIds = entries.Select(e => e.Id).ToList();
+    var batchesOf = (await db.StockBatchMovements.Where(m => entryIds.Contains(m.StockLedgerEntryId))
+            .Join(db.StockBatches, m => m.BatchId, b => b.Id, (m, b) => new { m.StockLedgerEntryId, b.BatchNumber, b.ExpiryDate, m.QuantityChange })
+            .ToListAsync())
+        .ToLookup(x => x.StockLedgerEntryId);
+
+    // What each movement was for: the sale and its prescription, the return, the purchase order, the transfer.
+    List<Guid> Refs(string type) => entries.Where(e => e.ReferenceType == type && e.ReferenceId != null)
+        .Select(e => e.ReferenceId!.Value).Distinct().ToList();
+    var returnIds = Refs("OrderReturn");
+    var returns = await db.OrderReturns.Where(r => returnIds.Contains(r.Id))
+        .Select(r => new { r.Id, r.ReturnNumber, r.OrderId }).ToDictionaryAsync(r => r.Id);
+    var orderIds = Refs("Order").Concat(returns.Values.Select(r => r.OrderId)).Distinct().ToList();
+    var orders = await db.Orders.Where(o => orderIds.Contains(o.Id))
+        .Select(o => new { o.Id, o.OrderNumber }).ToDictionaryAsync(o => o.Id);
+    var prescriptions = await db.Prescriptions.Where(p => orderIds.Contains(p.OrderId)).ToDictionaryAsync(p => p.OrderId);
+    var poIds = Refs("PurchaseOrder");
+    var purchaseOrders = await db.PurchaseOrders.Where(p => poIds.Contains(p.Id))
+        .Select(p => new { p.Id, p.PONumber, p.SupplierName }).ToDictionaryAsync(p => p.Id);
+    var transferIds = Refs("StockTransfer");
+    var transfers = await db.StockTransferOrders.Where(t => transferIds.Contains(t.Id))
+        .Select(t => new { t.Id, t.TransferNumber }).ToDictionaryAsync(t => t.Id);
+
+    var balance = opening;
+    var rows = entries.Select(e =>
+    {
+        balance += e.QuantityChange;
+        var refId = e.ReferenceId ?? Guid.Empty;
+        var saleId = e.ReferenceType == "Order" ? refId
+            : e.ReferenceType == "OrderReturn" && returns.TryGetValue(refId, out var ret) ? ret.OrderId : Guid.Empty;
+        var rx = prescriptions.GetValueOrDefault(saleId);
+        var po = e.ReferenceType == "PurchaseOrder" ? purchaseOrders.GetValueOrDefault(refId) : null;
+        return new
+        {
+            id = e.Id, at = e.CreatedAt, kind = RegisterKind(e),
+            reference = e.ReferenceType switch
+            {
+                "Order" => orders.GetValueOrDefault(refId)?.OrderNumber,
+                "OrderReturn" => returns.GetValueOrDefault(refId)?.ReturnNumber,
+                "PurchaseOrder" => po?.PONumber,
+                "StockTransfer" => transfers.GetValueOrDefault(refId)?.TransferNumber,
+                _ => null
+            },
+            supplierName = po?.SupplierName,
+            batches = batchesOf[e.Id].Select(b => new
+            {
+                batchNumber = b.BatchNumber, expiryDate = b.ExpiryDate?.ToString("yyyy-MM-dd"), quantity = Math.Abs(b.QuantityChange)
+            }).ToList(),
+            patientName = rx?.PatientName, patientCnic = rx?.PatientCnic,
+            doctorName = rx?.DoctorName, doctorRegistrationNo = rx?.DoctorRegistrationNo,
+            prescribedOn = rx?.PrescribedOn.ToString("yyyy-MM-dd"), prescriptionId = rx?.Id, hasPhoto = rx?.HasPhoto ?? false,
+            quantityIn = e.QuantityChange > 0 ? e.QuantityChange : 0m,
+            quantityOut = e.QuantityChange < 0 ? -e.QuantityChange : 0m,
+            balance, notes = e.Notes, by = e.CreatedBy
+        };
+    }).ToList();
+
+    var packed = Pos.Api.Services.MedicinePacking.IsPacked(product);
+    return Results.Ok(new
+    {
+        productId = product.Id, productName = product.Name, genericName = product.GenericName, strength = product.Strength,
+        dosageForm = product.DosageForm, manufacturer = product.Manufacturer, drapRegistrationNo = product.DrapRegistrationNo,
+        schedule = product.Schedule.ToString(),
+        packUnits = packed ? product.PackUnits : null,
+        looseUnitName = packed ? Pos.Api.Services.MedicinePacking.LooseUnitName(product) : null,
+        from = firstDay.ToString("yyyy-MM-dd"), to = lastDay.ToString("yyyy-MM-dd"),
+        opening, closing = balance, rows
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// A prescription's photo, for the register. Only within the location the prescription was taken at.
+api.MapGet("/pharmacy/prescriptions/{id:guid}/photo", async (AppDbContext db, HttpContext http, Guid id) =>
+{
+    var prescription = await db.Prescriptions.Where(p => p.Id == id).Select(p => new { p.BranchId }).FirstOrDefaultAsync();
+    if (prescription == null) return Results.NotFound();
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, prescription.BranchId);
+    if (scopeError != null) return scopeError;
+    var photo = await db.PrescriptionPhotos.FirstOrDefaultAsync(p => p.PrescriptionId == id);
+    return photo == null ? Results.NotFound() : Results.File(photo.Data, photo.ContentType);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
 
 // What the till needs to stop expired stock and warn about stock close to expiry: per product this
 // location counts, how much is still sellable, how much has expired, and the nearest sellable expiry.
@@ -17299,7 +17549,14 @@ public record SaveRegionDto(string? Name, string? Code);
 /// batch safe, the second records when the sale really happened rather than when it reached us.
 /// Both are optional so the ordinary online checkout path is unchanged.
 /// </summary>
-public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null, string? ClientLocalId = null, DateTime? CapturedAt = null);
+public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null, string? ClientLocalId = null, DateTime? CapturedAt = null,
+    PrescriptionDto? Prescription = null);
+/// <summary>
+/// The prescription a sale of prescription-only or controlled medicines is made against
+/// (Models/PharmacyEntities.cs). PhotoDataUrl: a data: URL of its photo, already shrunk by the till.
+/// </summary>
+public record PrescriptionDto(string? PatientName, string? PatientPhone, string? PatientCnic, string? DoctorName,
+    string? DoctorRegistrationNo, DateTime? PrescribedOn, string? Notes = null, string? PhotoDataUrl = null);
 public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station,
     SaleUnit? SaleUnit = null);
 public record UpdateTicketStatusDto(string Status);

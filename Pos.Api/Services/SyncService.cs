@@ -251,6 +251,13 @@ public class SyncService : ISyncService
                     .ToListAsync(ct);
                 if (rows.Count == 0) return (new List<object>(), null, null);
 
+                // A pharmacy's prescription goes with its sale, so head office's controlled-medicine
+                // register has it too. Its photo stays on this host.
+                var orderIds = rows.Select(o => o.Id).ToList();
+                var prescriptions = await _db.Prescriptions.IgnoreQueryFilters().AsNoTracking()
+                    .Where(p => orderIds.Contains(p.OrderId))
+                    .ToDictionaryAsync(p => p.OrderId, ct);
+
                 var records = rows.Select(o => (object)new
                 {
                     o.Id, o.TenantId, o.BranchId, o.OrderNumber,
@@ -271,7 +278,14 @@ public class SyncService : ISyncService
                         i.DeviceReportedUnitPricePKR,
                         // A medicine sold loose: what one of the quantity was (box, strip, tablet).
                         saleUnit = i.SaleUnit?.ToString(), i.UnitsPerSaleUnit
-                    })
+                    }),
+                    prescription = prescriptions.TryGetValue(o.Id, out var rx)
+                        ? new
+                        {
+                            rx.Id, rx.PatientName, rx.PatientPhone, rx.PatientCnic, rx.DoctorName, rx.DoctorRegistrationNo,
+                            rx.PrescribedOn, rx.Notes, rx.RecordedBy, rx.CreatedAt
+                        }
+                        : null
                 }).ToList();
                 return (records, rows[^1].CreatedAt, rows[^1].Id);
             }

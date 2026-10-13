@@ -220,6 +220,27 @@ public class SyncReceiver : ISyncReceiver
                 });
             }
 
+            // A pharmacy's prescription came with its sale; its photo stays at the shop.
+            if (Obj(rec, "prescription") is { } rx)
+            {
+                _db.Prescriptions.Add(new Prescription
+                {
+                    Id = GuidOf(rx, "id") ?? Guid.NewGuid(),
+                    TenantId = tenantId,
+                    BranchId = branchId.Value,
+                    OrderId = order.Id,
+                    PatientName = Str(rx, "patientName") ?? string.Empty,
+                    PatientPhone = Str(rx, "patientPhone"),
+                    PatientCnic = Str(rx, "patientCnic"),
+                    DoctorName = Str(rx, "doctorName") ?? string.Empty,
+                    DoctorRegistrationNo = Str(rx, "doctorRegistrationNo"),
+                    PrescribedOn = Date(rx, "prescribedOn") ?? order.CreatedAt,
+                    Notes = Str(rx, "notes"),
+                    RecordedBy = Str(rx, "recordedBy"),
+                    CreatedAt = Date(rx, "createdAt") ?? DateTime.UtcNow
+                });
+            }
+
             _db.Orders.Add(order);
             // Closed out so a second copy of the same sale inside one batch is a duplicate too.
             existingIds.Add(order.Id);
@@ -650,6 +671,14 @@ public class SyncReceiver : ISyncReceiver
     {
         var raw = Str(rec, key);
         return raw != null && Enum.TryParse<TEnum>(raw, true, out var parsed) ? parsed : fallback;
+    }
+
+    private static Dictionary<string, JsonElement>? Obj(Dictionary<string, JsonElement> rec, string key)
+    {
+        if (!TryGet(rec, key, out var el) || el.ValueKind != JsonValueKind.Object) return null;
+        var map = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var prop in el.EnumerateObject()) map[prop.Name] = prop.Value;
+        return map;
     }
 
     private static List<Dictionary<string, JsonElement>> Arr(Dictionary<string, JsonElement> rec, string key)

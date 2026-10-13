@@ -15,6 +15,8 @@ import type {
   StockBatch,
   ExpirySummary,
   SaleUnit,
+  PrescriptionInput,
+  ControlledRegister,
   ZReportSummary,
   CategorySalesReport,
   ItemPerformanceReport,
@@ -683,6 +685,8 @@ export const posApi = {
       /** A medicine sold loose: what one of the quantity is. The server prices it itself. */
       saleUnit?: SaleUnit;
     }[];
+    /** Required by the server for a prescription-only or controlled medicine. */
+    prescription?: PrescriptionInput;
   }) => {
     const res = await api.post('/api/orders', orderData);
     return res.data;
@@ -1094,6 +1098,16 @@ export const posApi = {
   /** One location's batches with stock, earliest expiry first. */
   getStockBatches: async (branchId: string, productId?: string) => {
     const res = await api.get<StockBatch[]>('/api/inventory/batches', { params: { branchId, productId } });
+    return res.data;
+  },
+  /** One controlled medicine's register at a location: every movement with its running balance. */
+  getControlledRegister: async (params: { branchId: string; productId: string; from?: string; to?: string }) => {
+    const res = await api.get<ControlledRegister>('/api/pharmacy/controlled-register', { params });
+    return res.data;
+  },
+  /** A prescription's photo, as a blob (an <img> cannot send the sign-in token itself). */
+  getPrescriptionPhoto: async (prescriptionId: string) => {
+    const res = await api.get<Blob>(`/api/pharmacy/prescriptions/${prescriptionId}/photo`, { responseType: 'blob' });
     return res.data;
   },
   /** For the till: per product with batches, what is sellable and what has expired. */
