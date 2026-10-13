@@ -14,6 +14,7 @@ import type {
   BranchStockItem,
   StockBatch,
   ExpirySummary,
+  SaleUnit,
   ZReportSummary,
   CategorySalesReport,
   ItemPerformanceReport,
@@ -679,6 +680,8 @@ export const posApi = {
       modifiersSummary?: string;
       specialNotes?: string;
       station: string;
+      /** A medicine sold loose: what one of the quantity is. The server prices it itself. */
+      saleUnit?: SaleUnit;
     }[];
   }) => {
     const res = await api.post('/api/orders', orderData);

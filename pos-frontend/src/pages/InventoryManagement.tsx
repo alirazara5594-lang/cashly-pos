@@ -22,6 +22,7 @@ import { usePosStore } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
 import { useBusinessShape } from '../hooks/useBusinessShape';
 import { daysUntil, formatDay, expiryChip, today, thisMonth, expiryToIso, expiryPassed } from '../utils/expiry';
+import { formatPacked } from '../utils/medicine';
 import type { BranchStockItem, RawIngredient, IngredientMasterRow, StockBatch } from '../types';
 
 export const InventoryManagement: React.FC = () => {
@@ -212,9 +213,10 @@ export const InventoryManagement: React.FC = () => {
         bonusQuantity: bonus > 0 ? bonus : undefined,
         retailPricePKR: batchExpiry && printedPrice > 0 ? printedPrice : undefined
       });
+      const unitWord = stockInItem.packUnits ? 'box(es)' : stockInItem.unit;
       setActionSuccess(bonus > 0
-        ? `Added +${stockInQty + bonus} ${stockInItem.unit} (${stockInQty} + ${bonus} bonus) to ${stockInItem.productName}`
-        : `Added +${stockInQty} ${stockInItem.unit} to ${stockInItem.productName}`);
+        ? `Added +${stockInQty + bonus} ${unitWord} (${stockInQty} + ${bonus} bonus) to ${stockInItem.productName}`
+        : `Added +${stockInQty} ${unitWord} to ${stockInItem.productName}`);
       setStockInItem(null);
       await fetchInventory();
       setTimeout(() => setActionSuccess(null), 3500);
@@ -292,7 +294,8 @@ export const InventoryManagement: React.FC = () => {
         adjustmentQty: adjustQty,
         reason: adjustReason
       });
-      setActionSuccess(`Adjusted ${adjustItem.productName} by ${adjustQty > 0 ? '+' + adjustQty : adjustQty}`);
+      setActionSuccess(`Adjusted ${adjustItem.productName} by ${adjustQty > 0 ? '+' + adjustQty : adjustQty}${
+        adjustItem.packUnits ? ` ${(adjustItem.looseUnitName ?? 'unit').toLowerCase()}s` : ''}`);
       setAdjustItem(null);
       await fetchInventory();
       setTimeout(() => setActionSuccess(null), 3500);
@@ -675,7 +678,9 @@ export const InventoryManagement: React.FC = () => {
                           <div className="text-[10px] text-slate-500">{item.sku}</div>
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-slate-700">
-                          {item.costPricePKR.toLocaleString()}
+                          {/* A medicine counted in tablets costs per tablet here; shown per box, like its price. */}
+                          {(item.costPricePKR * (item.packUnits ?? 1)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          {item.packUnits && <div className="text-[10px] text-slate-400 font-sans">per box</div>}
                         </td>
                         <td className="py-3 px-3 text-right font-mono text-teal-600 font-bold">
                           {item.sellingPricePKR.toLocaleString()}
@@ -693,9 +698,13 @@ export const InventoryManagement: React.FC = () => {
                                   ? 'bg-rose-50 text-rose-600 border border-rose-200'
                                   : 'bg-teal-50 text-teal-600 border border-teal-200'
                               }`}>
-                                {item.quantityOnHand} {item.unit}
+                                {item.packUnits
+                                  ? formatPacked(item.quantityOnHand, item.packUnits, item.looseUnitName)
+                                  : `${item.quantityOnHand} ${item.unit}`}
                               </span>
-                              <div className="text-[10px] text-slate-500 mt-0.5">Min: {item.minAlertLevel}</div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">
+                                Min: {formatPacked(item.minAlertLevel, item.packUnits, item.looseUnitName)}
+                              </div>
                             </>
                           )}
                         </td>
@@ -725,7 +734,7 @@ export const InventoryManagement: React.FC = () => {
                                   )}
                                   {(item.expiredQty ?? 0) > 0 && (
                                     <span className="px-1.5 py-0.5 rounded border bg-rose-100 border-rose-300 text-rose-700 text-[10px] font-bold">
-                                      {item.expiredQty} expired
+                                      {formatPacked(item.expiredQty ?? 0, item.packUnits, item.looseUnitName)} expired
                                     </span>
                                   )}
                                 </div>
@@ -769,7 +778,8 @@ export const InventoryManagement: React.FC = () => {
                                 setStockInItem(item);
                                 setStockInQty(10);
                                 setSupplierName('');
-                                setNewCostPrice(item.costPricePKR);
+                                // Received in boxes, at a cost per box (a medicine's count is in tablets).
+                                setNewCostPrice(Math.round(item.costPricePKR * (item.packUnits ?? 1) * 100) / 100);
                                 // Each delivery is a new batch for a business with batches; others keep the last one.
                                 setBatchNo(batchExpiry ? '' : item.batchNumber || '');
                                 setExpiryDate(batchExpiry ? '' : item.expiryDate || '');
@@ -1029,14 +1039,23 @@ export const InventoryManagement: React.FC = () => {
 
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
               <div className="font-bold text-teal-600 text-sm">{stockInItem.productName}</div>
-              <div className="text-xs text-slate-500 mt-0.5">Current Stock: <span className="font-bold text-slate-900">{stockInItem.quantityOnHand} {stockInItem.unit}</span></div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                Current Stock: <span className="font-bold text-slate-900">
+                  {stockInItem.packUnits
+                    ? formatPacked(stockInItem.quantityOnHand, stockInItem.packUnits, stockInItem.looseUnitName)
+                    : `${stockInItem.quantityOnHand} ${stockInItem.unit}`}
+                </span>
+              </div>
             </div>
 
             <form onSubmit={handleStockInSubmit} onInput={() => setStockInError(null)} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div className={batchExpiry ? '' : 'col-span-2'}>
                   <label className="block text-xs text-slate-500 font-medium mb-1">
-                    {batchExpiry ? `Quantity bought (${stockInItem.unit}) *` : `Quantity to Inward (${stockInItem.unit}) *`}
+                    {/* A medicine sold loose is still bought in boxes; each puts its tablets on the shelf. */}
+                    {stockInItem.packUnits
+                      ? `Boxes bought (${stockInItem.packUnits} ${(stockInItem.looseUnitName ?? 'unit').toLowerCase()}s each) *`
+                      : batchExpiry ? `Quantity bought (${stockInItem.unit}) *` : `Quantity to Inward (${stockInItem.unit}) *`}
                   </label>
                   <input
                     type="number"
@@ -1050,7 +1069,7 @@ export const InventoryManagement: React.FC = () => {
                 </div>
                 {batchExpiry && (
                   <div>
-                    <label className="block text-xs text-slate-500 font-medium mb-1">Bonus units (free)</label>
+                    <label className="block text-xs text-slate-500 font-medium mb-1">{stockInItem.packUnits ? 'Bonus boxes (free)' : 'Bonus units (free)'}</label>
                     <input
                       type="number"
                       min="0"
@@ -1103,7 +1122,9 @@ export const InventoryManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-500 font-medium mb-1">{batchExpiry ? 'Price paid per unit (PKR)' : 'Unit Cost Price (PKR)'}</label>
+                  <label className="block text-xs text-slate-500 font-medium mb-1">
+                    {stockInItem.packUnits ? 'Price paid per box (PKR)' : batchExpiry ? 'Price paid per unit (PKR)' : 'Unit Cost Price (PKR)'}
+                  </label>
                   <input
                     type="number"
                     min="0"
@@ -1131,11 +1152,15 @@ export const InventoryManagement: React.FC = () => {
                   </div>
                   <div className="px-3 py-2 rounded-xl bg-teal-50/60 border border-teal-100 text-[11px] text-slate-600 flex flex-col justify-center">
                     <div>
-                      Receiving <span className="font-bold text-slate-900">{(stockInQty || 0) + (bonusQty > 0 ? bonusQty : 0)} {stockInItem.unit}</span>
+                      Receiving <span className="font-bold text-slate-900">
+                        {stockInItem.packUnits
+                          ? formatPacked(((stockInQty || 0) + (bonusQty > 0 ? bonusQty : 0)) * stockInItem.packUnits, stockInItem.packUnits, stockInItem.looseUnitName)
+                          : `${(stockInQty || 0) + (bonusQty > 0 ? bonusQty : 0)} ${stockInItem.unit}`}
+                      </span>
                     </div>
                     {bonusQty > 0 && stockInQty > 0 && newCostPrice > 0 && (
                       <div>
-                        Each costs <span className="font-bold text-teal-700 font-mono">
+                        Each {stockInItem.packUnits ? 'box' : ''} costs <span className="font-bold text-teal-700 font-mono">
                           Rs {(stockInQty * newCostPrice / (stockInQty + bonusQty)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                         </span> after the bonus
                       </div>
@@ -1266,11 +1291,13 @@ export const InventoryManagement: React.FC = () => {
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono">
-                            <span className="font-bold text-slate-900">{b.quantityOnHand.toLocaleString()}</span>
-                            <span className="text-slate-400"> / {b.quantityReceived.toLocaleString()}</span>
+                            <span className="font-bold text-slate-900">{formatPacked(b.quantityOnHand, b.packUnits, b.looseUnitName)}</span>
+                            <span className="text-slate-400"> / {formatPacked(b.quantityReceived, b.packUnits, b.looseUnitName)}</span>
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono text-slate-700">
-                            {b.unitCostPKR.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            {/* Per box for a medicine counted in tablets, like its pack price. */}
+                            {(b.unitCostPKR * (b.packUnits ?? 1)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            {b.packUnits && <div className="text-[10px] text-slate-400 font-sans">per box</div>}
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono text-slate-700">
                             {b.retailPricePKR != null ? b.retailPricePKR.toLocaleString() : '—'}
@@ -1288,12 +1315,15 @@ export const InventoryManagement: React.FC = () => {
             {!batchLoading && !batchError && batchRows.length > 0 && (() => {
               const expiredUnits = batchRows.filter(b => b.daysToExpiry != null && b.daysToExpiry < 0).reduce((n, b) => n + b.quantityOnHand, 0);
               const soonUnits = batchRows.filter(b => b.daysToExpiry != null && b.daysToExpiry >= 0 && b.daysToExpiry <= 90).reduce((n, b) => n + b.quantityOnHand, 0);
+              // One product's batches add up in its own count (boxes + tablets); several products' only as units.
+              const single = batchView.productId ? batchRows[0] : undefined;
+              const total = (n: number) => single?.packUnits ? formatPacked(n, single.packUnits, single.looseUnitName) : `${n.toLocaleString()} units`;
               return (
                 <div className="px-5 py-3 border-t border-slate-200 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
                   <span><span className="font-bold text-slate-900">{batchRows.length}</span> {batchRows.length === 1 ? 'batch' : 'batches'}</span>
-                  <span><span className="font-bold text-slate-900">{batchRows.reduce((n, b) => n + b.quantityOnHand, 0).toLocaleString()}</span> units on hand</span>
-                  {soonUnits > 0 && <span className="text-amber-700"><span className="font-bold">{soonUnits.toLocaleString()}</span> expiring within 3 months</span>}
-                  {expiredUnits > 0 && <span className="text-rose-700"><span className="font-bold">{expiredUnits.toLocaleString()}</span> expired — return or write off</span>}
+                  <span><span className="font-bold text-slate-900">{total(batchRows.reduce((n, b) => n + b.quantityOnHand, 0))}</span> on hand</span>
+                  {soonUnits > 0 && <span className="text-amber-700"><span className="font-bold">{total(soonUnits)}</span> expiring within 3 months</span>}
+                  {expiredUnits > 0 && <span className="text-rose-700"><span className="font-bold">{total(expiredUnits)}</span> expired — return or write off</span>}
                 </div>
               );
             })()}
@@ -1315,12 +1345,23 @@ export const InventoryManagement: React.FC = () => {
 
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
               <div className="font-bold text-amber-600 text-sm">{adjustItem.productName}</div>
-              <div className="text-xs text-slate-500 mt-0.5">Current Stock: <span className="font-bold text-slate-900">{adjustItem.quantityOnHand} {adjustItem.unit}</span></div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                Current Stock: <span className="font-bold text-slate-900">
+                  {adjustItem.packUnits
+                    ? formatPacked(adjustItem.quantityOnHand, adjustItem.packUnits, adjustItem.looseUnitName)
+                    : `${adjustItem.quantityOnHand} ${adjustItem.unit}`}
+                </span>
+              </div>
             </div>
 
             <form onSubmit={handleAdjustSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs text-slate-500 font-medium mb-1">Adjustment Quantity (use - for loss/waste) *</label>
+                <label className="block text-xs text-slate-500 font-medium mb-1">
+                  {/* A medicine sold loose is counted, and so adjusted, in tablets. */}
+                  {adjustItem.packUnits
+                    ? `Adjustment in ${(adjustItem.looseUnitName ?? 'unit').toLowerCase()}s — a box is ${adjustItem.packUnits} (use - for loss/waste) *`
+                    : 'Adjustment Quantity (use - for loss/waste) *'}
+                </label>
                 <input
                   type="number"
                   step="1"
@@ -1330,7 +1371,11 @@ export const InventoryManagement: React.FC = () => {
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
                 <div className="text-[11px] text-slate-500 mt-1">
-                  Resulting Stock: <span className="font-bold text-slate-900">{Math.max(0, adjustItem.quantityOnHand + adjustQty)} {adjustItem.unit}</span>
+                  Resulting Stock: <span className="font-bold text-slate-900">
+                    {adjustItem.packUnits
+                      ? formatPacked(Math.max(0, adjustItem.quantityOnHand + adjustQty), adjustItem.packUnits, adjustItem.looseUnitName)
+                      : `${Math.max(0, adjustItem.quantityOnHand + adjustQty)} ${adjustItem.unit}`}
+                  </span>
                 </div>
               </div>
 

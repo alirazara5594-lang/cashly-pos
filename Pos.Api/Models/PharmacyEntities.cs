@@ -26,6 +26,17 @@ public enum MedicineSchedule
     Controlled = 3
 }
 
+/// <summary>
+/// How a medicine with packing (Product.PackUnits) is sold on one line: the whole box, a strip, or one
+/// tablet (capsule, ampoule...). See Services/MedicinePacking.cs.
+/// </summary>
+public enum SaleUnit
+{
+    Pack = 1,
+    Strip = 2,
+    Unit = 3
+}
+
 /// <summary>Stock of one product at one location received under one batch number and expiry date.</summary>
 public class StockBatch
 {

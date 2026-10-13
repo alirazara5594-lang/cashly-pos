@@ -23,6 +23,7 @@ import { usePosStore } from '../store/posStore';
 import { useBusinessShape } from '../hooks/useBusinessShape';
 import { useSector } from '../hooks/useSector';
 import { today, thisMonth, expiryToIso, expiryPassed } from '../utils/expiry';
+import { isPacked, looseUnitName } from '../utils/medicine';
 import type { StockTransferOrder, PurchaseOrder, RawIngredient, Supplier, StockLedgerEntry, Warehouse, Product, Branch } from '../types';
 
 /**
@@ -132,19 +133,25 @@ export const SupplyChainManagement: React.FC = () => {
   // Goods bought to be sold as they are (retail items), alongside the ingredients.
   const [products, setProducts] = useState<Product[]>([]);
 
-  const itemFromKey = (key: string): StockLineItem | null => {
+  /**
+   * A medicine sold loose (utils/medicine.ts) is bought in boxes, at its cost per box, but its stock
+   * is counted — and so moved between locations — in tablets.
+   */
+  const itemFromKey = (key: string, use: 'purchase' | 'transfer'): StockLineItem | null => {
     if (key.startsWith('p:')) {
       const p = products.find(x => x.id === key.slice(2));
-      return p ? { productId: p.id, ingredientName: p.name, unit: p.unit || 'Piece', unitCostPKR: p.costPricePKR || 0 } : null;
+      if (!p) return null;
+      const unit = !isPacked(p) ? p.unit || 'Piece' : use === 'purchase' ? 'Box' : looseUnitName(p.dosageForm);
+      return { productId: p.id, ingredientName: p.name, unit, unitCostPKR: p.costPricePKR || 0 };
     }
     const i = ingredients.find(x => x.id === key.slice(2));
     return i ? { ingredientId: i.id, ingredientName: i.name, unit: i.unit, unitCostPKR: i.costPerUnitPKR || 0 } : null;
   };
 
   /** The first thing in the picker, for a new line: an ingredient if there are any, else a product. */
-  const firstItem = (): StockLineItem | null =>
-    ingredients.length > 0 ? itemFromKey(`i:${ingredients[0].id}`)
-      : products.length > 0 ? itemFromKey(`p:${products[0].id}`)
+  const firstItem = (use: 'purchase' | 'transfer'): StockLineItem | null =>
+    ingredients.length > 0 ? itemFromKey(`i:${ingredients[0].id}`, use)
+      : products.length > 0 ? itemFromKey(`p:${products[0].id}`, use)
       : null;
 
   const itemOptions = (
@@ -246,7 +253,7 @@ export const SupplyChainManagement: React.FC = () => {
     // A blank form: the quantity, vehicle and note are the person's to fill in.
     setTransferVehicle('');
     setTransferNotes('');
-    const first = firstItem();
+    const first = firstItem('transfer');
     setTransferLines(first ? [{ ...first, quantityRequested: 0 }] : []);
     setIsNewTransferOpen(true);
   };
@@ -258,7 +265,7 @@ export const SupplyChainManagement: React.FC = () => {
   }, [location.state?.openRequisition, ingredients.length]);
 
   const handleAddTransferLine = () => {
-    const first = firstItem();
+    const first = firstItem('transfer');
     if (!first) return;
     setTransferLines([...transferLines, { ...first, quantityRequested: 0 }]);
   };
@@ -340,13 +347,13 @@ export const SupplyChainManagement: React.FC = () => {
     setPoSupplierId(firstSupplier?.id || '');
     setPoSupplier(firstSupplier?.name || '');
     setPoNotes('');
-    const first = firstItem();
+    const first = firstItem('purchase');
     setPoLines(first ? [{ ...first, quantity: 0 }] : []);
     setIsNewPOOpen(true);
   };
 
   const handleAddPOLine = () => {
-    const first = firstItem();
+    const first = firstItem('purchase');
     if (!first) return;
     setPoLines([...poLines, { ...first, quantity: 0 }]);
   };
@@ -1367,7 +1374,7 @@ export const SupplyChainManagement: React.FC = () => {
                     <select
                       value={lineKey(line)}
                       onChange={(e) => {
-                        const item = itemFromKey(e.target.value);
+                        const item = itemFromKey(e.target.value, 'transfer');
                         if (!item) return;
                         const updated = [...transferLines];
                         updated[idx] = {
@@ -1720,7 +1727,7 @@ export const SupplyChainManagement: React.FC = () => {
                     <select
                       value={lineKey(line)}
                       onChange={(e) => {
-                        const item = itemFromKey(e.target.value);
+                        const item = itemFromKey(e.target.value, 'purchase');
                         if (!item) return;
                         const updated = [...poLines];
                         updated[idx] = {

@@ -214,7 +214,9 @@ public class SyncReceiver : ISyncReceiver
                     UnitPricePKR = Dec(line, "unitPricePKR"),
                     TotalPricePKR = Dec(line, "totalPricePKR"),
                     ModifiersSummary = Str(line, "modifiersSummary"),
-                    DeviceReportedUnitPricePKR = DecOrNull(line, "deviceReportedUnitPricePKR")
+                    DeviceReportedUnitPricePKR = DecOrNull(line, "deviceReportedUnitPricePKR"),
+                    SaleUnit = Str(line, "saleUnit") is string unit && Enum.TryParse<SaleUnit>(unit, true, out var saleUnit) ? saleUnit : null,
+                    UnitsPerSaleUnit = Dec(line, "unitsPerSaleUnit", 1)
                 });
             }
 

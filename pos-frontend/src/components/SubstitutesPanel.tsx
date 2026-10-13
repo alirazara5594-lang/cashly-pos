@@ -12,8 +12,8 @@ interface SubstitutesPanelProps {
   reason: SubstitutesReason;
   /** Same formula, strength and form, in stock here, cheapest first (utils/medicine.ts). */
   options: Product[];
-  /** What is left to sell here beyond the cart, and the nearest expiry still sellable. */
-  stockOf: (productId: string) => { available: number | null; nearestExpiry: string | null };
+  /** What is left to sell here beyond the cart ("2 boxes + 5 tablets"), and the nearest expiry still sellable. */
+  stockOf: (productId: string) => { available: string | null; nearestExpiry: string | null };
   onAdd: (substitute: Product) => void;
   /** Offered only when the medicine shows no stock: the count may be wrong and it may be on the shelf. */
   onAddAnyway: () => void;

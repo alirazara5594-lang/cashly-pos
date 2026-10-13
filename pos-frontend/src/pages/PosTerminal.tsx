@@ -32,7 +32,7 @@ import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCached
 import { getStoredTerminal } from '../services/deviceLicense';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary } from '../types';
 import { daysUntil, formatDay } from '../utils/expiry';
-import { isSubstitute } from '../utils/medicine';
+import { isSubstitute, saleUnitOptions, formatPacked, looseUnitName } from '../utils/medicine';
 import { ThermalReceiptModal } from '../components/ThermalReceiptModal';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { ProductCard } from '../components/ProductCard';
@@ -47,6 +47,7 @@ export const PosTerminal: React.FC = () => {
     addToCart,
     removeFromCart,
     updateQuantity,
+    setLineSaleUnit,
     setOrderType,
     orderType,
     selectedTable,
@@ -189,7 +190,15 @@ export const PosTerminal: React.FC = () => {
     noticeTimer.current = window.setTimeout(() => setExpiryNotice(null), tone === 'block' ? 7000 : 4500);
   };
 
-  const cartQtyOf = (productId: string) => cart.filter(i => i.productId === productId).reduce((n, i) => n + i.quantity, 0);
+  /** What the cart takes from this product's stock: tablets, for a medicine sold by the box or strip. */
+  const cartQtyOf = (productId: string) =>
+    cart.filter(i => i.productId === productId).reduce((n, i) => n + i.quantity * (i.unitsPerSaleUnit ?? 1), 0);
+
+  /** A product's stock as it is counted: "5 boxes + 4 tablets" for a medicine sold loose. */
+  const stockLabel = (productId: string, qty: number) => {
+    const product = products.find(p => p.id === productId);
+    return product ? formatPacked(qty, product.packUnits, looseUnitName(product.dosageForm)) : qty.toLocaleString();
+  };
 
   /** False (with the reason shown) when the cart would hold more than can be sold before expiry. */
   const expiryAllows = (productId: string, productName: string, wanted: number, alreadyInCart: boolean) => {
@@ -197,8 +206,8 @@ export const PosTerminal: React.FC = () => {
     if (!info) return true;
     if (info.expiredQty > 0 && wanted > info.sellableQty) {
       showExpiryNotice('block', info.sellableQty <= 0
-        ? `${productName}: all the stock here has expired (${info.expiredQty}). It cannot be sold — take it off the shelf.`
-        : `${productName}: only ${info.sellableQty} can be sold. The other ${info.expiredQty} have expired.`);
+        ? `${productName}: all the stock here has expired (${stockLabel(productId, info.expiredQty)}). It cannot be sold — take it off the shelf.`
+        : `${productName}: only ${stockLabel(productId, info.sellableQty)} can be sold. The other ${stockLabel(productId, info.expiredQty)} have expired.`);
       return false;
     }
     if (!alreadyInCart && info.nearestExpiry) {
@@ -236,8 +245,10 @@ export const PosTerminal: React.FC = () => {
       setSubstitutesFor({ product, reason: expired ? 'expired' : 'out', modifiers, notes });
       return;
     }
-    if (!expiryAllows(product.id, product.name, inCart + 1, inCart > 0)) return;
-    addToCart(product, modifiers, notes);
+    // A medicine sold loose goes in as a box; the cart line switches it to a strip or a tablet.
+    const box = saleUnitOptions(product)[0];
+    if (!expiryAllows(product.id, product.name, inCart + (box?.units ?? 1), inCart > 0)) return;
+    addToCart(product, modifiers, notes, box);
   };
 
   useEffect(() => {
@@ -381,7 +392,8 @@ export const PosTerminal: React.FC = () => {
         unitPricePKR: i.unitPricePKR,
         modifiersSummary: i.selectedModifiers?.map(m => m.name).join(', '),
         specialNotes: i.specialNotes,
-        station: i.station || 'MainKitchen'
+        station: i.station || 'MainKitchen',
+        saleUnit: i.saleUnit
       }))
     };
 
@@ -721,10 +733,14 @@ export const PosTerminal: React.FC = () => {
               </div>
             ) : (
               cart.map((item) => {
-                const catName = categories.find(c => c.id === products.find(p => p.id === item.productId)?.categoryId)?.name;
+                const product = products.find(p => p.id === item.productId);
+                const catName = categories.find(c => c.id === product?.categoryId)?.name;
+                // A medicine sold loose: box, strip or tablet, switched on the line itself.
+                const unitOptions = product && item.saleUnit ? saleUnitOptions(product) : [];
+                const lineUnits = item.quantity * (item.unitsPerSaleUnit ?? 1);
                 return (
                   <div
-                    key={item.productId + (item.specialNotes || '')}
+                    key={item.productId + (item.specialNotes || '') + (item.saleUnit || '')}
                     className="flex items-start gap-3"
                   >
                     <div className="w-10 h-10 rounded-lg bg-teal-50 flex items-center justify-center text-lg flex-shrink-0">
@@ -732,6 +748,30 @@ export const PosTerminal: React.FC = () => {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold text-slate-900 truncate">{item.productName}</p>
+                      {unitOptions.length > 1 && (
+                        <div className="flex items-center gap-1 mt-1" role="group" aria-label={`Sell ${item.productName} by`}>
+                          {unitOptions.map(opt => (
+                            <button
+                              key={opt.unit}
+                              aria-pressed={opt.unit === item.saleUnit}
+                              onClick={() => {
+                                if (opt.unit === item.saleUnit) return;
+                                const wanted = cartQtyOf(item.productId) - lineUnits + item.quantity * opt.units;
+                                if (expiryAllows(item.productId, item.productName, wanted, true)) {
+                                  setLineSaleUnit(item.productId, item.saleUnit, item.specialNotes, opt);
+                                }
+                              }}
+                              className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold transition ${
+                                opt.unit === item.saleUnit
+                                  ? 'bg-teal-500 border-teal-500 text-white'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:border-teal-300'
+                              }`}
+                            >
+                              {opt.label} <span className="font-normal opacity-80">{opt.price.toLocaleString()}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {item.selectedModifiers && item.selectedModifiers.length > 0 && (
                         <p className="text-xs text-slate-400 truncate">
                           {item.selectedModifiers.map(m => m.name).join(', ')}
@@ -756,7 +796,7 @@ export const PosTerminal: React.FC = () => {
                       </div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <button
-                          onClick={() => updateQuantity(item.productId, -1)}
+                          onClick={() => updateQuantity(item.productId, -1, item.saleUnit)}
                           className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-slate-600 hover:bg-slate-200 transition"
                         >
                           <Minus className="w-3 h-3" />
@@ -764,9 +804,11 @@ export const PosTerminal: React.FC = () => {
                         <span className="text-xs font-bold w-4 text-center text-slate-900">{item.quantity}</span>
                         <button
                           onClick={() => {
-                            const lines = cart.filter(i => i.productId === item.productId).length;
-                            if (expiryAllows(item.productId, item.productName, cartQtyOf(item.productId) + lines, true)) {
-                              updateQuantity(item.productId, 1);
+                            // Every line of this product in this unit goes up by one.
+                            const adding = cart.filter(i => i.productId === item.productId && i.saleUnit === item.saleUnit)
+                              .reduce((n, i) => n + (i.unitsPerSaleUnit ?? 1), 0);
+                            if (expiryAllows(item.productId, item.productName, cartQtyOf(item.productId) + adding, true)) {
+                              updateQuantity(item.productId, 1, item.saleUnit);
                             }
                           }}
                           className="w-6 h-6 rounded-full bg-teal-500 flex items-center justify-center text-white hover:bg-teal-600 transition"
@@ -777,9 +819,11 @@ export const PosTerminal: React.FC = () => {
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="text-sm font-bold text-slate-900">{item.totalPricePKR.toLocaleString()}</p>
-                      <p className="text-[10px] text-slate-400">{item.unitPricePKR} ea</p>
+                      <p className="text-[10px] text-slate-400">
+                        {item.unitPricePKR} {item.saleUnitLabel ? `/ ${item.saleUnitLabel.toLowerCase()}` : 'ea'}
+                      </p>
                       <button
-                        onClick={() => removeFromCart(item.productId)}
+                        onClick={() => removeFromCart(item.productId, item.saleUnit)}
                         className="mt-1 text-slate-400 hover:text-rose-500 p-0.5 transition"
                       >
                         <Trash2 className="w-3 h-3 ml-auto" />
@@ -1184,7 +1228,10 @@ export const PosTerminal: React.FC = () => {
           product={substitutesFor.product}
           reason={substitutesFor.reason}
           options={substitutesOf(substitutesFor.product)}
-          stockOf={(id) => ({ available: availableQty(id), nearestExpiry: expiryByProduct.get(id)?.nearestExpiry ?? null })}
+          stockOf={(id) => {
+            const left = availableQty(id);
+            return { available: left == null ? null : stockLabel(id, left), nearestExpiry: expiryByProduct.get(id)?.nearestExpiry ?? null };
+          }}
           onAdd={(sub) => {
             setSubstitutesFor(null);
             addProduct(sub);

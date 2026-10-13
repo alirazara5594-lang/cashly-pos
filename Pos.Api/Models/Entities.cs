@@ -496,6 +496,19 @@ public class Product
     public string? RackLocation { get; set; }
     public MedicineSchedule Schedule { get; set; } = MedicineSchedule.None;
 
+    // Packing, for a medicine sold loose (Services/MedicinePacking.cs). The prices above stay per box.
+    /// <summary>
+    /// How many of the smallest unit (tablet, capsule...) one box holds. Null: sold whole only, and
+    /// stock is counted in boxes. Set: stock is counted in the smallest unit, and it sells loose too.
+    /// </summary>
+    public int? PackUnits { get; set; }
+    /// <summary>How many of the smallest unit one strip holds, when the box comes in strips.</summary>
+    public int? StripUnits { get; set; }
+    /// <summary>The business's own price for one strip, when it is not worked out from the box price.</summary>
+    public decimal? StripPricePKR { get; set; }
+    /// <summary>The business's own price for one tablet (capsule...), when not worked out from the box price.</summary>
+    public decimal? LooseUnitPricePKR { get; set; }
+
     public ICollection<ProductModifier> Modifiers { get; set; } = new List<ProductModifier>();
     public ICollection<ProductRecipeItem> RecipeItems { get; set; } = new List<ProductRecipeItem>();
 }
@@ -689,6 +702,16 @@ public class OrderItem
     public string? ModifiersSummary { get; set; }
     public string? SpecialNotes { get; set; }
     public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
+
+    /// <summary>What one of <see cref="Quantity"/> is for a medicine sold loose: a box, a strip or one tablet.
+    /// Null for everything else.</summary>
+    public SaleUnit? SaleUnit { get; set; }
+    /// <summary>
+    /// How much of the product's stock one of <see cref="Quantity"/> takes: 30 for a box of 30 tablets,
+    /// 10 for a strip of 10, 1 for everything else. Kept with the sale so a later change to the
+    /// packing never changes what an old sale took or what its return puts back.
+    /// </summary>
+    public decimal UnitsPerSaleUnit { get; set; } = 1;
 
     /// <summary>
     /// Unit price the device actually charged, when it differs from the catalog price the server

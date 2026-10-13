@@ -99,6 +99,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 <div key={idx} className="grid grid-cols-12 text-[10px]">
                   <div className="col-span-6 font-semibold">
                     {item.productName}
+                    {/* A medicine sold loose: the quantity is boxes, strips or tablets. */}
+                    {item.saleUnitLabel && <span className="font-normal"> ({item.saleUnitLabel})</span>}
                     {item.specialNotes && <div className="text-[9px] text-gray-600 italic">*{item.specialNotes}</div>}
                   </div>
                   <div className="col-span-2 text-center">{item.quantity}</div>

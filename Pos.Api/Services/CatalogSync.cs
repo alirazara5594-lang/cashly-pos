@@ -48,10 +48,16 @@ namespace Pos.Api.Services;
 public sealed record CatalogCategoryDto(
     Guid Id, string Name, string? LocalName, string Icon, int SortOrder, bool IsSample);
 
+// A medicine's details and packing ride along (Models/PharmacyEntities.cs, Services/MedicinePacking.cs):
+// a pharmacy's till needs the formula to find substitutes and the packing to sell loose. They default
+// to empty so a snapshot from an older head office still reads.
 public sealed record CatalogProductDto(
     Guid Id, Guid CategoryId, string SKU, string Barcode, string Name, string? UrduName,
     string Description, decimal SellingPricePKR, string Unit,
-    string? ImageUrl, string Station, bool IsActive, bool IsSample);
+    string? ImageUrl, string Station, bool IsActive, bool IsSample,
+    string? GenericName = null, string? Strength = null, string? DosageForm = null, string? Manufacturer = null,
+    string? DrapRegistrationNo = null, string? RackLocation = null, string? Schedule = null,
+    int? PackUnits = null, int? StripUnits = null, decimal? StripPricePKR = null, decimal? LooseUnitPricePKR = null);
 
 public sealed record CatalogModifierDto(
     Guid Id, Guid ProductId, string Name, decimal PricePKR, Guid? IngredientId, decimal? IngredientQty);
@@ -126,7 +132,9 @@ public class CatalogBuilder
             Products: products.Select(p => new CatalogProductDto(
                 p.Id, p.CategoryId, p.SKU, p.Barcode, p.Name, p.UrduName, p.Description,
                 p.SellingPricePKR, p.Unit, p.ImageUrl,
-                p.Station.ToString(), p.IsActive, p.IsSample)).ToList(),
+                p.Station.ToString(), p.IsActive, p.IsSample,
+                p.GenericName, p.Strength, p.DosageForm, p.Manufacturer, p.DrapRegistrationNo, p.RackLocation,
+                p.Schedule.ToString(), p.PackUnits, p.StripUnits, p.StripPricePKR, p.LooseUnitPricePKR)).ToList(),
             Modifiers: modifiers.Select(m => new CatalogModifierDto(
                 m.Id, m.ProductId, m.Name, m.PricePKR, m.IngredientId, m.IngredientQty)).ToList(),
             BranchPrices: branchPrices.Select(b => new CatalogBranchPriceDto(
@@ -278,6 +286,9 @@ public class CatalogMirror
 
         int productsWritten = 0;
         var writtenProductIds = new HashSet<Guid>();
+        // Products head office has started (or stopped) counting in tablets: this host's own stock of
+        // them is converted with the rest of the snapshot, in one transaction.
+        var rebases = new List<(Guid ProductId, decimal Factor, bool NowPacked)>();
 
         foreach (var dto in snapshot.Products)
         {
@@ -322,6 +333,23 @@ public class CatalogMirror
             product.Station = ParseEnum(dto.Station, KitchenStation.MainKitchen);
             product.IsActive = dto.IsActive;
             product.IsSample = dto.IsSample;
+
+            product.GenericName = dto.GenericName;
+            product.Strength = dto.Strength;
+            product.DosageForm = dto.DosageForm;
+            product.Manufacturer = dto.Manufacturer;
+            product.DrapRegistrationNo = dto.DrapRegistrationNo;
+            product.RackLocation = dto.RackLocation;
+            product.Schedule = ParseEnum(dto.Schedule, MedicineSchedule.None);
+            var pack = dto.PackUnits is > 1 ? dto.PackUnits : null;
+            var strip = pack != null && MedicinePacking.Validate(pack, dto.StripUnits) == null && dto.StripUnits is > 1 ? dto.StripUnits : null;
+            var factor = MedicinePacking.RebaseFactor(product.PackUnits, pack);
+            if (factor != 1m && _db.Entry(product).State != EntityState.Added)
+                rebases.Add((product.Id, factor, pack != null));
+            product.PackUnits = pack;
+            product.StripUnits = strip;
+            product.StripPricePKR = dto.StripPricePKR;
+            product.LooseUnitPricePKR = dto.LooseUnitPricePKR;
             productsWritten++;
         }
 
@@ -462,7 +490,18 @@ public class CatalogMirror
                     _db.BranchProductPrices.Remove(local);
         }
 
-        await _db.SaveChangesAsync(ct);
+        if (rebases.Count == 0)
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        else
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            foreach (var (productId, factor, nowPacked) in rebases)
+                await MedicinePacking.RebaseStockAsync(_db, productId, factor, nowPacked);
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
 
         return new CatalogApplyResult(true, null, categoriesWritten, productsWritten,
             productsRetired, pricesWritten, reasons);

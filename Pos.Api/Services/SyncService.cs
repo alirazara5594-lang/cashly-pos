@@ -268,7 +268,9 @@ public class SyncService : ISyncService
                     {
                         i.Id, i.ProductId, i.ProductName, i.Quantity,
                         i.UnitPricePKR, i.TotalPricePKR, i.ModifiersSummary,
-                        i.DeviceReportedUnitPricePKR
+                        i.DeviceReportedUnitPricePKR,
+                        // A medicine sold loose: what one of the quantity was (box, strip, tablet).
+                        saleUnit = i.SaleUnit?.ToString(), i.UnitsPerSaleUnit
                     })
                 }).ToList();
                 return (records, rows[^1].CreatedAt, rows[^1].Id);

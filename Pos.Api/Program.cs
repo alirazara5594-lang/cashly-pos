@@ -1618,7 +1618,8 @@ using (var scope = app.Services.CreateScope())
         ("Add-on prices per unit", FixAddOnUnitPricesAsync),
         ("Plan prices follow the price list", SyncPlanPricesFromPackagesAsync),
         ("Batches and medicines", EnsureBatchSchemaAsync),
-        ("Existing batch numbers into batches", MoveBranchStockBatchesAsync)
+        ("Existing batch numbers into batches", MoveBranchStockBatchesAsync),
+        ("Medicine packing and loose sale", EnsurePackingSchemaAsync)
     })
     {
         try
@@ -1912,6 +1913,16 @@ static Task EnsureBatchSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRaw
 
     -- A return or a cancelled transfer finds the movements it reverses by their reference.
     CREATE INDEX IF NOT EXISTS ""IX_StockLedgerEntries_ReferenceId"" ON ""StockLedgerEntries"" (""ReferenceId"");
+");
+
+/// <summary>A medicine's packing, and what each sale line sold of it (Services/MedicinePacking.cs).</summary>
+static Task EnsurePackingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PackUnits"" integer NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""StripUnits"" integer NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""StripPricePKR"" numeric NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""LooseUnitPricePKR"" numeric NULL;
+    ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""SaleUnit"" integer NULL;
+    ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""UnitsPerSaleUnit"" numeric NOT NULL DEFAULT 1;
 ");
 
 /// <summary>
@@ -3273,6 +3284,36 @@ static void ApplyMedicineDetails(Product product, MedicineDetailsDto? medicine)
     product.DrapRegistrationNo = Clean(medicine.DrapRegistrationNo);
     product.RackLocation = Clean(medicine.RackLocation);
     if (medicine.Schedule.HasValue) product.Schedule = medicine.Schedule.Value;
+    product.StripPricePKR = medicine.StripPricePKR is > 0 ? medicine.StripPricePKR : null;
+    product.LooseUnitPricePKR = medicine.LooseUnitPricePKR is > 0 ? medicine.LooseUnitPricePKR : null;
+}
+
+/// <summary>
+/// A medicine's packing onto its product (Services/MedicinePacking.cs). When the unit its stock is
+/// counted in changes — boxes to tablets, the first time packing is set — every count of it changes
+/// with it, at every location. Taking packing off while any is in stock is refused: loose tablets
+/// cannot be counted as boxes. Returns the reason when refused. Run in the transaction that saves
+/// the product: the conversion writes straight away.
+/// </summary>
+static async Task<string?> ApplyPackingAsync(AppDbContext db, Product product, MedicineDetailsDto? medicine)
+{
+    if (medicine == null) return null;
+    var pack = medicine.PackUnits is > 1 ? medicine.PackUnits : null;
+    var strip = pack != null && medicine.StripUnits is > 1 ? medicine.StripUnits : null;
+    var invalid = Pos.Api.Services.MedicinePacking.Validate(medicine.PackUnits, medicine.StripUnits);
+    if (invalid != null) return invalid;
+
+    var factor = Pos.Api.Services.MedicinePacking.RebaseFactor(product.PackUnits, pack);
+    if (factor != 1m && db.Entry(product).State != EntityState.Added)
+    {
+        if (pack == null && await db.BranchStocks.AnyAsync(s => s.ProductId == product.Id && s.QuantityOnHand != 0))
+            return $"{product.Name} is counted in loose {Pos.Api.Services.MedicinePacking.LooseUnitName(product).ToLowerInvariant()}s. "
+                 + "Its packing can only be taken off once none of it is in stock.";
+        await Pos.Api.Services.MedicinePacking.RebaseStockAsync(db, product.Id, factor, nowPacked: pack != null);
+    }
+    product.PackUnits = pack;
+    product.StripUnits = strip;
+    return null;
 }
 
 /// <summary>One product's batches at one location: those saved, plus any added in this unit of work.</summary>
@@ -3453,9 +3494,10 @@ static void ApplyReceiptToAverageCost(BranchStock stock, decimal quantityIn, dec
         : Math.Round((stock.QuantityOnHand * stock.AverageCostPKR + quantityIn * unitCostPKR) / (stock.QuantityOnHand + quantityIn), 2);
 }
 
-/// <summary>What one unit of this location's stock cost: its own average, or the catalogue cost until it has one.</summary>
+/// <summary>What one unit of this location's stock cost: its own average, or the catalogue cost until it
+/// has one (per tablet for a medicine counted in tablets — the catalogue cost is per box).</summary>
 static decimal UnitCostOf(BranchStock stock, Product? product) =>
-    stock.AverageCostPKR > 0 ? stock.AverageCostPKR : product?.CostPricePKR ?? 0;
+    stock.AverageCostPKR > 0 ? stock.AverageCostPKR : product == null ? 0 : Pos.Api.Services.MedicinePacking.BaseCost(product);
 
 /// <summary>
 /// A location's own stock row for an ingredient that a document (transfer, purchase) names by some
@@ -3586,7 +3628,8 @@ static async Task ConsumeStockForSaleAsync(AppDbContext db, Order order, string 
     {
         if (!stock.TryGetValue(line.ProductId, out var row)) continue;
         var before = row.QuantityOnHand;
-        var sold = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleConsumption, -line.Quantity,
+        // A strip of a medicine counted in tablets takes ten tablets (OrderItem.UnitsPerSaleUnit).
+        var sold = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleConsumption, -(line.Quantity * line.UnitsPerSaleUnit),
             UnitCostOf(row, row.Product), "Order", order.Id, actor, $"Order {order.OrderNumber}");
         await ApplyBatchesAsync(db, sold);
         if (before >= 0 && row.QuantityOnHand < 0)
@@ -4043,7 +4086,11 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
         }
 
         // Base unit price is ALWAYS sourced from the database, never from the client payload.
-        var unitPrice = branchPricing && branchPrice?.SellingPricePKR is decimal ownPrice ? ownPrice : product.SellingPricePKR;
+        var boxPrice = branchPricing && branchPrice?.SellingPricePKR is decimal ownPrice ? ownPrice : product.SellingPricePKR;
+        // A medicine sold loose: the box, a strip or one tablet, each at its own price, and its name
+        // says which, so the receipt, a return and the reports all show it (Services/MedicinePacking.cs).
+        var saleUnit = Pos.Api.Services.MedicinePacking.Resolve(product, item.SaleUnit);
+        var unitPrice = Pos.Api.Services.MedicinePacking.PriceOf(product, boxPrice, saleUnit);
         var lineTotal = unitPrice * item.Quantity;
         subTotal += lineTotal;
 
@@ -4051,13 +4098,15 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
         {
             OrderId = orderId,
             ProductId = product.Id,
-            ProductName = product.Name,
+            ProductName = saleUnit == null ? product.Name : $"{product.Name} ({Pos.Api.Services.MedicinePacking.Label(product, saleUnit)})",
             Quantity = item.Quantity,
             UnitPricePKR = unitPrice,
             TotalPricePKR = lineTotal,
             ModifiersSummary = item.ModifiersSummary,
             SpecialNotes = item.SpecialNotes,
-            Station = product.Station
+            Station = product.Station,
+            SaleUnit = saleUnit,
+            UnitsPerSaleUnit = Pos.Api.Services.MedicinePacking.UnitsPer(product, saleUnit)
         });
     }
 
@@ -6587,12 +6636,14 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
         Unit = dto.Unit ?? "Piece", Station = dto.Station, ImageUrl = dto.ImageUrl, IsActive = true
     };
     ApplyMedicineDetails(product, dto.Medicine);
+    db.Products.Add(product);
+    var packingRefused = await ApplyPackingAsync(db, product, dto.Medicine);
+    if (packingRefused != null) return Results.BadRequest(new { message = packingRefused });
     if (dto.Modifiers != null)
     {
         foreach (var mod in dto.Modifiers)
             product.Modifiers.Add(new ProductModifier { Name = mod.Name, PricePKR = mod.PricePKR });
     }
-    db.Products.Add(product);
     await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "ProductCreated", "Product", product.Id, null, product.SellingPricePKR.ToString("0.##"));
     await db.SaveChangesAsync();
     return Results.Ok(product);
@@ -6609,6 +6660,7 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     if (product == null) return Results.NotFound();
 
     var oldPrice = product.SellingPricePKR;
+    var oldPacking = (product.PackUnits, product.StripUnits);
 
     product.Name = dto.Name ?? product.Name;
     product.UrduName = dto.UrduName ?? product.UrduName;
@@ -6619,14 +6671,27 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     product.Station = dto.Station;
     ApplyMedicineDetails(product, dto.Medicine);
 
+    // Setting packing the first time converts the stock already counted in boxes into tablets, at
+    // every location; that and the product's own change are saved together or not at all.
+    await using var tx = await db.Database.BeginTransactionAsync();
+    var packingRefused = await ApplyPackingAsync(db, product, dto.Medicine);
+    if (packingRefused != null) return Results.BadRequest(new { message = packingRefused });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
     if (oldPrice != product.SellingPricePKR)
     {
-        var currentUser = await accessor.GetCurrentUserAsync(http);
         await WriteAuditAsync(db, product.TenantId, currentUser, "PriceChanged", "Product", product.Id,
             oldValue: oldPrice.ToString("0.##"), newValue: product.SellingPricePKR.ToString("0.##"));
     }
+    if (oldPacking != (product.PackUnits, product.StripUnits))
+    {
+        static string Packing(int? pack, int? strip) => pack == null ? "sold whole" : strip == null ? $"box of {pack}" : $"box of {pack} in strips of {strip}";
+        await WriteAuditAsync(db, product.TenantId, currentUser, "PackingChanged", "Product", product.Id,
+            oldValue: Packing(oldPacking.PackUnits, oldPacking.StripUnits), newValue: Packing(product.PackUnits, product.StripUnits));
+    }
 
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(product);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu prices."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
@@ -6946,7 +7011,7 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
             .ToDictionaryAsync(s => s.ProductId);
         foreach (var line in order.Items.GroupBy(i => i.ProductId))
         {
-            var requested = line.Sum(i => i.Quantity);
+            var requested = line.Sum(i => i.Quantity * i.UnitsPerSaleUnit);
             if (stockDict.TryGetValue(line.Key, out var stock) && stock.QuantityOnHand < requested)
                 return (Results.Conflict(new { message = $"Insufficient stock for {line.First().ProductName}. Available: {stock.QuantityOnHand}, Requested: {requested}" }), null, null);
         }
@@ -7422,7 +7487,7 @@ api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.A
     {
         if (stockDict.TryGetValue(item.ProductId, out var stock))
         {
-            var returned = RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity,
+            var returned = RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity * item.UnitsPerSaleUnit,
                 UnitCostOf(stock, stock.Product), "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
             await ApplyBatchesAsync(db, returned, restoreFrom: ("Order", order.Id));
         }
@@ -7618,10 +7683,12 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         {
             if (!stock.TryGetValue(line.ProductId, out var row)) continue;
             var unitCost = soldAt.FirstOrDefault(s => s.ProductId == line.ProductId)?.UnitCost ?? UnitCostOf(row, row.Product);
-            var backOnShelf = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleReturn, line.Quantity, unitCost,
+            // A returned strip puts its ten tablets back (the line sold strips; the shelf counts tablets).
+            var units = line.Quantity * (order.Items.FirstOrDefault(i => i.Id == line.OrderItemId)?.UnitsPerSaleUnit ?? 1);
+            var backOnShelf = RecordProductStockMovement(db, row, order.TenantId, StockMovementType.SaleReturn, units, unitCost,
                 "OrderReturn", ret.Id, ret.CreatedBy, $"Return {ret.ReturnNumber} of order {order.OrderNumber}");
             await ApplyBatchesAsync(db, backOnShelf, restoreFrom: ("Order", order.Id));
-            restockedCost += line.Quantity * unitCost;
+            restockedCost += units * unitCost;
         }
     }
 
@@ -9011,6 +9078,9 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
     rows.AddRange(stocks.Select(s => (object)new
     {
         id = s.Id.ToString(), branchId = s.BranchId, productId = s.ProductId,
+        // A medicine counted in tablets: the screen shows its count as boxes and loose tablets.
+        packUnits = s.Product != null && Pos.Api.Services.MedicinePacking.IsPacked(s.Product) ? s.Product.PackUnits : null,
+        looseUnitName = s.Product != null && Pos.Api.Services.MedicinePacking.IsPacked(s.Product) ? Pos.Api.Services.MedicinePacking.LooseUnitName(s.Product) : null,
         batchCount = batchPicture.TryGetValue(s.ProductId, out var bp) ? bp.count : 0,
         nearestExpiry = bp?.nearestExpiry,
         expiredQty = bp?.expiredQty ?? 0m,
@@ -9028,8 +9098,10 @@ api.MapGet("/inventory", async (AppDbContext db, HttpContext http, Guid branchId
     rows.AddRange(untracked.Select(p => (object)new
     {
         id = $"untracked-{p.Id}", branchId, productId = p.Id,
+        packUnits = Pos.Api.Services.MedicinePacking.IsPacked(p) ? p.PackUnits : null,
+        looseUnitName = Pos.Api.Services.MedicinePacking.IsPacked(p) ? Pos.Api.Services.MedicinePacking.LooseUnitName(p) : null,
         productName = p.Name, sku = p.SKU, barcode = p.Barcode, categoryName = p.Category?.Name ?? "General",
-        unit = p.Unit, costPricePKR = p.CostPricePKR, sellingPricePKR = p.SellingPricePKR, quantityOnHand = 0m,
+        unit = p.Unit, costPricePKR = Pos.Api.Services.MedicinePacking.BaseCost(p), sellingPricePKR = p.SellingPricePKR, quantityOnHand = 0m,
         minAlertLevel = 0m, batchNumber = (string?)null, expiryDate = (string?)null, isLowStock = false,
         isTracked = false
     }));
@@ -9045,12 +9117,14 @@ api.MapGet("/inventory/batches", async (AppDbContext db, HttpContext http, Guid 
     var today = BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId!.Value));
     var batches = await db.StockBatches
         .Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0 && (productId == null || b.ProductId == productId))
-        .Join(db.Products, b => b.ProductId, p => p.Id, (b, p) => new { b, p.Name })
+        .Join(db.Products, b => b.ProductId, p => p.Id, (b, p) => new { b, p.Name, p.PackUnits, p.DosageForm })
         .OrderBy(x => x.b.ExpiryDate == null).ThenBy(x => x.b.ExpiryDate).ThenBy(x => x.Name)
         .ToListAsync();
     return Results.Ok(batches.Select(x => new
     {
         id = x.b.Id, productId = x.b.ProductId, productName = x.Name, batchNumber = x.b.BatchNumber,
+        packUnits = x.PackUnits is > 1 ? x.PackUnits : null,
+        looseUnitName = x.PackUnits is > 1 ? Pos.Api.Services.MedicinePacking.LooseUnitName(x.DosageForm) : null,
         expiryDate = x.b.ExpiryDate?.ToString("yyyy-MM-dd"),
         daysToExpiry = x.b.ExpiryDate.HasValue ? (int?)(x.b.ExpiryDate.Value.Date - today).TotalDays : null,
         quantityOnHand = x.b.QuantityOnHand, quantityReceived = x.b.QuantityReceived,
@@ -9129,18 +9203,22 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
     // The receipt's cost goes into THIS location's average cost. It used to overwrite the product's
     // company-wide cost, so one branch buying at a new price rewrote every branch's margins. A bonus
     // (10 + 1) arrives free: more units for the same money, so each unit costs less.
-    var paidUnitCost = dto.CostPricePKR is > 0 ? dto.CostPricePKR.Value : UnitCostOf(stock, product);
+    // A medicine counted in tablets is received in boxes, at a cost per box: 5 boxes of 30 put 150
+    // tablets on the shelf, each costing a thirtieth of the box (Services/MedicinePacking.cs).
+    var perBox = Pos.Api.Services.MedicinePacking.UnitsPerBox(product);
+    var paidUnitCost = dto.CostPricePKR is > 0 ? dto.CostPricePKR.Value : UnitCostOf(stock, product) * perBox;
     var bonusUnits = dto.BonusQuantity ?? 0;
-    var unitsIn = dto.Quantity + bonusUnits;
+    var unitsIn = (dto.Quantity + bonusUnits) * perBox;
     var unitCost = Math.Round(dto.Quantity * paidUnitCost / unitsIn, 4);
     ApplyReceiptToAverageCost(stock, unitsIn, unitCost);
-    if (product.CostPricePKR <= 0 && unitCost > 0) product.CostPricePKR = unitCost; // a first cost for a product that had none
+    if (product.CostPricePKR <= 0 && unitCost > 0) product.CostPricePKR = unitCost * perBox; // a first cost for a product that had none
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
     var receivedNote = string.IsNullOrWhiteSpace(dto.SupplierName) ? "Stock received" : $"Stock received from {dto.SupplierName}";
+    var boxesNote = perBox > 1 ? $"{dto.Quantity + bonusUnits:0.##} box(es) of {perBox}" : null;
     var movement = RecordProductStockMovement(db, stock, scopedTenantId.Value, StockMovementType.PurchaseReceipt, unitsIn, unitCost,
         "StockIn", null, currentUser?.FullName ?? "System",
-        bonusUnits > 0 ? $"{receivedNote} (incl. {bonusUnits:0.##} bonus)" : receivedNote);
+        string.Join(", ", new[] { receivedNote, boxesNote, bonusUnits > 0 ? $"incl. {bonusUnits:0.##} bonus" : null }.Where(s => s != null)));
     await ApplyBatchesAsync(db, movement, new BatchIn(dto.BatchNumber, dto.ExpiryDate, dto.RetailPricePKR, dto.SupplierName));
     await db.SaveChangesAsync();
 
@@ -9163,7 +9241,10 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
         }
     }
 
-    return Results.Ok(new { message = $"Received {unitsIn:0.##} units", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand, averageCostPKR = stock.AverageCostPKR });
+    var receivedWhat = perBox > 1
+        ? $"{dto.Quantity + bonusUnits:0.##} box(es), {unitsIn:0.##} {Pos.Api.Services.MedicinePacking.LooseUnitName(product).ToLowerInvariant()}s"
+        : $"{unitsIn:0.##} units";
+    return Results.Ok(new { message = $"Received {receivedWhat}", productId = dto.ProductId, newQuantityOnHand = stock.QuantityOnHand, averageCostPKR = stock.AverageCostPKR });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasInventoryManagement)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock."));
 
@@ -9776,8 +9857,9 @@ api.MapGet("/reports/item-performance", async (AppDbContext db, HttpContext http
     var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
     var items = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
-    return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", CostPrice = i.Product?.CostPricePKR ?? 0 })
-        .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.CostPrice * qty; var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
+    // Cost per unit of stock (a tablet, for a medicine sold loose) times the stock each line took.
+    return Results.Ok(items.GroupBy(i => new { i.ProductId, i.ProductName, CategoryName = i.Product?.Category?.Name ?? "General", UnitCost = i.Product == null ? 0 : Pos.Api.Services.MedicinePacking.BaseCost(i.Product) })
+        .Select(g => { var qty = g.Sum(x => x.Quantity); var rev = g.Sum(x => x.TotalPricePKR); var cost = g.Key.UnitCost * g.Sum(x => x.Quantity * x.UnitsPerSaleUnit); var gp = rev - cost; return new { productId = g.Key.ProductId.ToString(), productName = g.Key.ProductName, categoryName = g.Key.CategoryName, quantitySold = qty, revenuePKR = rev, costPKR = cost, grossProfitPKR = gp, marginPercent = rev > 0 ? Math.Round((gp / rev) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.revenuePKR).Take(25).ToList());
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasAdvancedReports)));
@@ -9874,7 +9956,9 @@ api.MapGet("/reports/consolidated", async (AppDbContext db, HttpContext http, Gu
     {
         var bOrders = orders.Where(o => o.BranchId == b.Id).ToList();
         var bGross = bOrders.Sum(o => o.TotalPKR);
-        var bCost = bOrders.SelectMany(o => o.Items).Sum(i => (i.Product?.CostPricePKR ?? (i.UnitPricePKR * 0.45m)) * i.Quantity);
+        var bCost = bOrders.SelectMany(o => o.Items).Sum(i => i.Product != null
+            ? Pos.Api.Services.MedicinePacking.BaseCost(i.Product) * i.Quantity * i.UnitsPerSaleUnit
+            : i.UnitPricePKR * 0.45m * i.Quantity);
         var bProfit = bGross - bOrders.Sum(o => o.TaxPKR) - bCost;
         return new { branchId = b.Id, branchName = b.Name, branchCode = b.Code, city = b.City, isHeadOffice = b.IsHeadOffice, orderCount = bOrders.Count, grossSalesPKR = bGross, taxCollectedPKR = bOrders.Sum(o => o.TaxPKR), estimatedCostPKR = Math.Round(bCost, 2), netProfitPKR = Math.Round(bProfit, 2), profitMarginPercent = bGross > 0 ? Math.Round((bProfit / bGross) * 100, 1) : 0 };
     }).OrderByDescending(x => x.grossSalesPKR).ToList();
@@ -9947,11 +10031,13 @@ api.MapPost("/transfers", async (AppDbContext db, HttpContext http, CreateTransf
             var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.TenantId == scopedTenantId.Value);
             if (product == null) return Results.BadRequest(new { message = "One of those products does not belong to this business." });
             var sourceStock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == dto.SourceBranchId && s.ProductId == productId);
-            var productCost = sourceStock == null ? product.CostPricePKR : UnitCostOf(sourceStock, product);
+            var productCost = sourceStock == null ? Pos.Api.Services.MedicinePacking.BaseCost(product) : UnitCostOf(sourceStock, product);
             totalEstCost += item.QuantityRequested * productCost;
             order.Items.Add(new StockTransferItem
             {
-                TransferOrderId = order.Id, ProductId = productId, IngredientName = product.Name, Unit = product.Unit,
+                // A medicine counted in tablets moves in tablets, like its count.
+                TransferOrderId = order.Id, ProductId = productId, IngredientName = product.Name,
+                Unit = Pos.Api.Services.MedicinePacking.IsPacked(product) ? Pos.Api.Services.MedicinePacking.LooseUnitName(product) : product.Unit,
                 QuantityRequested = item.QuantityRequested, UnitCostPKR = productCost
             });
             continue;
@@ -10392,6 +10478,8 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     }
 
     var receivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
+    var poProductIds = productItems.Select(i => i.ProductId!.Value).Distinct().ToList();
+    var poProducts = await db.Products.Where(p => poProductIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id);
     foreach (var item in po.Items)
     {
         // Goods bought to resell go onto this location's shelf, at this location's cost.
@@ -10404,10 +10492,12 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
                 db.BranchStocks.Add(stock);
             }
             // A distributor's bonus (10 + 1) arrives free: more units for the same money, so each costs less.
+            // A medicine counted in tablets is ordered in boxes: each box puts its tablets on the shelf.
+            var perBox = poProducts.TryGetValue(productId, out var poProduct) ? Pos.Api.Services.MedicinePacking.UnitsPerBox(poProduct) : 1;
             var receivedLine = dto.Lines?.FirstOrDefault(l => l.ItemId == item.Id);
             var bonus = Math.Max(0, receivedLine?.BonusQuantity ?? 0);
-            var unitsIn = item.Quantity + bonus;
-            var costEach = unitsIn > 0 ? Math.Round(item.Quantity * item.UnitCostPKR / unitsIn, 4) : item.UnitCostPKR;
+            var unitsIn = (item.Quantity + bonus) * perBox;
+            var costEach = unitsIn > 0 ? Math.Round(item.Quantity * item.UnitCostPKR / unitsIn, 4) : item.UnitCostPKR / perBox;
             ApplyReceiptToAverageCost(stock, unitsIn, costEach);
             var poReceipt = RecordProductStockMovement(db, stock, po.TenantId, StockMovementType.PurchaseReceipt, unitsIn, costEach,
                 "PurchaseOrder", po.Id, receivedBy, bonus > 0 ? $"PO {po.PONumber} (incl. {bonus:0.##} bonus)" : $"PO {po.PONumber}");
@@ -17210,7 +17300,8 @@ public record SaveRegionDto(string? Name, string? Code);
 /// Both are optional so the ordinary online checkout path is unchanged.
 /// </summary>
 public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null, string? ClientLocalId = null, DateTime? CapturedAt = null);
-public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station);
+public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantity, decimal UnitPricePKR, string? ModifiersSummary, string? SpecialNotes, KitchenStation Station,
+    SaleUnit? SaleUnit = null);
 public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
 public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
@@ -17229,7 +17320,8 @@ public record BatchIn(string? BatchNumber, DateTime? ExpiryDate, decimal? Retail
 public record ReceivePOLineDto(Guid ItemId, string? BatchNumber, DateTime? ExpiryDate, decimal? BonusQuantity = null, decimal? RetailPricePKR = null);
 /// <summary>A medicine's details on its product (Models/PharmacyEntities.cs).</summary>
 public record MedicineDetailsDto(string? GenericName, string? Strength, string? DosageForm, string? Manufacturer,
-    string? DrapRegistrationNo, string? RackLocation, MedicineSchedule? Schedule);
+    string? DrapRegistrationNo, string? RackLocation, MedicineSchedule? Schedule,
+    int? PackUnits = null, int? StripUnits = null, decimal? StripPricePKR = null, decimal? LooseUnitPricePKR = null);
 public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
 public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal QuantityReceived, decimal? NewCostPerUnitPKR, string? SupplierName);
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);

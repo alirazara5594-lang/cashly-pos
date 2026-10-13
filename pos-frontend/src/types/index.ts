@@ -421,10 +421,21 @@ export interface Product {
   drapRegistrationNo?: string | null;
   rackLocation?: string | null;
   schedule?: MedicineSchedule;
+  // Packing, for a medicine sold loose (utils/medicine.ts). Prices and cost above stay per box.
+  /** How many tablets (capsules...) one box holds. Set: stock is counted in tablets and sells loose. */
+  packUnits?: number | null;
+  /** How many tablets one strip holds, when the box comes in strips. */
+  stripUnits?: number | null;
+  /** The business's own strip / tablet price, when not worked out from the box price. */
+  stripPricePKR?: number | null;
+  looseUnitPricePKR?: number | null;
 }
 
 /** How a medicine may be sold; 'None' means the product is not a medicine. */
 export type MedicineSchedule = 'None' | 'OverTheCounter' | 'Prescription' | 'Controlled';
+
+/** What one of a cart line's quantity is, for a medicine sold loose. */
+export type SaleUnit = 'Pack' | 'Strip' | 'Unit';
 
 export interface MedicineDetails {
   genericName?: string;
@@ -434,6 +445,10 @@ export interface MedicineDetails {
   drapRegistrationNo?: string;
   rackLocation?: string;
   schedule?: MedicineSchedule;
+  packUnits?: number;
+  stripUnits?: number;
+  stripPricePKR?: number;
+  looseUnitPricePKR?: number;
 }
 
 /** Stock of one product received under one batch number and expiry date. */
@@ -451,6 +466,9 @@ export interface StockBatch {
   retailPricePKR: number | null;
   supplierName: string | null;
   receivedAt: string;
+  /** Set for a medicine counted in tablets: its quantities are tablets, shown as boxes + loose. */
+  packUnits?: number | null;
+  looseUnitName?: string | null;
 }
 
 /** What the till knows about a product's batches at this location. */
@@ -481,6 +499,12 @@ export interface CartItem {
   specialNotes?: string;
   station: KitchenStation;
   product?: Product;
+  /** A medicine sold loose: the box, a strip or one tablet. Absent for everything else. */
+  saleUnit?: SaleUnit;
+  /** How many tablets one of the quantity takes from stock (30 for a box of 30). 1 when absent. */
+  unitsPerSaleUnit?: number;
+  /** "Box", "Strip", "Tablet" — for the cart and the receipt. */
+  saleUnitLabel?: string;
 }
 
 
@@ -782,6 +806,9 @@ export interface BranchStockItem {
   /** False for a product this branch has never received or counted: it sells without a count
    *  until Stock In or Adjust creates one. */
   isTracked?: boolean;
+  /** Set for a medicine counted in tablets: quantities and cost are per tablet; it is received in boxes. */
+  packUnits?: number | null;
+  looseUnitName?: string | null;
 }
 
 export interface ZReportSummary {

@@ -17,8 +17,11 @@ import type {
   PermissionAction,
   UserRole,
   EffectivePackageFeatures,
-  MyPackageInfo
+  MyPackageInfo,
+  SaleUnit,
+  ProductModifier
 } from '../types';
+import type { SaleUnitOption } from '../utils/medicine';
 
 import { offlineDb, saveSetting, getSetting } from '../services/offlineDb';
 import { posApi } from '../services/api';
@@ -297,9 +300,13 @@ interface PosState {
   autoSyncOnReconnect: () => Promise<number>;
   
   // Cart Actions
-  addToCart: (product: Product, modifiers?: any[], notes?: string) => void;
-  removeFromCart: (productId: string) => void;
-  updateQuantity: (productId: string, delta: number) => void;
+  /** `unit`: a medicine sold loose — the box, a strip or a tablet, at its own price (utils/medicine.ts). */
+  addToCart: (product: Product, modifiers?: ProductModifier[], notes?: string, unit?: SaleUnitOption) => void;
+  /** Lines of the product sold in `saleUnit` (none for a product that is not sold loose). */
+  removeFromCart: (productId: string, saleUnit?: SaleUnit) => void;
+  updateQuantity: (productId: string, delta: number, saleUnit?: SaleUnit) => void;
+  /** Sells a line of a medicine by another unit (box to strip...), merging with a line already in it. */
+  setLineSaleUnit: (productId: string, from: SaleUnit | undefined, notes: string | undefined, to: SaleUnitOption) => void;
   setOrderType: (type: OrderType) => void;
   setSelectedTable: (table?: string) => void;
   setCustomerInfo: (info: { name?: string; phone?: string; address?: string }) => void;
@@ -535,11 +542,11 @@ export const usePosStore = create<PosState>((set, get) => ({
   setIsOnline: (online) => set({ isOnline: online }),
   setOfflinePendingCount: (count) => set({ offlinePendingCount: count }),
 
-  addToCart: (product, modifiers = [], notes = '') => {
+  addToCart: (product, modifiers = [], notes = '', unit) => {
     const { cart } = get();
-    const existingIndex = cart.findIndex(i => i.productId === product.id && i.specialNotes === notes);
+    const existingIndex = cart.findIndex(i => i.productId === product.id && i.specialNotes === notes && i.saleUnit === unit?.unit);
     const modifiersTotal = modifiers.reduce((acc, m) => acc + (m.pricePKR || 0), 0);
-    const itemUnitPrice = product.sellingPricePKR + modifiersTotal;
+    const itemUnitPrice = (unit ? unit.price : product.sellingPricePKR) + modifiersTotal;
 
     if (existingIndex > -1) {
       const updated = [...cart];
@@ -555,20 +562,40 @@ export const usePosStore = create<PosState>((set, get) => ({
         totalPricePKR: itemUnitPrice,
         selectedModifiers: modifiers,
         specialNotes: notes,
-        station: product.station
+        station: product.station,
+        ...(unit && { saleUnit: unit.unit, unitsPerSaleUnit: unit.units, saleUnitLabel: unit.label })
       };
       set({ cart: [...cart, newItem] });
     }
   },
 
-  removeFromCart: (productId) => {
-    set({ cart: get().cart.filter(i => i.productId !== productId) });
+  removeFromCart: (productId, saleUnit) => {
+    set({ cart: get().cart.filter(i => !(i.productId === productId && i.saleUnit === saleUnit)) });
   },
 
-  updateQuantity: (productId, delta) => {
+  setLineSaleUnit: (productId, from, notes, to) => {
+    const { cart } = get();
+    const line = cart.find(i => i.productId === productId && i.saleUnit === from && i.specialNotes === notes);
+    if (!line || from === to.unit) return;
+    const price = to.price + (line.selectedModifiers ?? []).reduce((acc, m) => acc + (m.pricePKR || 0), 0);
+    const switched: CartItem = {
+      ...line, saleUnit: to.unit, unitsPerSaleUnit: to.units, saleUnitLabel: to.label,
+      unitPricePKR: price, totalPricePKR: line.quantity * price
+    };
+    const into = cart.find(i => i !== line && i.productId === productId && i.saleUnit === to.unit && i.specialNotes === notes);
+    set({
+      cart: into
+        ? cart.filter(i => i !== line).map(i => i === into
+            ? { ...i, quantity: i.quantity + line.quantity, totalPricePKR: (i.quantity + line.quantity) * i.unitPricePKR }
+            : i)
+        : cart.map(i => (i === line ? switched : i))
+    });
+  },
+
+  updateQuantity: (productId, delta, saleUnit) => {
     const { cart } = get();
     const updated = cart.map(i => {
-      if (i.productId === productId) {
+      if (i.productId === productId && i.saleUnit === saleUnit) {
         const newQty = Math.max(1, i.quantity + delta);
         return {
           ...i,

@@ -22,6 +22,7 @@ import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { toUrdu } from '../utils/urduTransliterate';
+import { isPacked, looseUnitName, saleUnitOptions } from '../utils/medicine';
 import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo, MedicineDetails, MedicineSchedule } from '../types';
 
 /** Mirrors CreateProductDto on the server. */
@@ -42,9 +43,10 @@ interface ProductForm {
   medicine: Required<MedicineDetails>;
 }
 
+// Packing and own loose prices: 0 means not set (sold whole only / worked out from the box price).
 const EMPTY_MEDICINE: Required<MedicineDetails> = {
   genericName: '', strength: '', dosageForm: '', manufacturer: '', drapRegistrationNo: '', rackLocation: '',
-  schedule: 'OverTheCounter'
+  schedule: 'OverTheCounter', packUnits: 0, stripUnits: 0, stripPricePKR: 0, looseUnitPricePKR: 0
 };
 
 const EMPTY_PRODUCT_FORM: ProductForm = {
@@ -358,6 +360,29 @@ export const MenuManagement: React.FC = () => {
   // ── Products ───────────────────────────────────────────────────────────
   const setProdField = <K extends keyof ProductForm>(key: K, value: ProductForm[K]) =>
     setProdForm(prev => ({ ...prev, [key]: value }));
+  const setMedicineField = <K extends keyof MedicineDetails>(key: K, value: Required<MedicineDetails>[K]) =>
+    setProdForm(prev => ({ ...prev, medicine: { ...prev.medicine, [key]: value } }));
+
+  // The packing being entered, priced the way the till will price it (utils/medicine.ts): with the
+  // business's own loose prices, and without them for the placeholders.
+  const packingOf = (ownPrices: boolean) => ({
+    sellingPricePKR: prodForm.sellingPricePKR, dosageForm: prodForm.medicine.dosageForm,
+    packUnits: prodForm.medicine.packUnits, stripUnits: prodForm.medicine.stripUnits,
+    stripPricePKR: ownPrices ? prodForm.medicine.stripPricePKR : 0,
+    looseUnitPricePKR: ownPrices ? prodForm.medicine.looseUnitPricePKR : 0
+  } as Product);
+  const looseName = looseUnitName(prodForm.medicine.dosageForm).toLowerCase();
+  const packingPreview = saleUnitOptions(packingOf(true));
+  const derivedPrice = (unit: 'Strip' | 'Unit') => saleUnitOptions(packingOf(false)).find(o => o.unit === unit)?.price;
+  /** What saving does to stock already received, when the packing changes how stock is counted. */
+  const packingNote = !editingProduct ? null
+    : !isPacked(editingProduct) && prodForm.medicine.packUnits > 1
+      ? `Any stock of this already received is counted in boxes. Saving converts it at every location: each box becomes ${prodForm.medicine.packUnits} ${looseName}s, with its cost.`
+    : isPacked(editingProduct) && !(prodForm.medicine.packUnits > 1)
+      ? `Packing can only be taken off once none of this is in stock: loose ${looseName}s cannot be counted as boxes.`
+    : isPacked(editingProduct) && prodForm.medicine.packUnits !== editingProduct.packUnits
+      ? `Stock stays counted in ${looseName}s. Only what a box holds changes, for stock received and sold from now on.`
+    : null;
 
   /** Typing the English name drafts the Urdu one alongside it, until the user takes over. */
   const handleNameChange = (value: string) =>
@@ -407,7 +432,9 @@ export const MenuManagement: React.FC = () => {
         genericName: product.genericName || '', strength: product.strength || '', dosageForm: product.dosageForm || '',
         manufacturer: product.manufacturer || '', drapRegistrationNo: product.drapRegistrationNo || '',
         rackLocation: product.rackLocation || '',
-        schedule: product.schedule && product.schedule !== 'None' ? product.schedule : 'OverTheCounter'
+        schedule: product.schedule && product.schedule !== 'None' ? product.schedule : 'OverTheCounter',
+        packUnits: product.packUnits ?? 0, stripUnits: product.stripUnits ?? 0,
+        stripPricePKR: product.stripPricePKR ?? 0, looseUnitPricePKR: product.looseUnitPricePKR ?? 0
       }
     });
     setShowProductModal(true);
@@ -1290,7 +1317,7 @@ export const MenuManagement: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
-                    Cost Price <span className="text-slate-400 normal-case">(PKR)</span>
+                    Cost Price <span className="text-slate-400 normal-case">(PKR{medicines && prodForm.medicine.packUnits > 1 ? ', per box' : ''})</span>
                   </label>
                   <input
                     type="number"
@@ -1303,6 +1330,7 @@ export const MenuManagement: React.FC = () => {
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
                     Selling Price <span className="text-rose-500">*</span>
+                    {medicines && prodForm.medicine.packUnits > 1 && <span className="text-slate-400 normal-case"> (per box)</span>}
                   </label>
                   <input
                     type="number"
@@ -1462,6 +1490,89 @@ export const MenuManagement: React.FC = () => {
                           ? 'Each sale will need a prescription, the patient\'s CNIC and the doctor\'s registration, and goes into the controlled-medicine register.'
                           : 'Each sale will need a prescription recorded with it.'}
                       </p>
+                    )}
+                  </div>
+
+                  {/* Packing: a box sold whole, by the strip or by the tablet. Stock of a packed
+                      medicine is counted in tablets; it is still bought and received in boxes. */}
+                  <div className="sm:col-span-2 space-y-2">
+                    <label className="block text-xs font-semibold text-slate-500">
+                      Packing <span className="font-normal text-slate-400">— to sell by the strip or the {looseName}</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label htmlFor="pack-units" className="block text-[11px] text-slate-500 mb-1 capitalize">{looseName}s in one box</label>
+                        <input
+                          id="pack-units"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={prodForm.medicine.packUnits || ''}
+                          onChange={(e) => setMedicineField('packUnits', Math.max(0, Math.floor(Number(e.target.value))))}
+                          placeholder="Blank: sold whole only"
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="strip-units" className="block text-[11px] text-slate-500 mb-1">
+                          In strips of <span className="text-slate-400">(optional)</span>
+                        </label>
+                        <input
+                          id="strip-units"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={prodForm.medicine.stripUnits || ''}
+                          onChange={(e) => setMedicineField('stripUnits', Math.max(0, Math.floor(Number(e.target.value))))}
+                          disabled={!(prodForm.medicine.packUnits > 1)}
+                          placeholder="e.g. 10"
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
+                    </div>
+                    {packingPreview.length > 0 && (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          {packingPreview.some(o => o.unit === 'Strip') ? (
+                            <div>
+                              <label htmlFor="strip-price" className="block text-[11px] text-slate-500 mb-1">
+                                Own strip price <span className="text-slate-400">(optional)</span>
+                              </label>
+                              <input
+                                id="strip-price"
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={prodForm.medicine.stripPricePKR || ''}
+                                onChange={(e) => setMedicineField('stripPricePKR', Math.max(0, Number(e.target.value)))}
+                                placeholder={`${derivedPrice('Strip')?.toLocaleString() ?? ''} from the box price`}
+                                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                              />
+                            </div>
+                          ) : <div />}
+                          <div>
+                            <label htmlFor="loose-price" className="block text-[11px] text-slate-500 mb-1">
+                              Own {looseName} price <span className="text-slate-400">(optional)</span>
+                            </label>
+                            <input
+                              id="loose-price"
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={prodForm.medicine.looseUnitPricePKR || ''}
+                              onChange={(e) => setMedicineField('looseUnitPricePKR', Math.max(0, Number(e.target.value)))}
+                              placeholder={`${derivedPrice('Unit')?.toLocaleString() ?? ''} from the box price`}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          Sells as {packingPreview.map(o => `${o.label} Rs ${o.price.toLocaleString()}`).join(' · ')}
+                        </p>
+                      </>
+                    )}
+                    {packingNote && (
+                      <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">{packingNote}</p>
                     )}
                   </div>
                 </div>
