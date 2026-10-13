@@ -474,6 +474,91 @@ export interface ControlledRegisterRow {
   by: string;
 }
 
+// --- Pharmacy reports (pages/PharmacyReports.tsx). Quantities are in the medicine's stock unit
+// (tablets, for a medicine sold loose — packUnits says how many make a box). ---
+
+/** A batch expired or expiring soon. */
+export interface ExpiryReportRow {
+  batchId: string;
+  productId: string;
+  productName: string;
+  strength: string | null;
+  manufacturer: string | null;
+  packUnits: number | null;
+  looseUnitName: string | null;
+  batchNumber: string;
+  expiryDate: string;
+  /** Negative once expired. */
+  daysToExpiry: number;
+  quantity: number;
+  costValuePKR: number;
+  retailValuePKR: number;
+  supplierName: string | null;
+}
+
+/** Stock returned to a distributor or written off. */
+export interface StockRemovalRow {
+  id: string;
+  at: string;
+  kind: string;
+  productId: string;
+  productName: string;
+  strength: string | null;
+  manufacturer: string | null;
+  packUnits: number | null;
+  looseUnitName: string | null;
+  batchNumber: string | null;
+  expiryDate: string | null;
+  quantity: number;
+  valuePKR: number;
+  notes: string | null;
+  by: string;
+}
+
+export interface PrescriptionSaleRow {
+  prescriptionId: string;
+  orderId: string;
+  orderNumber: string;
+  at: string;
+  cancelled: boolean;
+  totalPKR: number;
+  patientName: string;
+  patientPhone: string | null;
+  patientCnic: string | null;
+  doctorName: string;
+  doctorRegistrationNo: string | null;
+  prescribedOn: string;
+  hasPhoto: boolean;
+  controlled: boolean;
+  medicines: { name: string; quantity: number; controlled: boolean }[];
+}
+
+export interface SlowMoverRow {
+  productId: string;
+  productName: string;
+  strength: string | null;
+  manufacturer: string | null;
+  packUnits: number | null;
+  looseUnitName: string | null;
+  quantityOnHand: number;
+  stockValuePKR: number;
+  unitsSold: number;
+  lastSoldAt: string | null;
+  daysSinceLastSale: number | null;
+  /** How many days the stock would last at the pace it sold; null when it did not sell. */
+  daysOfStock: number | null;
+}
+
+export interface CompanyMarginRow {
+  /** Null for products with no company entered. */
+  company: string | null;
+  products: number;
+  revenuePKR: number;
+  costPKR: number;
+  profitPKR: number;
+  marginPercent: number;
+}
+
 export interface ControlledRegister {
   productId: string;
   productName: string;
@@ -1215,7 +1300,7 @@ export interface Supplier {
 
 export type StockMovementType =
   | 'PurchaseReceipt' | 'SaleConsumption' | 'TransferOut' | 'TransferIn'
-  | 'Adjustment' | 'Waste' | 'OpeningBalance' | 'StockCount' | 'SaleReturn';
+  | 'Adjustment' | 'Waste' | 'OpeningBalance' | 'StockCount' | 'SaleReturn' | 'ReturnToSupplier';
 
 export interface StockLedgerEntry {
   id: string;

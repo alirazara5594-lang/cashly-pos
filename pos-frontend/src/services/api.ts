@@ -17,6 +17,11 @@ import type {
   SaleUnit,
   PrescriptionInput,
   ControlledRegister,
+  ExpiryReportRow,
+  StockRemovalRow,
+  PrescriptionSaleRow,
+  SlowMoverRow,
+  CompanyMarginRow,
   ZReportSummary,
   CategorySalesReport,
   ItemPerformanceReport,
@@ -1103,6 +1108,34 @@ export const posApi = {
   /** One controlled medicine's register at a location: every movement with its running balance. */
   getControlledRegister: async (params: { branchId: string; productId: string; from?: string; to?: string }) => {
     const res = await api.get<ControlledRegister>('/api/pharmacy/controlled-register', { params });
+    return res.data;
+  },
+  // --- Pharmacy reports (pages/PharmacyReports.tsx); one location each. ---
+  /** Batches expired or expiring within `days`, earliest first. */
+  getExpiryReport: async (branchId: string, days: number) => {
+    const res = await api.get<ExpiryReportRow[]>('/api/pharmacy/reports/expiry', { params: { branchId, days } });
+    return res.data;
+  },
+  /** Stock out of one batch without a sale: back to the distributor, or written off. Quantity in stock units. */
+  removeBatchStock: async (batchId: string, data: { kind: 'Return' | 'WriteOff'; quantity: number; supplierName?: string; reference?: string; reason?: string }) => {
+    const res = await api.post<{ message: string; quantityOnHand: number }>(`/api/pharmacy/batches/${batchId}/remove`, data);
+    return res.data;
+  },
+  getStockRemovals: async (branchId: string, from: string, to: string) => {
+    const res = await api.get<{ from: string; to: string; rows: StockRemovalRow[] }>('/api/pharmacy/reports/removals', { params: { branchId, from, to } });
+    return res.data;
+  },
+  getPrescriptionSales: async (branchId: string, from: string, to: string) => {
+    const res = await api.get<{ from: string; to: string; rows: PrescriptionSaleRow[]; doctors: { doctorName: string; prescriptions: number }[] }>(
+      '/api/pharmacy/reports/prescriptions', { params: { branchId, from, to } });
+    return res.data;
+  },
+  getSlowMovers: async (branchId: string, days: number) => {
+    const res = await api.get<{ days: number; rows: SlowMoverRow[] }>('/api/pharmacy/reports/slow-movers', { params: { branchId, days } });
+    return res.data;
+  },
+  getMarginByCompany: async (branchId: string, from: string, to: string) => {
+    const res = await api.get<{ from: string; to: string; rows: CompanyMarginRow[] }>('/api/pharmacy/reports/margin-by-company', { params: { branchId, from, to } });
     return res.data;
   },
   /** A prescription's photo, as a blob (an <img> cannot send the sign-in token itself). */

@@ -36,6 +36,7 @@ const DirectorDashboard = lazy(() => import('./pages/DirectorDashboard').then(m 
 const SuperAdmin = lazy(() => import('./pages/SuperAdmin').then(m => ({ default: m.SuperAdmin })));
 const InventoryManagement = lazy(() => import('./pages/InventoryManagement').then(m => ({ default: m.InventoryManagement })));
 const ControlledRegister = lazy(() => import('./pages/ControlledRegister').then(m => ({ default: m.ControlledRegister })));
+const PharmacyReports = lazy(() => import('./pages/PharmacyReports').then(m => ({ default: m.PharmacyReports })));
 const SupplyChainManagement = lazy(() => import('./pages/SupplyChainManagement').then(m => ({ default: m.SupplyChainManagement })));
 const ReportsManagement = lazy(() => import('./pages/ReportsManagement').then(m => ({ default: m.ReportsManagement })));
 const UserManagement = lazy(() => import('./pages/UserManagement').then(m => ({ default: m.UserManagement })));
@@ -456,6 +457,7 @@ function MainLayoutInner() {
             {/* Stock → `inventory` module */}
             <Route path="/inventory" element={<RequireModule module="inventory"><InventoryManagement /></RequireModule>} />
             <Route path="/controlled-register" element={<RequireModule module="inventory"><RequireSector feature="medicines" label="The controlled-medicine register"><ControlledRegister /></RequireSector></RequireModule>} />
+            <Route path="/pharmacy-reports" element={<RequireModule module="reports"><RequireSector feature="medicines" label="Pharmacy reports"><PharmacyReports /></RequireSector></RequireModule>} />
             <Route path="/stock-requests" element={<RequireModule module="inventory"><StockRequests /></RequireModule>} />
 
             {/* Commissary / procurement → `supplychain` module */}

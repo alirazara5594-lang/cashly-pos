@@ -1222,7 +1222,9 @@ public enum StockMovementType
     OpeningBalance = 7,
     StockCount = 8,
     /// <summary>Goods a customer brought back, put back on the shelf.</summary>
-    SaleReturn = 9
+    SaleReturn = 9,
+    /// <summary>Goods sent back to the supplier (a pharmacy's expired or near-expiry batch to its distributor).</summary>
+    ReturnToSupplier = 10
 }
 
 /// <remarks>One row is EITHER an ingredient movement (IngredientId) OR a finished-product

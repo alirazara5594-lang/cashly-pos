@@ -2280,6 +2280,18 @@ static (DateTime StartUtc, DateTime EndUtc) BusinessDayUtc(DateTime localDate, T
 }
 
 /// <summary>
+/// A report's days in the business's own calendar, the first to the last inclusive (the last 30 days
+/// unless asked otherwise), with the UTC instants they run between. Null when the first is after the last.
+/// </summary>
+static (DateTime FirstDay, DateTime LastDay, DateTime StartUtc, DateTime EndUtc)? ReportDays(TimeZoneInfo zone, DateTime? from, DateTime? to)
+{
+    var lastDay = (to ?? BusinessToday(zone)).Date;
+    var firstDay = (from ?? lastDay.AddDays(-30)).Date;
+    if (firstDay > lastDay) return null;
+    return (firstDay, lastDay, BusinessDayUtc(firstDay, zone).StartUtc, BusinessDayUtc(lastDay, zone).EndUtc);
+}
+
+/// <summary>
 /// The locations a report reads. Staff pinned to a branch always get their own. Someone who sees
 /// the whole business gets the location they name or, asking for allLocations as head office does,
 /// every location of the business — head office does not sell, so its own figures are empty.
@@ -3415,6 +3427,7 @@ static string RegisterKind(StockLedgerEntry e) => e.MovementType switch
     StockMovementType.Adjustment when e.ReferenceType == "Order" => "Sale voided",
     StockMovementType.Adjustment when e.ReferenceType == "StockTransfer" => "Transfer cancelled",
     StockMovementType.Waste => "Written off",
+    StockMovementType.ReturnToSupplier => "Returned to distributor",
     StockMovementType.OpeningBalance => "Opening balance",
     StockMovementType.StockCount => "Counted",
     _ => "Adjusted"
@@ -3472,8 +3485,10 @@ static async Task<List<StockBatch>> LoadBatchesAsync(AppDbContext db, Guid branc
 /// Whatever the batches cannot account for is stock with no batch. A business without batches has
 /// none to move, so nothing changes for it. The caller saves.
 /// </summary>
+/// <param name="fromBatch">Stock going out of one named batch (returned to its distributor, written
+/// off) rather than earliest-expiry first.</param>
 static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, BatchIn? into = null,
-    (string Type, Guid Id)? restoreFrom = null, (string Type, Guid Id)? mirrorFrom = null)
+    (string Type, Guid Id)? restoreFrom = null, (string Type, Guid Id)? mirrorFrom = null, Guid? fromBatch = null)
 {
     if (entry.ProductId is not Guid productId || entry.QuantityChange == 0) return;
     var change = entry.QuantityChange;
@@ -3584,6 +3599,14 @@ static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, Bat
                 remaining -= put;
             }
         }
+        return;
+    }
+
+    // Stock out of one named batch: exactly that batch, as far as it goes.
+    if (fromBatch is Guid named && batches.FirstOrDefault(b => b.Id == named) is { } chosen)
+    {
+        var take = Math.Min(Math.Max(0, chosen.QuantityOnHand), -change);
+        if (take > 0) Move(chosen, -take);
         return;
     }
 
@@ -9372,6 +9395,251 @@ api.MapGet("/pharmacy/controlled-register", async (AppDbContext db, HttpContext 
         opening, closing = balance, rows
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// --- Pharmacy reports: expiry, stock returned to distributors and written off, prescription sales,
+// slow movers and margin by company. Each is for one location, the one the screen is on.
+
+// Batches expired or expiring within `days` (30, 60, 90...), earliest first, with what they cost and
+// would sell for: what to send back to the distributor while it will still take it, or write off.
+api.MapGet("/pharmacy/reports/expiry", async (AppDbContext db, HttpContext http, Guid branchId, int? days) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var today = BusinessToday(await TenantTimeZoneAsync(db, scopedTenantId!.Value));
+    var within = Math.Clamp(days ?? 90, 0, 730);
+    // An expiry is stored as the last good day at midnight UTC, so "on or before that day" is "before the next".
+    var before = DateTime.SpecifyKind(today.AddDays(within + 1), DateTimeKind.Utc);
+    var batches = await db.StockBatches
+        .Where(b => b.BranchId == scopedBranchId!.Value && b.QuantityOnHand > 0 && b.ExpiryDate != null && b.ExpiryDate < before)
+        .Join(db.Products, b => b.ProductId, p => p.Id, (b, p) => new { b, p })
+        .OrderBy(x => x.b.ExpiryDate).ThenBy(x => x.p.Name)
+        .ToListAsync();
+    return Results.Ok(batches.Select(x =>
+    {
+        var perBox = Pos.Api.Services.MedicinePacking.UnitsPerBox(x.p);
+        return new
+        {
+            batchId = x.b.Id, productId = x.p.Id, productName = x.p.Name, strength = x.p.Strength, manufacturer = x.p.Manufacturer,
+            packUnits = perBox > 1 ? (int?)perBox : null,
+            looseUnitName = perBox > 1 ? Pos.Api.Services.MedicinePacking.LooseUnitName(x.p) : null,
+            batchNumber = x.b.BatchNumber, expiryDate = x.b.ExpiryDate!.Value.ToString("yyyy-MM-dd"),
+            daysToExpiry = (int)(x.b.ExpiryDate!.Value.Date - today).TotalDays,
+            quantity = x.b.QuantityOnHand,
+            costValuePKR = Math.Round(x.b.QuantityOnHand * x.b.UnitCostPKR, 2),
+            retailValuePKR = Math.Round(x.b.QuantityOnHand * x.p.SellingPricePKR / perBox, 2),
+            supplierName = x.b.SupplierName
+        };
+    }));
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// A batch, or part of it, leaving the shelf without being sold: returned to the distributor (for credit
+// or replacement) or written off (expired, damaged). It comes out of exactly that batch, at its cost.
+// Like a stock adjustment, it changes the count and the ledger, not the books or the supplier's balance.
+api.MapPost("/pharmacy/batches/{id:guid}/remove", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id, RemoveBatchStockDto dto) =>
+{
+    var batch = await db.StockBatches.FirstOrDefaultAsync(b => b.Id == id);
+    if (batch == null) return Results.NotFound(new { message = "Batch not found." });
+    var (scopedTenantId, _, scopeError) = await ResolveScopeAsync(http, db, null, batch.BranchId);
+    if (scopeError != null) return scopeError;
+
+    var toSupplier = string.Equals(dto.Kind, "Return", StringComparison.OrdinalIgnoreCase);
+    if (!toSupplier && !string.Equals(dto.Kind, "WriteOff", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { message = "Say whether it goes back to the distributor or is written off." });
+    if (dto.Quantity <= 0) return Results.BadRequest(new { message = "Enter how much is leaving the shelf." });
+    if (dto.Quantity > batch.QuantityOnHand)
+        return Results.BadRequest(new { message = $"Batch {batch.BatchNumber} holds only {batch.QuantityOnHand:0.##}." });
+    var supplier = NullIfBlank(dto.SupplierName) ?? batch.SupplierName;
+    var reason = NullIfBlank(dto.Reason);
+    var reference = NullIfBlank(dto.Reference);
+    if (toSupplier && supplier == null) return Results.BadRequest(new { message = "Enter the distributor it goes back to." });
+    if (!toSupplier && reason == null) return Results.BadRequest(new { message = "Enter why it is written off (expired, damaged...)." });
+
+    var stock = await db.BranchStocks.Include(s => s.Product)
+        .FirstOrDefaultAsync(s => s.BranchId == batch.BranchId && s.ProductId == batch.ProductId);
+    if (stock == null) return Results.BadRequest(new { message = "This product has no stock count here." });
+
+    var currentUser = await accessor.GetCurrentUserAsync(http);
+    var what = toSupplier
+        ? $"Returned to {supplier}{(reference != null ? $" ({reference})" : "")}{(reason != null ? $": {reason}" : "")}"
+        : $"Written off: {reason}";
+    var entry = RecordProductStockMovement(db, stock, scopedTenantId!.Value,
+        toSupplier ? StockMovementType.ReturnToSupplier : StockMovementType.Waste, -dto.Quantity, batch.UnitCostPKR,
+        toSupplier ? "SupplierReturn" : "WriteOff", batch.Id, currentUser?.FullName ?? "System", $"Batch {batch.BatchNumber}: {what}");
+    await ApplyBatchesAsync(db, entry, fromBatch: batch.Id);
+    await WriteAuditAsync(db, scopedTenantId.Value, currentUser, toSupplier ? "StockReturnedToSupplier" : "StockWrittenOff", "StockBatch", batch.Id,
+        oldValue: null, newValue: $"{dto.Quantity:0.##} of {stock.Product?.Name} batch {batch.BatchNumber}. {what}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = toSupplier ? $"Returned to {supplier}." : "Written off.", quantityOnHand = stock.QuantityOnHand });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to remove stock."));
+
+// What left the shelf without being sold over a span of days: returned to distributors and written off.
+api.MapGet("/pharmacy/reports/removals", async (AppDbContext db, HttpContext http, Guid branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    if (ReportDays(await TenantTimeZoneAsync(db, scopedTenantId!.Value), from, to) is not { } span)
+        return Results.BadRequest(new { message = "The first day must not be after the last." });
+    var branch = scopedBranchId!.Value;
+    var entries = await db.StockLedgerEntries
+        .Where(e => e.BranchId == branch && e.ProductId != null && e.CreatedAt >= span.StartUtc && e.CreatedAt < span.EndUtc
+                 && (e.MovementType == StockMovementType.ReturnToSupplier || e.MovementType == StockMovementType.Waste))
+        .Join(db.Products, e => e.ProductId, p => p.Id, (e, p) => new { e, p })
+        .OrderByDescending(x => x.e.CreatedAt)
+        .ToListAsync();
+    var batchIds = entries.Where(x => x.e.ReferenceId != null).Select(x => x.e.ReferenceId!.Value).Distinct().ToList();
+    var batches = await db.StockBatches.Where(b => batchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id);
+    return Results.Ok(new
+    {
+        from = span.FirstDay.ToString("yyyy-MM-dd"), to = span.LastDay.ToString("yyyy-MM-dd"),
+        rows = entries.Select(x =>
+        {
+            var batch = x.e.ReferenceId is Guid bid ? batches.GetValueOrDefault(bid) : null;
+            var packed = Pos.Api.Services.MedicinePacking.IsPacked(x.p);
+            return new
+            {
+                id = x.e.Id, at = x.e.CreatedAt, kind = RegisterKind(x.e),
+                productId = x.p.Id, productName = x.p.Name, strength = x.p.Strength, manufacturer = x.p.Manufacturer,
+                packUnits = packed ? x.p.PackUnits : null,
+                looseUnitName = packed ? Pos.Api.Services.MedicinePacking.LooseUnitName(x.p) : null,
+                batchNumber = batch?.BatchNumber, expiryDate = batch?.ExpiryDate?.ToString("yyyy-MM-dd"),
+                quantity = -x.e.QuantityChange, valuePKR = Math.Round(-x.e.QuantityChange * x.e.UnitCostPKR, 2),
+                notes = x.e.Notes, by = x.e.CreatedBy
+            };
+        }).ToList()
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("inventory", "view"));
+
+// Sales made on prescription over a span of days: the patient, the doctor, what was sold, and which
+// doctors' prescriptions come in most.
+api.MapGet("/pharmacy/reports/prescriptions", async (AppDbContext db, HttpContext http, Guid branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    if (ReportDays(await TenantTimeZoneAsync(db, scopedTenantId!.Value), from, to) is not { } span)
+        return Results.BadRequest(new { message = "The first day must not be after the last." });
+    var branch = scopedBranchId!.Value;
+    var sales = await db.Prescriptions.Where(p => p.BranchId == branch)
+        .Join(db.Orders, p => p.OrderId, o => o.Id, (p, o) => new { p, o })
+        .Where(x => (x.o.CapturedAt ?? x.o.CreatedAt) >= span.StartUtc && (x.o.CapturedAt ?? x.o.CreatedAt) < span.EndUtc)
+        .OrderByDescending(x => x.o.CapturedAt ?? x.o.CreatedAt)
+        .Select(x => new { x.p, x.o.OrderNumber, x.o.TotalPKR, x.o.Status, At = x.o.CapturedAt ?? x.o.CreatedAt })
+        .ToListAsync();
+    var orderIds = sales.Select(s => s.p.OrderId).ToList();
+    var lines = (await db.OrderItems.Where(i => orderIds.Contains(i.OrderId))
+            .Join(db.Products, i => i.ProductId, p => p.Id, (i, p) => new { i.OrderId, i.ProductName, i.Quantity, p.Schedule })
+            .Where(x => x.Schedule >= MedicineSchedule.Prescription)
+            .ToListAsync())
+        .ToLookup(x => x.OrderId);
+    var rows = sales.Select(s => new
+    {
+        prescriptionId = s.p.Id, orderId = s.p.OrderId, orderNumber = s.OrderNumber, at = s.At,
+        cancelled = s.Status == OrderStatus.Cancelled, totalPKR = s.TotalPKR,
+        patientName = s.p.PatientName, patientPhone = s.p.PatientPhone, patientCnic = s.p.PatientCnic,
+        doctorName = s.p.DoctorName, doctorRegistrationNo = s.p.DoctorRegistrationNo,
+        prescribedOn = s.p.PrescribedOn.ToString("yyyy-MM-dd"), hasPhoto = s.p.HasPhoto,
+        controlled = lines[s.p.OrderId].Any(l => l.Schedule == MedicineSchedule.Controlled),
+        medicines = lines[s.p.OrderId].Select(l => new { name = l.ProductName, quantity = l.Quantity, controlled = l.Schedule == MedicineSchedule.Controlled }).ToList()
+    }).ToList();
+    var doctors = rows.Where(r => !r.cancelled && !string.IsNullOrWhiteSpace(r.doctorName))
+        .GroupBy(r => r.doctorName.Trim(), StringComparer.OrdinalIgnoreCase)
+        .Select(g => new { doctorName = g.First().doctorName.Trim(), prescriptions = g.Count() })
+        .OrderByDescending(d => d.prescriptions).Take(10).ToList();
+    return Results.Ok(new { from = span.FirstDay.ToString("yyyy-MM-dd"), to = span.LastDay.ToString("yyyy-MM-dd"), rows, doctors });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+
+// What sits on the shelf and hardly sells: everything in stock here, with how much of it sold over the
+// last `days`, when it last sold, and how many days the stock would last at that pace.
+api.MapGet("/pharmacy/reports/slow-movers", async (AppDbContext db, HttpContext http, Guid branchId, int? days) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var branch = scopedBranchId!.Value;
+    var zone = await TenantTimeZoneAsync(db, scopedTenantId!.Value);
+    var today = BusinessToday(zone);
+    var window = Math.Clamp(days ?? 90, 7, 730);
+    var since = BusinessDayUtc(today.AddDays(-window), zone).StartUtc;
+
+    var stocks = await db.BranchStocks.Include(s => s.Product)
+        .Where(s => s.BranchId == branch && s.QuantityOnHand > 0).ToListAsync();
+    var productIds = stocks.Select(s => s.ProductId).ToList();
+    var sales = db.OrderItems.Where(i => productIds.Contains(i.ProductId))
+        .Join(db.Orders.Where(o => o.BranchId == branch && o.Status != OrderStatus.Cancelled), i => i.OrderId, o => o.Id, (i, o) => new { i, o });
+    var soldInWindow = await sales.Where(x => x.o.IsPaid && x.o.CreatedAt >= since)
+        .GroupBy(x => x.i.ProductId)
+        .Select(g => new { ProductId = g.Key, Units = g.Sum(x => x.i.Quantity * x.i.UnitsPerSaleUnit) })
+        .ToDictionaryAsync(x => x.ProductId, x => x.Units);
+    var lastSold = await sales.GroupBy(x => x.i.ProductId)
+        .Select(g => new { ProductId = g.Key, At = g.Max(x => x.o.CreatedAt) })
+        .ToDictionaryAsync(x => x.ProductId, x => x.At);
+
+    var rows = stocks.Where(s => s.Product != null).Select(s =>
+    {
+        var units = soldInWindow.GetValueOrDefault(s.ProductId);
+        DateTime? last = lastSold.TryGetValue(s.ProductId, out var at) ? at : null;
+        var packed = Pos.Api.Services.MedicinePacking.IsPacked(s.Product!);
+        return new
+        {
+            productId = s.ProductId, productName = s.Product!.Name, strength = s.Product.Strength, manufacturer = s.Product.Manufacturer,
+            packUnits = packed ? s.Product.PackUnits : null,
+            looseUnitName = packed ? Pos.Api.Services.MedicinePacking.LooseUnitName(s.Product) : null,
+            quantityOnHand = s.QuantityOnHand,
+            stockValuePKR = Math.Round(s.QuantityOnHand * UnitCostOf(s, s.Product), 2),
+            unitsSold = units,
+            lastSoldAt = last,
+            daysSinceLastSale = last.HasValue ? (int?)(DateTime.UtcNow - last.Value).TotalDays : null,
+            // At the pace it sold over the window, how long what is on the shelf would last.
+            daysOfStock = units > 0 ? (int?)Math.Round(s.QuantityOnHand / (units / window)) : null
+        };
+    })
+    .OrderBy(r => r.unitsSold).ThenByDescending(r => r.stockValuePKR)
+    .Take(300).ToList();
+    return Results.Ok(new { days = window, rows });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
+
+// Sales, cost and margin per pharmaceutical company over a span of days. The cost is what each sale took
+// from stock at the time (the ledger), so a later price change does not rewrite it. Before discounts and returns.
+api.MapGet("/pharmacy/reports/margin-by-company", async (AppDbContext db, HttpContext http, Guid branchId, DateTime? from, DateTime? to) =>
+{
+    var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    if (ReportDays(await TenantTimeZoneAsync(db, scopedTenantId!.Value), from, to) is not { } span)
+        return Results.BadRequest(new { message = "The first day must not be after the last." });
+    var branch = scopedBranchId!.Value;
+    var orders = db.Orders.Where(o => o.BranchId == branch && o.IsPaid && o.Status != OrderStatus.Cancelled
+                                   && o.CreatedAt >= span.StartUtc && o.CreatedAt < span.EndUtc);
+    var revenue = await orders.SelectMany(o => o.Items)
+        .GroupBy(i => i.ProductId)
+        .Select(g => new { ProductId = g.Key, Revenue = g.Sum(i => i.TotalPricePKR) })
+        .ToDictionaryAsync(x => x.ProductId, x => x.Revenue);
+    var orderIds = orders.Select(o => (Guid?)o.Id);
+    var cost = await db.StockLedgerEntries
+        .Where(e => e.BranchId == branch && e.ProductId != null && e.MovementType == StockMovementType.SaleConsumption
+                 && e.ReferenceType == "Order" && orderIds.Contains(e.ReferenceId))
+        .GroupBy(e => e.ProductId!.Value)
+        .Select(g => new { ProductId = g.Key, Cost = g.Sum(e => -e.QuantityChange * e.UnitCostPKR) })
+        .ToDictionaryAsync(x => x.ProductId, x => x.Cost);
+    var productIds = revenue.Keys.ToList();
+    var companyOf = await db.Products.Where(p => productIds.Contains(p.Id))
+        .Select(p => new { p.Id, p.Manufacturer }).ToDictionaryAsync(p => p.Id, p => p.Manufacturer);
+
+    // Products with no company entered are one group of their own ("" here, null to the screen).
+    var rows = revenue
+        .GroupBy(r => companyOf.GetValueOrDefault(r.Key)?.Trim() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+        .Select(g =>
+        {
+            var sold = g.Sum(r => r.Value);
+            var spent = g.Sum(r => cost.GetValueOrDefault(r.Key));
+            return new
+            {
+                company = g.Key.Length == 0 ? null : g.Key, products = g.Count(),
+                revenuePKR = Math.Round(sold, 2), costPKR = Math.Round(spent, 2), profitPKR = Math.Round(sold - spent, 2),
+                marginPercent = sold > 0 ? Math.Round((sold - spent) / sold * 100, 1) : 0m
+            };
+        })
+        .OrderByDescending(r => r.revenuePKR).ToList();
+    return Results.Ok(new { from = span.FirstDay.ToString("yyyy-MM-dd"), to = span.LastDay.ToString("yyyy-MM-dd"), rows });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"));
 
 // A prescription's photo, for the register. Only within the location the prescription was taken at.
 api.MapGet("/pharmacy/prescriptions/{id:guid}/photo", async (AppDbContext db, HttpContext http, Guid id) =>
@@ -17580,6 +17848,12 @@ public record MedicineDetailsDto(string? GenericName, string? Strength, string? 
     string? DrapRegistrationNo, string? RackLocation, MedicineSchedule? Schedule,
     int? PackUnits = null, int? StripUnits = null, decimal? StripPricePKR = null, decimal? LooseUnitPricePKR = null);
 public record StockAdjustmentDto(Guid BranchId, Guid ProductId, decimal AdjustmentQty, string Reason);
+/// <summary>
+/// Stock leaving one batch without a sale. Kind: "Return" (to the distributor; SupplierName defaults to
+/// the batch's, Reference is its credit note or slip) or "WriteOff" (Reason required). Quantity is in the
+/// product's stock unit — tablets, for a medicine sold loose.
+/// </summary>
+public record RemoveBatchStockDto(string Kind, decimal Quantity, string? SupplierName, string? Reference, string? Reason);
 public record IngredientStockInDto(Guid BranchId, Guid IngredientId, decimal QuantityReceived, decimal? NewCostPerUnitPKR, string? SupplierName);
 public record CreateIngredientDto(Guid BranchId, Guid TenantId, string Name, string? Category, string? Unit, decimal CostPerUnitPKR, decimal InitialStock, decimal MinAlertLevel, string? SupplierName);
 public record UpdateIngredientMasterDto(string? Name, string? Category, string? Unit, decimal? MinAlertLevel);

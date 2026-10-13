@@ -377,7 +377,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         title: 'Insights',
         items: [
           { id: 'analytics', label: 'Smart Analytics', path: '/analytics', icon: Brain },
-          ...(recipes ? [{ id: 'menuEngineering', label: 'Menu Engineering', path: '/menu-engineering', icon: TrendingUp }] : [])
+          ...(recipes ? [{ id: 'menuEngineering', label: 'Menu Engineering', path: '/menu-engineering', icon: TrendingUp }] : []),
+          // A pharmacy's own: expiry, returns and write-offs, prescription sales, slow movers, margin by company.
+          ...(medicines ? [{ id: 'pharmacyReports', label: 'Pharmacy Reports', path: '/pharmacy-reports', icon: CalendarClock }] : [])
         ]
       });
     }
