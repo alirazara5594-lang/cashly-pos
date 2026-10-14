@@ -429,6 +429,36 @@ export interface Product {
   /** The business's own strip / tablet price, when not worked out from the box price. */
   stripPricePKR?: number | null;
   looseUnitPricePKR?: number | null;
+  /** How the item is taxed (Tax Setup). Absent = Standard. */
+  taxTreatment?: TaxTreatment;
+  /** The item's own rate, for 'OwnRate'. */
+  taxRatePercent?: number | null;
+}
+
+/** How an item is taxed: the sale's rate, not at all, at 0%, or at its own rate. */
+export type TaxTreatment = 'Standard' | 'Exempt' | 'ZeroRated' | 'OwnRate';
+
+/** One rate's share of a sale's tax, for its receipt. */
+export interface TaxLine {
+  ratePercent: number;
+  exempt: boolean;
+  amountPKR: number;
+  taxPKR: number;
+}
+
+/** Tax Setup → Items taxed differently (GET /tax/items). */
+export interface TaxItems {
+  categories: { id: string; name: string; items: number; standard: number; exempt: number; zeroRated: number; ownRate: number }[];
+  items: { id: string; name: string; categoryName: string; taxTreatment: TaxTreatment; taxRatePercent: number | null }[];
+  moreItems: number;
+}
+
+/** Reports → tax by rate (GET /reports/tax-by-rate). */
+export interface TaxByRateReport {
+  from: string;
+  to: string;
+  rows: { kind: 'rate' | 'zero' | 'exempt' | 'earlier'; ratePercent: number; label: string; lines: number; salesPKR: number; taxPKR: number }[];
+  totalTaxPKR: number;
 }
 
 /** How a medicine may be sold; 'None' means the product is not a medicine. */
@@ -436,6 +466,53 @@ export type MedicineSchedule = 'None' | 'OverTheCounter' | 'Prescription' | 'Con
 
 /** What one of a cart line's quantity is, for a medicine sold loose. */
 export type SaleUnit = 'Pack' | 'Strip' | 'Unit';
+
+/** What a sale is taxed at, at one branch — the rates the server charges (GET /tax/branch-rates). */
+export interface BranchTax {
+  cashRate: number;
+  cardRate: number;
+  pricesIncludeTax: boolean;
+  decimals: number;
+  legalName: string | null;
+  ntn: string | null;
+  strn: string | null;
+}
+
+/** How tax is charged: one rate, a cash and a card rate, or each outlet by its province. */
+export type TaxMode = 'Single' | 'CashCard' | 'Provincial';
+
+/** The whole Tax Setup page (GET /tax/setup). */
+export interface TaxSetup {
+  pricesIncludeTax: boolean;
+  mode: TaxMode;
+  standardRate: number;
+  cardRate: number;
+  taxAuthorityName: string;
+  countryCode: string;
+  decimals: number;
+  regions: {
+    regionCode: string;
+    authorityName: string;
+    defaultCashRate: number;
+    defaultCardRate: number;
+    cashRate: number;
+    cardRate: number;
+    /** The business set its own rates for this province (else it follows the platform's). */
+    ownRates: boolean;
+  }[];
+  outlets: { id: string; name: string; code: string; regionCode: string | null; companyId: string | null }[];
+  companies: { id: string; legalName: string; isDefault: boolean; ntn: string | null; strn: string | null }[];
+}
+
+export interface SaveTaxSetup {
+  pricesIncludeTax: boolean;
+  mode: TaxMode;
+  standardRate: number;
+  cardRate: number;
+  outletRegions: { branchId: string; regionCode: string | null }[];
+  regionRates: { regionCode: string; cashRate: number; cardRate: number }[];
+  companies: { id: string; ntn: string | null; strn: string | null }[];
+}
 
 /** The prescription a sale of prescription-only or controlled medicines is made against (utils/prescription.ts). */
 export interface PrescriptionInput {
@@ -645,6 +722,9 @@ export interface CartItem {
   unitsPerSaleUnit?: number;
   /** "Box", "Strip", "Tablet" — for the cart and the receipt. */
   saleUnitLabel?: string;
+  /** How the item is taxed, taken from the product as it went in the cart. Absent = Standard. */
+  taxTreatment?: TaxTreatment;
+  taxRatePercent?: number | null;
 }
 
 
@@ -686,6 +766,9 @@ export interface Order {
 
   /** Money given back through returns so far. The sale itself is never edited. */
   refundedPKR?: number;
+
+  /** The tax by rate, for the receipt (worked out item by item). */
+  taxLines?: TaxLine[];
 
   /** The customer the sale is on, when there is one. */
   customerId?: string | null;

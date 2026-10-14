@@ -17,6 +17,12 @@ import type {
   SaleUnit,
   PrescriptionInput,
   ControlledRegister,
+  BranchTax,
+  TaxSetup,
+  SaveTaxSetup,
+  TaxItems,
+  TaxTreatment,
+  TaxByRateReport,
   ExpiryReportRow,
   StockRemovalRow,
   PrescriptionSaleRow,
@@ -1110,6 +1116,19 @@ export const posApi = {
     const res = await api.get<StockBatch[]>('/api/inventory/batches', { params: { branchId, productId } });
     return res.data;
   },
+  // --- Tax Setup (pages/TaxConfiguration.tsx) ---
+  getTaxSetup: async () => (await api.get<TaxSetup>('/api/tax/setup')).data,
+  saveTaxSetup: async (data: SaveTaxSetup) => (await api.put<{ message: string }>('/api/tax/setup', data)).data,
+  /** Each category's tax mix, and the items not taxed at the standard rate. */
+  getTaxItems: async () => (await api.get<TaxItems>('/api/tax/items')).data,
+  /** Every item in a category taxed one way (applies at once). */
+  applyCategoryTax: async (categoryId: string, taxTreatment: TaxTreatment, taxRatePercent?: number) =>
+    (await api.post<{ message: string; count: number }>(`/api/tax/categories/${categoryId}/apply`, { taxTreatment, taxRatePercent })).data,
+  /** Tax by rate over a span of days (Reports → Tax & Compliance). */
+  getTaxByRate: async (branchId: string, from?: string, to?: string) =>
+    (await api.get<TaxByRateReport>('/api/reports/tax-by-rate', { params: { ...reportLocation(branchId), from, to } })).data,
+  /** What the till taxes at, at this branch: the same rates the server charges. */
+  getBranchTax: async (branchId: string) => (await api.get<BranchTax>('/api/tax/branch-rates', { params: { branchId } })).data,
   /** One controlled medicine's register at a location: every movement with its running balance. */
   getControlledRegister: async (params: { branchId: string; productId: string; from?: string; to?: string }) => {
     const res = await api.get<ControlledRegister>('/api/pharmacy/controlled-register', { params });

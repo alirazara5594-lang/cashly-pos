@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { Printer, X, CheckCircle } from 'lucide-react';
 import type { Order } from '../types';
+import { taxLineLabel } from '../utils/tax';
 
 interface ThermalReceiptModalProps {
   order: Order | null;
@@ -10,6 +11,12 @@ interface ThermalReceiptModalProps {
   branchName?: string;
   branchAddress?: string;
   branchPhone?: string;
+  /** The company the branch trades under, and its tax numbers (Tax Setup). */
+  legalName?: string | null;
+  ntn?: string | null;
+  strn?: string | null;
+  /** Prices already include the tax: the tax line says so. */
+  pricesIncludeTax?: boolean;
 }
 
 export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
@@ -18,8 +25,11 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   onClose,
   branchName = 'Your Business POS',
   branchAddress = 'Main Commercial Area, Sector F-7, Islamabad',
-  branchPhone = '051-111-222-333'
-
+  branchPhone = '051-111-222-333',
+  legalName,
+  ntn,
+  strn,
+  pricesIncludeTax = false
 }) => {
   // A sale reported to the tax authority prints the authority's invoice number and its QR code.
   const fiscalPayload = order?.fiscalQrPayload ?? order?.fiscalInvoiceNumber ?? null;
@@ -60,6 +70,14 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             <div className="font-bold text-base tracking-wider uppercase">{branchName}</div>
             <div className="text-[10px] text-gray-700 mt-0.5">{branchAddress}</div>
             <div className="text-[10px] text-gray-700">Tel: {branchPhone}</div>
+            {legalName && legalName.trim().toLowerCase() !== branchName.trim().toLowerCase() && (
+              <div className="text-[10px] text-gray-700 mt-0.5">{legalName}</div>
+            )}
+            {(ntn || strn) && (
+              <div className="text-[10px] text-gray-700">
+                {ntn && <>NTN: {ntn}</>}{ntn && strn && '  ·  '}{strn && <>STRN: {strn}</>}
+              </div>
+            )}
             <div className="text-[9px] text-gray-500 mt-1 uppercase font-sans">** TAX INVOICE **</div>
           </div>
 
@@ -123,12 +141,31 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 <span>-{order.discountPKR.toLocaleString()}</span>
               </div>
             )}
-            <div className="flex justify-between">
-              <span>
-                Sales Tax ({order.paymentMethod === 'Cash' ? 'Tax Rate' : 'Digital Rate'}):
-              </span>
-              <span>{order.taxPKR.toLocaleString()}</span>
-            </div>
+            {/* Tax by rate when the bill has more than one (exempt or own-rate items), else one line. */}
+            {order.taxLines && (order.taxLines.length > 1 || order.taxLines.some(l => l.exempt)) ? (
+              <>
+                {order.taxLines.map(line => (
+                  <div key={line.exempt ? 'exempt' : line.ratePercent} className="flex justify-between text-gray-700">
+                    <span>
+                      {line.exempt ? `Exempt sales ${line.amountPKR.toLocaleString()}` : `Tax ${taxLineLabel(line)} on ${line.amountPKR.toLocaleString()}`}
+                      {!line.exempt && pricesIncludeTax ? ' (incl.)' : ''}:
+                    </span>
+                    <span>{line.exempt ? '—' : line.taxPKR.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between">
+                  <span>Total Sales Tax:</span>
+                  <span>{order.taxPKR.toLocaleString()}</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex justify-between">
+                <span>
+                  Sales Tax{order.taxLines?.[0] && !order.taxLines[0].exempt ? ` ${taxLineLabel(order.taxLines[0])}` : ''}{pricesIncludeTax ? ' (included)' : ''}:
+                </span>
+                <span>{order.taxPKR.toLocaleString()}</span>
+              </div>
+            )}
             <div className="flex justify-between text-xs font-bold pt-1 border-t border-gray-300">
               <span>TOTAL:</span>
               <span>{order.totalPKR.toLocaleString()}</span>

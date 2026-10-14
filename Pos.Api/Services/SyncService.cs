@@ -277,7 +277,9 @@ public class SyncService : ISyncService
                         i.UnitPricePKR, i.TotalPricePKR, i.ModifiersSummary,
                         i.DeviceReportedUnitPricePKR,
                         // A medicine sold loose: what one of the quantity was (box, strip, tablet).
-                        saleUnit = i.SaleUnit?.ToString(), i.UnitsPerSaleUnit
+                        saleUnit = i.SaleUnit?.ToString(), i.UnitsPerSaleUnit,
+                        // How the line was taxed, for the tax-by-rate report at head office.
+                        taxTreatment = i.TaxTreatment?.ToString(), i.TaxRatePercent, i.TaxPKR
                     }),
                     prescription = prescriptions.TryGetValue(o.Id, out var rx)
                         ? new

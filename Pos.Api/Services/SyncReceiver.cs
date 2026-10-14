@@ -216,7 +216,10 @@ public class SyncReceiver : ISyncReceiver
                     ModifiersSummary = Str(line, "modifiersSummary"),
                     DeviceReportedUnitPricePKR = DecOrNull(line, "deviceReportedUnitPricePKR"),
                     SaleUnit = Str(line, "saleUnit") is string unit && Enum.TryParse<SaleUnit>(unit, true, out var saleUnit) ? saleUnit : null,
-                    UnitsPerSaleUnit = Dec(line, "unitsPerSaleUnit", 1)
+                    UnitsPerSaleUnit = Dec(line, "unitsPerSaleUnit", 1),
+                    TaxTreatment = Str(line, "taxTreatment") is string treatment && Enum.TryParse<TaxTreatment>(treatment, true, out var taxTreatment) ? taxTreatment : null,
+                    TaxRatePercent = DecOrNull(line, "taxRatePercent"),
+                    TaxPKR = DecOrNull(line, "taxPKR")
                 });
             }
 

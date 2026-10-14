@@ -23,7 +23,9 @@ import {
   Star,
   AlertTriangle,
   CalendarClock,
-  FileText
+  FileText,
+  ChevronDown,
+  Printer
 } from 'lucide-react';
 
 import { usePosStore } from '../store/posStore';
@@ -40,6 +42,7 @@ import { ProductCard } from '../components/ProductCard';
 import { SubstitutesPanel, type SubstitutesReason } from '../components/SubstitutesPanel';
 import { PrescriptionModal } from '../components/PrescriptionModal';
 import { emptyPrescription, prescriptionNeeds, prescriptionProblem } from '../utils/prescription';
+import { cartTax } from '../utils/tax';
 import { getEmoji } from '../utils/productEmoji';
 
 export const PosTerminal: React.FC = () => {
@@ -89,6 +92,11 @@ export const PosTerminal: React.FC = () => {
     if (noTables && orderType === 'DineIn') setOrderType('Takeaway');
   }, [noTables, orderType, setOrderType]);
 
+  // The till takes cash or card only; a method left over from before falls back to cash.
+  useEffect(() => {
+    if (paymentMethod !== 'Cash' && paymentMethod !== 'Card') setPaymentMethod('Cash');
+  }, [paymentMethod, setPaymentMethod]);
+
   // ── Loyalty / promo / gift card extras. Every one of these is optional: leaving
   // the whole section untouched produces exactly the same order payload as before.
   const [lookupPhone, setLookupPhone] = useState('');
@@ -97,6 +105,9 @@ export const PosTerminal: React.FC = () => {
   const [promoCodeInput, setPromoCodeInput] = useState('');
   const [giftCardCode, setGiftCardCode] = useState('');
   const [giftCardRedeemAmount, setGiftCardRedeemAmount] = useState<number>(0);
+  // Folded away in the cart until the cashier opens it, so the checkout is always in view.
+  const [showExtras, setShowExtras] = useState(false);
+  const extrasInUse = !!(lookupPhone.trim() || matchedCustomer || promoCodeInput.trim() || giftCardCode.trim());
 
   const handleCustomerLookup = async () => {
     const phone = lookupPhone.trim();
@@ -133,6 +144,7 @@ export const PosTerminal: React.FC = () => {
     setPromoCodeInput('');
     setGiftCardCode('');
     setGiftCardRedeemAmount(0);
+    setShowExtras(false);
     setPrescription(null);
   };
 
@@ -166,6 +178,15 @@ export const PosTerminal: React.FC = () => {
   // still be sold before expiry and what already has expired. Expired stock is never rung up; stock
   // within a month of expiry is flagged as it goes in the cart. Offline, the till keeps what it last knew.
   const branchId = selectedBranch?.id;
+
+  // The tax this branch charges, as the server works it out (Tax Setup): its rates, whether prices
+  // include tax, and the NTN / STRN for the receipt. Loaded again when the till comes back online.
+  const loadBranchTax = usePosStore(s => s.loadBranchTax);
+  const branchTax = usePosStore(s => s.branchTax);
+  useEffect(() => {
+    if (branchId) void loadBranchTax(branchId);
+  }, [branchId, isOnline, loadBranchTax]);
+
   const [expiryByProduct, setExpiryByProduct] = useState<Map<string, ExpirySummary>>(() => new Map());
   const [expiryRefresh, setExpiryRefresh] = useState(0);
   const [expiryNotice, setExpiryNotice] = useState<{ tone: 'block' | 'warn'; text: string } | null>(null);
@@ -456,6 +477,8 @@ export const PosTerminal: React.FC = () => {
           inKitchenAt: res.inKitchenAt ?? null,
           fiscalInvoiceNumber: res.fiscalInvoiceNumber ?? null,
           fiscalQrPayload: res.fiscalQrPayload ?? null,
+          // The server's tax by rate; the till's own as a fallback (an older server sends none).
+          taxLines: res.taxLines ?? cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).lines,
           items: [...cart]
         };
 
@@ -508,6 +531,7 @@ export const PosTerminal: React.FC = () => {
           changeDuePKR: 0,
           isPaid: true,
           createdAt: new Date().toISOString(),
+          taxLines: cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).lines,
           items: [...cart]
         };
 
@@ -549,6 +573,12 @@ export const PosTerminal: React.FC = () => {
 
   const allowedMethods = tenantSettings?.allowedPaymentMethods?.split(',').map(m => m.trim()) || allPaymentMethods.map(m => m.key);
   const visiblePaymentMethods = allPaymentMethods.filter(m => allowedMethods.includes(m.key));
+  // The till takes cash or card, nothing else.
+  const primaryMethods = visiblePaymentMethods.filter(m => m.key === 'Cash' || m.key === 'Card');
+  const gridCols: Record<number, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3', 4: 'grid-cols-4' };
+  // The notes a customer hands over, from the bill: exact, then the next 500, 1,000 and 5,000.
+  const quickCash = Array.from(new Set([grandTotal, ...[500, 1000, 5000].map(n => Math.max(n, Math.ceil(grandTotal / n) * n))]));
+  const cashShort = cashTendered > 0 && cashTendered < grandTotal;
 
   return (
     <div className="flex-1 flex flex-col h-[calc(100vh-53px)] overflow-hidden bg-slate-50">
@@ -568,8 +598,9 @@ export const PosTerminal: React.FC = () => {
           </button>
         </div>
       )}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Products and the cart side by side from tablet width up; stacked on a phone. */}
+      <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
@@ -657,11 +688,13 @@ export const PosTerminal: React.FC = () => {
           </div>
         </div>
 
-        <div className="w-full lg:w-96 flex flex-col bg-white border border-slate-200 rounded-2xl shadow-xl m-2 ml-0 overflow-hidden">
-          <div className="p-4 border-b border-slate-100">
+        {/* The cart: its header, the items (the only part that scrolls), and the checkout pinned at
+            the bottom — so the total, the payment and Charge are always in view, however long the bill. */}
+        <div className="h-[60%] shrink-0 md:h-auto md:shrink md:w-80 lg:w-96 flex flex-col min-h-0 bg-white border border-slate-200 rounded-2xl shadow-xl m-2 md:ml-0 overflow-hidden">
+          <div className="px-4 pt-3 pb-3 border-b border-slate-100 shrink-0">
             <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-slate-900 truncate">
                   {orderType === 'DineIn' ? (selectedTable || 'Select Table') : orderType === 'Takeaway' ? (noTables ? 'Counter Sale' : 'Takeaway') : orderType === 'Delivery' ? 'Delivery' : 'Phone Order'}
                 </h2>
                 <p className="text-xs text-slate-400">
@@ -679,12 +712,12 @@ export const PosTerminal: React.FC = () => {
                 </button>
               )}
             </div>
-            <div className="flex gap-2 mt-3">
+            <div className="flex gap-2 mt-2">
               {orderTypeOptions.map((type) => (
                 <button
                   key={type}
                   onClick={() => setOrderType(type)}
-                  className={`flex-1 py-2 rounded-xl text-xs font-bold transition ${
+                  className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition ${
                     orderType === type
                       ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -696,17 +729,12 @@ export const PosTerminal: React.FC = () => {
             </div>
 
             {orderType === 'DineIn' && !noTables && (
-              <div className="mt-3 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500 font-medium">Table:</span>
-                  <Link to="/floors" className="text-[10px] text-teal-500 hover:text-teal-600 font-bold">
-                    + Manage
-                  </Link>
-                </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-medium shrink-0">Table</span>
                 <select
                   value={selectedTable}
                   onChange={(e) => setSelectedTable(e.target.value)}
-                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
+                  className="flex-1 min-w-0 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500"
                 >
                   {tables.length > 0 ? (
                     Array.from(new Set(tables.map(t => t.section || 'Main Hall'))).map(floorName => (
@@ -733,6 +761,9 @@ export const PosTerminal: React.FC = () => {
                     </>
                   )}
                 </select>
+                <Link to="/floors" className="text-[10px] text-teal-500 hover:text-teal-600 font-bold shrink-0">
+                  + Manage
+                </Link>
               </div>
             )}
 
@@ -749,9 +780,10 @@ export const PosTerminal: React.FC = () => {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 min-h-0 overflow-y-auto">
+           <div className="p-4 space-y-3">
             {cart.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-3">
+              <div className="py-6 flex flex-col items-center justify-center text-slate-400 space-y-3">
                 <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center">
                   <ShoppingBag className="w-8 h-8 stroke-[1.5] text-slate-300" />
                 </div>
@@ -862,16 +894,110 @@ export const PosTerminal: React.FC = () => {
                 );
               })
             )}
+           </div>
+
+            {/* Optional customer / promo / gift-card attachments, folded into one line so they never
+                push the checkout out of view. Everything here can be skipped. */}
+            <div className="px-4 pb-4">
+              <button
+                type="button"
+                onClick={() => setShowExtras(v => !v)}
+                aria-expanded={showExtras}
+                className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-dashed border-slate-200 text-[11px] font-semibold text-slate-500 hover:border-teal-300 hover:text-teal-700 transition"
+              >
+                <span className="flex items-center gap-1.5">
+                  <UserRound className="w-3.5 h-3.5" /> Customer, promo or gift card
+                  {extrasInUse && <span className="px-1.5 py-0.5 rounded bg-teal-50 text-teal-700 border border-teal-200 text-[9px] font-bold">Added</span>}
+                </span>
+                <ChevronDown className={`w-3.5 h-3.5 transition ${showExtras ? 'rotate-180' : ''}`} />
+              </button>
+              {showExtras && (
+                <div className="mt-2.5 space-y-2.5">
+                  <div className="flex gap-1.5">
+                    <div className="relative flex-1">
+                      <UserRound className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        value={lookupPhone}
+                        onChange={(e) => { setLookupPhone(e.target.value); setCustomerLookupState('idle'); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleCustomerLookup(); }}
+                        placeholder="Customer phone"
+                        className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
+                      />
+                    </div>
+                    <button
+                      onClick={handleCustomerLookup}
+                      disabled={customerLookupState === 'searching' || !lookupPhone.trim()}
+                      className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-[11px] font-bold transition disabled:opacity-40"
+                    >
+                      {customerLookupState === 'searching' ? '…' : 'Look Up'}
+                    </button>
+                  </div>
+
+                  {matchedCustomer && (
+                    <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
+                      <span className="text-[11px] font-bold text-amber-800 truncate">{matchedCustomer.fullName}</span>
+                      <span className="flex items-center gap-1 text-[11px] font-bold text-amber-700 shrink-0">
+                        <Star className="w-3 h-3" />
+                        {(matchedCustomer.loyaltyPoints ?? 0).toLocaleString()} pts
+                      </span>
+                    </div>
+                  )}
+                  {customerLookupState === 'notfound' && (
+                    <p className="text-[10px] text-slate-400">
+                      No loyalty profile for that number — the sale will still go through.
+                    </p>
+                  )}
+
+                  <div className="relative">
+                    <Percent className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      value={promoCodeInput}
+                      onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
+                      placeholder="Promo code"
+                      className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+
+                  <div className="flex gap-1.5">
+                    <div className="relative flex-1">
+                      <Gift className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        value={giftCardCode}
+                        onChange={(e) => setGiftCardCode(e.target.value.toUpperCase())}
+                        placeholder="Gift card code"
+                        className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
+                      />
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      value={giftCardRedeemAmount || ''}
+                      onChange={(e) => setGiftCardRedeemAmount(Number(e.target.value) || 0)}
+                      placeholder="PKR"
+                      className="w-20 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-right text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Promo and gift-card amounts are validated and applied by the server on submit.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="p-4 border-t border-slate-100 space-y-2">
+          {/* The checkout, always in view: totals, prescription, payment and Charge. */}
+          <div className="shrink-0 border-t border-slate-100 px-4 py-3 space-y-2">
+           <div className="space-y-1">
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>Sub Total</span>
               <span className="font-medium text-slate-700">{subtotal.toLocaleString()}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-slate-500">
               <span>
-                Sales Tax ({getEffectiveTaxRate()}% {paymentMethod === 'Cash' ? 'Cash' : 'Card/Digital'}):
+                {/* Items taxed their own way (exempt, own rate) make one rate meaningless. */}
+                {cart.some(i => i.taxTreatment && i.taxTreatment !== 'Standard')
+                  ? 'Sales Tax (by item):'
+                  : `Sales Tax (${getEffectiveTaxRate()}% ${paymentMethod === 'Cash' ? 'Cash' : 'Card/Digital'}):`}
               </span>
               <span className="font-medium text-slate-700">{tax.toLocaleString()}</span>
             </div>
@@ -918,89 +1044,14 @@ export const PosTerminal: React.FC = () => {
                 <span>Customer Saves 8% Tax</span>
               </div>
             )}
-            <div className="flex justify-between text-sm font-bold text-slate-900 border-t border-slate-100 pt-2">
+           </div>
+            <div className="flex justify-between text-base font-bold text-slate-900 border-t border-slate-100 pt-2">
               <span>TOTAL</span>
               <span className="text-teal-600">{grandTotal.toLocaleString()}</span>
             </div>
-          </div>
 
-          {/* Optional customer / promo / gift-card attachments. Everything here can be
-              skipped — the checkout below works exactly as it always has. */}
-          <div className="p-4 border-t border-slate-100 space-y-2.5">
-            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Customer & Offers (optional)</div>
-
-            <div className="flex gap-1.5">
-              <div className="relative flex-1">
-                <UserRound className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                <input
-                  value={lookupPhone}
-                  onChange={(e) => { setLookupPhone(e.target.value); setCustomerLookupState('idle'); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleCustomerLookup(); }}
-                  placeholder="Customer phone"
-                  className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
-                />
-              </div>
-              <button
-                onClick={handleCustomerLookup}
-                disabled={customerLookupState === 'searching' || !lookupPhone.trim()}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-[11px] font-bold transition disabled:opacity-40"
-              >
-                {customerLookupState === 'searching' ? '…' : 'Look Up'}
-              </button>
-            </div>
-
-            {matchedCustomer && (
-              <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200">
-                <span className="text-[11px] font-bold text-amber-800 truncate">{matchedCustomer.fullName}</span>
-                <span className="flex items-center gap-1 text-[11px] font-bold text-amber-700 shrink-0">
-                  <Star className="w-3 h-3" />
-                  {(matchedCustomer.loyaltyPoints ?? 0).toLocaleString()} pts
-                </span>
-              </div>
-            )}
-            {customerLookupState === 'notfound' && (
-              <p className="text-[10px] text-slate-400">
-                No loyalty profile for that number — the sale will still go through.
-              </p>
-            )}
-
-            <div className="relative">
-              <Percent className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input
-                value={promoCodeInput}
-                onChange={(e) => setPromoCodeInput(e.target.value.toUpperCase())}
-                placeholder="Promo code"
-                className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
-              />
-            </div>
-
-            <div className="flex gap-1.5">
-              <div className="relative flex-1">
-                <Gift className="w-3 h-3 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                <input
-                  value={giftCardCode}
-                  onChange={(e) => setGiftCardCode(e.target.value.toUpperCase())}
-                  placeholder="Gift card code"
-                  className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold tracking-wider text-slate-900 focus:outline-none focus:border-teal-500"
-                />
-              </div>
-              <input
-                type="number"
-                min="0"
-                value={giftCardRedeemAmount || ''}
-                onChange={(e) => setGiftCardRedeemAmount(Number(e.target.value) || 0)}
-                placeholder="PKR"
-                className="w-20 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-right text-[11px] text-slate-900 focus:outline-none focus:border-teal-500"
-              />
-            </div>
-            <p className="text-[10px] text-slate-400">
-              Promo and gift-card amounts are validated and applied by the server on submit.
-            </p>
-          </div>
-
-          <div className="p-4 border-t border-slate-100">
             {rxNeeds.any && (
-              <div className={`mb-3 px-3 py-2 rounded-xl border text-xs flex items-center gap-2 ${
+              <div className={`px-3 py-2 rounded-xl border text-xs flex items-center gap-2 ${
                 rxMissing ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-teal-50 border-teal-200 text-teal-900'
               }`}>
                 <FileText className="w-4 h-4 shrink-0" />
@@ -1029,72 +1080,94 @@ export const PosTerminal: React.FC = () => {
                 </button>
               </div>
             )}
-            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Payment Method</div>
-            <div className="grid grid-cols-3 gap-2 mb-3">
-              {visiblePaymentMethods.map(({ key, label, icon: Icon }) => (
-                <button
-                  key={key}
-                  onClick={() => setPaymentMethod(key as PaymentMethod)}
-                  className={`py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 ${
-                    paymentMethod === key
-                      ? 'bg-teal-500 text-white shadow-md shadow-teal-500/25'
-                      : 'bg-slate-100 text-slate-600 hover:bg-teal-50'
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
-
-            {paymentMethod === 'Cash' && (
-              <div className="space-y-2 bg-slate-50 p-3 rounded-xl border border-slate-200 mb-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-medium text-slate-500">Cash Received</label>
-                  <input
-                    type="number"
-                    value={cashTendered || ''}
-                    onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
-                    className="w-28 px-2 py-1 bg-white border border-slate-200 rounded-lg text-right font-bold text-slate-900 text-xs focus:outline-none focus:border-teal-500"
-                  />
-                </div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[grandTotal, 500, 1000, 5000].map((amt, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setCashTendered(amt)}
-                      className="py-1.5 px-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 text-center transition"
-                    >
-                      {i === 0 ? 'Exact' : `${amt}`}
-                    </button>
-                  ))}
-                </div>
-                {cashTendered > 0 && (
-                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-200">
-                    <span className="text-[11px] font-semibold text-slate-500">Change Due:</span>
-                    <span className="text-sm font-bold text-teal-600">{Math.max(0, cashTendered - grandTotal).toLocaleString()}</span>
-                  </div>
-                )}
+            {/* How the customer pays: cash or card. */}
+            {primaryMethods.length > 0 && (
+              <div role="radiogroup" aria-label="Payment method" className={`grid gap-2 ${gridCols[primaryMethods.length]}`}>
+                {primaryMethods.map(({ key, label, icon: Icon }) => (
+                  <button
+                    key={key}
+                    role="radio"
+                    aria-checked={paymentMethod === key}
+                    onClick={() => setPaymentMethod(key as PaymentMethod)}
+                    className={`py-2.5 rounded-xl border text-sm font-bold transition flex items-center justify-center gap-2 ${
+                      paymentMethod === key
+                        ? 'bg-teal-600 border-teal-600 text-white shadow-md shadow-teal-600/25'
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-teal-300 hover:bg-teal-50/60'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-2 mb-3">
+            {/* Cash: what the customer handed over, the change (or what is still short), and the
+                notes they are likely to give, worked out from the bill. */}
+            {paymentMethod === 'Cash' ? (
+              <div className="space-y-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <label className="flex items-center rounded-lg border border-slate-200 bg-white focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20">
+                    <span className="pl-2.5 text-[11px] font-semibold text-slate-500 shrink-0">Received</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      aria-label="Cash received"
+                      value={cashTendered || ''}
+                      onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
+                      placeholder="0"
+                      className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-right text-sm font-bold text-slate-900 placeholder:text-slate-300 focus:outline-none"
+                    />
+                  </label>
+                  <div className={`flex items-center justify-between rounded-lg border px-2.5 py-1.5 ${
+                    cashShort ? 'bg-rose-50 border-rose-200 text-rose-700'
+                      : cashTendered > 0 ? 'bg-teal-50 border-teal-200 text-teal-700'
+                      : 'bg-slate-50 border-slate-200 text-slate-400'
+                  }`}>
+                    <span className="text-[11px] font-semibold">{cashShort ? 'Short' : 'Change'}</span>
+                    <span className="text-sm font-bold">{cashTendered > 0 ? Math.abs(cashTendered - grandTotal).toLocaleString() : '—'}</span>
+                  </div>
+                </div>
+                <div className={`grid gap-1.5 ${gridCols[quickCash.length]}`}>
+                  {quickCash.map((amt, i) => (
+                    <button
+                      key={amt}
+                      onClick={() => setCashTendered(amt)}
+                      className={`py-1.5 rounded-lg border text-[11px] font-bold transition ${
+                        cashTendered === amt
+                          ? 'bg-teal-50 border-teal-300 text-teal-700'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {i === 0 ? 'Exact' : amt.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : paymentMethod === 'Card' ? (
+              <p className="text-[11px] text-slate-500 px-0.5">Take the payment on the card machine, then press Charge.</p>
+            ) : null}
+
+            <div className="flex gap-2">
               <button
                 onClick={() => {
                   parkCurrentBill();
                   setPrescription(null);
                 }}
                 disabled={cart.length === 0}
-                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
+                title="Hold this bill"
+                className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
               >
                 <PauseCircle className="w-4 h-4" />
                 <span>Hold</span>
               </button>
               <button
                 disabled={cart.length === 0}
-                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
+                title="Print the bill"
+                className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
               >
-                <span>Print</span>
+                <Printer className="w-4 h-4" />
+                <span className="hidden lg:inline">Print</span>
               </button>
               <button
                 onClick={() => {
@@ -1102,7 +1175,7 @@ export const PosTerminal: React.FC = () => {
                   handleCompleteSale();
                 }}
                 disabled={cart.length === 0 || isSubmitting}
-                className="py-2.5 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition disabled:opacity-40 flex items-center justify-center gap-1.5"
+                className="flex-1 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-lg shadow-teal-600/25 transition disabled:opacity-40 flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (
                   <span>Charging...</span>
@@ -1331,6 +1404,10 @@ export const PosTerminal: React.FC = () => {
         branchName={selectedBranch?.name || selectedTenant?.name}
         branchAddress={selectedBranch?.address}
         branchPhone={selectedBranch?.phone}
+        legalName={branchTax?.legalName}
+        ntn={branchTax?.ntn}
+        strn={branchTax?.strn}
+        pricesIncludeTax={branchTax?.pricesIncludeTax}
       />
 
       <ManagerOverrideModal

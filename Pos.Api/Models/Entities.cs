@@ -175,6 +175,13 @@ public class TenantSettings
     /// </summary>
     public bool UseProvincialTax { get; set; } = false;
 
+    /// <summary>
+    /// Whether menu and shelf prices already include tax (the tax is the part of the price it makes
+    /// up), or tax is added on top at checkout. Used by the till and by the server's own pricing, so
+    /// both always arrive at the same total.
+    /// </summary>
+    public bool PricesIncludeTax { get; set; } = false;
+
     // --- Business policies: who decides what, once there is more than one location ----------
     // Chosen at setup from the business's shape and editable later. The code checks these, never
     // the business type, so a chain that lets its branches buy their own bread just says so.
@@ -227,6 +234,34 @@ public class TaxJurisdiction
     public decimal CashTaxRate { get; set; }
     public decimal DigitalTaxRate { get; set; }
     public bool IsActive { get; set; } = true;
+}
+
+/// <summary>How an item is taxed.</summary>
+public enum TaxTreatment
+{
+    /// <summary>At the business's rate for the sale (one rate, cash/card, or the outlet's province).</summary>
+    Standard = 0,
+    /// <summary>Not taxed, and not a taxable sale (e.g. many medicines).</summary>
+    Exempt = 1,
+    /// <summary>A taxable sale at 0%.</summary>
+    ZeroRated = 2,
+    /// <summary>At the item's own rate, whatever the sale.</summary>
+    OwnRate = 3
+}
+
+/// <summary>
+/// A business's own rates for one province (region), when they differ from the platform's defaults
+/// in <see cref="TaxJurisdiction"/>. The platform defaults are shared by every business and only the
+/// platform admin changes them; a business that needs other rates keeps them here, for itself alone.
+/// </summary>
+public class TenantTaxRegionRate
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TenantId { get; set; }
+    public string RegionCode { get; set; } = string.Empty;
+    public decimal CashTaxRate { get; set; }
+    public decimal DigitalTaxRate { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }
 
 /// <summary>
@@ -509,6 +544,11 @@ public class Product
     /// <summary>The business's own price for one tablet (capsule...), when not worked out from the box price.</summary>
     public decimal? LooseUnitPricePKR { get; set; }
 
+    /// <summary>How this item is taxed (Tax Setup): at the business's rate, not at all, or at its own rate.</summary>
+    public TaxTreatment TaxTreatment { get; set; } = TaxTreatment.Standard;
+    /// <summary>The item's own rate, for <see cref="TaxTreatment.OwnRate"/>.</summary>
+    public decimal? TaxRatePercent { get; set; }
+
     public ICollection<ProductModifier> Modifiers { get; set; } = new List<ProductModifier>();
     public ICollection<ProductRecipeItem> RecipeItems { get; set; } = new List<ProductRecipeItem>();
 }
@@ -712,6 +752,14 @@ public class OrderItem
     /// packing never changes what an old sale took or what its return puts back.
     /// </summary>
     public decimal UnitsPerSaleUnit { get; set; } = 1;
+
+    /// <summary>How this line was taxed, as sold (the product's treatment then). Null on sales from
+    /// before tax was worked out per item.</summary>
+    public TaxTreatment? TaxTreatment { get; set; }
+    /// <summary>The rate this line was taxed at (0 for exempt and zero-rated).</summary>
+    public decimal? TaxRatePercent { get; set; }
+    /// <summary>The tax in this line, after its share of the bill's discount.</summary>
+    public decimal? TaxPKR { get; set; }
 
     /// <summary>
     /// Unit price the device actually charged, when it differs from the catalog price the server

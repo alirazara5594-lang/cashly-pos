@@ -19,9 +19,11 @@ import type {
   EffectivePackageFeatures,
   MyPackageInfo,
   SaleUnit,
-  ProductModifier
+  ProductModifier,
+  BranchTax
 } from '../types';
 import type { SaleUnitOption } from '../utils/medicine';
+import { cartTax } from '../utils/tax';
 
 import { offlineDb, saveSetting, getSetting, type OfflineOrder } from '../services/offlineDb';
 import { posApi } from '../services/api';
@@ -307,10 +309,14 @@ interface PosState {
   deliveryAddress?: string;
   discountPKR: number;
 
-  // Tax Configuration
+  // Tax: the fallback rates below apply only until the branch's own arrive (branchTax).
   cashTaxRatePercent: number;
   cardTaxRatePercent: number;
+  /** Whether prices include tax — from the business's Tax Setup, via branchTax. */
   taxMode: 'Exclusive' | 'Inclusive';
+  /** What the server taxes a sale at, at this branch (GET /tax/branch-rates); kept on the device for offline. */
+  branchTax: BranchTax | null;
+  loadBranchTax: (branchId: string) => Promise<void>;
   paymentMethod: PaymentMethod;
   isMenuEditLocked: boolean; // Super Admin managed menu lock
   theme: 'light' | 'dark';
@@ -320,7 +326,6 @@ interface PosState {
   setTheme: (theme: 'light' | 'dark') => void;
   toggleTheme: () => void;
   setPaymentMethod: (method: PaymentMethod) => void;
-  setTaxSettings: (settings: { cashRate?: number; cardRate?: number; mode?: 'Exclusive' | 'Inclusive' }) => void;
   setIsMenuEditLocked: (locked: boolean) => void;
   setDeploymentMode: (mode: 'Single' | 'MultiBranch') => void;
   setIsInstalled: (installed: boolean) => void;
@@ -405,10 +410,11 @@ export const usePosStore = create<PosState>((set, get) => ({
   deliveryAddress: '',
   discountPKR: 0,
 
-  // Tax Rates: 16% Cash, 8% Card/Digital
+  // Tax Rates: 16% Cash, 8% Card/Digital — until the branch's own are loaded.
   cashTaxRatePercent: 16,
   cardTaxRatePercent: 8,
   taxMode: 'Exclusive',
+  branchTax: null,
   paymentMethod: 'Cash',
   isMenuEditLocked: true,
   theme: (localStorage.getItem('cashly_pos_theme') as 'light' | 'dark') || 'light',
@@ -525,12 +531,21 @@ export const usePosStore = create<PosState>((set, get) => ({
   parkedBills: [],
 
   setPaymentMethod: (paymentMethod) => set({ paymentMethod }),
-  setTaxSettings: (settings) => set((state) => ({
-    cashTaxRatePercent: settings.cashRate ?? state.cashTaxRatePercent,
-    cardTaxRatePercent: settings.cardRate ?? state.cardTaxRatePercent,
-    taxMode: settings.mode ?? state.taxMode
-  })),
   setIsMenuEditLocked: (isMenuEditLocked) => set({ isMenuEditLocked }),
+
+  loadBranchTax: async (branchId) => {
+    const cacheKey = `branchTax:${branchId}`;
+    const apply = (tax: BranchTax) => set({ branchTax: tax, taxMode: tax.pricesIncludeTax ? 'Inclusive' : 'Exclusive' });
+    try {
+      const tax = await posApi.getBranchTax(branchId);
+      apply(tax);
+      // Kept on the device, so a till opened offline still charges the right tax.
+      saveSetting(cacheKey, tax).catch(() => { /* optional */ });
+    } catch {
+      const cached = await getSetting(cacheKey).catch(() => null);
+      if (cached) apply(cached as BranchTax);
+    }
+  },
 
   loadTenantSettings: async () => {
     const { selectedTenant } = get();
@@ -607,7 +622,10 @@ export const usePosStore = create<PosState>((set, get) => ({
         selectedModifiers: modifiers,
         specialNotes: notes,
         station: product.station,
-        ...(unit && { saleUnit: unit.unit, unitsPerSaleUnit: unit.units, saleUnitLabel: unit.label })
+        ...(unit && { saleUnit: unit.unit, unitsPerSaleUnit: unit.units, saleUnitLabel: unit.label }),
+        // How it is taxed goes with it, so the cart's tax matches the server's item by item.
+        taxTreatment: product.taxTreatment ?? 'Standard',
+        taxRatePercent: product.taxRatePercent ?? null
       };
       set({ cart: [...cart, newItem] });
     }
@@ -794,7 +812,9 @@ export const usePosStore = create<PosState>((set, get) => ({
   },
 
   getEffectiveTaxRate: () => {
-    const { paymentMethod, tenantSettings, cashTaxRatePercent, cardTaxRatePercent } = get();
+    const { paymentMethod, tenantSettings, cashTaxRatePercent, cardTaxRatePercent, branchTax } = get();
+    // The branch's own rates, as the server resolves them (one rate, cash/card, or its province's).
+    if (branchTax) return paymentMethod === 'Cash' ? branchTax.cashRate : branchTax.cardRate;
     if (tenantSettings) {
       if (tenantSettings.useDualTaxRate) {
         return paymentMethod === 'Cash' ? tenantSettings.defaultTaxRate : tenantSettings.digitalTaxRate;
@@ -811,17 +831,9 @@ export const usePosStore = create<PosState>((set, get) => ({
   },
 
   getTaxAmount: () => {
-    const { taxMode, getEffectiveTaxRate, discountPKR } = get();
-    const subtotal = get().getSubTotal() - discountPKR;
-    const taxable = Math.max(0, subtotal);
-    const rate = getEffectiveTaxRate();
-
-    if (taxMode === 'Inclusive') {
-      // Tax is inside the price
-      return Math.round(taxable - (taxable / (1 + rate / 100)));
-    }
-    // Tax Exclusive: added on top
-    return Math.round((taxable * rate) / 100);
+    const { taxMode, getEffectiveTaxRate, discountPKR, cart, branchTax } = get();
+    // Item by item, as the server does: exempt and own-rate items are taxed their own way.
+    return cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).tax;
   },
 
   getTotal: () => {

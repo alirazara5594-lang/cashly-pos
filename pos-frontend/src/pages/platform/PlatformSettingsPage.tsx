@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Save, RefreshCw, Building2, Landmark, Percent, CalendarClock, MessageCircle, ShieldCheck, Send, AlertTriangle } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { usePosStore } from '../../store/posStore';
-import type { PlatformMessageRow, PlatformSettingsData } from '../../types';
+import type { PlatformMessageRow, PlatformSettingsData, TaxJurisdiction } from '../../types';
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500 disabled:bg-slate-50';
 const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
@@ -18,6 +18,103 @@ const Card: React.FC<{ icon: React.ReactNode; title: string; hint?: string; chil
 );
 
 type Form = PlatformSettingsData & { whatsAppApiKey?: string; whatsAppApiSecret?: string; whatsAppAccessToken?: string };
+
+/**
+ * Cashly's default province tax rates. Every business that has not set its own rates for a province
+ * (Tax Setup) is taxed at these — so changing one changes it for all of them. Only the platform
+ * changes them; each row saves on its own.
+ */
+const PlatformTaxDefaults: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
+  const [rows, setRows] = useState<TaxJurisdiction[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, { cash: string; card: string }>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getTaxJurisdictions()
+      .then(list => {
+        if (cancelled) return;
+        setRows(list);
+        setDrafts(Object.fromEntries(list.map(j => [j.id, { cash: String(j.cashTaxRate), card: String(j.digitalTaxRate) }])));
+      })
+      .catch(() => { if (!cancelled) setRows([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async (j: TaxJurisdiction) => {
+    const d = drafts[j.id];
+    const cash = parseFloat(d.cash);
+    const card = parseFloat(d.card);
+    if (![cash, card].every(n => Number.isFinite(n) && n >= 0 && n <= 100)) {
+      setNote({ ok: false, text: `${j.authorityName}: rates must be between 0 and 100%.` });
+      return;
+    }
+    if (!window.confirm(`Change ${j.authorityName}'s default to ${cash}% cash / ${card}% card for every business that uses Cashly's rate?`)) return;
+    setBusyId(j.id);
+    setNote(null);
+    try {
+      const saved = await posApi.updateTaxJurisdiction(j.id, { cashTaxRate: cash, digitalTaxRate: card });
+      setRows(prev => prev?.map(r => (r.id === j.id ? { ...r, ...saved } : r)) ?? prev);
+      setNote({ ok: true, text: `${j.authorityName}: default rates saved.` });
+    } catch (err) {
+      setNote({ ok: false, text: getApiErrorMessage(err, 'Could not save the rates.') });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <Card icon={<Landmark className="w-4 h-4 text-teal-600" />} title="Default province tax rates"
+      hint="Used by every business that has not set its own rates for a province in Tax Setup. A change here reaches all of them.">
+      {!rows ? <p className="text-[11px] text-slate-400">Loading…</p> : rows.length === 0 ? <p className="text-[11px] text-slate-400">No provinces set up.</p> : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs min-w-[480px]">
+            <thead>
+              <tr className="border-b border-slate-200 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <th className="py-2 pr-2">Province</th>
+                <th className="py-2 pr-2 text-right">Cash %</th>
+                <th className="py-2 pr-2 text-right">Card %</th>
+                <th className="py-2" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map(j => {
+                const d = drafts[j.id] ?? { cash: String(j.cashTaxRate), card: String(j.digitalTaxRate) };
+                const changed = parseFloat(d.cash) !== j.cashTaxRate || parseFloat(d.card) !== j.digitalTaxRate;
+                return (
+                  <tr key={j.id}>
+                    <td className="py-2 pr-2">
+                      <div className="font-semibold text-slate-900">{j.authorityName}</div>
+                      <div className="text-[10px] font-mono text-slate-400">{j.countryCode} · {j.regionCode}</div>
+                    </td>
+                    {(['cash', 'card'] as const).map(k => (
+                      <td key={k} className="py-2 pr-2 text-right">
+                        <input type="number" min="0" max="100" step="0.5" value={d[k]} disabled={!canEdit}
+                          aria-label={`${j.authorityName} ${k} rate`}
+                          onChange={(e) => setDrafts(prev => ({ ...prev, [j.id]: { ...d, [k]: e.target.value } }))}
+                          className="w-20 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-right text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500 disabled:bg-slate-50" />
+                      </td>
+                    ))}
+                    <td className="py-2 text-right">
+                      {canEdit && (
+                        <button onClick={() => save(j)} disabled={!changed || busyId === j.id}
+                          className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 disabled:opacity-40 text-white text-[11px] font-bold">
+                          {busyId === j.id ? 'Saving…' : 'Save'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {note && <p className={`text-[11px] font-semibold ${note.ok ? 'text-teal-700' : 'text-rose-600'}`}>{note.text}</p>}
+    </Card>
+  );
+};
 
 /**
  * Cashly's own details and the rules billing runs by: what an invoice says about you and how
@@ -228,6 +325,8 @@ export const PlatformSettingsPage: React.FC = () => {
       <Card icon={<ShieldCheck className="w-4 h-4 text-teal-600" />} title="Platform team">
         {toggle('requireTwoStepForTeam', 'Everyone on the team must use 2-step sign-in', 'Until they turn it on, they can only do that. Strongly recommended: this console can change every customer.')}
       </Card>
+
+      <PlatformTaxDefaults canEdit={canEdit} />
 
       {message && (
         <div className={`px-3 py-2 rounded-xl text-xs font-semibold border ${message.ok ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>{message.text}</div>

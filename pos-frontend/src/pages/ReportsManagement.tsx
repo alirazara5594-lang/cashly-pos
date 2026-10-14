@@ -24,6 +24,7 @@ import type {
   CategorySalesReport, 
   ItemPerformanceReport,
   TaxAuditReport,
+  TaxByRateReport,
   PaymentMethodsReport,
   ConsolidatedFinancialReport
 } from '../types';
@@ -85,6 +86,7 @@ export const ReportsManagement: React.FC = () => {
   // Report Datasets
   const [zReport, setZReport] = useState<ZReportSummary | null>(null);
   const [taxAudit, setTaxAudit] = useState<TaxAuditReport | null>(null);
+  const [taxByRate, setTaxByRate] = useState<TaxByRateReport | null>(null);
   const [categorySales, setCategorySales] = useState<CategorySalesReport[]>([]);
   const [productPerformance, setProductPerformance] = useState<ItemPerformanceReport[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodsReport | null>(null);
@@ -118,6 +120,10 @@ export const ReportsManagement: React.FC = () => {
       } else if (activeTab === 'tax') {
         const data = await posApi.getTaxAuditReport(reportLocationId, selectedDaysRange);
         setTaxAudit(data);
+        // The same days, by rate: items are taxed one by one (exempt, own rate), not a bill at a time.
+        const since = new Date();
+        since.setDate(since.getDate() - selectedDaysRange);
+        setTaxByRate(await posApi.getTaxByRate(reportLocationId, since.toLocaleDateString('en-CA'), new Date().toLocaleDateString('en-CA')).catch(() => null));
       } else if (activeTab === 'categories') {
         const data = await posApi.getCategorySalesReport(reportLocationId, selectedDaysRange);
         setCategorySales(data);
@@ -600,6 +606,40 @@ export const ReportsManagement: React.FC = () => {
         {/* ========================================================================= */}
         {activeTab === 'tax' && (
           <div className="space-y-6">
+            {/* Tax by rate: what was sold at each rate and the tax on it, then zero-rated and exempt. */}
+            {taxByRate && taxByRate.rows.length > 0 && (
+              <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-sm">Tax by rate</h4>
+                    <span className="text-[11px] text-slate-500">Each item taxed its own way — standard, own rate, zero-rated or exempt</span>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-teal-700">Total tax {taxByRate.totalTaxPKR.toLocaleString()}</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="py-2.5 px-5">Rate</th>
+                        <th className="py-2.5 px-3 text-right">Lines</th>
+                        <th className="py-2.5 px-3 text-right">Sales</th>
+                        <th className="py-2.5 px-5 text-right">Tax</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {taxByRate.rows.map(r => (
+                        <tr key={`${r.kind}-${r.ratePercent}`} className={r.kind === 'earlier' ? 'text-slate-500' : ''}>
+                          <td className="py-2.5 px-5 font-semibold text-slate-900">{r.label}</td>
+                          <td className="py-2.5 px-3 text-right font-mono">{r.lines.toLocaleString()}</td>
+                          <td className="py-2.5 px-3 text-right font-mono">{r.salesPKR.toLocaleString()}</td>
+                          <td className="py-2.5 px-5 text-right font-mono font-bold">{r.kind === 'exempt' ? '—' : r.taxPKR.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             {taxAudit ? (
               <>
                 {/* 2 Big Segments: 16% Cash vs 8% Card */}

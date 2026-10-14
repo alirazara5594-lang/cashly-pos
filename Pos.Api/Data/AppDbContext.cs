@@ -72,6 +72,7 @@ public class AppDbContext : DbContext
     public DbSet<SmartAlert> SmartAlerts => Set<SmartAlert>();
     public DbSet<TenantSettings> TenantSettings => Set<TenantSettings>();
     public DbSet<TaxJurisdiction> TaxJurisdictions => Set<TaxJurisdiction>();
+    public DbSet<TenantTaxRegionRate> TenantTaxRegionRates => Set<TenantTaxRegionRate>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<GiftCard> GiftCards => Set<GiftCard>();
@@ -662,6 +663,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<Prescription>().HasIndex(p => p.OrderId).IsUnique();
         modelBuilder.Entity<Prescription>().HasIndex(p => p.TenantId);
         modelBuilder.Entity<PrescriptionPhoto>().HasKey(p => p.PrescriptionId);
+        modelBuilder.Entity<TenantTaxRegionRate>().HasIndex(r => new { r.TenantId, r.RegionCode }).IsUnique();
 
         modelBuilder.Entity<TenantNote>().HasIndex(n => new { n.TenantId, n.CreatedAt });
         modelBuilder.Entity<TenantNote>().HasIndex(n => n.FollowUpAt);

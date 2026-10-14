@@ -1620,7 +1620,8 @@ using (var scope = app.Services.CreateScope())
         ("Batches and medicines", EnsureBatchSchemaAsync),
         ("Existing batch numbers into batches", MoveBranchStockBatchesAsync),
         ("Medicine packing and loose sale", EnsurePackingSchemaAsync),
-        ("Prescriptions", EnsurePrescriptionSchemaAsync)
+        ("Prescriptions", EnsurePrescriptionSchemaAsync),
+        ("Tax setup", EnsureTaxSetupSchemaAsync)
     })
     {
         try
@@ -1924,6 +1925,25 @@ static Task EnsurePackingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlR
     ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""LooseUnitPricePKR"" numeric NULL;
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""SaleUnit"" integer NULL;
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""UnitsPerSaleUnit"" numeric NOT NULL DEFAULT 1;
+");
+
+/// <summary>Whether prices include tax, and each business's own province rates (TenantTaxRegionRate).</summary>
+static Task EnsureTaxSetupSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""PricesIncludeTax"" boolean NOT NULL DEFAULT FALSE;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""TaxTreatment"" integer NOT NULL DEFAULT 0;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""TaxRatePercent"" numeric NULL;
+    ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""TaxTreatment"" integer NULL;
+    ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""TaxRatePercent"" numeric NULL;
+    ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""TaxPKR"" numeric NULL;
+    CREATE TABLE IF NOT EXISTS ""TenantTaxRegionRates"" (
+        ""Id"" uuid NOT NULL PRIMARY KEY,
+        ""TenantId"" uuid NOT NULL,
+        ""RegionCode"" text NOT NULL,
+        ""CashTaxRate"" numeric NOT NULL DEFAULT 0,
+        ""DigitalTaxRate"" numeric NOT NULL DEFAULT 0,
+        ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_TenantTaxRegionRates_TenantId_RegionCode"" ON ""TenantTaxRegionRates"" (""TenantId"", ""RegionCode"");
 ");
 
 /// <summary>The prescriptions sales of prescription-only and controlled medicines are made against.</summary>
@@ -3331,6 +3351,17 @@ static void ApplyMedicineDetails(Product product, MedicineDetailsDto? medicine)
     product.LooseUnitPricePKR = medicine.LooseUnitPricePKR is > 0 ? medicine.LooseUnitPricePKR : null;
 }
 
+/// <summary>An item's tax treatment onto its product (null leaves it as it is). The reason when refused.</summary>
+static string? ApplyProductTax(Product product, TaxTreatment? treatment, decimal? ratePercent)
+{
+    if (treatment == null) return null;
+    if (treatment == TaxTreatment.OwnRate && ratePercent is null or < 0 or > 100)
+        return "Enter the item's own tax rate, between 0 and 100%.";
+    product.TaxTreatment = treatment.Value;
+    product.TaxRatePercent = treatment == TaxTreatment.OwnRate ? ratePercent : null;
+    return null;
+}
+
 /// <summary>A CNIC as its 13 digits, or null when what was entered is not one.</summary>
 static string? NormalizeCnic(string? cnic)
 {
@@ -4167,7 +4198,12 @@ static async Task<(bool Skipped, bool Sent, string? Reason, Guid? LogId)> SendWh
 }
 
 // --- Helper: resolve the applicable tax rates for a branch ---
-static async Task<(decimal CashRate, decimal DigitalRate, int DecimalPlaces)> ResolveTaxRatesAsync(AppDbContext db, Branch branch)
+// The one place a sale's tax rates come from — the till asks for them through /tax/branch-rates, so
+// what it shows and what the server charges never differ. The business chooses one way (Tax Setup):
+//   one rate for everything, a cash rate and a card rate, or by province — each outlet then taking its
+//   province's rates: the business's own (TenantTaxRegionRate) if it set them, else the platform's.
+// And whether its prices already include the tax.
+static async Task<(decimal CashRate, decimal DigitalRate, int DecimalPlaces, bool PricesIncludeTax)> ResolveTaxRatesAsync(AppDbContext db, Branch branch)
 {
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == branch.TenantId);
     var decimals = settings?.DecimalPlaces ?? 2;
@@ -4178,15 +4214,57 @@ static async Task<(decimal CashRate, decimal DigitalRate, int DecimalPlaces)> Re
     // Everyone else (non-PK tenants, PK tenants with no region set) keeps the flat tenant rate.
     if (settings != null && settings.UseProvincialTax && !string.IsNullOrWhiteSpace(branch.RegionCode))
     {
-        var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j =>
-            j.CountryCode == settings.CountryCode && j.RegionCode == branch.RegionCode && j.IsActive);
-        if (jurisdiction != null)
+        var own = await db.TenantTaxRegionRates.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(r => r.TenantId == branch.TenantId && r.RegionCode == branch.RegionCode);
+        if (own != null)
         {
-            cashRate = jurisdiction.CashTaxRate;
-            digitalRate = jurisdiction.DigitalTaxRate;
+            cashRate = own.CashTaxRate;
+            digitalRate = own.DigitalTaxRate;
+        }
+        else
+        {
+            var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j =>
+                j.CountryCode == settings.CountryCode && j.RegionCode == branch.RegionCode && j.IsActive);
+            if (jurisdiction != null)
+            {
+                cashRate = jurisdiction.CashTaxRate;
+                digitalRate = jurisdiction.DigitalTaxRate;
+            }
         }
     }
-    return (cashRate, digitalRate, decimals);
+    return (cashRate, digitalRate, decimals, settings?.PricesIncludeTax ?? false);
+}
+
+/// <summary>
+/// The tax on a sale, item by item: each line at its own treatment — the sale's rate (standard), none
+/// (exempt, zero-rated) or the item's own rate — on its share of the bill after the discount. Sets
+/// each line's rate and tax, and returns the bill's tax and what the customer pays. With prices that
+/// include tax, the tax is the part of each line it makes up; otherwise it is added on top.
+/// </summary>
+static (decimal Tax, decimal Total) TaxLines(IEnumerable<OrderItem> lines, decimal subTotal, decimal discount,
+    decimal saleRatePercent, bool pricesIncludeTax, int decimals)
+{
+    var taxable = Math.Max(0, subTotal - discount);
+    decimal tax = 0;
+    foreach (var line in lines)
+    {
+        var rate = line.TaxTreatment switch
+        {
+            TaxTreatment.Exempt or TaxTreatment.ZeroRated => 0m,
+            TaxTreatment.OwnRate => line.TaxRatePercent ?? 0m,
+            _ => saleRatePercent
+        };
+        var share = subTotal > 0 ? line.TotalPricePKR / subTotal : 0m;
+        var lineTaxable = Math.Max(0, line.TotalPricePKR - discount * share);
+        var lineTax = rate <= 0 ? 0m
+            : pricesIncludeTax ? lineTaxable - lineTaxable / (1 + rate / 100m)
+            : lineTaxable * rate / 100m;
+        line.TaxRatePercent = rate;
+        line.TaxPKR = Math.Round(lineTax, 2, MidpointRounding.AwayFromZero);
+        tax += lineTax;
+    }
+    tax = Math.Round(tax, decimals, MidpointRounding.AwayFromZero);
+    return (tax, pricesIncludeTax ? taxable : taxable + tax);
 }
 
 static decimal PickTaxRate(PaymentMethod method, decimal cashRate, decimal digitalRate) => method switch
@@ -4261,7 +4339,10 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
             SpecialNotes = item.SpecialNotes,
             Station = product.Station,
             SaleUnit = saleUnit,
-            UnitsPerSaleUnit = Pos.Api.Services.MedicinePacking.UnitsPer(product, saleUnit)
+            UnitsPerSaleUnit = Pos.Api.Services.MedicinePacking.UnitsPer(product, saleUnit),
+            // How the item is taxed (Tax Setup); the rate and tax are worked out with the bill's below.
+            TaxTreatment = product.TaxTreatment,
+            TaxRatePercent = product.TaxTreatment == TaxTreatment.OwnRate ? product.TaxRatePercent ?? 0m : null
         });
     }
 
@@ -4282,18 +4363,19 @@ static async Task<ServerPricedOrder> PriceOrderAsync(AppDbContext db, Branch bra
     }
     if (discount > subTotal) discount = subTotal;
 
-    var (cashRate, digitalRate, decimals) = await ResolveTaxRatesAsync(db, branch);
+    var (cashRate, digitalRate, decimals, pricesIncludeTax) = await ResolveTaxRatesAsync(db, branch);
     var rate = PickTaxRate(dto.PaymentMethod, cashRate, digitalRate);
 
     subTotal = Math.Round(subTotal, decimals, MidpointRounding.AwayFromZero);
     discount = Math.Round(discount, decimals, MidpointRounding.AwayFromZero);
-    var tax = Math.Round((subTotal - discount) * (rate / 100m), decimals, MidpointRounding.AwayFromZero);
+    var (tax, total) = TaxLines(result.Items, subTotal, discount, rate, pricesIncludeTax, decimals);
 
     result.SubTotalPKR = subTotal;
     result.DiscountPKR = discount;
     result.TaxPKR = tax;
-    result.TotalPKR = subTotal - discount + tax;
+    result.TotalPKR = total;
     result.TaxRatePercent = rate;
+    result.PricesIncludeTax = pricesIncludeTax;
     result.Decimals = decimals;
     return result;
 }
@@ -4432,9 +4514,8 @@ static async Task ApplyOrderCommerceAsync(AppDbContext db, Order order, CreateOr
                     promo.UsesCount += 1;
                     order.PromoCodeId = promo.Id;
 
-                    // Re-derive tax and total from the new pre-tax base.
-                    priced.TaxPKR = Math.Round((priced.SubTotalPKR - priced.DiscountPKR) * (priced.TaxRatePercent / 100m), decimals, MidpointRounding.AwayFromZero);
-                    priced.TotalPKR = priced.SubTotalPKR - priced.DiscountPKR + priced.TaxPKR;
+                    // Re-derive tax and total from the new base, the same way the price was taxed.
+                    (priced.TaxPKR, priced.TotalPKR) = TaxLines(priced.Items, priced.SubTotalPKR, priced.DiscountPKR, priced.TaxRatePercent, priced.PricesIncludeTax, decimals);
                 }
             }
         }
@@ -6793,6 +6874,8 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
         Unit = dto.Unit ?? "Piece", Station = dto.Station, ImageUrl = dto.ImageUrl, IsActive = true
     };
     ApplyMedicineDetails(product, dto.Medicine);
+    var taxRefused = ApplyProductTax(product, dto.TaxTreatment, dto.TaxRatePercent);
+    if (taxRefused != null) return Results.BadRequest(new { message = taxRefused });
     db.Products.Add(product);
     var packingRefused = await ApplyPackingAsync(db, product, dto.Medicine);
     if (packingRefused != null) return Results.BadRequest(new { message = packingRefused });
@@ -6827,6 +6910,8 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     product.CategoryId = dto.CategoryId;
     product.Station = dto.Station;
     ApplyMedicineDetails(product, dto.Medicine);
+    var taxRefused = ApplyProductTax(product, dto.TaxTreatment, dto.TaxRatePercent);
+    if (taxRefused != null) return Results.BadRequest(new { message = taxRefused });
 
     // Setting packing the first time converts the stock already counted in boxes into tablets, at
     // every location; that and the product's own change are saved together or not at all.
@@ -7057,6 +7142,12 @@ api.MapPost("/orders", async (
         status = order.Status.ToString(),
         subTotalPKR = order.SubTotalPKR, discountPKR = order.DiscountPKR,
         taxPKR = order.TaxPKR, taxRatePercent = priced!.TaxRatePercent, totalPKR = order.TotalPKR,
+        // The tax by rate, for the receipt: what was sold at each rate, then what was exempt.
+        taxLines = order.Items.Where(i => i.TaxTreatment != null)
+            .GroupBy(i => i.TaxTreatment == TaxTreatment.Exempt ? -1m : i.TaxRatePercent ?? 0m)
+            .OrderByDescending(g => g.Key)
+            .Select(g => new { ratePercent = g.Key < 0 ? 0m : g.Key, exempt = g.Key < 0, amountPKR = g.Sum(i => i.TotalPricePKR), taxPKR = g.Sum(i => i.TaxPKR ?? 0m) })
+            .ToList(),
         discountRejected = priced.DiscountRejected,
         customerId = order.CustomerId,
         promoCodeApplied = priced.AppliedPromo?.Code,
@@ -10361,14 +10452,19 @@ api.MapGet("/reports/sales-by-category", async (AppDbContext db, HttpContext htt
     if (scopeError != null) return scopeError;
 
     var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId);
-    var taxDivisor = settings != null ? (1 + settings.DefaultTaxRate / 100m) : 1.16m;
+    // Line amounts carry the tax inside them only when the business's prices include tax; otherwise
+    // they are the net amount and the tax was added on top. (At the business's main rate.)
+    var categoryTaxRate = (settings?.DefaultTaxRate ?? 16m) / 100m;
+    var pricesIncludeTax = settings?.PricesIncludeTax == true;
+    decimal NetOf(decimal amount) => pricesIncludeTax ? Math.Round(amount / (1 + categoryTaxRate), 2) : amount;
+    decimal TaxOf(decimal amount) => pricesIncludeTax ? Math.Round(amount - amount / (1 + categoryTaxRate), 2) : Math.Round(amount * categoryTaxRate, 2);
     var zone = BusinessTimeZone(settings?.CountryCode);
     var since = BusinessDayUtc(BusinessToday(zone).AddDays(-(days ?? 7)), zone).StartUtc;
     var items = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= since && o.IsPaid)
         .SelectMany(o => o.Items).Include(i => i.Product).ThenInclude(p => p!.Category).ToListAsync();
     var totalRevenue = items.Sum(i => i.TotalPricePKR);
     return Results.Ok(items.GroupBy(i => new { Id = i.Product?.CategoryId ?? Guid.Empty, Name = i.Product?.Category?.Name ?? "Uncategorized" })
-        .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = Math.Round(gross / taxDivisor, 2), taxPKR = Math.Round(gross - (gross / taxDivisor), 2), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
+        .Select(g => { var gross = g.Sum(x => x.TotalPricePKR); return new { categoryId = g.Key.Id.ToString(), categoryName = g.Key.Name, quantitySold = g.Sum(x => x.Quantity), grossSalesPKR = gross, netSalesPKR = NetOf(gross), taxPKR = TaxOf(gross), percentageOfTotal = totalRevenue > 0 ? Math.Round((gross / totalRevenue) * 100, 1) : 0 }; })
         .OrderByDescending(x => x.grossSalesPKR).ToList());
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasAdvancedReports)));
@@ -10400,7 +10496,7 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
     // One location's own (provincial) rates; across locations, the business's default.
     if (branchIds.Count == 1 && await db.Branches.FirstOrDefaultAsync(b => b.Id == branchIds[0]) is { } branchEntity)
     {
-        var (cashRate, digitalRate, _) = await ResolveTaxRatesAsync(db, branchEntity);
+        var (cashRate, digitalRate, _, _) = await ResolveTaxRatesAsync(db, branchEntity);
         primaryTaxRate = cashRate;
         secondaryTaxRate = digitalRate;
     }
@@ -15207,13 +15303,15 @@ api.MapGet("/settings/tax-jurisdictions", async (AppDbContext db) =>
     });
 });
 
-// Only the Owner or a platform SuperAdmin may change the rates.
+// These are the PLATFORM's default province rates, shared by every business — so only the platform
+// admin changes them. A business that needs other rates keeps its own (PUT /tax/setup), for itself.
+// (Any owner could change these before, which changed every other business's tax with them.)
 api.MapPut("/settings/tax-jurisdictions/{id:guid}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTaxJurisdictionDto dto) =>
 {
     var currentUser = await accessor.GetCurrentUserAsync(http);
     if (currentUser == null) return Results.Unauthorized();
-    if (!(http.IsSuperAdmin() || UserRoles.RunsBusiness(currentUser.Role) || currentUser.Role == UserRole.SuperAdmin))
-        return Results.Json(new { message = "Only the restaurant owner can change tax jurisdiction rates." }, statusCode: 403);
+    if (!http.IsSuperAdmin())
+        return Results.Json(new { message = "These are Cashly's default rates for every business. Set your own rates in Tax Setup instead." }, statusCode: 403);
 
     var jurisdiction = await db.TaxJurisdictions.FirstOrDefaultAsync(j => j.Id == id);
     if (jurisdiction == null) return Results.NotFound();
@@ -15239,6 +15337,279 @@ api.MapPut("/settings/tax-jurisdictions/{id:guid}", async (AppDbContext db, Http
     await db.SaveChangesAsync();
     return Results.Ok(jurisdiction);
 });
+
+// ============================================================
+// TAX SETUP — one page, one save (pages/TaxConfiguration.tsx)
+//
+// How the business is taxed: whether its prices include tax; one rate, a cash and a card rate, or
+// by province; which province each selling location is in; its own rates for a province when they
+// differ from the platform's; and the NTN / STRN printed on its receipts. Everything the till and the
+// server price with comes from here, through ResolveTaxRatesAsync.
+// ============================================================
+
+api.MapGet("/tax/setup", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    if (settings == null) return Results.NotFound(new { message = "This business has no settings yet." });
+    var tenant = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == tenantId.Value);
+
+    var platformRates = await db.TaxJurisdictions
+        .Where(j => j.CountryCode == settings.CountryCode && j.IsActive)
+        .OrderBy(j => j.AuthorityName).ToListAsync();
+    var ownRates = await db.TenantTaxRegionRates.Where(r => r.TenantId == tenantId.Value).ToDictionaryAsync(r => r.RegionCode);
+    var outlets = await db.Branches.Where(b => b.TenantId == tenantId.Value && b.CanSell)
+        .OrderBy(b => b.Name)
+        .Select(b => new { id = b.Id, name = b.Name, code = b.Code, regionCode = b.RegionCode, companyId = b.CompanyId })
+        .ToListAsync();
+    if (!await db.Companies.AnyAsync(c => c.TenantId == tenantId.Value && c.IsDefault))
+    {
+        await GetOrCreateDefaultCompanyAsync(db, tenantId.Value, tenant?.Name ?? "My business");
+        await db.SaveChangesAsync();
+    }
+    var companies = await db.Companies.Where(c => c.TenantId == tenantId.Value)
+        .OrderByDescending(c => c.IsDefault).ThenBy(c => c.LegalName)
+        .Select(c => new { id = c.Id, legalName = c.LegalName, isDefault = c.IsDefault, ntn = c.TaxRegistrationNumber, strn = c.SalesTaxRegistrationNumber })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        pricesIncludeTax = settings.PricesIncludeTax,
+        mode = settings.UseProvincialTax ? "Provincial" : settings.UseDualTaxRate ? "CashCard" : "Single",
+        standardRate = settings.DefaultTaxRate,
+        cardRate = settings.DigitalTaxRate,
+        taxAuthorityName = settings.TaxAuthorityName,
+        countryCode = settings.CountryCode,
+        decimals = settings.DecimalPlaces,
+        regions = platformRates.Select(j =>
+        {
+            var own = ownRates.GetValueOrDefault(j.RegionCode);
+            return new
+            {
+                regionCode = j.RegionCode, authorityName = j.AuthorityName,
+                defaultCashRate = j.CashTaxRate, defaultCardRate = j.DigitalTaxRate,
+                cashRate = own?.CashTaxRate ?? j.CashTaxRate, cardRate = own?.DigitalTaxRate ?? j.DigitalTaxRate,
+                ownRates = own != null
+            };
+        }).ToList(),
+        outlets,
+        companies
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
+
+api.MapPut("/tax/setup", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SaveTaxSetupDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var settings = await db.TenantSettings.FirstOrDefaultAsync(s => s.TenantId == tenantId.Value);
+    if (settings == null) return Results.NotFound(new { message = "This business has no settings yet." });
+
+    var mode = dto.Mode?.Trim();
+    if (mode is not ("Single" or "CashCard" or "Provincial"))
+        return Results.BadRequest(new { message = "Choose how tax is charged: one rate, cash and card rates, or by province." });
+    static bool BadRate(decimal r) => r < 0 || r > 100;
+    if (BadRate(dto.StandardRate) || BadRate(dto.CardRate))
+        return Results.BadRequest(new { message = "A tax rate must be between 0 and 100%." });
+
+    var platformRates = await db.TaxJurisdictions.Where(j => j.CountryCode == settings.CountryCode && j.IsActive)
+        .ToDictionaryAsync(j => j.RegionCode);
+    var before = $"{(settings.PricesIncludeTax ? "prices include tax" : "tax on top")}; "
+               + $"{(settings.UseProvincialTax ? "by province" : settings.UseDualTaxRate ? "cash/card" : "one rate")}; "
+               + $"{settings.DefaultTaxRate:0.##}% / {settings.DigitalTaxRate:0.##}%";
+
+    settings.PricesIncludeTax = dto.PricesIncludeTax;
+    settings.DefaultTaxRate = dto.StandardRate;
+    settings.DigitalTaxRate = mode == "Single" ? dto.StandardRate : dto.CardRate;
+    settings.UseDualTaxRate = mode != "Single";
+    settings.UseProvincialTax = mode == "Provincial";
+
+    // Which province each selling location is in (used when tax is by province).
+    if (dto.OutletRegions != null)
+    {
+        var branches = await db.Branches.Where(b => b.TenantId == tenantId.Value).ToDictionaryAsync(b => b.Id);
+        foreach (var outlet in dto.OutletRegions)
+        {
+            if (!branches.TryGetValue(outlet.BranchId, out var branch)) continue;
+            var code = NullIfBlank(outlet.RegionCode);
+            if (code != null && !platformRates.ContainsKey(code))
+                return Results.BadRequest(new { message = $"{branch.Name}: unknown province {code}." });
+            branch.RegionCode = code;
+        }
+    }
+
+    // The business's own rates for a province. The same as the platform's default means "follow the
+    // default", so the own copy is dropped and later changes to the default reach this business too.
+    if (dto.RegionRates != null)
+    {
+        var ownRates = await db.TenantTaxRegionRates.Where(r => r.TenantId == tenantId.Value).ToDictionaryAsync(r => r.RegionCode);
+        foreach (var rate in dto.RegionRates)
+        {
+            if (!platformRates.TryGetValue(rate.RegionCode, out var platform))
+                return Results.BadRequest(new { message = $"Unknown province {rate.RegionCode}." });
+            if (BadRate(rate.CashRate) || BadRate(rate.CardRate))
+                return Results.BadRequest(new { message = $"{platform.AuthorityName}: a tax rate must be between 0 and 100%." });
+            ownRates.TryGetValue(rate.RegionCode, out var own);
+            if (rate.CashRate == platform.CashTaxRate && rate.CardRate == platform.DigitalTaxRate)
+            {
+                if (own != null) db.TenantTaxRegionRates.Remove(own);
+                continue;
+            }
+            if (own == null)
+            {
+                own = new TenantTaxRegionRate { TenantId = tenantId.Value, RegionCode = rate.RegionCode };
+                db.TenantTaxRegionRates.Add(own);
+            }
+            own.CashTaxRate = rate.CashRate;
+            own.DigitalTaxRate = rate.CardRate;
+            own.UpdatedAt = DateTime.UtcNow;
+        }
+    }
+
+    // The NTN and STRN printed on receipts, per company the business trades under.
+    if (dto.Companies != null)
+    {
+        foreach (var entry in dto.Companies)
+        {
+            var company = await db.Companies.FirstOrDefaultAsync(c => c.Id == entry.Id && c.TenantId == tenantId.Value);
+            if (company == null) continue;
+            company.TaxRegistrationNumber = NullIfBlank(entry.Ntn);
+            company.SalesTaxRegistrationNumber = NullIfBlank(entry.Strn);
+        }
+    }
+
+    var after = $"{(settings.PricesIncludeTax ? "prices include tax" : "tax on top")}; "
+              + $"{(mode == "Provincial" ? "by province" : mode == "CashCard" ? "cash/card" : "one rate")}; "
+              + $"{settings.DefaultTaxRate:0.##}% / {settings.DigitalTaxRate:0.##}%";
+    await WriteAuditAsync(db, tenantId.Value, await accessor.GetCurrentUserAsync(http), "TaxSetupChanged", "TenantSettings", settings.Id, before, after);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Tax setup saved." });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"));
+
+// Items taxed differently: each category with how its items are taxed, and the items not at the
+// standard rate — so a pharmacy sees its exempt medicines, and a shop its own-rate items, at a glance.
+api.MapGet("/tax/items", async (AppDbContext db, HttpContext http) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var products = await db.Products.Where(p => p.TenantId == tenantId.Value && p.IsActive)
+        .Select(p => new { p.Id, p.Name, p.CategoryId, p.TaxTreatment, p.TaxRatePercent }).ToListAsync();
+    var categoryNames = await db.Categories.Where(c => c.TenantId == tenantId.Value).ToDictionaryAsync(c => c.Id, c => c.Name);
+    var different = products.Where(p => p.TaxTreatment != TaxTreatment.Standard).OrderBy(p => p.Name).ToList();
+    return Results.Ok(new
+    {
+        categories = products.GroupBy(p => p.CategoryId).Select(g => new
+        {
+            id = g.Key, name = categoryNames.GetValueOrDefault(g.Key) ?? "Uncategorized", items = g.Count(),
+            standard = g.Count(p => p.TaxTreatment == TaxTreatment.Standard),
+            exempt = g.Count(p => p.TaxTreatment == TaxTreatment.Exempt),
+            zeroRated = g.Count(p => p.TaxTreatment == TaxTreatment.ZeroRated),
+            ownRate = g.Count(p => p.TaxTreatment == TaxTreatment.OwnRate)
+        }).OrderBy(c => c.name).ToList(),
+        items = different.Take(300).Select(p => new
+        {
+            id = p.Id, name = p.Name, categoryName = categoryNames.GetValueOrDefault(p.CategoryId) ?? "Uncategorized",
+            taxTreatment = p.TaxTreatment.ToString(), taxRatePercent = p.TaxRatePercent
+        }).ToList(),
+        moreItems = Math.Max(0, different.Count - 300)
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
+
+// Every item in a category taxed one way at once (a pharmacy marking all its medicines exempt).
+api.MapPost("/tax/categories/{id:guid}/apply", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid id, ApplyCategoryTaxDto dto) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var category = await db.Categories.FirstOrDefaultAsync(c => c.Id == id && c.TenantId == tenantId.Value);
+    if (category == null) return Results.NotFound(new { message = "Category not found." });
+    var products = await db.Products.Where(p => p.TenantId == tenantId.Value && p.CategoryId == id).ToListAsync();
+    foreach (var product in products)
+    {
+        var refused = ApplyProductTax(product, dto.TaxTreatment, dto.TaxRatePercent);
+        if (refused != null) return Results.BadRequest(new { message = refused });
+    }
+    var label = dto.TaxTreatment switch
+    {
+        TaxTreatment.Exempt => "exempt",
+        TaxTreatment.ZeroRated => "zero-rated",
+        TaxTreatment.OwnRate => $"{dto.TaxRatePercent:0.##}%",
+        _ => "the standard rate"
+    };
+    await WriteAuditAsync(db, tenantId.Value, await accessor.GetCurrentUserAsync(http), "CategoryTaxChanged", "Category", category.Id,
+        null, $"{products.Count} item(s) in {category.Name} taxed at {label}");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = $"{products.Count} item(s) in {category.Name} now taxed at {label}.", count = products.Count });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "edit"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// Tax by rate over a span of days: for each rate, what was sold and the tax on it; then zero-rated and
+// exempt sales; and sales from before tax was worked out per item, at their bills' own tax.
+api.MapGet("/reports/tax-by-rate", async (AppDbContext db, HttpContext http, Guid? branchId, DateTime? from, DateTime? to, bool? allLocations) =>
+{
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, branchId, allLocations == true);
+    if (scopeError != null) return scopeError;
+    if (ReportDays(await TenantTimeZoneAsync(db, tenantId), from, to) is not { } span)
+        return Results.BadRequest(new { message = "The first day must not be after the last." });
+    var orders = db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled
+                                   && o.CreatedAt >= span.StartUtc && o.CreatedAt < span.EndUtc);
+    var lines = await orders.SelectMany(o => o.Items)
+        .Where(i => i.TaxTreatment != null)
+        .Select(i => new { i.TaxTreatment, i.TaxRatePercent, i.TotalPricePKR, i.TaxPKR })
+        .ToListAsync();
+    var earlier = await orders.Where(o => !o.Items.Any(i => i.TaxTreatment != null))
+        .Select(o => new { o.SubTotalPKR, o.DiscountPKR, o.TaxPKR }).ToListAsync();
+
+    var rows = lines
+        .GroupBy(l => l.TaxTreatment == TaxTreatment.Exempt ? "exempt" : l.TaxTreatment == TaxTreatment.ZeroRated ? "zero" : $"rate:{l.TaxRatePercent ?? 0m:0.####}")
+        .Select(g =>
+        {
+            var first = g.First();
+            var kind = g.Key == "exempt" ? "exempt" : g.Key == "zero" ? "zero" : "rate";
+            return new
+            {
+                kind,
+                ratePercent = kind == "rate" ? first.TaxRatePercent ?? 0m : 0m,
+                label = kind == "exempt" ? "Exempt" : kind == "zero" ? "Zero-rated (0%)" : $"{first.TaxRatePercent ?? 0m:0.##}%",
+                lines = g.Count(),
+                salesPKR = Math.Round(g.Sum(l => l.TotalPricePKR), 2),
+                taxPKR = Math.Round(g.Sum(l => l.TaxPKR ?? 0m), 2)
+            };
+        })
+        .OrderBy(r => r.kind == "rate" ? 0 : r.kind == "zero" ? 1 : 2).ThenByDescending(r => r.ratePercent)
+        .ToList();
+    if (earlier.Count > 0)
+        rows.Add(new
+        {
+            kind = "earlier", ratePercent = 0m, label = "Earlier sales (one rate per bill)", lines = earlier.Count,
+            salesPKR = Math.Round(earlier.Sum(o => o.SubTotalPKR - o.DiscountPKR), 2),
+            taxPKR = Math.Round(earlier.Sum(o => o.TaxPKR), 2)
+        });
+    return Results.Ok(new
+    {
+        from = span.FirstDay.ToString("yyyy-MM-dd"), to = span.LastDay.ToString("yyyy-MM-dd"),
+        rows, totalTaxPKR = rows.Sum(r => r.taxPKR)
+    });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));
+
+// What the till taxes a sale at, at one location: the cash and card rates, whether prices already
+// include tax, and the company's NTN / STRN for the receipt. The same rates the server charges.
+api.MapGet("/tax/branch-rates", async (AppDbContext db, HttpContext http, Guid branchId) =>
+{
+    var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
+    if (scopeError != null) return scopeError;
+    var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == scopedBranchId!.Value);
+    if (branch == null) return Results.NotFound();
+    var (cashRate, cardRate, decimals, pricesIncludeTax) = await ResolveTaxRatesAsync(db, branch);
+    var company = branch.CompanyId is Guid companyId ? await db.Companies.FirstOrDefaultAsync(c => c.Id == companyId) : null;
+    company ??= await db.Companies.FirstOrDefaultAsync(c => c.TenantId == branch.TenantId && c.IsDefault);
+    return Results.Ok(new
+    {
+        cashRate, cardRate, pricesIncludeTax, decimals,
+        legalName = company?.LegalName, ntn = company?.TaxRegistrationNumber, strn = company?.SalesTaxRegistrationNumber
+    });
+}).RequireAuthorization();
 
 // ============================================================
 // AUDIT LOG (Owner / SuperAdmin only)
@@ -17832,6 +18203,8 @@ public class ServerPricedOrder
     public decimal TaxPKR { get; set; }
     public decimal TotalPKR { get; set; }
     public decimal TaxRatePercent { get; set; }
+    /// <summary>Whether the prices already included the tax (TenantSettings.PricesIncludeTax).</summary>
+    public bool PricesIncludeTax { get; set; }
     public bool DiscountRejected { get; set; }
     public decimal AttemptedDiscountPKR { get; set; }
     public string? Error { get; set; }
@@ -17855,6 +18228,12 @@ public class ServerPricedOrder
 // DTOs
 public record VerifyPinDto(string Username, string PinCode, string? RequiredPermission);
 public record UpdateTaxJurisdictionDto(string? AuthorityName, decimal? CashTaxRate, decimal? DigitalTaxRate, bool? IsActive);
+/// <summary>The whole Tax Setup page in one save. Mode: "Single", "CashCard" or "Provincial".</summary>
+public record SaveTaxSetupDto(bool PricesIncludeTax, string Mode, decimal StandardRate, decimal CardRate,
+    List<TaxOutletRegionDto>? OutletRegions = null, List<TaxRegionRateDto>? RegionRates = null, List<TaxCompanyNumbersDto>? Companies = null);
+public record TaxOutletRegionDto(Guid BranchId, string? RegionCode);
+public record TaxRegionRateDto(string RegionCode, decimal CashRate, decimal CardRate);
+public record TaxCompanyNumbersDto(Guid Id, string? Ntn, string? Strn);
 /// <summary>RegionCode is the tax jurisdiction; RegionId the grouping (Guid.Empty clears it).</summary>
 public record UpdateBranchDto(string? Name, string? Address, string? City, string? Phone, string? RegionCode, int? AllowedCounters, int? AllowedOrderTabs,
     LocationType? LocationType = null, bool? CanSell = null, bool? HoldsStock = null, Guid? CompanyId = null, Guid? RegionId = null,
@@ -17885,9 +18264,11 @@ public record AssignRiderDto(Guid OrderId, Guid RiderId);
 public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
 public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers,
-    MedicineDetailsDto? Medicine = null);
+    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null);
 public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station,
-    MedicineDetailsDto? Medicine = null);
+    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null);
+/// <summary>Every item in a category taxed one way (Tax Setup → Items taxed differently).</summary>
+public record ApplyCategoryTaxDto(TaxTreatment TaxTreatment, decimal? TaxRatePercent);
 public record CreateCategoryDto(Guid TenantId, string Name, string? LocalName, string? Icon, int SortOrder);
 public record CreateProductModifierDto(string Name, decimal PricePKR);
 public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate,

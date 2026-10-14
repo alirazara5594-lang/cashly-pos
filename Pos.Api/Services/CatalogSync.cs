@@ -57,7 +57,8 @@ public sealed record CatalogProductDto(
     string? ImageUrl, string Station, bool IsActive, bool IsSample,
     string? GenericName = null, string? Strength = null, string? DosageForm = null, string? Manufacturer = null,
     string? DrapRegistrationNo = null, string? RackLocation = null, string? Schedule = null,
-    int? PackUnits = null, int? StripUnits = null, decimal? StripPricePKR = null, decimal? LooseUnitPricePKR = null);
+    int? PackUnits = null, int? StripUnits = null, decimal? StripPricePKR = null, decimal? LooseUnitPricePKR = null,
+    string? TaxTreatment = null, decimal? TaxRatePercent = null);
 
 public sealed record CatalogModifierDto(
     Guid Id, Guid ProductId, string Name, decimal PricePKR, Guid? IngredientId, decimal? IngredientQty);
@@ -134,7 +135,8 @@ public class CatalogBuilder
                 p.SellingPricePKR, p.Unit, p.ImageUrl,
                 p.Station.ToString(), p.IsActive, p.IsSample,
                 p.GenericName, p.Strength, p.DosageForm, p.Manufacturer, p.DrapRegistrationNo, p.RackLocation,
-                p.Schedule.ToString(), p.PackUnits, p.StripUnits, p.StripPricePKR, p.LooseUnitPricePKR)).ToList(),
+                p.Schedule.ToString(), p.PackUnits, p.StripUnits, p.StripPricePKR, p.LooseUnitPricePKR,
+                p.TaxTreatment.ToString(), p.TaxRatePercent)).ToList(),
             Modifiers: modifiers.Select(m => new CatalogModifierDto(
                 m.Id, m.ProductId, m.Name, m.PricePKR, m.IngredientId, m.IngredientQty)).ToList(),
             BranchPrices: branchPrices.Select(b => new CatalogBranchPriceDto(
@@ -350,6 +352,9 @@ public class CatalogMirror
             product.StripUnits = strip;
             product.StripPricePKR = dto.StripPricePKR;
             product.LooseUnitPricePKR = dto.LooseUnitPricePKR;
+            // How the item is taxed travels with it, so a host's till taxes it as head office does.
+            product.TaxTreatment = ParseEnum(dto.TaxTreatment, TaxTreatment.Standard);
+            product.TaxRatePercent = product.TaxTreatment == TaxTreatment.OwnRate ? dto.TaxRatePercent : null;
             productsWritten++;
         }
 

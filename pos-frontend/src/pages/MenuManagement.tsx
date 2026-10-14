@@ -23,7 +23,7 @@ import { useSector } from '../hooks/useSector';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
 import { toUrdu } from '../utils/urduTransliterate';
 import { isPacked, looseUnitName, saleUnitOptions } from '../utils/medicine';
-import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo, MedicineDetails, MedicineSchedule } from '../types';
+import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo, MedicineDetails, MedicineSchedule, TaxTreatment } from '../types';
 
 /** Mirrors CreateProductDto on the server. */
 interface ProductForm {
@@ -41,7 +41,17 @@ interface ProductForm {
   modifiers: { name: string; pricePKR: number }[];
   /** A pharmacy's medicine details; ignored by every other kind of business. */
   medicine: Required<MedicineDetails>;
+  /** How the item is taxed (Tax Setup); the rate is used for 'OwnRate'. */
+  taxTreatment: TaxTreatment;
+  taxRatePercent: number;
 }
+
+const TAX_TREATMENTS: { value: TaxTreatment; label: string; hint: string }[] = [
+  { value: 'Standard', label: 'Standard rate', hint: 'Taxed at your business\'s rate (Tax Setup).' },
+  { value: 'Exempt', label: 'Exempt', hint: 'No tax, and not a taxable sale.' },
+  { value: 'ZeroRated', label: 'Zero-rated', hint: 'A taxable sale at 0%.' },
+  { value: 'OwnRate', label: 'Own rate', hint: 'Taxed at this item\'s own rate.' }
+];
 
 // Packing and own loose prices: 0 means not set (sold whole only / worked out from the box price).
 const EMPTY_MEDICINE: Required<MedicineDetails> = {
@@ -52,7 +62,8 @@ const EMPTY_MEDICINE: Required<MedicineDetails> = {
 const EMPTY_PRODUCT_FORM: ProductForm = {
   categoryId: '', name: '', urduName: '', sku: '', barcode: '', description: '',
   costPricePKR: 0, sellingPricePKR: 0, unit: 'Piece', station: 'MainKitchen',
-  imageUrl: '', modifiers: [], medicine: EMPTY_MEDICINE
+  imageUrl: '', modifiers: [], medicine: EMPTY_MEDICINE,
+  taxTreatment: 'Standard', taxRatePercent: 0
 };
 
 const DOSAGE_FORMS = ['Tablet', 'Capsule', 'Syrup', 'Suspension', 'Injection', 'Drops', 'Cream / Ointment', 'Inhaler', 'Sachet', 'Other'];
@@ -435,7 +446,9 @@ export const MenuManagement: React.FC = () => {
         schedule: product.schedule && product.schedule !== 'None' ? product.schedule : 'OverTheCounter',
         packUnits: product.packUnits ?? 0, stripUnits: product.stripUnits ?? 0,
         stripPricePKR: product.stripPricePKR ?? 0, looseUnitPricePKR: product.looseUnitPricePKR ?? 0
-      }
+      },
+      taxTreatment: product.taxTreatment ?? 'Standard',
+      taxRatePercent: product.taxRatePercent ?? 0
     });
     setShowProductModal(true);
   };
@@ -456,7 +469,9 @@ export const MenuManagement: React.FC = () => {
           costPricePKR: prodForm.costPricePKR,
           sellingPricePKR: prodForm.sellingPricePKR,
           station: prodForm.station,
-          medicine: medicines ? prodForm.medicine : undefined
+          medicine: medicines ? prodForm.medicine : undefined,
+          taxTreatment: prodForm.taxTreatment,
+          taxRatePercent: prodForm.taxTreatment === 'OwnRate' ? prodForm.taxRatePercent : undefined
         });
       } else {
         await posApi.createProduct({
@@ -476,7 +491,9 @@ export const MenuManagement: React.FC = () => {
           modifiers: prodForm.modifiers
             .filter(m => m.name.trim())
             .map(m => ({ name: m.name.trim(), pricePKR: m.pricePKR })),
-          medicine: medicines ? prodForm.medicine : undefined
+          medicine: medicines ? prodForm.medicine : undefined,
+          taxTreatment: prodForm.taxTreatment,
+          taxRatePercent: prodForm.taxTreatment === 'OwnRate' ? prodForm.taxRatePercent : undefined
         });
       }
       await fetchCatalog();
@@ -1351,6 +1368,37 @@ export const MenuManagement: React.FC = () => {
                     </span>
                   </div>
                 </div>
+              </div>
+
+              {/* How this item is taxed — most at the business's rate; some exempt or at their own rate. */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+                <div className="sm:col-span-2">
+                  <label htmlFor="prod-tax" className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Tax</label>
+                  <select
+                    id="prod-tax"
+                    value={prodForm.taxTreatment}
+                    onChange={(e) => setProdField('taxTreatment', e.target.value as TaxTreatment)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                  >
+                    {TAX_TREATMENTS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                  <p className="text-[11px] text-slate-500 mt-1">{TAX_TREATMENTS.find(t => t.value === prodForm.taxTreatment)?.hint}</p>
+                </div>
+                {prodForm.taxTreatment === 'OwnRate' && (
+                  <div>
+                    <label htmlFor="prod-tax-rate" className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">Item's rate (%)</label>
+                    <input
+                      id="prod-tax-rate"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.5"
+                      value={prodForm.taxRatePercent}
+                      onChange={(e) => setProdField('taxRatePercent', Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className={`grid grid-cols-1 ${kitchenRouting ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
