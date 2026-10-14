@@ -795,6 +795,11 @@ export const posApi = {
       `/api/admin/tenants/${tenantId}/users/${userId}/reset-password`, { email: email || undefined, disableTwoFactor });
     return res.data;
   },
+  /** Support sets a new 6-digit PIN for an owner who forgot theirs (Cashly POS alone signs in by PIN). Shown once. */
+  resetOwnerPin: async (tenantId: string, userId: string) => {
+    const res = await api.post<{ pin: string; signedOutSessions: number }>(`/api/admin/tenants/${tenantId}/users/${userId}/reset-pin`, {});
+    return res.data;
+  },
   getPlatformPrices: async () => {
     const res = await api.get<PlatformPrice[]>('/api/admin/platform-prices');
     return res.data;
@@ -1570,7 +1575,8 @@ export const posApi = {
   signup: async (data: {
     restaurantName: string;
     contactName: string;
-    email: string;
+    /** A head office's back-office sign-in. Cashly POS alone sends none: its owner signs in by username + 6-digit PIN. */
+    email?: string;
     phone: string;
     city?: string;
     address?: string;

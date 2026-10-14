@@ -433,6 +433,7 @@ const OwnerSignIn: React.FC<{ tenantId: string; invitePending: boolean; webName:
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [issued, setIssued] = useState<{ userId: string; email: string; password: string; signedOut: number; twoFactorOff: boolean } | null>(null);
+  const [issuedPin, setIssuedPin] = useState<{ userId: string; pin: string; signedOut: number } | null>(null);
   const [copied, setCopied] = useState(false);
   const [lostPhone, setLostPhone] = useState<Record<string, boolean>>({});
   const [invite, setInvite] = useState<{ token: string; expiresAt: string } | null>(null);
@@ -452,6 +453,7 @@ const OwnerSignIn: React.FC<{ tenantId: string; invitePending: boolean; webName:
     setBusyId(owner.id);
     setError(null);
     setIssued(null);
+    setIssuedPin(null);
     setCopied(false);
     try {
       const res = await posApi.resetOwnerPassword(tenantId, owner.id, owner.email ? undefined : email, !!lostPhone[owner.id]);
@@ -459,6 +461,24 @@ const OwnerSignIn: React.FC<{ tenantId: string; invitePending: boolean; webName:
       setOwners(await posApi.getTenantOwners(tenantId));
     } catch (err) {
       setError(getApiErrorMessage(err, 'Could not reset the password.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // An owner of Cashly POS alone signs in by username and PIN, with no email to reset it by.
+  const resetPin = async (owner: TenantOwnerAccount) => {
+    if (!window.confirm(`Set a new PIN for ${owner.fullName}? Their old PIN stops working and they are signed out on every device.`)) return;
+    setBusyId(owner.id);
+    setError(null);
+    setIssued(null);
+    setIssuedPin(null);
+    try {
+      const res = await posApi.resetOwnerPin(tenantId, owner.id);
+      setIssuedPin({ userId: owner.id, pin: res.pin, signedOut: res.signedOutSessions });
+      setOwners(await posApi.getTenantOwners(tenantId));
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Could not reset the PIN.'));
     } finally {
       setBusyId(null);
     }
@@ -535,10 +555,27 @@ const OwnerSignIn: React.FC<{ tenantId: string; invitePending: boolean; webName:
               <input type="email" value={emailDrafts[o.id] ?? ''} onChange={(e) => setEmailDrafts(d => ({ ...d, [o.id]: e.target.value }))}
                 placeholder="Owner's email for back-office sign-in" className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs" />
             )}
-            <button disabled={busyId !== null} onClick={() => reset(o)}
-              className="w-full py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-[11px] font-bold transition">
-              {busyId === o.id ? 'Resetting…' : o.lockedUntil ? 'Unlock & reset password' : 'Reset password'}
-            </button>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button disabled={busyId !== null} onClick={() => resetPin(o)}
+                className="py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white text-[11px] font-bold transition">
+                {busyId === o.id ? 'Resetting…' : o.lockedUntil ? 'Unlock & reset PIN' : 'Reset PIN'}
+              </button>
+              <button disabled={busyId !== null} onClick={() => reset(o)}
+                className="py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white text-[11px] font-bold transition">
+                {busyId === o.id ? 'Resetting…' : o.lockedUntil ? 'Unlock & reset password' : 'Reset password'}
+              </button>
+            </div>
+            {issuedPin?.userId === o.id && (
+              <div className="p-2.5 rounded-lg bg-teal-50 border border-teal-200 space-y-1.5">
+                <div className="text-[10px] font-semibold text-teal-800 uppercase">New PIN — shown once</div>
+                <code className="block px-2 py-1 rounded bg-white border border-teal-200 text-lg font-mono font-bold text-slate-900 tracking-[0.3em] select-all">{issuedPin.pin}</code>
+                <p className="text-[10px] text-teal-800 leading-snug">
+                  Read it to the owner. They sign in as <strong>@{o.username}</strong> with this PIN at {restaurantSignInLink(webName).replace(/^https?:\/\//, '')},
+                  then can choose their own in Staff &amp; Pin Access.
+                  {issuedPin.signedOut > 0 && ` ${issuedPin.signedOut} old session(s) were signed out.`}
+                </p>
+              </div>
+            )}
             {issued?.userId === o.id && (
               <div className="p-2.5 rounded-lg bg-teal-50 border border-teal-200 space-y-1.5">
                 <div className="text-[10px] font-semibold text-teal-800 uppercase">Temporary password — shown once</div>

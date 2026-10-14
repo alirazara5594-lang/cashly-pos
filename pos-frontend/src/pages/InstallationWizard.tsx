@@ -513,6 +513,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     }, 60);
   };
 
+  // How the owner signs in. A head office (Cashly POS + ERP) runs its back office by email and
+  // password. Cashly POS alone has no email at all: the owner signs in everywhere — tills and back
+  // office — with username and PIN, so that PIN is 6 digits. Cashly support resets a forgotten one.
+  const ownerUsesEmail = signupMode && systemType === 'POS_ERP';
+  const ownerPinOnly = signupMode && systemType !== 'POS_ERP';
+
   // Step Validation
   const validateStep = (s: number): StepProblem | null => {
     // Setup type and version both default, so those steps are always valid
@@ -561,17 +567,19 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       if (signupMode && ownerMobile.replace(/\D/g, '').length < 10) {
         return { text: 'Enter your mobile number, for example 0300 1234567.', field: 'wiz-owner-mobile' };
       }
-      if (signupMode && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
+      if (ownerUsesEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim())) {
         return { text: 'Enter a valid email address.', field: 'wiz-owner-email' };
       }
-      if (signupMode) {
+      if (ownerUsesEmail) {
         if (adminPassword.length < 8 || !/[A-Za-z]/.test(adminPassword) || !/\d/.test(adminPassword)) {
           return { text: 'Use at least 8 characters, with letters and numbers.', field: 'wiz-owner-password' };
         }
         if (adminPassword !== adminPasswordConfirm) return { text: 'The two passwords do not match.', field: 'wiz-owner-password2' };
       }
       if (adminUsername.trim().length < 3) return { text: 'Use at least 3 characters.', field: 'wiz-owner-username' };
-      if (!/^\d{4,6}$/.test(adminPin.trim())) return { text: 'Use 4 to 6 digits.', field: 'wiz-owner-pin' };
+      if (ownerPinOnly ? !/^\d{6}$/.test(adminPin.trim()) : !/^\d{4,6}$/.test(adminPin.trim())) {
+        return { text: ownerPinOnly ? 'Use 6 digits — your PIN is how you sign in everywhere.' : 'Use 4 to 6 digits.', field: 'wiz-owner-pin' };
+      }
       if (signupMode && isEasyPin(adminPin.trim())) {
         return { text: 'Too easy to guess — avoid 1234, 0000 and the like.', field: 'wiz-owner-pin' };
       }
@@ -674,14 +682,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         const created = await posApi.signup({
           restaurantName: restaurantName.trim(),
           contactName: adminFullName.trim(),
-          email: adminEmail.trim(),
+          // Only a head office signs in by email; Cashly POS alone sends none.
+          email: ownerUsesEmail ? adminEmail.trim() : undefined,
           phone: phone.trim(),
           city: city.trim() || undefined,
           address: address.trim() || undefined,
           country: country?.name,
           adminUsername: adminUsername.trim().toLowerCase(),
           adminPin: adminPin.trim(),
-          adminPassword,
+          adminPassword: ownerUsesEmail ? adminPassword : undefined,
           webName,
           businessType,
           // Sent for every kind, not only a pharmacy: without it the server assumes a restaurant
@@ -730,7 +739,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         // The sign-in screen on this device fills in the new owner's email (and the restaurant, for
         // the username fallback).
         try {
-          localStorage.setItem('cashly_login_email', adminEmail.trim().toLowerCase());
+          // No email (Cashly POS alone): an older one on this device would start sign-in on email.
+          if (ownerUsesEmail) localStorage.setItem('cashly_login_email', adminEmail.trim().toLowerCase());
+          else localStorage.removeItem('cashly_login_email');
           localStorage.setItem('cashly_restaurant', restaurantName.trim());
         } catch { /* optional */ }
         return;
@@ -884,7 +895,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     const firstName = adminFullName.trim().split(/\s+/)[0];
     const signInLink = signupMode && signupSuccess.webName ? restaurantSignInLink(signupSuccess.webName) : null;
     const nextSteps = signupMode ? [
-      'Sign in to the back office with your email and password.',
+      ownerUsesEmail
+        ? 'Sign in to the back office with your email and password.'
+        : 'Sign in at your staff sign-in address with your username and PIN.',
       wantsSampleMenu ? 'Try a sale with the sample menu, then add your own.' : 'Add your menu and prices.',
       isErp ? 'Connect each outlet’s tills with a pairing code from Locations.' : 'Connect your tills and tablets with a pairing code.'
     ] : [];
@@ -930,13 +943,15 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 <ShieldCheck className="w-4 h-4 text-teal-600" /> Your sign-in
               </div>
               {row('Business', signupSuccess.restaurantName)}
-              {signupMode && adminEmail.trim() && row('Back office email', adminEmail.trim().toLowerCase())}
+              {ownerUsesEmail && adminEmail.trim() && row('Back office email', adminEmail.trim().toLowerCase())}
               {row('Username', <span className="font-mono">{signupSuccess.username}</span>)}
               {row('PIN', <span className="tracking-widest text-slate-400">••••</span>, true)}
               <p className="mt-3 text-xs text-slate-500">
-                {signupMode
+                {ownerUsesEmail
                   ? <>Back office: your <strong>email and password</strong>. At a till or tablet: your <strong>username and PIN</strong>.</>
-                  : 'Sign in with your business name, username and the PIN you chose.'}
+                  : signupMode
+                    ? <>Everywhere — tills, tablets and the back office: your <strong>username and PIN</strong>, at your staff sign-in address below.</>
+                    : 'Sign in with your business name, username and the PIN you chose.'}
               </p>
             </div>
 
@@ -1188,9 +1203,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
       title: 'Owner account', icon: User, step: SECURITY_STEP,
       rows: [
         ['Name', adminFullName.trim() || '—'],
-        ...(signupMode
-          ? [['Email', adminEmail.trim().toLowerCase() || '—'], ['Mobile', ownerMobile.trim() || '—']] as [string, React.ReactNode][]
-          : []),
+        ...(ownerUsesEmail ? [['Email', adminEmail.trim().toLowerCase() || '—']] as [string, React.ReactNode][] : []),
+        ...(signupMode ? [['Mobile', ownerMobile.trim() || '—']] as [string, React.ReactNode][] : []),
         ['Username', <span className="font-mono">{adminUsername.trim().toLowerCase() || '—'}</span>],
         ['PIN', <span className="tracking-widest text-slate-400">••••</span>]
       ]
@@ -2193,8 +2207,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                   </div>
                 </div>
 
-                {/* The back-office sign-in, the way Toast does it: email + password. The PIN is for the tills. */}
-                {signupMode && (
+                {/* A head office's back-office sign-in: email + password. The PIN is for the tills.
+                    Cashly POS alone has no email: its owner signs in everywhere with username + PIN. */}
+                {ownerUsesEmail && (
                   <div className="p-6">
                     {groupLabel('Back office sign-in', 'Reports, menu and settings — your email and password')}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2242,7 +2257,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                 )}
 
                 <div className="p-6">
-                  {groupLabel('Till & tablet sign-in', 'At a till or tablet you sign in with your username and PIN')}
+                  {ownerPinOnly
+                    ? groupLabel('Your sign-in', 'Username and PIN — at the tills and in the back office, at your staff sign-in address')
+                    : groupLabel('Till & tablet sign-in', 'At a till or tablet you sign in with your username and PIN')}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label htmlFor="wiz-owner-username" className={labelCls}>Username</label>
@@ -2251,11 +2268,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                       {problemNote('wiz-owner-username')}
                     </div>
                     <div>
-                      <label htmlFor="wiz-owner-pin" className={labelCls}><span>PIN</span><span className="text-xs font-medium text-slate-400">4 to 6 digits</span></label>
+                      <label htmlFor="wiz-owner-pin" className={labelCls}><span>PIN</span><span className="text-xs font-medium text-slate-400">{ownerPinOnly ? '6 digits' : '4 to 6 digits'}</span></label>
                       <div className="relative">
                         <input id="wiz-owner-pin" type={showPin ? 'text' : 'password'} inputMode="numeric" maxLength={6} value={adminPin}
                           onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                          autoComplete="off" placeholder="••••" className={`${inputCls} pr-10 tracking-[0.3em] font-semibold${problemEdge('wiz-owner-pin')}`} />
+                          autoComplete="off" placeholder={ownerPinOnly ? '••••••' : '••••'} className={`${inputCls} pr-10 tracking-[0.3em] font-semibold${problemEdge('wiz-owner-pin')}`} />
                         <button type="button" onClick={() => setShowPin(v => !v)} title={showPin ? 'Hide' : 'Show'}
                           className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer">
                           {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -2272,7 +2289,10 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
 
               <p className="flex items-start gap-2 text-xs text-slate-500">
                 <ShieldCheck className="w-4 h-4 text-teal-600 shrink-0" />
-                As the owner you can see every report and change the menu, prices, stock, staff and devices.
+                <span>
+                  As the owner you can see every report and change the menu, prices, stock, staff and devices.
+                  {ownerPinOnly && ' Keep your PIN private — it opens everything. If you forget it, Cashly support can reset it for you.'}
+                </span>
               </p>
             </div>
           )}

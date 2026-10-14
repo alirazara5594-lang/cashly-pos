@@ -101,7 +101,10 @@ export const LoginGate: React.FC = () => {
   const restaurantHere = address && addressInfo?.webName === address.webName ? addressInfo : null;
   const showPlatformAdmin = !address && isPlatformAdminAddress();
 
-  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : currentRestaurantAddress() ? 'username' : 'email');
+  // Elsewhere: a device that knows a business but no email — Cashly POS alone, whose owner has no
+  // email and signs in by username and PIN — starts there; everyone else on email.
+  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : currentRestaurantAddress() ? 'username'
+    : !readSaved(EMAIL_KEY) && readSaved(RESTAURANT_KEY) ? 'username' : 'email');
   const [email, setEmail] = useState(() => readSaved(EMAIL_KEY));
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

@@ -145,8 +145,9 @@ export const AccountSecurityModal: React.FC<{ onClose: () => void }> = ({ onClos
               <h4 className="text-xs font-bold flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5 text-teal-600" /> Back office password</h4>
               {!info.email ? (
                 <p className="text-[11px] text-slate-500">
-                  Your account has no email, so you sign in with your username and PIN. Ask your owner to add an email for you in
-                  <strong> Staff &amp; Pin Access</strong> to use a password.
+                  Your account has no email, so you sign in with your username and PIN. To also use an email and password, add
+                  an email to the account in <strong>Staff &amp; Pin Access</strong> — the owner can do this for anyone, and for
+                  themselves.
                 </p>
               ) : (
                 <>

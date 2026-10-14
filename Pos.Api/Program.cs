@@ -10190,6 +10190,13 @@ api.MapPut("/users/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Midd
         if (changedEmail != user.Email) user.EmailConfirmedAt = null;
         user.Email = changedEmail;
         if (changedEmail == null) user.PasswordHash = null;
+        // An owner of Cashly POS alone signs up with no email. One added later also becomes the
+        // business's contact address, so billing reminders reach it as well as the app.
+        if (changedEmail != null && user.Role == UserRole.OwnerAdmin)
+        {
+            var business = await db.Tenants.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.Id == user.TenantId);
+            if (business != null && string.IsNullOrWhiteSpace(business.ContactEmail)) business.ContactEmail = changedEmail;
+        }
     }
     if (!string.IsNullOrEmpty(dto.Password)) user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password);
     // A staff member who lost their phone: the owner turns their 2-step sign-in off, and they set it up again.
@@ -11283,14 +11290,23 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     if (!System.Text.RegularExpressions.Regex.IsMatch(ownerPin, @"^\d{4,6}$"))
         return Results.BadRequest(new { error = "The PIN must be 4 to 6 digits." });
 
-    // The owner's email is their back-office sign-in, so it can belong to one account only.
+    // How the owner signs in. A business with a head office (Cashly POS + ERP) runs its back office
+    // by email and password, so it must give an email — one account each. Cashly POS alone needs
+    // none: its owner signs in everywhere with username and PIN (6 digits, then, as it opens
+    // everything), may add an email later in Staff & Pin Access, and Cashly support resets a
+    // forgotten PIN.
+    var hasHeadOffice = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode) != BusinessStructures.SingleShop;
     var ownerEmail = NormalizeEmail(dto.Email);
-    if (ownerEmail == null || !ownerEmail.Contains('@'))
-        return Results.BadRequest(new { error = "A valid email address is required." });
-    if (await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == ownerEmail))
+    if (hasHeadOffice && (ownerEmail == null || !ownerEmail.Contains('@')))
+        return Results.BadRequest(new { error = "A valid email address is required to run a head office." });
+    if (ownerEmail != null && !ownerEmail.Contains('@'))
+        return Results.BadRequest(new { error = "That email address does not look right." });
+    if (ownerEmail != null && await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == ownerEmail))
         return Results.BadRequest(new { error = "An account with this email already exists. Sign in with it instead, or use a different email." });
+    if (ownerEmail == null && ownerPin.Length != 6)
+        return Results.BadRequest(new { error = "Your PIN must be 6 digits — it is how you sign in everywhere." });
     string? ownerPasswordHash = null;
-    if (!string.IsNullOrEmpty(dto.AdminPassword))
+    if (ownerEmail != null && !string.IsNullOrEmpty(dto.AdminPassword))
     {
         var passwordProblem = PasswordProblem(dto.AdminPassword);
         if (passwordProblem != null) return Results.BadRequest(new { error = passwordProblem });
@@ -11350,7 +11366,8 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
             Name = dto.RestaurantName.Trim(),
             Slug = slug,
             ContactName = dto.ContactName.Trim(),
-            ContactEmail = dto.Email.Trim().ToLower(),
+            // Empty for Cashly POS alone: its billing reminders then stay in the app (Plan & Add-ons).
+            ContactEmail = ownerEmail ?? string.Empty,
             ContactPhone = dto.Phone.Trim(),
             ContactMobile = ownerMobile,
             City = dto.City?.Trim(),
@@ -11468,9 +11485,9 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
             .GetRequiredService<Pos.Api.Services.IEntitlementService>()
             .RecomputeAsync(tenant.Id);
 
-        // Ask the owner to confirm their email. Never a reason for signup to fail.
+        // Ask the owner to confirm their email, when they gave one. Never a reason for signup to fail.
         var confirmationSent = false;
-        if (emailSender.IsConfigured)
+        if (ownerEmail != null && emailSender.IsConfigured)
         {
             try { await SendEmailConfirmationAsync(db, emailSender, adminUser); confirmationSent = true; }
             catch (Exception ex) { Console.WriteLine($"[Email] Could not queue the confirmation for {ownerEmail}: {ex.Message}"); }
@@ -14686,6 +14703,42 @@ app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-passwo
         hadEmail, $"Temporary password set for {email}; {signedOut} session(s) signed out" + (twoFactorTurnedOff ? "; 2-step sign-in turned off" : ""));
     await db.SaveChangesAsync();
     return Results.Ok(new { email, temporaryPassword = temporary, signedOutSessions = signedOut, twoFactorTurnedOff });
+}).RequireAuthorization();
+
+// An owner of Cashly POS alone signs in by username and PIN and has no email to reset it by, so a
+// forgotten PIN comes to support. A new 6-digit PIN is made here — not an easy one, and not one
+// anyone else at the business uses (a till knows people by PIN alone) — and read to the owner once.
+// The account is unlocked and every session signed out. The owner can change it in Staff & Pin Access.
+app.MapPost("/api/admin/tenants/{tenantId:guid}/users/{userId:guid}/reset-pin", async (
+    Guid tenantId, Guid userId, AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManageSupport)) return PlatformDenied();
+    var user = await db.Users.IgnoreQueryFilters().FirstOrDefaultAsync(u => u.Id == userId && u.TenantId == tenantId);
+    if (user == null) return Results.NotFound(new { message = "No such account at this business." });
+    if (user.Role == UserRole.SuperAdmin) return Results.BadRequest(new { message = "Not for platform accounts." });
+
+    static bool Easy(string pin) =>
+        pin.Distinct().Count() == 1                                           // 000000, 777777
+        || "0123456789012345".Contains(pin) || "9876543210987654".Contains(pin); // 123456, 654321
+    string pin, lookup;
+    var tries = 0;
+    do
+    {
+        pin = System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        lookup = PinLookupFor(builder.Configuration, tenantId, pin);
+        if (++tries > 50) return Results.Problem("Could not make a free PIN. Try again.");
+    } while (Easy(pin) || await PinTakenAsync(db, tenantId, lookup, user.Id));
+
+    user.PinCodeHash = BCrypt.Net.BCrypt.HashPassword(pin);
+    user.PinLookup = lookup;
+    user.FailedLoginAttempts = 0;
+    user.LockedUntil = null;
+    var signedOut = await SignOutEverywhereAsync(db, user.Id);
+
+    await WriteAuditAsync(db, tenantId, await accessor.GetCurrentUserAsync(http), "PinResetBySupport", "AppUser", user.Id,
+        null, $"New PIN set for {user.Username}; {signedOut} session(s) signed out");
+    await db.SaveChangesAsync();
+    return Results.Ok(new { pin, signedOutSessions = signedOut });
 }).RequireAuthorization();
 
 // ============================================================
