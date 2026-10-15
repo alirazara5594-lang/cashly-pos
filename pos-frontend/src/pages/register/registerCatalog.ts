@@ -12,7 +12,7 @@ import type { BusinessType, PublicPackage, SubscriptionTier } from '../../types'
 /** Which product the business is registering for. */
 export type ProductKind = 'pos' | 'erp';
 
-export type KindId = 'restaurant' | 'hybrid' | 'retail' | 'pharmacy' | 'grocery';
+export type KindId = 'restaurant' | 'retail' | 'pharmacy' | 'grocery';
 
 export interface BusinessKind {
   id: KindId;
@@ -31,8 +31,9 @@ export const BUSINESS_KINDS: BusinessKind[] = [
   { id: 'restaurant', type: 'Restaurant', pack: 'restaurant', label: 'Restaurant or café', hint: 'Dine-in, takeaway, delivery', icon: UtensilsCrossed, food: true },
   { id: 'retail', type: 'Retail', pack: 'retail', label: 'Retail store', hint: 'Shops and boutiques', icon: ShoppingBag, food: false },
   { id: 'pharmacy', type: 'Retail', pack: 'pharmacy', label: 'Pharmacy', hint: 'Medicines, batches, expiry', icon: Pill, food: false },
-  { id: 'grocery', type: 'CashAndCarry', pack: 'grocery', label: 'Mart or cash & carry', hint: 'Grocery and wholesale', icon: ShoppingCart, food: false },
-  { id: 'hybrid', type: 'Hybrid', pack: 'restaurant', label: 'Café with a shop', hint: 'Food and retail together', icon: Store, food: true }
+  { id: 'grocery', type: 'CashAndCarry', pack: 'grocery', label: 'Mart or cash & carry', hint: 'Grocery and wholesale', icon: ShoppingCart, food: false }
+  // "Café with a shop" is not offered: it got exactly the restaurant's screens. A café registers as
+  // a restaurant until food-and-retail together is built (restaurant plus retail selling).
 ];
 
 export const PLANS: SubscriptionTier[] = ['Starter', 'Standard', 'Professional'];
@@ -65,7 +66,7 @@ const pharmacy = (tier: SubscriptionTier): PlanCopy =>
     : { fits: 'A large pharmacy with its own accounts', adds: ['Accounting: ledger, profit and loss, balance sheet', 'Payroll, payslips and leave'] };
 
 export function planCopy(kind: KindId, tier: SubscriptionTier): PlanCopy {
-  if (kind === 'restaurant' || kind === 'hybrid') return food(tier);
+  if (kind === 'restaurant') return food(tier);
   if (kind === 'pharmacy') return pharmacy(tier);
   if (kind === 'grocery') return mart(tier);
   return shop(tier);

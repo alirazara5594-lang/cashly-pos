@@ -53,6 +53,10 @@ const labelCls = 'block text-sm font-semibold text-slate-700 mb-1';
 const hintCls = 'mt-1 text-xs text-slate-500 truncate';
 const stepCls = 'space-y-5 [@media(max-height:760px)]:space-y-3';
 const gridCls = 'grid md:grid-cols-2 gap-x-4 gap-y-3';
+/** After the name of a field that must be filled in. */
+const req = <span className="text-rose-600 font-bold" aria-hidden="true"> *</span>;
+/** The steps that ask for typed details, which say what the * means. */
+const FORM_STEPS: StepId[] = ['business', 'headOffice', 'owner', 'outlets'];
 
 export const Register: React.FC = () => {
   const [product, setProduct] = useState<ProductKind | null>(null);
@@ -462,7 +466,12 @@ export const Register: React.FC = () => {
   const stepHeader = (title: string, sub: string) => (
     <div className="space-y-1">
       {step?.phase && <p className="text-xs font-bold uppercase tracking-wider text-teal-700">Phase {step.phase} · {PHASES[step.phase]}</p>}
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>
+      <div className="flex items-baseline justify-between gap-4">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">{title}</h1>
+        {step && FORM_STEPS.includes(step.id) && (
+          <span className="text-xs font-semibold text-slate-500 whitespace-nowrap"><span className="text-rose-600 font-bold">*</span> Required</span>
+        )}
+      </div>
       <p className="text-sm text-slate-600 [@media(max-height:760px)]:hidden">{sub}</p>
     </div>
   );
@@ -471,8 +480,8 @@ export const Register: React.FC = () => {
     <div className={stepCls}>
       {stepHeader('Tell us about your business', 'The kind of business decides which screens you get: tables and a kitchen for food, batches and prescriptions for a pharmacy.')}
       <fieldset>
-        <legend className={labelCls}>What kind of business is it?</legend>
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+        <legend className={labelCls}>What kind of business is it?{req}</legend>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {BUSINESS_KINDS.map(k => {
             const Icon = k.icon;
             const on = k.id === kindId;
@@ -492,15 +501,15 @@ export const Register: React.FC = () => {
 
       <div className={gridCls}>
         <div>
-          <label htmlFor="reg-name" className={labelCls}>Business name</label>
-          <input id="reg-name" value={name} onChange={e => { setName(e.target.value); setProblem(null); }} placeholder="e.g. Royal Grill" className={inputCls + ring('reg-name')} autoComplete="organization" />
+          <label htmlFor="reg-name" className={labelCls}>Business name{req}</label>
+          <input id="reg-name" aria-required="true" value={name} onChange={e => { setName(e.target.value); setProblem(null); }} placeholder="e.g. Royal Grill" className={inputCls + ring('reg-name')} autoComplete="organization" />
           {errorText('reg-name')}
         </div>
         <div>
-          <label htmlFor="reg-web" className={labelCls}>Staff sign-in address</label>
+          <label htmlFor="reg-web" className={labelCls}>Staff sign-in address{req}</label>
           <div className={`flex items-center h-11 rounded-xl border bg-white overflow-hidden focus-within:ring-4 focus-within:ring-teal-500/15 focus-within:border-teal-500 ${fieldError('reg-web') ? 'border-rose-400' : 'border-slate-300'}`}>
             {linkParts.prefix && <span className="pl-3.5 text-sm text-slate-400 whitespace-nowrap">{linkParts.prefix}</span>}
-            <input id="reg-web" value={webName} spellCheck={false}
+            <input id="reg-web" aria-required="true" value={webName} spellCheck={false}
               onChange={e => { setWebNameEdited(true); setWebNameInput(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); setProblem(null); }}
               placeholder="royalgrill" className="flex-1 min-w-0 h-full px-1 text-sm text-slate-900 focus:outline-none" />
             {linkParts.suffix && <span className="pr-3.5 text-sm text-slate-400 whitespace-nowrap">{linkParts.suffix}</span>}
@@ -517,15 +526,15 @@ export const Register: React.FC = () => {
           )}
         </div>
         <div>
-          <label htmlFor="reg-country" className={labelCls}>Country</label>
-          <select id="reg-country" value={countryIso} onChange={e => { setCountryIso(e.target.value); setStateCode(''); }} className={inputCls}>
+          <label htmlFor="reg-country" className={labelCls}>Country{req}</label>
+          <select id="reg-country" aria-required="true" value={countryIso} onChange={e => { setCountryIso(e.target.value); setStateCode(''); }} className={inputCls}>
             {countryList.map(c => <option key={c.iso2} value={c.iso2}>{c.name}</option>)}
           </select>
         </div>
         {states.length > 0 && (
           <div>
-            <label htmlFor="reg-state" className={labelCls}>Province</label>
-            <select id="reg-state" value={stateCode} onChange={e => { setStateCode(e.target.value); setProblem(null); }} className={inputCls + ring('reg-state')}>
+            <label htmlFor="reg-state" className={labelCls}>Province{req}</label>
+            <select id="reg-state" aria-required="true" value={stateCode} onChange={e => { setStateCode(e.target.value); setProblem(null); }} className={inputCls + ring('reg-state')}>
               <option value="">Choose…</option>
               {states.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
             </select>
@@ -571,38 +580,67 @@ export const Register: React.FC = () => {
   const planStep = (
     <div className={stepCls}>
       {stepHeader('Choose your plan', `For a ${kind.label.toLowerCase()}. Free for 30 days with every feature; you pay only if you stay.`)}
-      <div className="grid md:grid-cols-3 gap-3 pt-1">
+      {/* Pricing cards, the way pricing pages read: name, who it is for, price, what is included,
+          and a choose button at the foot of each. Roomy on a big screen, compact on a short one. */}
+      <div className="grid md:grid-cols-3 gap-5 [@media(max-height:760px)]:gap-3 pt-2">
         {PLANS.map(tier => {
           const f = planFigures(tier, packages);
           const copy = planCopy(kindId, tier);
           const on = plan === tier;
           const recommended = RECOMMENDED_PLAN === tier;
+          const yearlySaving = Math.round(12 - f.yearly / f.monthly);
           return (
             <button key={tier} type="button" onClick={() => setPlan(tier)} aria-pressed={on}
-              className={`relative text-left rounded-2xl border-2 p-4 flex flex-col gap-2 transition cursor-pointer ${on ? 'border-teal-500 bg-teal-50/50 shadow-lg' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-              {recommended && <span className="absolute -top-2.5 left-4 text-[11px] font-bold px-2 py-0.5 rounded-full bg-teal-600 text-white">Recommended</span>}
-              <div className="flex items-center justify-between">
-                <span className="text-lg font-bold text-slate-900">{planName(tier)}</span>
-                <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${on ? 'border-teal-600 bg-teal-600' : 'border-slate-300'}`}>
-                  {on && <Check className="w-3 h-3 text-white" />}
-                </span>
+              className={`relative text-left rounded-3xl border-2 p-6 [@media(max-height:760px)]:p-4 [@media(min-height:860px)]:p-8 flex flex-col gap-4 [@media(max-height:760px)]:gap-2 [@media(min-height:860px)]:gap-5 transition cursor-pointer focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/30 ${
+                on ? 'border-teal-500 bg-teal-50/40 shadow-xl shadow-teal-900/10' : 'border-slate-200 bg-white hover:border-teal-300 hover:shadow-lg'
+              }`}>
+              {recommended && (
+                <span className="absolute -top-3 left-6 [@media(max-height:760px)]:left-4 text-xs font-bold px-2.5 py-0.5 rounded-full bg-teal-600 text-white shadow-sm">Recommended</span>
+              )}
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-2xl [@media(max-height:760px)]:text-lg [@media(min-height:860px)]:text-3xl font-bold text-slate-900">{planName(tier)}</span>
+                  <span className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${on ? 'border-teal-600 bg-teal-600' : 'border-slate-300'}`}>
+                    {on && <Check className="w-3.5 h-3.5 text-white" />}
+                  </span>
+                </div>
+                <p className="text-sm [@media(max-height:760px)]:text-[13px] [@media(min-height:860px)]:text-base text-slate-600 leading-snug min-h-[2.5rem] [@media(max-height:760px)]:min-h-0">{copy.fits}</p>
               </div>
-              <p className="text-[13px] text-slate-600 leading-snug">{copy.fits}</p>
-              <p>
-                <span className="text-xl font-bold text-slate-900">{money(f.monthly)}</span>
-                <span className="text-sm text-slate-500"> / month</span>
-                <span className="block text-xs text-slate-500">or {money(f.yearly)} a year</span>
+
+              <div>
+                <p className="flex items-baseline gap-1">
+                  <span className="text-3xl [@media(max-height:760px)]:text-xl [@media(min-height:860px)]:text-4xl font-extrabold tracking-tight text-slate-900">{money(f.monthly)}</span>
+                  <span className="text-sm [@media(min-height:860px)]:text-base text-slate-500">/ month</span>
+                </p>
+                <p className="text-xs [@media(min-height:860px)]:text-sm text-slate-500 mt-0.5">
+                  or {money(f.yearly)} a year{yearlySaving > 0 && <span className="ml-1.5 font-semibold text-teal-700">· {yearlySaving} months free</span>}
+                </p>
+              </div>
+
+              <p className="text-sm [@media(max-height:760px)]:text-xs [@media(min-height:860px)]:text-[15px] font-semibold text-teal-800 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2 [@media(max-height:760px)]:py-1 [@media(min-height:860px)]:py-2.5">
+                {deviceLine(f, kind.food)}
               </p>
-              <p className="text-xs font-semibold text-teal-800 bg-teal-50 rounded-lg px-2.5 py-1">{deviceLine(f, kind.food)}</p>
-              <ul className="space-y-1 text-[13px] leading-snug text-slate-700">
-                {tier !== 'Starter' && <li className="text-xs font-semibold text-slate-500">Everything in {planName(PLANS[PLANS.indexOf(tier) - 1])}, plus:</li>}
-                {copy.adds.map(a => <li key={a} className="flex gap-1.5"><Check className="w-3.5 h-3.5 text-teal-600 shrink-0 mt-0.5" /> {a}</li>)}
+
+              <ul className="space-y-2 [@media(max-height:760px)]:space-y-1 [@media(min-height:860px)]:space-y-3 text-sm [@media(max-height:760px)]:text-[13px] [@media(min-height:860px)]:text-[15px] leading-snug text-slate-700 border-t border-slate-200 pt-4 [@media(max-height:760px)]:pt-2 [@media(min-height:860px)]:pt-5">
+                {tier !== 'Starter' && <li className="text-xs font-bold uppercase tracking-wide text-slate-500">Everything in {planName(PLANS[PLANS.indexOf(tier) - 1])}, plus</li>}
+                {copy.adds.map(a => (
+                  <li key={a} className="flex gap-2"><Check className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" /> {a}</li>
+                ))}
               </ul>
+
+              <span className={`mt-auto inline-flex items-center justify-center gap-1.5 h-11 [@media(max-height:760px)]:h-9 [@media(min-height:860px)]:h-12 [@media(min-height:860px)]:text-base rounded-xl text-sm font-bold transition ${
+                on ? 'bg-teal-600 text-white' : 'border-2 border-teal-600 text-teal-700'
+              }`}>
+                {on ? <><Check className="w-4 h-4" /> Selected</> : `Choose ${planName(tier)}`}
+              </span>
             </button>
           );
         })}
       </div>
-      <p className="text-xs text-slate-500">Prices exclude tax. Extra tills, tablets and per-shop services (FBR / PRA invoicing, online payments, QR ordering) can be added any time from Plan &amp; Add-ons.</p>
+      <p className="text-xs text-slate-500 text-center">
+        Prices exclude tax. Extra tills, tablets and per-shop services (FBR / PRA invoicing, online payments, QR ordering) can be added any time from Plan &amp; Add-ons.
+      </p>
     </div>
   );
 
@@ -611,8 +649,8 @@ export const Register: React.FC = () => {
       {stepHeader('Your head office', 'The ERP runs here: products and prices, buying, stock, accounts and reports for every outlet. The head office itself does not sell.')}
       <div className={gridCls}>
         <div>
-          <label htmlFor="reg-hq-name" className={labelCls}>Head office name</label>
-          <input id="reg-hq-name" value={hqName} onChange={e => { setHqNameEdited(true); setHqNameInput(e.target.value); setProblem(null); }} className={inputCls + ring('reg-hq-name')} />
+          <label htmlFor="reg-hq-name" className={labelCls}>Head office name{req}</label>
+          <input id="reg-hq-name" aria-required="true" value={hqName} onChange={e => { setHqNameEdited(true); setHqNameInput(e.target.value); setProblem(null); }} className={inputCls + ring('reg-hq-name')} />
           {errorText('reg-hq-name')}
         </div>
         <div className="flex items-end">
@@ -648,42 +686,42 @@ export const Register: React.FC = () => {
         : 'You sign in to the ERP with your email and password. Your username and PIN sign you in at any outlet till.')}
       <div className={gridCls}>
         <div>
-          <label htmlFor="reg-owner-name" className={labelCls}>Full name</label>
-          <input id="reg-owner-name" value={fullName} onChange={e => { setFullName(e.target.value); setProblem(null); }} className={inputCls + ring('reg-owner-name')} autoComplete="name" />
+          <label htmlFor="reg-owner-name" className={labelCls}>Full name{req}</label>
+          <input id="reg-owner-name" aria-required="true" value={fullName} onChange={e => { setFullName(e.target.value); setProblem(null); }} className={inputCls + ring('reg-owner-name')} autoComplete="name" />
           {errorText('reg-owner-name')}
         </div>
         <div>
-          <label htmlFor="reg-mobile" className={labelCls}>Mobile number</label>
-          <input id="reg-mobile" type="tel" value={mobile} onChange={e => { setMobile(e.target.value); setProblem(null); }} placeholder="0300 1234567" className={inputCls + ring('reg-mobile')} autoComplete="tel" />
+          <label htmlFor="reg-mobile" className={labelCls}>Mobile number{req}</label>
+          <input id="reg-mobile" aria-required="true" type="tel" value={mobile} onChange={e => { setMobile(e.target.value); setProblem(null); }} placeholder="0300 1234567" className={inputCls + ring('reg-mobile')} autoComplete="tel" />
           {errorText('reg-mobile') || <p className={hintCls}>One free trial per number. Support uses it to confirm it is you.</p>}
         </div>
         {!ownerPinOnly && (
           <>
             <div className="md:col-span-2">
-              <label htmlFor="reg-email" className={labelCls}>Email</label>
-              <input id="reg-email" type="email" value={email} onChange={e => { setEmail(e.target.value); setProblem(null); }} placeholder="you@yourbusiness.com" className={inputCls + ring('reg-email')} autoComplete="email" />
+              <label htmlFor="reg-email" className={labelCls}>Email{req}</label>
+              <input id="reg-email" aria-required="true" type="email" value={email} onChange={e => { setEmail(e.target.value); setProblem(null); }} placeholder="you@yourbusiness.com" className={inputCls + ring('reg-email')} autoComplete="email" />
               {errorText('reg-email')}
             </div>
             <div>
-              <label htmlFor="reg-password" className={labelCls}>Password</label>
-              <input id="reg-password" type={secretType} value={password} onChange={e => { setPassword(e.target.value); setProblem(null); }} className={inputCls + ring('reg-password')} autoComplete="new-password" />
+              <label htmlFor="reg-password" className={labelCls}>Password{req}</label>
+              <input id="reg-password" aria-required="true" type={secretType} value={password} onChange={e => { setPassword(e.target.value); setProblem(null); }} className={inputCls + ring('reg-password')} autoComplete="new-password" />
               {errorText('reg-password') || <p className={hintCls}>At least 8 characters, with letters and numbers.</p>}
             </div>
             <div>
-              <label htmlFor="reg-password2" className={labelCls}>Confirm password</label>
-              <input id="reg-password2" type={secretType} value={password2} onChange={e => { setPassword2(e.target.value); setProblem(null); }} className={inputCls + ring('reg-password2')} autoComplete="new-password" />
+              <label htmlFor="reg-password2" className={labelCls}>Confirm password{req}</label>
+              <input id="reg-password2" aria-required="true" type={secretType} value={password2} onChange={e => { setPassword2(e.target.value); setProblem(null); }} className={inputCls + ring('reg-password2')} autoComplete="new-password" />
               {errorText('reg-password2')}
             </div>
           </>
         )}
         <div>
-          <label htmlFor="reg-username" className={labelCls}>Username</label>
-          <input id="reg-username" value={username} onChange={e => { setUsername(e.target.value.replace(/\s/g, '')); setProblem(null); }} placeholder="e.g. ali" className={inputCls + ring('reg-username')} autoComplete="username" spellCheck={false} />
+          <label htmlFor="reg-username" className={labelCls}>Username{req}</label>
+          <input id="reg-username" aria-required="true" value={username} onChange={e => { setUsername(e.target.value.replace(/\s/g, '')); setProblem(null); }} placeholder="e.g. ali" className={inputCls + ring('reg-username')} autoComplete="username" spellCheck={false} />
           {errorText('reg-username')}
         </div>
         <div>
-          <label htmlFor="reg-pin" className={labelCls}>{ownerPinOnly ? '6-digit PIN' : 'Till PIN (4 to 6 digits)'}</label>
-          <input id="reg-pin" type={secretType} inputMode="numeric" value={pin} maxLength={6}
+          <label htmlFor="reg-pin" className={labelCls}>{ownerPinOnly ? '6-digit PIN' : 'Till PIN (4 to 6 digits)'}{req}</label>
+          <input id="reg-pin" aria-required="true" type={secretType} inputMode="numeric" value={pin} maxLength={6}
             onChange={e => { setPin(e.target.value.replace(/\D/g, '')); setProblem(null); }} className={inputCls + ' tracking-[0.4em] font-mono' + ring('reg-pin')} autoComplete="new-password" />
           {errorText('reg-pin') || <p className={hintCls}>Not 1234, 0000 or your birth year.</p>}
         </div>
@@ -727,16 +765,16 @@ export const Register: React.FC = () => {
         ) : (
           <div className="rounded-2xl border border-slate-200 bg-white">
             <div className="hidden md:grid grid-cols-12 gap-3 px-3 pt-2.5 pb-1 text-xs font-semibold text-slate-500">
-              <span className="col-span-4">Outlet name</span>
+              <span className="col-span-4">Outlet name{req}</span>
               <span className="col-span-3">City</span>
-              <span className="col-span-4">POS version</span>
+              <span className="col-span-4">POS version{req}</span>
             </div>
             {/* A long list scrolls inside this box; the page itself stays on one screen. */}
             <div className="max-h-[34vh] overflow-y-auto px-3 pb-3 pt-2 md:pt-0 space-y-2">
               {outlets.map((o, i) => (
                 <div key={i} className="grid grid-cols-12 gap-x-3 gap-y-2 items-start">
                   <div className="col-span-12 md:col-span-4">
-                    <input id={`reg-outlet-${i}`} aria-label={`Outlet ${i + 1} name`} value={o.name}
+                    <input id={`reg-outlet-${i}`} aria-required="true" aria-label={`Outlet ${i + 1} name`} value={o.name}
                       onChange={e => { const v = e.target.value; setOutlets(list => list.map((x, j) => j === i ? { ...x, name: v } : x)); setProblem(null); }}
                       placeholder={`Outlet ${i + 1}, e.g. Gulberg`} className={inputCls + ring(`reg-outlet-${i}`)} />
                     {errorText(`reg-outlet-${i}`)}
@@ -813,7 +851,7 @@ export const Register: React.FC = () => {
           {TERMS_URL ? <a href={TERMS_URL} target="_blank" rel="noreferrer" className="font-semibold text-teal-700 underline">Terms of Service</a> : <strong>Terms of Service</strong>}
           {' '}and{' '}
           {PRIVACY_URL ? <a href={PRIVACY_URL} target="_blank" rel="noreferrer" className="font-semibold text-teal-700 underline">Privacy Policy</a> : <strong>Privacy Policy</strong>}
-          , and confirm I may register this business.
+          , and confirm I may register this business.{req}
         </span>
       </label>
       {errorText('reg-agree')}
@@ -901,6 +939,8 @@ export const Register: React.FC = () => {
     business: businessStep, plan: planStep, headOffice: headOfficeStep, owner: ownerStep, outlets: outletsStep, review: reviewStep
   };
   const generalProblem = problem && !problem.field ? problem.text : null;
+  // Three pricing cards side by side want more room than a form does.
+  const pageWidth = !created && product && step.id === 'plan' ? 'max-w-6xl' : 'max-w-4xl';
   const progressLabel = useMemo(() => (product ? `Step ${stepIndex + 1} of ${steps.length}` : ''), [product, stepIndex, steps.length]);
 
   return (
@@ -917,7 +957,7 @@ export const Register: React.FC = () => {
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto px-5 md:px-10 py-6 [@media(max-height:760px)]:py-4">
+          <div className={`${pageWidth} mx-auto px-5 md:px-10 py-6 [@media(max-height:760px)]:py-4`}>
             {created ? success : !product ? chooser : stepContent[step.id]}
             {generalProblem && !created && (
               <div className="mt-6 px-4 py-3 rounded-xl bg-rose-50 border border-rose-200 text-sm font-semibold text-rose-700" role="alert">{generalProblem}</div>
@@ -928,7 +968,7 @@ export const Register: React.FC = () => {
         {/* Back / Continue, always in reach */}
         {product && !created && (
           <div className="border-t border-slate-200 bg-white px-5 md:px-10 py-3.5">
-            <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
+            <div className={`${pageWidth} mx-auto flex items-center justify-between gap-3`}>
               <button type="button" onClick={back} disabled={submitting}
                 className="inline-flex items-center gap-2 h-11 px-4 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50 cursor-pointer">
                 <ArrowLeft className="w-4 h-4" /> {stepIndex === 0 ? 'Change setup' : 'Back'}
