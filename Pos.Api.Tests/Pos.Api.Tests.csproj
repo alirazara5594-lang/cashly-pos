@@ -16,7 +16,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Pos.Api\Pos.Api.csproj" />
+    <!-- Building for the tests never closes a running backend (see Pos.Api.csproj, StopRunningCashlyApi). -->
+    <ProjectReference Include="..\Pos.Api\Pos.Api.csproj" AdditionalProperties="KeepRunningCashlyApi=true" />
   </ItemGroup>
 
 </Project>
