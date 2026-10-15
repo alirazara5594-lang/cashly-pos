@@ -1635,6 +1635,10 @@ export const posApi = {
     ownerMobile?: string;
     /** Start with a few sample items, to ring up a test sale straight away. */
     seedSampleMenu?: boolean;
+    /** The owner agreed to the Terms of Service and Privacy Policy (the server refuses without it). */
+    acceptedTerms?: boolean;
+    /** Which edition of those documents was shown. */
+    termsVersion?: string;
   }) => {
     const res = await api.post('/api/auth/signup', data);
     return res.data;

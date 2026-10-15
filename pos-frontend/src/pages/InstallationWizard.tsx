@@ -114,7 +114,9 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   // Registration vs Install mode
-  const [signupMode, setSignupMode] = useState<boolean>(forceSignup);
+  // Registration on a server already set up happens at /signup (pages/register); this stays for
+  // the forceSignup prop only.
+  const signupMode = forceSignup;
   const [signupSuccess, setSignupSuccess] = useState<{ 
     restaurantName: string; 
     username: string; 
@@ -308,17 +310,12 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
     let cancelled = false;
     posApi.getSetupStatus()
       .then((status) => {
-        if (!cancelled && status?.isConfigured) {
-          setSignupMode(true);
-          // Registering always creates a business; a till joins one at /connect instead.
-          setErpRole('ERP_SERVER');
-          setAdminUsername('');
-          setAdminPin('');
-        }
+        // A server already set up registers new businesses on its own page (pages/register).
+        if (!cancelled && status?.isConfigured) navigate('/signup', { replace: true });
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [forceSignup]);
+  }, [forceSignup, navigate]);
 
   const handleCountryChange = (code: string) => {
     const preset = getCountryByCode(code);

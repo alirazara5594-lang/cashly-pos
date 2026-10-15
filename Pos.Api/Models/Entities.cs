@@ -130,6 +130,10 @@ public class Tenant
     public DateTime TrialEndsAt { get; set; } = DateTime.UtcNow.AddDays(30);
     public DateTime? SubscriptionPaidUntil { get; set; } // null = not paid yet
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>When the owner agreed to the Terms of Service and Privacy Policy at registration, and
+    /// which edition of them. Null for businesses registered before agreement was asked for.</summary>
+    public DateTime? TermsAcceptedAt { get; set; }
+    public string? TermsVersion { get; set; }
     /// <summary>When the account was closed (status Cancelled); null while open.</summary>
     public DateTime? CancelledAt { get; set; }
 

@@ -1621,7 +1621,8 @@ using (var scope = app.Services.CreateScope())
         ("Existing batch numbers into batches", MoveBranchStockBatchesAsync),
         ("Medicine packing and loose sale", EnsurePackingSchemaAsync),
         ("Prescriptions", EnsurePrescriptionSchemaAsync),
-        ("Tax setup", EnsureTaxSetupSchemaAsync)
+        ("Tax setup", EnsureTaxSetupSchemaAsync),
+        ("Registration agreement", EnsureRegistrationSchemaAsync)
     })
     {
         try
@@ -1946,6 +1947,12 @@ static Task EnsureTaxSetupSchemaAsync(AppDbContext db) => db.Database.ExecuteSql
         ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
     );
     CREATE UNIQUE INDEX IF NOT EXISTS ""IX_TenantTaxRegionRates_TenantId_RegionCode"" ON ""TenantTaxRegionRates"" (""TenantId"", ""RegionCode"");
+");
+
+/// <summary>When, and to which edition, a new business's owner agreed to the Terms and Privacy Policy.</summary>
+static Task EnsureRegistrationSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsAcceptedAt"" timestamp with time zone NULL;
+    ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsVersion"" text NULL;
 ");
 
 /// <summary>The prescriptions sales of prescription-only and controlled medicines are made against.</summary>
@@ -11459,6 +11466,11 @@ api.MapDelete("/stock-requests/{id}", async (AppDbContext db, HttpContext http, 
 
 authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender, SignupDto dto) =>
 {
+    // A business is opened only by an owner who agreed to the Terms of Service and Privacy Policy;
+    // when, and to which edition, is kept with the business.
+    if (!dto.AcceptedTerms)
+        return Results.BadRequest(new { error = "Please agree to the Terms of Service and Privacy Policy to register." });
+
     // The restaurant's web name is its sign-in address: /r/<name> now, <name>.yourdomain.com once
     // there is a domain. The owner picks it; an older client that sends none gets one made from
     // the restaurant's name. Two restaurants may share a name — never an address.
@@ -11574,7 +11586,9 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
             Tier = tier,
             IsActive = true,
             IsTrialActive = true,
-            TrialEndsAt = DateTime.UtcNow.AddDays(30)
+            TrialEndsAt = DateTime.UtcNow.AddDays(30),
+            TermsAcceptedAt = DateTime.UtcNow,
+            TermsVersion = string.IsNullOrWhiteSpace(dto.TermsVersion) ? null : dto.TermsVersion.Trim()[..Math.Min(40, dto.TermsVersion.Trim().Length)]
         };
         db.Tenants.Add(tenant);
 
@@ -18591,7 +18605,9 @@ public record SignupDto(string RestaurantName, string ContactName, string Email,
     string? BusinessStructure = null, SetupCompanyDto? Company = null, SetupHeadOfficeDto? HeadOffice = null, SetupPoliciesDto? Policies = null, bool SetUpAccounting = false, string? InstallationType = null, string? AppSurface = null,
     string? AdminPassword = null, string? WebName = null,
     // The owner's mobile: one free trial per number. And whether to start with the sample menu.
-    string? OwnerMobile = null, bool SeedSampleMenu = false);
+    string? OwnerMobile = null, bool SeedSampleMenu = false,
+    // The owner ticked "I agree to the Terms of Service and Privacy Policy", and which edition they saw.
+    bool AcceptedTerms = false, string? TermsVersion = null);
 
 /// <summary>
 /// The three shapes a business can take (Models/OrganizationEntities.cs). Older clients sent only

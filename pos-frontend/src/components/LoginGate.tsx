@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor, Building2, Warehouse } from 'lucide-react';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
@@ -49,8 +49,8 @@ interface PendingBranchChoice {
   branches: MyBranch[];
 }
 
-const inputClass = 'w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20';
-const labelClass = 'block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1';
+const inputClass = 'w-full h-11 px-4 bg-white border border-slate-300 rounded-xl text-base text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/15 transition';
+const labelClass = 'block text-sm font-semibold text-slate-700 mb-1.5';
 
 /**
  * Mandatory full-screen sign-in. The first screen for anyone signed out — including a visitor
@@ -79,6 +79,7 @@ export const LoginGate: React.FC = () => {
   const login = usePosStore(s => s.login);
   const loadMyModulePermissions = usePosStore(s => s.loadMyModulePermissions);
   const selectedTenant = usePosStore(s => s.selectedTenant);
+  const isOnline = usePosStore(s => s.isOnline);
 
   // A till is paired to one branch and signs its staff in there, so every sale lands at that
   // branch. An office PC is not a till: it signs in like any browser.
@@ -386,404 +387,507 @@ export const LoginGate: React.FC = () => {
     else setPinCode(prev => (prev.length >= 6 ? prev : prev + String(val)));
   };
 
+  // While a PIN is being asked for, a keyboard works like the keypad: digits, Backspace, Esc to
+  // clear and Enter to sign in. Not while the cursor is in a text box (the username is typed there).
+  const pinActive = !twoFactor && !pending && (mode === 'till' || mode === 'username' || (mode === 'platform' && usePin));
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (!pinActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^\d$/.test(e.key)) {
+        e.preventDefault();
+        setError('');
+        setPinCode(prev => (prev.length >= 6 ? prev : prev + e.key));
+      } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        setPinCode(prev => prev.slice(0, -1));
+      } else if (e.key === 'Escape') {
+        setPinCode('');
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        formRef.current?.requestSubmit();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pinActive]);
+
+  // The clock on the brand panel, as on a till's lock screen.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Keys grow on a tall screen; on a laptop they stay compact so the whole sign-in fits without scrolling.
+  const keyBase = 'h-12 [@media(min-height:860px)]:h-14 [@media(max-height:720px)]:h-11 rounded-2xl bg-white border border-slate-200 shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-[0.97] transition select-none cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
   const keypad = (
     <div className="grid grid-cols-3 gap-2">
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => (
-        <button key={n} type="button" onClick={() => pressKey(n)}
-          className="py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-sm transition cursor-pointer">
+        <button key={n} type="button" onClick={() => pressKey(n)} className={`${keyBase} text-xl font-semibold text-slate-900`}>
           {n}
         </button>
       ))}
-      <button type="button" onClick={() => pressKey('clear')}
-        className="py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-rose-600 font-bold text-[11px] transition cursor-pointer">
+      <button type="button" onClick={() => pressKey('clear')} className={`${keyBase} text-sm font-semibold text-slate-500`}>
         Clear
       </button>
-      <button type="button" onClick={() => pressKey(0)}
-        className="py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-sm transition cursor-pointer">
+      <button type="button" onClick={() => pressKey(0)} className={`${keyBase} text-xl font-semibold text-slate-900`}>
         0
       </button>
-      <button type="button" onClick={() => pressKey('back')} title="Backspace"
-        className="py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold transition flex items-center justify-center cursor-pointer">
-        <Delete className="w-4 h-4" />
+      <button type="button" onClick={() => pressKey('back')} aria-label="Delete the last digit" title="Delete the last digit"
+        className={`${keyBase} flex items-center justify-center text-slate-600`}>
+        <Delete className="w-5 h-5" />
       </button>
     </div>
   );
 
-  const pinInput = (large: boolean) => (
+  // The PIN as dots: four to start with, growing to six as a longer PIN is typed.
+  const pinSlots = Math.max(4, Math.min(6, pinCode.length));
+  const pinDots = (
     <div>
-      <label className={labelClass}>PIN</label>
-      <input
-        type="password"
-        inputMode="numeric"
-        maxLength={6}
-        value={pinCode}
-        onChange={(e) => { setPinCode(e.target.value.replace(/\D/g, '')); setError(''); }}
-        autoFocus={large}
-        autoComplete="current-password"
-        placeholder="••••"
-        className={`w-full px-3 ${large ? 'py-4 text-3xl' : 'py-3 text-2xl'} bg-slate-50 border border-slate-200 rounded-xl text-center tracking-[0.5em] font-mono text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20`}
-      />
+      <div className="flex items-center justify-center gap-3.5 h-8" role="status" aria-label={`PIN: ${pinCode.length} digit${pinCode.length === 1 ? '' : 's'} entered`}>
+        {Array.from({ length: pinSlots }, (_, i) => (
+          <span key={i} className={`w-3.5 h-3.5 rounded-full transition ${
+            i < pinCode.length ? 'bg-teal-600 scale-110' : 'border-2 border-slate-300'
+          }`} />
+        ))}
+      </div>
+      <p className="hidden [@media(min-height:860px)]:block text-center text-[11px] text-slate-400">Tap the keys or type on the keyboard</p>
     </div>
   );
 
   const rememberedBranchId = readSaved(LOGIN_BRANCH_KEY);
 
-  const title =
-    mode === 'till' ? 'Staff Sign In'
-      : mode === 'email' ? 'Back Office Sign In'
-      : mode === 'username' ? 'Sign in with username'
-      : 'Platform Admin Sign In';
+  const heading =
+    mode === 'till' ? { title: 'Enter your PIN', sub: 'Your 4 to 6 digit staff PIN.' }
+      : mode === 'email' ? { title: 'Back office sign in', sub: 'Owners and managers sign in with email and password.' }
+      : mode === 'username' ? { title: 'Staff sign in', sub: 'Your username and PIN.' }
+      : { title: 'Cashly platform', sub: 'For the Cashly team only.' };
+
+  // What the brand panel says this screen is for: this restaurant's address, this till, or the
+  // business last used on this device.
+  const businessName = address
+    ? restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')
+    : selectedTenant?.name ?? null;
+  const placeLine = !address && mode === 'till'
+    ? [tillBranchName, terminal?.name].filter(Boolean).join(' · ') || 'This till'
+    : null;
+  const showConnect = (mode === 'email' || mode === 'username') && !tillBranchId;
+  const canRegister = !address && !tillBranchId && mode !== 'platform';
+  const staffTab = mode === 'till' || mode === 'username';
+  const linkClass = 'text-xs font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer';
+
+  const statusLine = (light: boolean) => (
+    <span className={`inline-flex items-center gap-2 text-xs font-semibold ${light ? 'text-teal-50/90' : 'text-slate-500'}`}>
+      <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+      {isOnline ? 'Online' : 'Offline: staff who signed in here this week can still sign in'}
+    </span>
+  );
 
   return (
-    <div className="min-h-screen w-full bg-white flex items-center justify-center p-4">
-      <div className="w-full max-w-sm space-y-5">
-        {/* Brand */}
-        <div className="flex flex-col items-center gap-2.5 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-teal-700 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-teal-700/25">
-            C
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-              Cashly <span className="text-teal-600">POS</span>
-            </h1>
-            {address ? (
-              // This restaurant's own sign-in address.
-              <div className="mt-2 space-y-0.5">
-                <p className="text-base font-bold text-slate-800 flex items-center justify-center gap-1.5">
-                  <Store className="w-4 h-4 text-teal-600" />
-                  {restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')}
-                </p>
-                {restaurantHere?.product && (
-                  <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
-                    {restaurantHere.product}
-                  </span>
+    <div className="min-h-screen w-full flex bg-white text-slate-900">
+      {/* Brand panel — the business, the till and the time, like a till's lock screen. */}
+      <aside className="hidden md:flex md:w-[44%] xl:w-1/2 relative overflow-hidden bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 text-white flex-col justify-between p-10 lg:p-14">
+        <div aria-hidden className="absolute -right-32 -top-32 w-96 h-96 rounded-full bg-white/5" />
+        <div aria-hidden className="absolute -left-24 bottom-10 w-72 h-72 rounded-full bg-white/5" />
+
+        <div className="relative flex items-center gap-3">
+          <div className="w-11 h-11 rounded-2xl bg-white text-teal-800 flex items-center justify-center font-bold text-xl shadow-lg shadow-black/20">C</div>
+          <span className="text-lg font-bold tracking-tight">Cashly <span className="text-teal-200">POS</span></span>
+        </div>
+
+        <div className="relative space-y-8">
+          <div className="space-y-2">
+            {businessName ? (
+              <>
+                <p className="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">{businessName}</p>
+                {placeLine && <p className="text-teal-100 font-semibold flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
+                {address && restaurantHere?.product && (
+                  <span className="inline-block text-[11px] font-bold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
                 )}
-                {restaurantHere?.missing && (
-                  <p className="text-[11px] text-rose-600">No restaurant uses this address. Check the link you were given.</p>
+                {address && restaurantHere?.missing && (
+                  <p className="text-sm text-amber-200">No business uses this address. Check the link you were given.</p>
                 )}
-                {!address.fromSubdomain && (
-                  <button type="button" onClick={leaveRestaurantAddress}
-                    className="text-[11px] text-slate-400 hover:text-teal-700 font-semibold">
+                {address && !address.fromSubdomain && (
+                  <button type="button" onClick={leaveRestaurantAddress} className="block text-sm font-semibold text-teal-100 hover:text-white underline-offset-4 hover:underline">
                     {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
                   </button>
                 )}
-              </div>
-            ) : (mode === 'till' || selectedTenant?.name) && (
-              <p className="text-[11px] text-slate-500 font-semibold flex items-center justify-center gap-1.5 mt-1">
-                <Store className="w-3.5 h-3.5 text-teal-600" />
-                {[selectedTenant?.name, mode === 'till' ? tillBranchName : null].filter(Boolean).join(' • ') || 'This till'}
-                {mode === 'till' && terminal?.name ? ` • ${terminal.name}` : ''}
-              </p>
+              </>
+            ) : (
+              <>
+                <p className="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">Sign in to Cashly</p>
+                <p className="text-teal-100 max-w-sm">Point of sale and back office for restaurants, shops and pharmacies.</p>
+              </>
+            )}
+            {/* On a computer the way to register lives here, always in view; on a phone it is under the sign-in. */}
+            {canRegister && (
+              <a href="/signup"
+                className="inline-flex items-center mt-3 px-4 h-10 rounded-xl bg-white text-teal-800 hover:bg-teal-50 text-sm font-bold transition shadow-lg shadow-black/10">
+                New business? Register free — 30-day trial →
+              </a>
+            )}
+          </div>
+          <div>
+            <p className="text-5xl lg:text-6xl font-bold tabular-nums tracking-tight">
+              {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </p>
+            <p className="mt-1 text-teal-100 font-semibold">
+              {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
+            </p>
+          </div>
+        </div>
+
+        <div className="relative flex flex-wrap items-center justify-between gap-3">
+          {statusLine(true)}
+          <div className="flex items-center gap-4 text-xs font-semibold">
+            {showConnect && <a href="/connect" className="text-teal-100 hover:text-white">Connect a till or tablet →</a>}
+            {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
+              <button type="button" onClick={() => switchMode('platform')} className="text-teal-100 hover:text-white">Platform admin</button>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* Sign-in */}
+      <main className="flex-1 flex flex-col min-h-screen min-w-0">
+        {/* On a phone the brand panel folds into this strip. */}
+        <div className="md:hidden px-6 pt-8 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-teal-700 text-white flex items-center justify-center font-bold text-lg">C</div>
+          <div className="min-w-0">
+            <p className="font-bold leading-tight truncate">{businessName ?? <>Cashly <span className="text-teal-600">POS</span></>}</p>
+            {placeLine && <p className="text-xs text-slate-500 truncate">{placeLine}</p>}
+            {address && !address.fromSubdomain && restaurantHere?.name && (
+              <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
             )}
           </div>
         </div>
 
-        {twoFactor ? (
-          // 2-step sign-in: the password was right; now the code from their phone.
-          <form onSubmit={submitCode} className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-teal-600" />
-              <span className="text-xs font-bold text-slate-900">2-step sign-in</span>
-            </div>
-            <p className="text-[11px] text-slate-500">
-              Open your authenticator app (Google Authenticator, Microsoft Authenticator…) and type the 6-digit code for Cashly POS.
-            </p>
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              autoFocus
-              value={code}
-              onChange={(e) => { setCode(e.target.value.slice(0, 12)); setError(''); }}
-              placeholder="123 456"
-              className="w-full px-3 py-4 bg-slate-50 border border-slate-200 rounded-xl text-center text-3xl tracking-[0.4em] font-mono text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
-            />
-            <p className="text-[10px] text-slate-400">Lost your phone? Type one of your recovery codes instead (like abcd-2345).</p>
-            {error && <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold">{error}</div>}
-            <button
-              type="submit"
-              disabled={loading || code.trim().length < 6}
-              className="w-full px-4 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Key className="w-4 h-4" /> {loading ? 'Checking…' : 'Verify'}
-            </button>
-            <button type="button" onClick={() => { setTwoFactor(null); setPassword(''); setPinCode(''); setError(''); }}
-              className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
-              <ArrowLeft className="w-3 h-3" /> Back to sign in
-            </button>
-          </form>
-        ) : pending ? (
-          // Only for someone who works at more than one location.
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-teal-600" />
-              <span className="text-xs font-bold text-slate-900">Where are you working today?</span>
-            </div>
-            <p className="text-[11px] text-slate-500">
-              Signed in as <strong className="text-slate-700">{pending.user.fullName}</strong>. The head office opens the ERP;
-              an outlet opens its POS.
-            </p>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
-              {pending.branches.map(b => {
-                const suggested = b.id === rememberedBranchId || (!rememberedBranchId && b.isHome);
-                const kind = locationKind(b);
-                const KindIcon = kind.icon;
-                return (
-                  <button
-                    key={b.id}
-                    type="button"
-                    disabled={loading}
-                    onClick={() => chooseBranch(b)}
-                    className={`w-full text-left px-3.5 py-3 rounded-xl border transition flex items-center gap-3 disabled:opacity-50 cursor-pointer ${
-                      suggested ? 'border-teal-400 bg-teal-50 hover:bg-teal-100' : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
-                    }`}
-                  >
-                    <span className="w-9 h-9 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0">
-                      <KindIcon className="w-4.5 h-4.5 text-teal-600" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-sm font-bold text-slate-900 truncate">{b.name}</span>
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-600 text-white shrink-0">{kind.opens}</span>
-                      </span>
-                      <span className="block text-[11px] text-slate-500 truncate">
-                        {kind.label}{b.city ? ` · ${b.city}` : ''} · {kind.hint}
-                      </span>
-                    </span>
-                    {b.isHome && (
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">Your branch</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {error && <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold">{error}</div>}
-            <button type="button" onClick={cancelBranchChoice} disabled={loading}
-              className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
-              <ArrowLeft className="w-3 h-3" /> Not you? Back to sign in
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-teal-600" />
-                <span className="text-xs font-bold text-slate-900">{title}</span>
-              </div>
-              {/* Cashly's own sign-in: never on a restaurant's address, and with a domain only at admin.<domain>. */}
-              {mode !== 'till' && (showPlatformAdmin || mode === 'platform') && (
-                <button
-                  type="button"
-                  onClick={() => switchMode(mode === 'platform' ? (tillBranchId ? 'till' : 'email') : 'platform')}
-                  className="text-[10px] text-teal-600 hover:text-teal-800 font-bold transition cursor-pointer"
-                >
-                  {mode === 'platform' ? '← Back' : 'Platform Admin →'}
-                </button>
-              )}
-            </div>
-
-            {mode === 'till' && (
-              <>
-                <p className="text-[11px] text-slate-500 text-center">Enter your PIN to start.</p>
-                {pinInput(true)}
-                {keypad}
-              </>
-            )}
-
-            {mode === 'email' && (
-              <>
-                <div>
-                  <label className={labelClass}>Email</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => { setEmail(e.target.value); setError(''); }}
-                    autoFocus={!email}
-                    autoComplete="email"
-                    placeholder="you@yourrestaurant.com"
-                    className={inputClass}
-                  />
+        <div className="flex-1 flex items-center justify-center px-6 py-6 [@media(max-height:720px)]:py-3">
+          <div className="w-full max-w-sm space-y-6">
+            {twoFactor ? (
+              // 2-step sign-in: the password was right; now the code from their phone.
+              <form onSubmit={submitCode} className="space-y-5">
+                <div className="space-y-1">
+                  <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ShieldCheck className="w-6 h-6 text-teal-600" /> 2-step sign-in</h1>
+                  <p className="text-sm text-slate-500">
+                    Open your authenticator app (Google Authenticator, Microsoft Authenticator…) and type the 6-digit code for Cashly POS.
+                  </p>
                 </div>
-                <div>
-                  <label className={labelClass}>Password</label>
-                  <div className="relative">
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={password}
-                      onChange={(e) => { setPassword(e.target.value); setError(''); }}
-                      autoFocus={!!email}
-                      autoComplete="current-password"
-                      className={`${inputClass} pr-10`}
-                    />
-                    <button type="button" onClick={() => setShowPassword(v => !v)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
-                      title={showPassword ? 'Hide password' : 'Show password'}>
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  value={code}
+                  onChange={(e) => { setCode(e.target.value.slice(0, 12)); setError(''); }}
+                  placeholder="123 456"
+                  className="w-full px-3 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-center text-3xl tracking-[0.4em] font-mono text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                />
+                <p className="text-xs text-slate-400">Lost your phone? Type one of your recovery codes instead (like abcd-2345).</p>
+                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold">{error}</div>}
+                <button
+                  type="submit"
+                  disabled={loading || code.trim().length < 6}
+                  className="w-full h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Key className="w-4 h-4" /> {loading ? 'Checking…' : 'Verify'}
+                </button>
+                <button type="button" onClick={() => { setTwoFactor(null); setPassword(''); setPinCode(''); setError(''); }}
+                  className={`${linkClass} w-full flex items-center justify-center gap-1`}>
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back to sign in
+                </button>
+              </form>
+            ) : pending ? (
+              // Only for someone who works at more than one location.
+              <div className="space-y-5">
+                <div className="space-y-1">
+                  <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><MapPin className="w-6 h-6 text-teal-600" /> Where are you working today?</h1>
+                  <p className="text-sm text-slate-500">
+                    Signed in as <strong className="text-slate-700">{pending.user.fullName}</strong>. The head office opens the ERP;
+                    an outlet opens its POS.
+                  </p>
+                </div>
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {pending.branches.map(b => {
+                    const suggested = b.id === rememberedBranchId || (!rememberedBranchId && b.isHome);
+                    const kind = locationKind(b);
+                    const KindIcon = kind.icon;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => chooseBranch(b)}
+                        className={`w-full text-left px-4 py-3.5 rounded-2xl border transition flex items-center gap-3 disabled:opacity-50 cursor-pointer ${
+                          suggested ? 'border-teal-400 bg-teal-50 hover:bg-teal-100' : 'border-slate-200 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center shrink-0">
+                          <KindIcon className="w-5 h-5 text-teal-600" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-sm font-bold text-slate-900 truncate">{b.name}</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-600 text-white shrink-0">{kind.opens}</span>
+                          </span>
+                          <span className="block text-xs text-slate-500 truncate">
+                            {kind.label}{b.city ? ` · ${b.city}` : ''} · {kind.hint}
+                          </span>
+                        </span>
+                        {b.isHome && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">Your branch</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold">{error}</div>}
+                <button type="button" onClick={cancelBranchChoice} disabled={loading}
+                  className={`${linkClass} w-full flex items-center justify-center gap-1`}>
+                  <ArrowLeft className="w-3.5 h-3.5" /> Not you? Back to sign in
+                </button>
+              </div>
+            ) : (
+              <form ref={formRef} onSubmit={handleSubmit} className="space-y-4">
+                {mode === 'platform' && (
+                  <button type="button" onClick={() => switchMode(tillBranchId ? 'till' : 'email')}
+                    className={`${linkClass} flex items-center gap-1`}>
+                    <ArrowLeft className="w-3.5 h-3.5" /> Back to business sign-in
+                  </button>
+                )}
+
+                <div className="space-y-1">
+                  <h1 className="text-2xl font-bold tracking-tight">{heading.title}</h1>
+                  <p className="text-sm text-slate-500 [@media(max-height:720px)]:hidden">{heading.sub}</p>
+                </div>
+
+                {/* Staff sign in with a PIN; owners and managers with email. */}
+                {mode !== 'platform' && (
+                  <div className="grid grid-cols-2 p-1 rounded-xl bg-slate-100" role="tablist" aria-label="How to sign in">
+                    <button type="button" role="tab" aria-selected={staffTab}
+                      onClick={() => { if (!staffTab) switchMode(tillBranchId ? 'till' : 'username'); }}
+                      className={`py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        staffTab ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                      }`}>
+                      <Key className="w-3.5 h-3.5" /> Staff PIN
+                    </button>
+                    <button type="button" role="tab" aria-selected={mode === 'email'}
+                      onClick={() => { if (mode !== 'email') switchMode('email'); }}
+                      className={`py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                        mode === 'email' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                      }`}>
+                      <Mail className="w-3.5 h-3.5" /> Email
                     </button>
                   </div>
-                  <button type="button" onClick={() => { setShowForgot(v => !v); setForgotState({ sending: false }); }}
-                    className="mt-1 text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
-                    Forgot password?
-                  </button>
-                  {showForgot && (
-                    <div className="mt-1 text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
-                      {forgotState.noEmail ? (
-                        <p>
-                          This server cannot send email yet. Staff: ask your restaurant owner to set a new password in
-                          <strong> Staff &amp; Pin Access</strong>. Owners: contact Cashly support.
-                        </p>
-                      ) : forgotState.message ? (
-                        <p className="text-teal-800">{forgotState.message}</p>
-                      ) : (
-                        <>
-                          <p>We will email a link to <strong>{email.trim() || 'the email above'}</strong> to set a new password.</p>
-                          <button
-                            type="button"
-                            onClick={sendResetLink}
-                            disabled={!email.trim() || forgotState.sending}
-                            className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-bold transition"
-                          >
-                            {forgotState.sending ? 'Sending…' : 'Email me a reset link'}
-                          </button>
-                        </>
+                )}
+
+                {mode === 'till' && (
+                  <>
+                    {pinDots}
+                    {keypad}
+                  </>
+                )}
+
+                {mode === 'email' && (
+                  <>
+                    <div>
+                      <label htmlFor="login-email" className={labelClass}>Email</label>
+                      <input
+                        id="login-email"
+                        type="email"
+                        value={email}
+                        onChange={(e) => { setEmail(e.target.value); setError(''); }}
+                        autoFocus={!email}
+                        autoComplete="email"
+                        placeholder="you@yourbusiness.com"
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <label htmlFor="login-password" className={labelClass}>Password</label>
+                        <button type="button" onClick={() => { setShowForgot(v => !v); setForgotState({ sending: false }); }}
+                          className="mb-1 text-xs font-semibold text-teal-700 hover:text-teal-800">
+                          Forgot password?
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <input
+                          id="login-password"
+                          type={showPassword ? 'text' : 'password'}
+                          value={password}
+                          onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                          autoFocus={!!email}
+                          autoComplete="current-password"
+                          className={`${inputClass} pr-11`}
+                        />
+                        <button type="button" onClick={() => setShowPassword(v => !v)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      {showForgot && (
+                        <div className="mt-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                          {forgotState.noEmail ? (
+                            <p>
+                              This server cannot send email yet. Staff: ask your owner to set a new password in
+                              <strong> Staff &amp; PINs</strong>. Owners: contact Cashly support.
+                            </p>
+                          ) : forgotState.message ? (
+                            <p className="text-teal-800">{forgotState.message}</p>
+                          ) : (
+                            <>
+                              <p>We will email a link to <strong>{email.trim() || 'the email above'}</strong> to set a new password.</p>
+                              <button
+                                type="button"
+                                onClick={sendResetLink}
+                                disabled={!email.trim() || forgotState.sending}
+                                className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-bold transition"
+                              >
+                                {forgotState.sending ? 'Sending…' : 'Email me a reset link'}
+                              </button>
+                            </>
+                          )}
+                        </div>
                       )}
                     </div>
+                  </>
+                )}
+
+                {mode === 'username' && (
+                  <>
+                    {/* Only when the server could not tell which business this username belongs to
+                        (never at a business's own address, which already says). */}
+                    {restaurantNeeded && !address && (
+                      <div>
+                        <label htmlFor="login-business" className={labelClass}>Business</label>
+                        <input id="login-business" type="text" value={restaurant} autoFocus spellCheck={false} autoComplete="organization"
+                          onChange={(e) => { setRestaurant(e.target.value); setError(''); }}
+                          placeholder="Your business's name or web address" className={inputClass} />
+                      </div>
+                    )}
+                    <div>
+                      <label htmlFor="login-username" className={labelClass}>Username</label>
+                      <input id="login-username" type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
+                        onChange={(e) => { setUsername(e.target.value); setError(''); }}
+                        placeholder="e.g. ali.cashier" className={inputClass} />
+                    </div>
+                    {pinDots}
+                    {keypad}
+                  </>
+                )}
+
+                {mode === 'platform' && !usePin && (
+                  <>
+                    <div>
+                      <label htmlFor="login-work-email" className={labelClass}>Work email</label>
+                      <input id="login-work-email" type="email" value={email} autoFocus autoComplete="email"
+                        onChange={(e) => { setEmail(e.target.value); setError(''); }} placeholder="you@cashly.com" className={inputClass} />
+                    </div>
+                    <div>
+                      <label htmlFor="login-platform-password" className={labelClass}>Password</label>
+                      <div className="relative">
+                        <input id="login-platform-password" type={showPassword ? 'text' : 'password'} value={password} autoComplete="current-password"
+                          onChange={(e) => { setPassword(e.target.value); setError(''); }} className={`${inputClass} pr-11`} />
+                        <button type="button" onClick={() => setShowPassword(v => !v)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    {setupPinAllowed && (
+                      <button type="button" onClick={() => { setUsePin(true); setError(''); }} className={`${linkClass} w-full`}>
+                        First time? Use the setup PIN to create the team
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {mode === 'platform' && usePin && (
+                  <>
+                    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                      The shared setup PIN only works until you add yourself as a named owner (Platform → Team).
+                    </p>
+                    <div>
+                      <label htmlFor="login-setup-username" className={labelClass}>Username</label>
+                      <input id="login-setup-username" type="text" value={username} autoFocus autoComplete="username"
+                        onChange={(e) => { setUsername(e.target.value); setError(''); }} className={inputClass} />
+                    </div>
+                    {pinDots}
+                    {keypad}
+                    <button type="button" onClick={() => { setUsePin(false); setError(''); setPinCode(''); }} className={`${linkClass} w-full`}>
+                      Sign in with my email instead
+                    </button>
+                  </>
+                )}
+
+                {error && (
+                  <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold space-y-1" role="alert">
+                    <div>{error}</div>
+                    {deviceNotConnected && (
+                      <a href="/connect" className="block underline">Connect this device again</a>
+                    )}
+                    {otherAddress && (
+                      <a href={otherAddress} className="block underline break-all">Go to {otherAddress.replace(/^https?:\/\//, '')}</a>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading || !ready}
+                  className="w-full h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-teal-600/20"
+                >
+                  {loading ? 'Signing in…' : 'Sign in'}
+                </button>
+
+                {/* Other ways in */}
+                <div className="flex flex-col items-center gap-2.5">
+                  {mode === 'till' && (
+                    <button type="button" onClick={() => switchMode('username')} className={linkClass}>
+                      Use username and PIN instead
+                    </button>
+                  )}
+                  {mode === 'username' && tillBranchId && (
+                    <button type="button" onClick={() => switchMode('till')} className={`${linkClass} flex items-center gap-1`}>
+                      <Monitor className="w-3.5 h-3.5" /> Back to PIN only
+                    </button>
+                  )}
+                  {(mode === 'till' || mode === 'username') && (
+                    <p className="text-xs text-slate-400 text-center">Forgot your PIN? Ask your manager to reset it.</p>
                   )}
                 </div>
-              </>
-            )}
 
-            {mode === 'username' && (
-              <>
-                {/* Only when the server could not tell which restaurant this username belongs to
-                    (never at a restaurant's own address, which already says). */}
-                {restaurantNeeded && !address && (
-                  <div>
-                    <label className={labelClass}>Restaurant</label>
-                    <input type="text" value={restaurant} autoFocus spellCheck={false} autoComplete="organization"
-                      onChange={(e) => { setRestaurant(e.target.value); setError(''); }}
-                      placeholder="Your restaurant's name or web address" className={inputClass} />
+                {/* The way in for a new business, on either tab. Only on Cashly's main address — not on
+                    a business's own address, and not on a till that already belongs to one. */}
+                {canRegister && (
+                  <div className="md:hidden pt-4 border-t border-slate-100">
+                    <a href="/signup"
+                      className="flex items-center justify-center w-full h-11 rounded-2xl border-2 border-teal-600 text-teal-700 hover:bg-teal-50 text-sm font-bold transition">
+                      New business? Register — 30-day free trial
+                    </a>
                   </div>
                 )}
-                <div>
-                  <label className={labelClass}>Username</label>
-                  <input type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
-                    onChange={(e) => { setUsername(e.target.value); setError(''); }}
-                    placeholder="e.g. ali.cashier" className={inputClass} />
-                </div>
-                {pinInput(false)}
-                {keypad}
-              </>
+              </form>
             )}
+          </div>
+        </div>
 
-            {mode === 'platform' && !usePin && (
-              <>
-                <div>
-                  <label className={labelClass}>Work email</label>
-                  <input type="email" value={email} autoFocus autoComplete="email"
-                    onChange={(e) => { setEmail(e.target.value); setError(''); }} placeholder="you@cashly.com" className={inputClass} />
-                </div>
-                <div>
-                  <label className={labelClass}>Password</label>
-                  <div className="relative">
-                    <input type={showPassword ? 'text' : 'password'} value={password} autoComplete="current-password"
-                      onChange={(e) => { setPassword(e.target.value); setError(''); }} className={`${inputClass} pr-10`} />
-                    <button type="button" onClick={() => setShowPassword(v => !v)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600">
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-                {setupPinAllowed && (
-                  <button type="button" onClick={() => { setUsePin(true); setError(''); }}
-                    className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
-                    First time? Use the setup PIN to create the team
-                  </button>
-                )}
-              </>
-            )}
-
-            {mode === 'platform' && usePin && (
-              <>
-                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                  The shared setup PIN only works until you add yourself as a named owner (Platform → Team).
-                </p>
-                <div>
-                  <label className={labelClass}>Username</label>
-                  <input type="text" value={username} autoFocus autoComplete="username"
-                    onChange={(e) => { setUsername(e.target.value); setError(''); }} className={inputClass} />
-                </div>
-                {pinInput(false)}
-                {keypad}
-                <button type="button" onClick={() => { setUsePin(false); setError(''); setPinCode(''); }}
-                  className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
-                  Sign in with my email instead
-                </button>
-              </>
-            )}
-
-            {error && (
-              <div className="px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold space-y-1">
-                <div>{error}</div>
-                {deviceNotConnected && (
-                  <a href="/connect" className="block underline">Connect this device again</a>
-                )}
-                {otherAddress && (
-                  <a href={otherAddress} className="block underline break-all">Go to {otherAddress.replace(/^https?:\/\//, '')}</a>
-                )}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading || !ready}
-              className="w-full px-4 py-3 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Key className="w-4 h-4" />
-              {loading ? 'Signing in…' : 'Sign In'}
-            </button>
-
-            {/* Other ways in */}
-            {mode === 'till' && (
-              <button type="button" onClick={() => switchMode('username')}
-                className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold">
-                Sign in with username instead
-              </button>
-            )}
-            {mode === 'email' && (
-              <button type="button" onClick={() => switchMode('username')}
-                className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
-                <Key className="w-3 h-3" /> No email? Sign in with username &amp; PIN
-              </button>
-            )}
-            {mode === 'username' && (
-              <button type="button" onClick={() => switchMode(tillBranchId ? 'till' : 'email')}
-                className="w-full text-[11px] text-slate-500 hover:text-teal-700 font-semibold flex items-center justify-center gap-1">
-                {tillBranchId ? <><Monitor className="w-3 h-3" /> Back to PIN sign-in</>
-                  : <><Mail className="w-3 h-3" /> {address ? 'Owner or manager? Sign in with email' : 'Sign in with email instead'}</>}
-              </button>
-            )}
-
-            {/* The way in for a new business — visitors arriving from the website's Demo button.
-                Only on Cashly's main address, not on a restaurant's own. */}
-            {mode === 'email' && !address && (
-              <div className="pt-3 border-t border-slate-100 text-center space-y-2">
-                <p className="text-[11px] text-slate-500">New to Cashly?</p>
-                <a href="/signup"
-                  className="block w-full px-4 py-2.5 rounded-xl border-2 border-teal-500 text-teal-700 hover:bg-teal-50 font-bold text-sm transition">
-                  New Registration — 30-day free trial
-                </a>
-              </div>
-            )}
-            {/* A new till, tablet or kitchen screen at an existing restaurant. */}
-            {(mode === 'email' || mode === 'username') && !tillBranchId && (
-              <a href="/connect" className="block text-center text-[11px] text-slate-500 hover:text-teal-700 font-semibold transition">
-                Connect a till or tablet →
-              </a>
-            )}
-          </form>
-        )}
-      </div>
+        {/* On a phone: what the brand panel's footer holds. */}
+        <div className="md:hidden px-6 pb-8 flex flex-col items-center gap-2.5">
+          {statusLine(false)}
+          {showConnect && <a href="/connect" className={linkClass}>Connect a till or tablet →</a>}
+          {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
+            <button type="button" onClick={() => switchMode('platform')} className={linkClass}>Platform admin</button>
+          )}
+        </div>
+      </main>
     </div>
   );
 };
