@@ -694,6 +694,8 @@ public class Order
     /// order's payment method, it is not a tax-affecting discount.
     /// </summary>
     public decimal GiftCardRedeemedPKR { get; set; } = 0;
+    /// <summary>Amount settled by loyalty points. Applied after tax, like a gift card.</summary>
+    public decimal LoyaltyDiscountPKR { get; set; } = 0;
 
     // --- Offline origin & reconciliation -----------------------------------
     // An offline sale already happened: the customer handed over money at a price the device

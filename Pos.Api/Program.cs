@@ -1927,9 +1927,11 @@ static Task EnsurePackingSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlR
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""UnitsPerSaleUnit"" numeric NOT NULL DEFAULT 1;
 ");
 
-/// <summary>Whether prices include tax, and each business's own province rates (TenantTaxRegionRate).</summary>
+/// <summary>Whether prices include tax, each business's own province rates (TenantTaxRegionRate), and
+/// what loyalty points paid of a sale (so its journal and refunds come out right).</summary>
 static Task EnsureTaxSetupSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
     ALTER TABLE ""TenantSettings"" ADD COLUMN IF NOT EXISTS ""PricesIncludeTax"" boolean NOT NULL DEFAULT FALSE;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""LoyaltyDiscountPKR"" numeric(18,2) NOT NULL DEFAULT 0;
     ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""TaxTreatment"" integer NOT NULL DEFAULT 0;
     ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""TaxRatePercent"" numeric NULL;
     ALTER TABLE ""OrderItems"" ADD COLUMN IF NOT EXISTS ""TaxTreatment"" integer NULL;
@@ -4058,7 +4060,8 @@ static async Task PostIntercompanyTransferAsync(AppDbContext db, StockTransferOr
 /// </summary>
 static async Task PostSaleJournalIfNeededAsync(AppDbContext db, Order order)
 {
-    if (!order.IsPaid || order.Status == OrderStatus.Cancelled || order.TotalPKR <= 0) return;
+    // A bill paid in full by a gift card or points still reaches the books, so the test is the bill.
+    if (!order.IsPaid || order.Status == OrderStatus.Cancelled || Pos.Api.Services.SaleMath.BillBeforeCredits(order) <= 0) return;
     if (!await HasAccountingAsync(db, order.TenantId)) return;
 
     // The original sale entry, not a reversal of it: a voided sale keeps its reversed original.
@@ -4069,20 +4072,6 @@ static async Task PostSaleJournalIfNeededAsync(AppDbContext db, Order order)
     JournalEntry? entry = null;
     try
     {
-        var settlementAccount = order.PaymentMethod switch
-        {
-            PaymentMethod.Cash => "1000",
-            PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
-            _ => "1100" // Split / CustomerKhata — approximated as receivable since it isn't fully cash-settled
-        };
-        var netSales = order.SubTotalPKR - order.DiscountPKR;
-        var lines = new List<(string, decimal, decimal)>
-        {
-            (settlementAccount, order.TotalPKR, 0),
-            ("4000", 0, netSales),
-            ("2100", 0, order.TaxPKR)
-        };
-
         // The cost of what left the shelves for this sale, exactly as the stock ledger recorded it:
         // counted products at this location's cost, recipe ingredients at theirs. Purchases put that
         // cost INTO Inventory (1200); until now nothing took it out again, so the books showed every
@@ -4091,11 +4080,11 @@ static async Task PostSaleJournalIfNeededAsync(AppDbContext db, Order order)
             .Where(e => e.TenantId == order.TenantId && e.ReferenceType == "Order" && e.ReferenceId == order.Id
                      && e.MovementType == StockMovementType.SaleConsumption)
             .SumAsync(e => (decimal?)(-e.QuantityChange * e.UnitCostPKR)) ?? 0m, 2);
-        if (costOfSale > 0)
-        {
-            lines.Add(("5000", costOfSale, 0));
-            lines.Add(("1200", 0, costOfSale));
-        }
+        // Revenue is the bill less its tax, so the entry balances with the tax inside the prices or on
+        // top, and with part of the bill paid by a gift card or points (Services/SaleMath.cs).
+        var lines = Pos.Api.Services.SaleMath.SaleJournalLines(order, costOfSale);
+        // A chart seeded before the discounts account existed gets it now.
+        if (lines.Any(l => l.Account == "4900")) await EnsureStandardAccountsAsync(db, order.TenantId);
 
         // Dated when the sale happened: an offline sale belongs to the day the customer paid, not
         // the day the terminal got its connection back.
@@ -5853,6 +5842,9 @@ api.MapPost("/sync/batch-orders", async (
     var syncedResults = new List<object>();
     var pricedByOrder = new Dictionary<Guid, ServerPricedOrder>();
     var createdOrders = new List<Order>();
+    var kitchenByTenant = new Dictionary<Guid, bool>();
+    // How old an offline sale may be and still reach the kitchen screen.
+    var offlineKitchenTicketWindow = TimeSpan.FromMinutes(15);
 
     foreach (var dto in ordersList)
     {
@@ -5924,6 +5916,7 @@ api.MapPost("/sync/batch-orders", async (
 
         foreach (var line in priced.Items) order.Items.Add(line);
         if (order.Status == OrderStatus.InKitchen) order.InKitchenAt = DateTime.UtcNow;
+        order.LoyaltyDiscountPKR = priced.LoyaltyDiscountPKR;
 
         // --- Whose numbers win -------------------------------------------------
         // The device's, when it sent any. It is the only party that knows what the customer was
@@ -6002,22 +5995,39 @@ api.MapPost("/sync/batch-orders", async (
                 oldValue: priced.AttemptedDiscountPKR.ToString("0.##"), newValue: "0");
         }
 
-        var stationGroups = order.Items.GroupBy(i => i.Station);
-        int ticketIndex = 1;
-        foreach (var group in stationGroups)
+        // Kitchen tickets only where the business has a kitchen, and only for a sale made in the
+        // last few minutes — a short drop in the connection. After a longer outage the kitchen has
+        // already served those meals; a burst of old "Cooking" tickets would bury the live ones.
+        if (!kitchenByTenant.TryGetValue(branch.TenantId, out var routesToKitchen))
+            kitchenByTenant[branch.TenantId] = routesToKitchen = await RoutesToKitchenAsync(db, branch.TenantId);
+        var sentToKitchen = routesToKitchen && DateTime.UtcNow - order.CapturedAt!.Value <= offlineKitchenTicketWindow;
+        if (sentToKitchen)
         {
-            order.KitchenTickets.Add(new KitchenTicket
+            var stationGroups = order.Items.GroupBy(i => i.Station);
+            int ticketIndex = 1;
+            foreach (var group in stationGroups)
             {
-                OrderId = order.Id,
-                BranchId = branch.Id,
-                TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
-                Station = group.Key,
-                Status = "Cooking",
-                CreatedAt = DateTime.UtcNow
-            });
+                order.KitchenTickets.Add(new KitchenTicket
+                {
+                    OrderId = order.Id,
+                    BranchId = branch.Id,
+                    TicketNumber = $"KOT-{DateTime.UtcNow:mm}-{ticketIndex++}",
+                    Station = group.Key,
+                    Status = "Cooking",
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+        }
+        else if (order.IsPaid && order.OrderType != OrderType.Delivery && order.OrderType != OrderType.CallOrder)
+        {
+            // Paid and handed over while the till was offline: the sale is done.
+            order.Status = OrderStatus.Completed;
+            order.InKitchenAt = null;
+            order.CompletedAt = order.CapturedAt;
         }
 
-        if (!string.IsNullOrEmpty(dto.TableNumber))
+        // A sale paid at once does not hold its table (as on the online path).
+        if (!string.IsNullOrEmpty(dto.TableNumber) && !dto.IsPaid)
         {
             var table = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == branch.Id && t.TableNumber == dto.TableNumber);
             if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
@@ -7134,30 +7144,34 @@ api.MapPost("/orders", async (
     var (error, order, priced) = await CreateOrderCoreAsync(db, branch, dto, actingUser, fiscal, waResolver);
     if (error != null) return error;
 
+    // No pricing comes back when the till sent a sale already saved (a retry after a dropped
+    // response): the saved sale is returned as it was, so the receipt matches what was recorded.
     return Results.Ok(new
     {
-        message = "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
+        message = priced == null ? "This sale was already recorded." : "Order placed and dispatched via Mode 1 (Kitchen + Counter)",
+        alreadyRecorded = priced == null,
         orderId = order!.Id, orderNumber = order.OrderNumber,
         kitchenTicketsCount = order.KitchenTickets.Count,
         status = order.Status.ToString(),
         subTotalPKR = order.SubTotalPKR, discountPKR = order.DiscountPKR,
-        taxPKR = order.TaxPKR, taxRatePercent = priced!.TaxRatePercent, totalPKR = order.TotalPKR,
+        taxPKR = order.TaxPKR, taxRatePercent = priced?.TaxRatePercent, totalPKR = order.TotalPKR,
         // The tax by rate, for the receipt: what was sold at each rate, then what was exempt.
         taxLines = order.Items.Where(i => i.TaxTreatment != null)
             .GroupBy(i => i.TaxTreatment == TaxTreatment.Exempt ? -1m : i.TaxRatePercent ?? 0m)
             .OrderByDescending(g => g.Key)
             .Select(g => new { ratePercent = g.Key < 0 ? 0m : g.Key, exempt = g.Key < 0, amountPKR = g.Sum(i => i.TotalPricePKR), taxPKR = g.Sum(i => i.TaxPKR ?? 0m) })
             .ToList(),
-        discountRejected = priced.DiscountRejected,
+        discountRejected = priced?.DiscountRejected ?? false,
         customerId = order.CustomerId,
-        promoCodeApplied = priced.AppliedPromo?.Code,
-        promoDiscountPKR = priced.PromoDiscountPKR,
-        promoRejectedReason = priced.PromoRejectedReason,
+        promoCodeApplied = priced?.AppliedPromo?.Code,
+        promoDiscountPKR = priced?.PromoDiscountPKR ?? 0m,
+        promoRejectedReason = priced?.PromoRejectedReason,
         giftCardRedeemedPKR = order.GiftCardRedeemedPKR,
-        giftCardRejectedReason = priced.GiftCardRejectedReason,
-        loyaltyPointsRedeemed = priced.LoyaltyPointsRedeemed,
-        loyaltyDiscountPKR = priced.LoyaltyDiscountPKR,
-        loyaltyRejectedReason = priced.LoyaltyRejectedReason,
+        giftCardRejectedReason = priced?.GiftCardRejectedReason,
+        loyaltyPointsRedeemed = priced?.LoyaltyPointsRedeemed ?? 0,
+        loyaltyDiscountPKR = order.LoyaltyDiscountPKR,
+        loyaltyRejectedReason = priced?.LoyaltyRejectedReason,
+        amountPaidPKR = order.AmountPaidPKR, changeDuePKR = order.ChangeDuePKR,
         fiscalInvoiceNumber = order.FiscalInvoiceNumber
     });
 // Selling is the last thing a tenant loses. PastDue and Restricted both still pass this gate.
@@ -7177,6 +7191,12 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     if (!branch.CanSell)
         return (Results.BadRequest(new { message = $"{branch.Name} does not sell. Ring this sale up at a selling branch." }), null, null);
 
+    // The till names each sale once (ClientLocalId). Pressing Charge again after a dropped response
+    // finds the sale already saved and returns it, rather than saving it a second time.
+    var clientId = string.IsNullOrWhiteSpace(dto.ClientLocalId) ? null : dto.ClientLocalId.Trim();
+    if (clientId != null && await FindOrderByClientIdAsync(db, branch.TenantId, clientId) is { } recorded)
+        return (null, recorded, null);
+
     var orderNumber = await GenerateOrderNumberAsync(db, branch.TenantId);
     var order = new Order
     {
@@ -7190,7 +7210,8 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         AmountPaidPKR = dto.AmountPaidPKR, ChangeDuePKR = dto.ChangeDuePKR, IsPaid = dto.IsPaid,
         CashierName = actingUser?.FullName ?? dto.CashierName ?? "Counter 1 Cashier",
         CreatedByRole = actingUser?.Role.ToString() ?? dto.CreatedByRole ?? "Cashier",
-        CreatedAt = DateTime.UtcNow
+        CreatedAt = DateTime.UtcNow,
+        ClientLocalId = clientId
     };
 
     var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser);
@@ -7204,8 +7225,17 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     order.DiscountPKR = priced.DiscountPKR;
     order.TaxPKR = priced.TaxPKR;
     order.TotalPKR = priced.TotalPKR;
+    order.LoyaltyDiscountPKR = priced.LoyaltyDiscountPKR;
     foreach (var line in priced.Items) order.Items.Add(line);
     if (order.Status == OrderStatus.InKitchen) order.InKitchenAt = DateTime.UtcNow;
+
+    // What was handed over and the change, against the server's total: cash may be more than the
+    // bill; anything else is the bill exactly.
+    if (order.IsPaid)
+    {
+        order.AmountPaidPKR = order.PaymentMethod == PaymentMethod.Cash ? Math.Max(dto.AmountPaidPKR, order.TotalPKR) : order.TotalPKR;
+        order.ChangeDuePKR = order.AmountPaidPKR - order.TotalPKR;
+    }
 
     // A discount attempted without permission is rejected (not applied) but does not block the
     // sale — the attempt is recorded so an owner can follow up.
@@ -7215,10 +7245,9 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
             oldValue: priced.AttemptedDiscountPKR.ToString("0.##"), newValue: "0");
     }
 
-    // KOTs per station — skipped for Retail/CashAndCarry tenants, which have no kitchen to route
-    // to. A bag of chips rung up at a shop counter has no business spawning a "Cooking" ticket.
-    var tenantBusinessType = await db.Tenants.Where(t => t.Id == branch.TenantId).Select(t => t.BusinessType).FirstOrDefaultAsync();
-    if (tenantBusinessType != BusinessType.Retail && tenantBusinessType != BusinessType.CashAndCarry)
+    // KOTs per station — only where this kind of business routes to a kitchen (Data/VerticalPacks.cs).
+    // A bag of chips or a strip of tablets rung up at a counter has no business spawning a "Cooking" ticket.
+    if (await RoutesToKitchenAsync(db, branch.TenantId))
     {
         var stationGroups = order.Items.GroupBy(i => i.Station);
         int ticketIndex = 1;
@@ -7233,8 +7262,9 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         }
     }
 
-    // Mark table occupied
-    if (!string.IsNullOrEmpty(dto.TableNumber))
+    // A table is held by a bill still open on it. A dine-in sale paid at once (at the counter) closes
+    // its bill there and then, as settling a tab does, so it does not hold the table.
+    if (!string.IsNullOrEmpty(dto.TableNumber) && !dto.IsPaid)
     {
         var table = await db.DiningTables.FirstOrDefaultAsync(t => t.BranchId == branch.Id && t.TableNumber == dto.TableNumber);
         if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
@@ -7277,7 +7307,18 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     AttachPrescription(db, order, dto.Prescription, order.CashierName);
 
     db.Orders.Add(order);
-    await db.SaveChangesAsync();
+    try
+    {
+        await db.SaveChangesAsync();
+    }
+    catch (DbUpdateException) when (clientId != null)
+    {
+        // The same sale arrived twice at the same moment and the other copy was saved first
+        // (the unique index on the till's id refused this one): hand back that one.
+        db.ChangeTracker.Clear();
+        if (await FindOrderByClientIdAsync(db, branch.TenantId, clientId) is { } first) return (null, first, null);
+        throw;
+    }
 
     // CRM visit/spend counters and loyalty accrual — only meaningful once the sale is committed.
     await ApplyPostSaleCustomerUpdatesAsync(db, order, priced);
@@ -7312,6 +7353,28 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     await PostSaleJournalIfNeededAsync(db, order);
 
     return (null, order, priced);
+}
+
+/// <summary>A sale already saved under the id the till gave it.</summary>
+static Task<Order?> FindOrderByClientIdAsync(AppDbContext db, Guid tenantId, string clientId) =>
+    db.Orders.Include(o => o.Items).Include(o => o.KitchenTickets)
+        .FirstOrDefaultAsync(o => o.TenantId == tenantId && o.ClientLocalId == clientId);
+
+/// <summary>
+/// Whether this kind of business sends its sales to a kitchen (Data/VerticalPacks.cs), read straight
+/// from its sector packs — the legacy business type when it has none — so asking never saves anything
+/// part-way through a sale.
+/// </summary>
+static async Task<bool> RoutesToKitchenAsync(AppDbContext db, Guid tenantId)
+{
+    var keys = await db.TenantVerticalPacks.IgnoreQueryFilters().AsNoTracking()
+        .Where(p => p.TenantId == tenantId)
+        .OrderByDescending(p => p.IsPrimary)
+        .Select(p => p.PackKey).ToListAsync();
+    if (keys.Count == 0)
+        keys.Add(Pos.Api.Data.VerticalPacks.FromLegacyBusinessType(await db.Tenants.IgnoreQueryFilters().AsNoTracking()
+            .Where(t => t.Id == tenantId).Select(t => t.BusinessType).FirstOrDefaultAsync()));
+    return Pos.Api.Data.VerticalPacks.Merge(keys, keys[0]).Flows.KitchenRouting;
 }
 
 api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, OrderStatus? status, int limit = 30) =>
@@ -7880,7 +7943,6 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         CreatedByUserId = currentUser?.Id
     };
 
-    decimal gross = 0;
     foreach (var requested in dto.Lines.GroupBy(l => l.OrderItemId))
     {
         var item = order.Items.FirstOrDefault(i => i.Id == requested.Key);
@@ -7891,7 +7953,6 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
             return Results.BadRequest(new { message = $"{item.ProductName}: {returnable} can still be returned." });
 
         var lineTotal = item.UnitPricePKR * quantity;
-        gross += lineTotal;
         ret.Lines.Add(new OrderReturnLine
         {
             OrderItemId = item.Id, ProductId = item.ProductId, ProductName = item.ProductName,
@@ -7899,18 +7960,11 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         });
     }
 
-    // The sale's discount and tax apply to what comes back in the same proportion they applied to
-    // the whole sale — and across every return, no more than the customer paid comes back.
-    var discountShare = order.SubTotalPKR > 0 ? order.DiscountPKR / order.SubTotalPKR : 0m;
-    var net = Math.Round(gross * (1 - discountShare), 2);
-    var taxable = order.SubTotalPKR - order.DiscountPKR;
-    var tax = taxable > 0 ? Math.Round(net * order.TaxPKR / taxable, 2) : 0m;
-    var stillRefundable = Math.Max(0, order.TotalPKR - order.RefundedPKR);
-    if (net + tax > stillRefundable)
-    {
-        net = Math.Min(net, stillRefundable);
-        tax = stillRefundable - net;
-    }
+    // Each line comes back at its own value after its share of the discount, with its own tax: an
+    // exempt item brings back no tax, and with tax inside the prices it is not added again. Across
+    // every return, no more than the customer paid in money comes back (Services/SaleMath.cs).
+    var (net, tax) = Pos.Api.Services.SaleMath.ReturnAmounts(order,
+        ret.Lines.Select(l => (order.Items.First(i => i.Id == l.OrderItemId), l.Quantity)).ToList());
     ret.SubTotalRefundedPKR = net;
     ret.TaxRefundedPKR = tax;
     ret.TotalRefundedPKR = net + tax;
@@ -7985,18 +8039,12 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         JournalEntry? entry = null;
         try
         {
-            var refundAccount = refundMethod switch
-            {
-                PaymentMethod.Cash => "1000",
-                PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast => "1020",
-                _ => "1100"
-            };
             var lines = new List<(string, decimal, decimal)>
             {
                 ("4000", ret.SubTotalRefundedPKR, 0),
-                ("2100", ret.TaxRefundedPKR, 0),
-                (refundAccount, 0, ret.TotalRefundedPKR)
+                (Pos.Api.Services.SaleMath.SettlementAccount(refundMethod), 0, ret.TotalRefundedPKR)
             };
+            if (ret.TaxRefundedPKR > 0) lines.Add(("2100", ret.TaxRefundedPKR, 0));
             var restocked = Math.Round(restockedCost, 2);
             if (restocked > 0)
             {
@@ -8102,8 +8150,11 @@ api.MapGet("/delivery/board", async (AppDbContext db, HttpContext http, Guid bra
 {
     var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
     if (error != null) return error;
+    // Everything still moving, and the last two days of finished ones — not every delivery ever made.
+    var finishedSince = DateTime.UtcNow.AddDays(-2);
     var orders = await db.Orders.Include(o => o.Items).Include(o => o.AssignedRider)
-        .Where(o => o.BranchId == scopedBranchId!.Value && (o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder))
+        .Where(o => o.BranchId == scopedBranchId!.Value && (o.OrderType == OrderType.Delivery || o.OrderType == OrderType.CallOrder)
+                 && ((o.Status != OrderStatus.Completed && o.Status != OrderStatus.Cancelled) || o.CreatedAt >= finishedSince))
         .OrderByDescending(o => o.CreatedAt).ToListAsync();
     return Results.Ok(new
     {
@@ -10399,11 +10450,17 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
     var zone = await TenantTimeZoneAsync(db, tenantId);
     var targetDate = (date ?? BusinessToday(zone)).Date;
     var (dayStart, dayEnd) = BusinessDayUtc(targetDate, zone);
+    // A sale belongs to the day it was made: one rung up offline counts on that day, not the day it synced.
     var orders = await db.Orders.Include(o => o.Items)
-        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= dayStart && o.CreatedAt < dayEnd && o.IsPaid).ToListAsync();
+        .Where(o => branchIds.Contains(o.BranchId) && (o.CapturedAt ?? o.CreatedAt) >= dayStart && (o.CapturedAt ?? o.CreatedAt) < dayEnd && o.IsPaid).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Card).ToList();
     var digitalOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).ToList();
+
+    // Refunds given that day, whichever day the sale was: the drawer paid them out today.
+    var refunds = await db.OrderReturns.Where(r => branchIds.Contains(r.BranchId) && r.CreatedAt >= dayStart && r.CreatedAt < dayEnd)
+        .Select(r => new { r.BranchId, r.RefundMethod, r.TotalRefundedPKR, r.TaxRefundedPKR }).ToListAsync();
+    var cashRefunds = refunds.Where(r => r.RefundMethod == PaymentMethod.Cash).ToList();
 
     // Every till session opened that day; each location's latest one is its closing. A location
     // that opened no till has no float — never an invented one.
@@ -10412,12 +10469,14 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
     var closingShifts = shifts.GroupBy(s => s.BranchId).ToDictionary(g => g.Key, g => g.First());
     var openingFloat = closingShifts.Values.Sum(s => s.OpeningFloatPKR);
     var cashSales = cashOrders.Sum(o => o.TotalPKR);
-    var expectedCash = openingFloat + cashSales;
+    var cashRefunded = cashRefunds.Sum(r => r.TotalRefundedPKR);
+    var expectedCash = openingFloat + cashSales - cashRefunded;
     // A location that has not counted its drawer yet counts as expected, so it shows no variance.
     var actualCash = branchIds.Sum(id =>
     {
         var shift = closingShifts.GetValueOrDefault(id);
-        var branchExpected = (shift?.OpeningFloatPKR ?? 0) + cashOrders.Where(o => o.BranchId == id).Sum(o => o.TotalPKR);
+        var branchExpected = (shift?.OpeningFloatPKR ?? 0) + cashOrders.Where(o => o.BranchId == id).Sum(o => o.TotalPKR)
+            - cashRefunds.Where(r => r.BranchId == id).Sum(r => r.TotalRefundedPKR);
         return shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : branchExpected;
     });
     var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
@@ -10438,6 +10497,10 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
         totalSalesPKR = orders.Sum(o => o.TotalPKR), totalOrders = orders.Count,
         cashSalesPKR = cashSales, cardSalesPKR = cardOrders.Sum(o => o.TotalPKR), digitalSalesPKR = digitalOrders.Sum(o => o.TotalPKR),
         cashTaxPKR = cashOrders.Sum(o => o.TaxPKR), cardTaxPKR = cardOrders.Sum(o => o.TaxPKR), totalTaxPKR = orders.Sum(o => o.TaxPKR),
+        refundCount = refunds.Count, refundsPKR = refunds.Sum(r => r.TotalRefundedPKR), cashRefundsPKR = cashRefunded,
+        refundTaxPKR = refunds.Sum(r => r.TaxRefundedPKR),
+        netSalesPKR = orders.Sum(o => o.TotalPKR) - refunds.Sum(r => r.TotalRefundedPKR),
+        netTaxPKR = orders.Sum(o => o.TaxPKR) - refunds.Sum(r => r.TaxRefundedPKR),
         openingFloatPKR = openingFloat, expectedCashInDrawerPKR = expectedCash, actualCashInDrawerPKR = actualCash, variancePKR = actualCash - expectedCash,
         dineInSalesPKR = orders.Where(o => o.OrderType == OrderType.DineIn).Sum(o => o.TotalPKR),
         takeawaySalesPKR = orders.Where(o => o.OrderType == OrderType.Takeaway).Sum(o => o.TotalPKR),
@@ -10504,42 +10567,72 @@ api.MapGet("/reports/tax-audit", async (AppDbContext db, HttpContext http, Guid?
     var today = BusinessToday(zone);
     var start = BusinessDayUtc(startDate?.Date ?? today.AddDays(-(days ?? 7)), zone).StartUtc;
     var end = endDate.HasValue ? BusinessDayUtc(endDate.Value.Date, zone).EndUtc : DateTime.UtcNow;
-    var orders = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= start && o.CreatedAt < end && o.IsPaid)
-        .OrderByDescending(o => o.CreatedAt).ToListAsync();
+    // A sale counts on the day it was made (an offline one, not on the day it synced).
+    var orders = await db.Orders.Where(o => branchIds.Contains(o.BranchId) && (o.CapturedAt ?? o.CreatedAt) >= start && (o.CapturedAt ?? o.CreatedAt) < end && o.IsPaid)
+        .OrderByDescending(o => o.CapturedAt ?? o.CreatedAt).ToListAsync();
     var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod != PaymentMethod.Cash).ToList();
-    static object BuildSegment(List<Order> segOrders, decimal ratePercent) => new
+    // Credit notes in the same days: a refund takes its tax back off what is owed, in the segment of
+    // the sale it came from.
+    var creditNotes = await db.OrderReturns
+        .Where(r => branchIds.Contains(r.BranchId) && r.CreatedAt >= start && r.CreatedAt < end)
+        .Join(db.Orders, r => r.OrderId, o => o.Id, (r, o) => new
+        {
+            r.Id, r.ReturnNumber, r.CreatedAt, r.BranchId, o.OrderNumber, SalePaidBy = o.PaymentMethod,
+            r.SubTotalRefundedPKR, r.TaxRefundedPKR, r.TotalRefundedPKR
+        })
+        .OrderByDescending(r => r.CreatedAt).ToListAsync();
+    // A sale's gross is the whole bill, including what a gift card or points paid; its net is that less tax.
+    object BuildSegment(List<Order> segOrders, decimal ratePercent, bool cash)
     {
-        taxRatePercent = ratePercent,
-        invoiceCount = segOrders.Count,
-        grossSalesPKR = segOrders.Sum(o => o.TotalPKR),
-        netTaxableSalesPKR = segOrders.Sum(o => o.TotalPKR) - segOrders.Sum(o => o.TaxPKR),
-        taxCollectedPKR = segOrders.Sum(o => o.TaxPKR)
-    };
+        var refundedTax = creditNotes.Where(r => (r.SalePaidBy == PaymentMethod.Cash) == cash).Sum(r => r.TaxRefundedPKR);
+        var collected = segOrders.Sum(o => o.TaxPKR);
+        return new
+        {
+            taxRatePercent = ratePercent,
+            invoiceCount = segOrders.Count,
+            grossSalesPKR = segOrders.Sum(Pos.Api.Services.SaleMath.BillBeforeCredits),
+            netTaxableSalesPKR = segOrders.Sum(o => Pos.Api.Services.SaleMath.BillBeforeCredits(o) - o.TaxPKR),
+            taxCollectedPKR = collected,
+            taxRefundedPKR = refundedTax,
+            netTaxPKR = collected - refundedTax
+        };
+    }
+    var taxCollected = orders.Sum(o => o.TaxPKR);
+    var taxRefunded = creditNotes.Sum(r => r.TaxRefundedPKR);
     return Results.Ok(new
     {
         // The business's own dates, not the UTC instants the range runs between.
         startDate = TimeZoneInfo.ConvertTimeFromUtc(start, zone).ToString("yyyy-MM-dd"),
         endDate = (endDate?.Date ?? today).ToString("yyyy-MM-dd"),
         totalInvoices = orders.Count,
-        totalGrossTurnoverPKR = orders.Sum(o => o.TotalPKR), totalNetSalesPKR = (cashOrders.Sum(o => o.TotalPKR) - cashOrders.Sum(o => o.TaxPKR)) + (cardOrders.Sum(o => o.TotalPKR) - cardOrders.Sum(o => o.TaxPKR)),
-        totalTaxCollectedPKR = cashOrders.Sum(o => o.TaxPKR) + cardOrders.Sum(o => o.TaxPKR),
-        cashSegment = BuildSegment(cashOrders, primaryTaxRate),
-        cardSegment = BuildSegment(cardOrders, secondaryTaxRate),
+        totalGrossTurnoverPKR = orders.Sum(Pos.Api.Services.SaleMath.BillBeforeCredits),
+        totalNetSalesPKR = orders.Sum(o => Pos.Api.Services.SaleMath.BillBeforeCredits(o) - o.TaxPKR),
+        totalTaxCollectedPKR = taxCollected,
+        totalTaxRefundedPKR = taxRefunded,
+        totalNetTaxPKR = taxCollected - taxRefunded,
+        cashSegment = BuildSegment(cashOrders, primaryTaxRate, cash: true),
+        cardSegment = BuildSegment(cardOrders, secondaryTaxRate, cash: false),
         invoices = orders.Select(o => new
         {
             orderId = o.Id,
             orderNumber = o.OrderNumber,
-            createdAt = o.CreatedAt,
+            createdAt = o.CapturedAt ?? o.CreatedAt,
             branchName = branchNames.GetValueOrDefault(o.BranchId),
             orderType = o.OrderType.ToString(),
             paymentMethod = o.PaymentMethod.ToString(),
             cashierName = o.CashierName ?? "—",
-            netAmountPKR = o.TotalPKR - o.TaxPKR,
+            netAmountPKR = Pos.Api.Services.SaleMath.BillBeforeCredits(o) - o.TaxPKR,
             taxRatePercent = o.PaymentMethod == PaymentMethod.Cash ? primaryTaxRate : secondaryTaxRate,
             taxAmountPKR = o.TaxPKR,
-            totalAmountPKR = o.TotalPKR
+            totalAmountPKR = Pos.Api.Services.SaleMath.BillBeforeCredits(o)
+        }).ToList(),
+        creditNotes = creditNotes.Select(r => new
+        {
+            returnId = r.Id, returnNumber = r.ReturnNumber, r.OrderNumber, createdAt = r.CreatedAt,
+            branchName = branchNames.GetValueOrDefault(r.BranchId),
+            netAmountPKR = r.SubTotalRefundedPKR, taxAmountPKR = r.TaxRefundedPKR, totalAmountPKR = r.TotalRefundedPKR
         }).ToList()
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
@@ -11076,6 +11169,9 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     var po = await db.PurchaseOrders.Include(p => p.Items)
         .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
+    // Staff kept to one branch receive only that branch's orders.
+    var (_, _, poScopeError) = await ResolveScopeAsync(http, db, null, po.BranchId);
+    if (poScopeError != null) return poScopeError;
     if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
 
     // The same rules as receiving stock by hand: a business whose stock carries batches names each
@@ -11177,6 +11273,11 @@ api.MapPost("/procurement/purchase-orders/{id}/cancel", async (AppDbContext db, 
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
     var po = await db.PurchaseOrders.FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
+    var (_, _, poScopeError) = await ResolveScopeAsync(http, db, null, po.BranchId);
+    if (poScopeError != null) return poScopeError;
+    // Received goods are on the shelf and owed to the supplier; cancelling the order would undo neither.
+    if (po.Status != POStatus.Ordered && po.Status != POStatus.Draft)
+        return Results.BadRequest(new { message = $"This purchase order is {po.Status.ToString().ToLowerInvariant()}, so it can no longer be cancelled." });
     po.Status = POStatus.Cancelled;
     await db.SaveChangesAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
@@ -15551,44 +15652,99 @@ api.MapGet("/reports/tax-by-rate", async (AppDbContext db, HttpContext http, Gui
     if (scopeError != null) return scopeError;
     if (ReportDays(await TenantTimeZoneAsync(db, tenantId), from, to) is not { } span)
         return Results.BadRequest(new { message = "The first day must not be after the last." });
-    var orders = db.Orders.Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled
-                                   && o.CreatedAt >= span.StartUtc && o.CreatedAt < span.EndUtc);
-    var lines = await orders.SelectMany(o => o.Items)
-        .Where(i => i.TaxTreatment != null)
-        .Select(i => new { i.TaxTreatment, i.TaxRatePercent, i.TotalPricePKR, i.TaxPKR })
+    // A sale counts on the day it was made (an offline one, not on the day it synced).
+    var orders = await db.Orders.Include(o => o.Items)
+        .Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled
+                 && (o.CapturedAt ?? o.CreatedAt) >= span.StartUtc && (o.CapturedAt ?? o.CreatedAt) < span.EndUtc)
         .ToListAsync();
-    var earlier = await orders.Where(o => !o.Items.Any(i => i.TaxTreatment != null))
-        .Select(o => new { o.SubTotalPKR, o.DiscountPKR, o.TaxPKR }).ToListAsync();
+    // Refunds given in the same days, with the sales they came from (which may be older).
+    var returns = await db.OrderReturns.Include(r => r.Lines)
+        .Where(r => branchIds.Contains(r.BranchId) && r.CreatedAt >= span.StartUtc && r.CreatedAt < span.EndUtc)
+        .ToListAsync();
+    var returnedOrderIds = returns.Select(r => r.OrderId).Distinct().ToList();
+    var returnedOrders = await db.Orders.Include(o => o.Items)
+        .Where(o => returnedOrderIds.Contains(o.Id)).ToDictionaryAsync(o => o.Id);
 
-    var rows = lines
-        .GroupBy(l => l.TaxTreatment == TaxTreatment.Exempt ? "exempt" : l.TaxTreatment == TaxTreatment.ZeroRated ? "zero" : $"rate:{l.TaxRatePercent ?? 0m:0.####}")
-        .Select(g =>
+    static string KeyOf(OrderItem i) => i.TaxTreatment == TaxTreatment.Exempt ? "exempt"
+        : i.TaxTreatment == TaxTreatment.ZeroRated ? "zero" : $"rate:{i.TaxRatePercent ?? 0m:0.####}";
+    // Each rate's sales (value excluding tax, after the bill's discount) and tax, sold and refunded.
+    var sold = new Dictionary<string, (OrderItem First, int Lines, decimal Net, decimal Tax, decimal RefundNet, decimal RefundTax)>();
+    void Add(string key, OrderItem item, int lines, decimal net, decimal tax, decimal refundNet, decimal refundTax)
+    {
+        sold.TryGetValue(key, out var cur);
+        sold[key] = (cur.First ?? item, cur.Lines + lines, cur.Net + net, cur.Tax + tax, cur.RefundNet + refundNet, cur.RefundTax + refundTax);
+    }
+    decimal earlierNet = 0, earlierTax = 0, earlierRefundNet = 0, earlierRefundTax = 0;
+    var earlierCount = 0;
+    foreach (var o in orders)
+    {
+        if (!o.Items.Any(i => i.TaxTreatment != null))
         {
-            var first = g.First();
-            var kind = g.Key == "exempt" ? "exempt" : g.Key == "zero" ? "zero" : "rate";
+            // From before tax was worked out per item: the bill's own figures.
+            earlierCount++;
+            earlierNet += Pos.Api.Services.SaleMath.BillBeforeCredits(o) - o.TaxPKR;
+            earlierTax += o.TaxPKR;
+            continue;
+        }
+        foreach (var item in o.Items.Where(i => i.TaxTreatment != null))
+        {
+            var (net, tax) = Pos.Api.Services.SaleMath.LineValue(o, item, item.Quantity);
+            Add(KeyOf(item), item, 1, net, tax, 0, 0);
+        }
+    }
+    foreach (var r in returns)
+    {
+        if (!returnedOrders.TryGetValue(r.OrderId, out var o)) continue;
+        if (!o.Items.Any(i => i.TaxTreatment != null))
+        {
+            earlierRefundNet += r.SubTotalRefundedPKR;
+            earlierRefundTax += r.TaxRefundedPKR;
+            continue;
+        }
+        // Each returned line at its own rate, scaled to what the refund actually paid back.
+        var parts = r.Lines
+            .Select(l => (Item: o.Items.FirstOrDefault(i => i.Id == l.OrderItemId), l.Quantity))
+            .Where(p => p.Item != null)
+            .Select(p => (Item: p.Item!, Value: Pos.Api.Services.SaleMath.LineValue(o, p.Item!, p.Quantity)))
+            .ToList();
+        var netAll = parts.Sum(p => p.Value.Net);
+        var taxAll = parts.Sum(p => p.Value.Tax);
+        foreach (var p in parts.Where(p => p.Item.TaxTreatment != null))
+            Add(KeyOf(p.Item), p.Item, 0, 0, 0,
+                netAll > 0 ? p.Value.Net * r.SubTotalRefundedPKR / netAll : 0m,
+                taxAll > 0 ? p.Value.Tax * r.TaxRefundedPKR / taxAll : 0m);
+    }
+
+    var rows = sold
+        .Select(kv =>
+        {
+            var kind = kv.Key == "exempt" ? "exempt" : kv.Key == "zero" ? "zero" : "rate";
+            var rate = kv.Value.First.TaxRatePercent ?? 0m;
             return new
             {
                 kind,
-                ratePercent = kind == "rate" ? first.TaxRatePercent ?? 0m : 0m,
-                label = kind == "exempt" ? "Exempt" : kind == "zero" ? "Zero-rated (0%)" : $"{first.TaxRatePercent ?? 0m:0.##}%",
-                lines = g.Count(),
-                salesPKR = Math.Round(g.Sum(l => l.TotalPricePKR), 2),
-                taxPKR = Math.Round(g.Sum(l => l.TaxPKR ?? 0m), 2)
+                ratePercent = kind == "rate" ? rate : 0m,
+                label = kind == "exempt" ? "Exempt" : kind == "zero" ? "Zero-rated (0%)" : $"{rate:0.##}%",
+                lines = kv.Value.Lines,
+                salesPKR = Math.Round(kv.Value.Net - kv.Value.RefundNet, 2),
+                taxPKR = Math.Round(kv.Value.Tax - kv.Value.RefundTax, 2),
+                refundedTaxPKR = Math.Round(kv.Value.RefundTax, 2)
             };
         })
         .OrderBy(r => r.kind == "rate" ? 0 : r.kind == "zero" ? 1 : 2).ThenByDescending(r => r.ratePercent)
         .ToList();
-    if (earlier.Count > 0)
+    if (earlierCount > 0 || earlierRefundTax > 0 || earlierRefundNet > 0)
         rows.Add(new
         {
-            kind = "earlier", ratePercent = 0m, label = "Earlier sales (one rate per bill)", lines = earlier.Count,
-            salesPKR = Math.Round(earlier.Sum(o => o.SubTotalPKR - o.DiscountPKR), 2),
-            taxPKR = Math.Round(earlier.Sum(o => o.TaxPKR), 2)
+            kind = "earlier", ratePercent = 0m, label = "Earlier sales (one rate per bill)", lines = earlierCount,
+            salesPKR = Math.Round(earlierNet - earlierRefundNet, 2),
+            taxPKR = Math.Round(earlierTax - earlierRefundTax, 2),
+            refundedTaxPKR = Math.Round(earlierRefundTax, 2)
         });
     return Results.Ok(new
     {
         from = span.FirstDay.ToString("yyyy-MM-dd"), to = span.LastDay.ToString("yyyy-MM-dd"),
-        rows, totalTaxPKR = rows.Sum(r => r.taxPKR)
+        rows, totalTaxPKR = rows.Sum(r => r.taxPKR), refundedTaxPKR = rows.Sum(r => r.refundedTaxPKR)
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("reports", "view"))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanViewFinancialReports, "You don't have permission to view financial reports."));

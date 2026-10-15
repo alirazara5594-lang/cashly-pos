@@ -684,7 +684,13 @@ export const posApi = {
     promoCode?: string;
     giftCardCode?: string;
     giftCardRedeemAmount?: number;
-    loyaltyPointsToRedeem?: number;
+    /** Named as the server reads it (CreateOrderDto.LoyaltyPointsRedeemed). */
+    loyaltyPointsRedeemed?: number;
+    /**
+     * This sale's own id, the same on every attempt to send it: a retry after a dropped response
+     * returns the sale already saved instead of saving it twice.
+     */
+    clientLocalId?: string;
     items: {
       productId: string;
       productName: string;

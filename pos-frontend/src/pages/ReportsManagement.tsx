@@ -379,7 +379,10 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">Gross Sales Turnover</div>
                     <div>
                       <div className="text-xl font-bold text-teal-600 leading-tight">{zReport.totalSalesPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{zReport.totalOrders} paid orders settled</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        {zReport.totalOrders} paid orders settled
+                        {(zReport.refundsPKR ?? 0) > 0 && <span className="text-rose-600"> · refunds {zReport.refundsPKR!.toLocaleString()}</span>}
+                      </div>
                     </div>
                   </div>
 
@@ -390,8 +393,9 @@ export const ReportsManagement: React.FC = () => {
                     </div>
                     <div>
                       <div className="text-xl font-bold text-slate-900 leading-tight">{zReport.expectedCashInDrawerPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Float: ${zReport.openingFloatPKR.toLocaleString()} + Cash: ${zReport.cashSalesPKR.toLocaleString()}`}>
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Float: ${zReport.openingFloatPKR.toLocaleString()} + Cash: ${zReport.cashSalesPKR.toLocaleString()} − Cash refunds: ${(zReport.cashRefundsPKR ?? 0).toLocaleString()}`}>
                         Float: {zReport.openingFloatPKR.toLocaleString()} + Cash: {zReport.cashSalesPKR.toLocaleString()}
+                        {(zReport.cashRefundsPKR ?? 0) > 0 && <> − Refunds: {zReport.cashRefundsPKR!.toLocaleString()}</>}
                       </div>
                     </div>
                   </div>
@@ -411,8 +415,10 @@ export const ReportsManagement: React.FC = () => {
                     <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider">Total Tax Collected</div>
                     <div>
                       <div className="text-xl font-bold text-amber-600 leading-tight">{zReport.totalTaxPKR.toLocaleString()}</div>
-                      <div className="text-[10px] text-amber-600 mt-0.5">
-                        Cash {zReport.cashTaxPKR.toLocaleString()} · Card &amp; digital {zReport.cardTaxPKR.toLocaleString()}
+                      <div className="text-[10px] text-amber-600 mt-0.5 truncate">
+                        {(zReport.refundTaxPKR ?? 0) > 0
+                          ? <>Refunded {zReport.refundTaxPKR!.toLocaleString()} · owed {(zReport.netTaxPKR ?? zReport.totalTaxPKR).toLocaleString()}</>
+                          : <>Cash {zReport.cashTaxPKR.toLocaleString()} · Card &amp; digital {zReport.cardTaxPKR.toLocaleString()}</>}
                       </div>
                     </div>
                   </div>
@@ -614,7 +620,12 @@ export const ReportsManagement: React.FC = () => {
                     <h4 className="font-bold text-slate-900 text-sm">Tax by rate</h4>
                     <span className="text-[11px] text-slate-500">Each item taxed its own way — standard, own rate, zero-rated or exempt</span>
                   </div>
-                  <span className="text-xs font-mono font-bold text-teal-700">Total tax {taxByRate.totalTaxPKR.toLocaleString()}</span>
+                  <span className="text-xs font-mono font-bold text-teal-700 text-right">
+                    Total tax {taxByRate.totalTaxPKR.toLocaleString()}
+                    {(taxByRate.refundedTaxPKR ?? 0) > 0 && (
+                      <span className="block text-[10px] font-semibold text-slate-500">after {taxByRate.refundedTaxPKR!.toLocaleString()} refunded</span>
+                    )}
+                  </span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
@@ -622,7 +633,7 @@ export const ReportsManagement: React.FC = () => {
                       <tr>
                         <th className="py-2.5 px-5">Rate</th>
                         <th className="py-2.5 px-3 text-right">Lines</th>
-                        <th className="py-2.5 px-3 text-right">Sales</th>
+                        <th className="py-2.5 px-3 text-right">Sales excl. tax</th>
                         <th className="py-2.5 px-5 text-right">Tax</th>
                       </tr>
                     </thead>
@@ -670,7 +681,10 @@ export const ReportsManagement: React.FC = () => {
                       </div>
                       <div>
                         <span className="text-[10px] text-teal-600 font-semibold uppercase">Tax Liability</span>
-                        <div className="text-lg font-mono font-bold text-teal-600">{taxAudit.cashSegment.taxCollectedPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-bold text-teal-600">{(taxAudit.cashSegment.netTaxPKR ?? taxAudit.cashSegment.taxCollectedPKR).toLocaleString()}</div>
+                        {(taxAudit.cashSegment.taxRefundedPKR ?? 0) > 0 && (
+                          <div className="text-[10px] text-slate-500">after {taxAudit.cashSegment.taxRefundedPKR!.toLocaleString()} refunded</div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -701,7 +715,10 @@ export const ReportsManagement: React.FC = () => {
                       </div>
                       <div>
                         <span className="text-[10px] text-sky-600 font-semibold uppercase">Tax Liability</span>
-                        <div className="text-lg font-mono font-bold text-sky-600">{taxAudit.cardSegment.taxCollectedPKR.toLocaleString()}</div>
+                        <div className="text-lg font-mono font-bold text-sky-600">{(taxAudit.cardSegment.netTaxPKR ?? taxAudit.cardSegment.taxCollectedPKR).toLocaleString()}</div>
+                        {(taxAudit.cardSegment.taxRefundedPKR ?? 0) > 0 && (
+                          <div className="text-[10px] text-slate-500">after {taxAudit.cardSegment.taxRefundedPKR!.toLocaleString()} refunded</div>
+                        )}
                       </div>
                     </div>
                   </div>

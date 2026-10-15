@@ -457,8 +457,10 @@ export interface TaxItems {
 export interface TaxByRateReport {
   from: string;
   to: string;
-  rows: { kind: 'rate' | 'zero' | 'exempt' | 'earlier'; ratePercent: number; label: string; lines: number; salesPKR: number; taxPKR: number }[];
+  /** Sales are the value excluding tax after discounts; sales and tax are net of refunds in the same days. */
+  rows: { kind: 'rate' | 'zero' | 'exempt' | 'earlier'; ratePercent: number; label: string; lines: number; salesPKR: number; taxPKR: number; refundedTaxPKR?: number }[];
   totalTaxPKR: number;
+  refundedTaxPKR?: number;
 }
 
 /** How a medicine may be sold; 'None' means the product is not a medicine. */
@@ -1049,6 +1051,13 @@ export interface ZReportSummary {
   cashTaxPKR: number; // 16% Tax
   cardTaxPKR: number; // 8% Tax
   totalTaxPKR: number;
+  /** Refunds given that day (whatever day the sale was), and what they took back. */
+  refundCount?: number;
+  refundsPKR?: number;
+  cashRefundsPKR?: number;
+  refundTaxPKR?: number;
+  netSalesPKR?: number;
+  netTaxPKR?: number;
   openingFloatPKR: number;
   expectedCashInDrawerPKR: number;
   actualCashInDrawerPKR: number;
@@ -1474,6 +1483,10 @@ export interface TaxSegment {
   grossSalesPKR: number;
   netTaxableSalesPKR: number;
   taxCollectedPKR: number;
+  /** Tax given back on refunds of this segment's sales in the same days. */
+  taxRefundedPKR?: number;
+  /** Tax owed: collected less refunded. */
+  netTaxPKR?: number;
 }
 
 export interface TaxAuditReport {
@@ -1483,9 +1496,13 @@ export interface TaxAuditReport {
   totalGrossTurnoverPKR: number;
   totalNetSalesPKR: number;
   totalTaxCollectedPKR: number;
+  totalTaxRefundedPKR?: number;
+  totalNetTaxPKR?: number;
   cashSegment: TaxSegment;
   cardSegment: TaxSegment;
   invoices: TaxAuditInvoice[];
+  /** Refunds in the same days: each one takes its tax back off what is owed. */
+  creditNotes?: { returnId: string; returnNumber: string; orderNumber: string; createdAt: string; branchName?: string; netAmountPKR: number; taxAmountPKR: number; totalAmountPKR: number }[];
 }
 
 export interface PaymentMethodStat {

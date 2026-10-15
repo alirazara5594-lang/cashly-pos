@@ -45,6 +45,12 @@ import { emptyPrescription, prescriptionNeeds, prescriptionProblem } from '../ut
 import { cartTax } from '../utils/tax';
 import { getEmoji } from '../utils/productEmoji';
 
+/** A new id for one sale, prefixed with the till so two tills can never make the same one. */
+function newSaleId(): string {
+  const terminalId = getStoredTerminal()?.id ?? 'unpaired';
+  return `${terminalId}:SALE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export const PosTerminal: React.FC = () => {
   const {
     selectedBranch,
@@ -173,6 +179,9 @@ export const PosTerminal: React.FC = () => {
   const [itemNote, setItemNote] = useState('');
 
   const barcodeInputRef = useRef<HTMLInputElement>(null);
+  // The id of the sale being charged, kept while the cart stays the same: pressing Charge again
+  // after the connection dropped sends the same id, and the server returns the sale it already saved.
+  const pendingSale = useRef<{ cart: string; id: string } | null>(null);
 
   // A business whose stock has batches (a pharmacy, a grocery): per product counted here, what can
   // still be sold before expiry and what already has expired. Expired stock is never rung up; stock
@@ -401,10 +410,16 @@ export const PosTerminal: React.FC = () => {
       setRxDialog({ charge: true });
       return;
     }
+    if (!selectedBranch?.id) {
+      alert('Choose the branch this till sells at before charging.');
+      return;
+    }
     setIsSubmitting(true);
 
+    // Cash handed over (the server works out the change against its own total).
+    const amountPaid = paymentMethod === 'Cash' ? Math.max(cashTendered || 0, grandTotal) : grandTotal;
     const orderPayload = {
-      branchId: selectedBranch?.id || 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      branchId: selectedBranch.id,
       orderType,
       tableNumber: orderType === 'DineIn' ? selectedTable : undefined,
       customerName: customerName || (orderType === 'Delivery' ? 'Delivery Customer' : undefined),
@@ -415,8 +430,8 @@ export const PosTerminal: React.FC = () => {
       taxPKR: tax,
       totalPKR: grandTotal,
       paymentMethod,
-      amountPaidPKR: grandTotal,
-      changeDuePKR: 0,
+      amountPaidPKR: amountPaid,
+      changeDuePKR: amountPaid - grandTotal,
       isPaid: true,
       cashierName: 'Counter 1 Cashier',
       createdByRole: 'Cashier',
@@ -443,7 +458,11 @@ export const PosTerminal: React.FC = () => {
 
     try {
       if (isOnline) {
-        const res = await posApi.createOrder(orderPayload);
+        // One id per sale: the same cart charged again reuses it; a changed cart is a new sale.
+        const cartKey = JSON.stringify(orderPayload);
+        if (pendingSale.current?.cart !== cartKey) pendingSale.current = { cart: cartKey, id: newSaleId() };
+        const res = await posApi.createOrder({ ...orderPayload, clientLocalId: pendingSale.current.id });
+        pendingSale.current = null;
 
         // The server ignores client-sent money fields and recomputes tax/totals
         // from DB prices (and, with provincial tax on, from the branch's
@@ -470,8 +489,8 @@ export const PosTerminal: React.FC = () => {
           taxPKR: serverTax,
           totalPKR: serverTotal,
           paymentMethod,
-          amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || serverTotal) : serverTotal,
-          changeDuePKR: paymentMethod === 'Cash' ? Math.max(0, (cashTendered || serverTotal) - serverTotal) : 0,
+          amountPaidPKR: res.amountPaidPKR ?? (paymentMethod === 'Cash' ? (cashTendered || serverTotal) : serverTotal),
+          changeDuePKR: res.changeDuePKR ?? (paymentMethod === 'Cash' ? Math.max(0, (cashTendered || serverTotal) - serverTotal) : 0),
           isPaid: true,
           createdAt: res.createdAt ?? new Date().toISOString(),
           inKitchenAt: res.inKitchenAt ?? null,

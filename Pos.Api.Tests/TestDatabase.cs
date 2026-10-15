@@ -42,8 +42,22 @@ public sealed class TestDatabase : IDisposable
             .UseSqlite(_connection)
             .Options;
 
+        // Postgres has now(); the document counters below call it.
+        _connection.CreateFunction("now", () => DateTime.UtcNow.ToString("O"));
+
         Db = new AppDbContext(options);
         Db.Database.EnsureCreated();
+
+        // Not part of the model: the server creates it at start-up (EnsureDocumentNumberingSchemaAsync).
+        // Invoice and document numbers are counted in it.
+        Db.Database.ExecuteSqlRaw(@"
+            CREATE TABLE IF NOT EXISTS ""DocumentSequences"" (
+                ""TenantId"" TEXT NOT NULL,
+                ""SequenceKey"" TEXT NOT NULL,
+                ""LastValue"" INTEGER NOT NULL,
+                ""UpdatedAt"" TEXT NOT NULL,
+                PRIMARY KEY (""TenantId"", ""SequenceKey"")
+            );");
 
         Receiver = new SyncReceiver(Db);
         Mirror = new HostEntitlementMirror(Db);
@@ -53,7 +67,8 @@ public sealed class TestDatabase : IDisposable
         Entitlements = new EntitlementService(Db);
         Subscriptions = new SubscriptionService(Db, Entitlements,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SubscriptionService>.Instance);
-        Checkout = new SubscriptionCheckout(Db, Subscriptions, Entitlements);
+        Checkout = new SubscriptionCheckout(Db, Subscriptions, Entitlements,
+            new SubscriptionPartsService(Db, new BillingService(Db), Entitlements));
     }
 
     public Guid TenantId { get; private set; } = Guid.NewGuid();
