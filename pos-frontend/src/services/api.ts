@@ -1856,6 +1856,11 @@ export const posApi = {
     return res.data;
   },
   /** The platform's own prices (the Head Office ERP), as anyone registering sees them. */
+  /** How to reach Cashly (Platform Settings contact details), for the sign-in page's Support panel. */
+  getPublicSupport: async () => {
+    const res = await api.get<{ companyName: string; phone?: string | null; email?: string | null; website?: string | null; city?: string | null }>('/api/public/support');
+    return res.data;
+  },
   getPublicPlatformPrices: async () => {
     const res = await api.get<PlatformPrice[]>('/api/public/platform-prices');
     return res.data;

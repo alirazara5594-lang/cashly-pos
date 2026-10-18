@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, Mail, Eye, EyeOff, Monitor, Building2, Warehouse } from 'lucide-react';
+import {
+  Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, ArrowRight, Eye, EyeOff, Monitor, MonitorSmartphone, Building2, Warehouse,
+  Receipt, Boxes, BarChart3, WifiOff, Cloud, Play
+} from 'lucide-react';
+import { DemoPanel, FeaturesMenu, PricingPanel, SupportPanel, type LoginPanel } from './login/LoginPanels';
+import { PosScene } from './login/PosScene';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { useNavigate } from 'react-router-dom';
@@ -31,16 +36,19 @@ const EMPTY_PERMISSIONS: AuthPermissions = {
 type SignedInUser = CurrentUser & { permissions?: AuthPermissions };
 
 /**
- * How someone signs in here — the way Toast does it:
+ * How someone signs in here. Nobody is asked to choose "POS or ERP": they say who they are, and
+ * that decides the next step (the way Google, Microsoft and Square sign in):
+ *  - identify: one box, "Username or work email". A username goes on to the PIN; an email to the
+ *              password. A Cashly POS owner never meets the word ERP.
  *  - till:     a till, tablet or kitchen screen paired to a branch. The PIN alone; the device
- *              already knows the restaurant and branch.
- *  - email:    the back office on any browser or office PC. Email + password; no restaurant name.
- *  - username: username + PIN. At a restaurant's own address (its subdomain, or its /r/ link) the
- *              restaurant is known; elsewhere it is asked for only when that username exists at
- *              more than one restaurant.
+ *              already knows the business and branch.
+ *  - email:    the password for a work email (head office, department staff, any owner with one).
+ *  - username: the PIN for a username. At a Cashly POS business's own address (its subdomain or
+ *              /r/ link) this is where sign-in starts. Elsewhere the business is asked for only
+ *              when that username exists at more than one business.
  *  - platform: Cashly's own platform admin.
  */
-type Mode = 'till' | 'email' | 'username' | 'platform';
+type Mode = 'till' | 'identify' | 'email' | 'username' | 'platform';
 
 /** Signed in, but works at more than one location and has not said which one yet. */
 interface PendingBranchChoice {
@@ -90,22 +98,33 @@ export const LoginGate: React.FC = () => {
   // A restaurant's own sign-in address: its subdomain, or the /r/<name> link this device opened.
   // The restaurant is known there, so its staff give just username + PIN.
   const [address, setAddress] = useState(() => currentRestaurantAddress());
+  // A till starts on its PIN; a business's own address on username and PIN; everywhere else on
+  // "who are you" — one box for a username or a work email.
+  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : currentRestaurantAddress() ? 'username' : 'identify');
   const [addressInfo, setAddressInfo] = useState<{ webName: string; name: string | null; product?: string; missing?: boolean } | null>(null);
   useEffect(() => {
     if (!address) return;
     let cancelled = false;
     posApi.getRestaurantByWebName(address.webName)
-      .then(r => { if (!cancelled) setAddressInfo({ webName: address.webName, name: r.name, product: r.product }); })
+      .then(r => {
+        if (cancelled) return;
+        setAddressInfo({ webName: address.webName, name: r.name, product: r.product });
+        // A business with a head office has office staff signing in by email at its address too,
+        // so it asks who they are first. A Cashly POS business stays on username and PIN.
+        if (r.product && r.product !== 'Cashly POS') setMode(m => (m === 'username' ? 'identify' : m));
+      })
       .catch(err => { if (!cancelled) setAddressInfo({ webName: address.webName, name: null, missing: getApiErrorStatus(err) === 404 }); });
     return () => { cancelled = true; };
   }, [address]);
   const restaurantHere = address && addressInfo?.webName === address.webName ? addressInfo : null;
   const showPlatformAdmin = !address && isPlatformAdminAddress();
 
-  // Elsewhere: a device that knows a business but no email — Cashly POS alone, whose owner has no
-  // email and signs in by username and PIN — starts there; everyone else on email.
-  const [mode, setMode] = useState<Mode>(tillBranchId ? 'till' : currentRestaurantAddress() ? 'username'
-    : !readSaved(EMAIL_KEY) && readSaved(RESTAURANT_KEY) ? 'username' : 'email');
+  // What was typed in the "who are you" box (the work email last used here, to start with), and
+  // whether the username or email below came from it (then it shows as "Signing in as …").
+  const [identifier, setIdentifier] = useState(() => readSaved(EMAIL_KEY));
+  const [identified, setIdentified] = useState(false);
+  // Pricing, Support or the demo, open over the page.
+  const [panel, setPanel] = useState<LoginPanel | null>(null);
   const [email, setEmail] = useState(() => readSaved(EMAIL_KEY));
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -152,7 +171,24 @@ export const LoginGate: React.FC = () => {
     navigate('/', { replace: true });
     setAddress(null);
     setAddressInfo(null);
-    switchMode(tillBranchId ? 'till' : 'email');
+    switchMode(tillBranchId ? 'till' : 'identify');
+  };
+
+  /** "Who are you" answered: a work email goes on to its password, a username to its PIN. */
+  const continueWithIdentifier = () => {
+    const id = identifier.trim();
+    if (!id) return;
+    setIdentified(true);
+    if (id.includes('@')) { setEmail(id); switchMode('email'); }
+    else { setUsername(id); switchMode('username'); }
+  };
+
+  /** "Not you?": back to the one box, with what was typed still in it. */
+  const changeIdentifier = () => {
+    setIdentified(false);
+    setPassword('');
+    setRestaurantNeeded(false);
+    switchMode('identify');
   };
 
   // Where "the other restaurant's address" links go when someone signs in at the wrong one.
@@ -188,6 +224,7 @@ export const LoginGate: React.FC = () => {
 
   const ready =
     mode === 'till' ? /^\d{4,6}$/.test(pinCode)
+      : mode === 'identify' ? !!identifier.trim()
       : mode === 'email' ? !!email.trim() && !!password
       : mode === 'username' ? !!username.trim() && !!pinCode.trim() && (!!address || !restaurantNeeded || !!typedRestaurant)
       : usePin ? !!username.trim() && !!pinCode.trim()
@@ -196,6 +233,7 @@ export const LoginGate: React.FC = () => {
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!ready || loading) return;
+    if (mode === 'identify') { continueWithIdentifier(); return; }
     setLoading(true);
     setError('');
     setDeviceNotConnected(false);
@@ -463,9 +501,18 @@ export const LoginGate: React.FC = () => {
 
   const heading =
     mode === 'till' ? { title: 'Enter your PIN', sub: 'Your 4 to 6 digit staff PIN.' }
-      : mode === 'email' ? { title: 'Back office sign in', sub: 'Owners and managers sign in with email and password.' }
-      : mode === 'username' ? { title: 'Staff sign in', sub: 'Your username and PIN.' }
+      : mode === 'identify' ? { title: 'Welcome back', sub: 'Sign in to continue to your Cashly account.' }
+      : mode === 'email' ? { title: 'Enter your password', sub: 'The password for your work email.' }
+      : mode === 'username' ? (identified ? { title: 'Enter your PIN', sub: 'Your 4 to 6 digit PIN.' } : { title: 'Sign in', sub: 'Your username and PIN.' })
       : { title: 'Cashly platform', sub: 'For the Cashly team only.' };
+
+  /** "Signing in as ali · Not you?" — who was given in the first box. */
+  const signingInAs = (who: string) => (
+    <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
+      <span className="min-w-0 text-sm text-slate-600 truncate">Signing in as <strong className="text-slate-900">{who}</strong></span>
+      <button type="button" onClick={changeIdentifier} className="shrink-0 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer">Not you?</button>
+    </div>
+  );
 
   // What the brand panel says this screen is for: this restaurant's address, this till, or the
   // business last used on this device.
@@ -475,9 +522,8 @@ export const LoginGate: React.FC = () => {
   const placeLine = !address && mode === 'till'
     ? [tillBranchName, terminal?.name].filter(Boolean).join(' · ') || 'This till'
     : null;
-  const showConnect = (mode === 'email' || mode === 'username') && !tillBranchId;
+  const showConnect = (mode === 'identify' || mode === 'email' || mode === 'username') && !tillBranchId;
   const canRegister = !address && !tillBranchId && mode !== 'platform';
-  const staffTab = mode === 'till' || mode === 'username';
   const linkClass = 'text-xs font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer';
 
   const statusLine = (light: boolean) => (
@@ -487,87 +533,169 @@ export const LoginGate: React.FC = () => {
     </span>
   );
 
+  // The business this screen is for, with "Not …?" off its own /r/ link.
+  const businessBlock = businessName && (
+    <div className="space-y-2">
+      <p className="text-3xl xl:text-4xl font-bold tracking-tight leading-tight">{businessName}</p>
+      {placeLine && <p className="text-teal-100 font-semibold flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
+      {address && restaurantHere?.product && (
+        <span className="inline-block text-[11px] font-bold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
+      )}
+      {address && restaurantHere?.missing && (
+        <p className="text-sm text-amber-200">No business uses this address. Check the link you were given.</p>
+      )}
+      {address && !address.fromSubdomain && (
+        <button type="button" onClick={leaveRestaurantAddress} className="block text-sm font-semibold text-teal-100 hover:text-white underline-offset-4 hover:underline">
+          {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
+        </button>
+      )}
+    </div>
+  );
+
+  // What Cashly does, in four tiles — each one something the product really has.
+  const features = [
+    { icon: Receipt, label: 'Fast billing' },
+    { icon: Boxes, label: 'Smart inventory' },
+    { icon: BarChart3, label: 'Powerful reports' },
+    { icon: Building2, label: 'Multi-branch' }
+  ];
+  const assurances = [
+    { icon: ShieldCheck, label: 'Secure 2-step sign-in' },
+    { icon: WifiOff, label: 'Keeps selling offline' },
+    { icon: Cloud, label: 'Cloud-based, any device' }
+  ];
+
   return (
-    <div className="min-h-screen w-full flex bg-white text-slate-900">
-      {/* Brand panel — the business, the till and the time, like a till's lock screen. */}
-      <aside className="hidden md:flex md:w-[44%] xl:w-1/2 relative overflow-hidden bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 text-white flex-col justify-between p-10 lg:p-14">
-        <div aria-hidden className="absolute -right-32 -top-32 w-96 h-96 rounded-full bg-white/5" />
-        <div aria-hidden className="absolute -left-24 bottom-10 w-72 h-72 rounded-full bg-white/5" />
+    <div className="h-screen w-full flex bg-[#071f26] text-slate-900 overflow-hidden">
+      {/* ── Left: the product (the main address), or the till's lock screen (a connected till) ── */}
+      <aside className="hidden lg:flex flex-1 min-w-0 relative overflow-hidden text-white flex-col px-12 xl:px-16 py-10 [@media(max-height:760px)]:py-6 bg-gradient-to-br from-[#071f26] via-[#0b3940] to-[#0d4a42]">
+        <div aria-hidden className="absolute -top-40 right-0 w-[560px] h-[560px] rounded-full bg-emerald-400/15 blur-3xl" />
+        <div aria-hidden className="absolute -bottom-48 -left-24 w-[520px] h-[520px] rounded-full bg-teal-300/10 blur-3xl" />
+        <div aria-hidden className="absolute inset-0 opacity-[0.06] bg-[linear-gradient(to_right,#fff_1px,transparent_1px),linear-gradient(to_bottom,#fff_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:linear-gradient(to_right,#000_30%,transparent_65%)]" />
 
-        <div className="relative flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-white text-teal-800 flex items-center justify-center font-bold text-xl shadow-lg shadow-black/20">C</div>
-          <span className="text-lg font-bold tracking-tight">Cashly <span className="text-teal-200">POS</span></span>
+        <div className="relative z-20 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-emerald-900/40">C</div>
+          <span className="text-2xl font-bold tracking-tight">Cashly <span className="text-emerald-300">POS</span></span>
+          {/* Cashly's own menu — not on a connected till, which belongs to one business. */}
+          {!tillBranchId && (
+            <nav className="ml-auto flex items-center gap-1" aria-label="Cashly">
+              <FeaturesMenu />
+              <button type="button" onClick={() => setPanel('pricing')}
+                className="px-3 h-10 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition cursor-pointer">Pricing</button>
+              <button type="button" onClick={() => setPanel('support')}
+                className="px-3 h-10 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition cursor-pointer">Support</button>
+            </nav>
+          )}
         </div>
 
-        <div className="relative space-y-8">
-          <div className="space-y-2">
-            {businessName ? (
-              <>
-                <p className="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">{businessName}</p>
-                {placeLine && <p className="text-teal-100 font-semibold flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
-                {address && restaurantHere?.product && (
-                  <span className="inline-block text-[11px] font-bold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
-                )}
-                {address && restaurantHere?.missing && (
-                  <p className="text-sm text-amber-200">No business uses this address. Check the link you were given.</p>
-                )}
-                {address && !address.fromSubdomain && (
-                  <button type="button" onClick={leaveRestaurantAddress} className="block text-sm font-semibold text-teal-100 hover:text-white underline-offset-4 hover:underline">
-                    {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
-                  </button>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="text-3xl lg:text-4xl font-bold tracking-tight leading-tight">Sign in to Cashly</p>
-                <p className="text-teal-100 max-w-sm">Point of sale and back office for restaurants, shops and pharmacies.</p>
-              </>
-            )}
-            {/* On a computer the way to register lives here, always in view; on a phone it is under the sign-in. */}
-            {canRegister && (
-              <a href="/signup"
-                className="inline-flex items-center mt-3 px-4 h-10 rounded-xl bg-white text-teal-800 hover:bg-teal-50 text-sm font-bold transition shadow-lg shadow-black/10">
-                New business? Register free — 30-day trial →
-              </a>
-            )}
+        {tillBranchId ? (
+          // A connected till: whose till it is, and the time — like a till's lock screen.
+          <div className="relative flex-1 flex flex-col justify-center gap-10">
+            {businessBlock}
+            <div>
+              <p className="text-6xl xl:text-7xl font-bold tabular-nums tracking-tight">
+                {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
+              <p className="mt-1 text-teal-100 font-semibold">
+                {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-5xl lg:text-6xl font-bold tabular-nums tracking-tight">
-              {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </p>
-            <p className="mt-1 text-teal-100 font-semibold">
-              {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
-            </p>
-          </div>
-        </div>
+        ) : (
+          <div className="relative flex-1 grid [@media(min-width:1280px)_and_(max-width:1535.98px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_296px] [@media(min-width:1536px)_and_(max-width:1879.98px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_420px] [@media(min-width:1880px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_532px] items-center gap-10">
+            <div className="space-y-7 [@media(max-height:760px)]:space-y-5 min-w-0">
+              {businessName && (
+                <div className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2 rounded-xl bg-white/10 border border-white/10 text-sm">
+                  <span className="text-teal-100">Signing in to <strong className="text-white">{businessName}</strong></span>
+                  {address && !address.fromSubdomain && (
+                    <button type="button" onClick={leaveRestaurantAddress} className="font-semibold text-emerald-300 hover:text-emerald-200">
+                      {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
+                    </button>
+                  )}
+                </div>
+              )}
+              <h1 className="text-5xl 2xl:text-6xl [@media(max-height:760px)]:text-4xl font-extrabold tracking-tight leading-[1.05]">
+                Smart POS for{' '}
+                <span className="relative inline-block">
+                  <span className="bg-gradient-to-r from-emerald-300 to-teal-300 bg-clip-text text-transparent">growing</span>
+                  <svg aria-hidden viewBox="0 0 200 12" className="absolute left-0 -bottom-2 w-full h-3 text-emerald-400" preserveAspectRatio="none">
+                    <path d="M2 9 C 50 2, 120 2, 198 7" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                </span>{' '}
+                businesses
+              </h1>
+              <p className="text-lg [@media(max-height:760px)]:text-base text-teal-50/80 max-w-xl">
+                Sell, manage stock, keep your books and run every branch from one system: Cashly POS, with the ERP for a head office.
+              </p>
 
-        <div className="relative flex flex-wrap items-center justify-between gap-3">
-          {statusLine(true)}
-          <div className="flex items-center gap-4 text-xs font-semibold">
-            {showConnect && <a href="/connect" className="text-teal-100 hover:text-white">Connect a till or tablet →</a>}
-            {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
-              <button type="button" onClick={() => switchMode('platform')} className="text-teal-100 hover:text-white">Platform admin</button>
-            )}
+              <div className="grid grid-cols-4 gap-3 max-w-xl">
+                {features.map(({ icon: Icon, label }) => (
+                  <div key={label} className="rounded-2xl bg-white/[0.06] border border-white/10 backdrop-blur px-2 py-4 [@media(max-height:760px)]:py-3 text-center">
+                    <Icon className="w-7 h-7 mx-auto text-emerald-300" />
+                    <p className="mt-2 text-sm font-semibold leading-tight">{label}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {canRegister && (
+                  <a href="/signup"
+                    className="inline-flex items-center gap-3 pl-2 pr-6 h-14 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 font-bold shadow-xl shadow-emerald-900/40 transition">
+                    <span className="w-10 h-10 rounded-xl bg-white text-teal-700 flex items-center justify-center"><ArrowRight className="w-5 h-5" /></span>
+                    <span className="leading-tight text-left">
+                      <span className="block text-base">Register free</span>
+                      <span className="block text-xs font-medium text-white/85">Start your 30-day trial</span>
+                    </span>
+                  </a>
+                )}
+                <button type="button" onClick={() => setPanel('demo')}
+                  className="inline-flex items-center gap-2.5 px-4 2xl:px-5 h-14 rounded-2xl border border-white/25 bg-white/5 hover:bg-white/10 font-bold transition cursor-pointer">
+                  <Play className="w-5 h-5 text-emerald-300 fill-emerald-300" /> Watch demo
+                </button>
+                {showConnect && (
+                  <a href="/connect"
+                    className="inline-flex items-center gap-2.5 px-4 2xl:px-5 h-14 rounded-2xl border border-white/25 bg-white/5 hover:bg-white/10 font-bold transition">
+                    <MonitorSmartphone className="w-5 h-5 text-emerald-300" /> Connect a till
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* The till on a shop counter, drawn at 560×480 and scaled to the room there is
+                (on narrower screens it reaches into the empty right margin). */}
+            <div aria-hidden className="relative hidden [@media(min-width:1280px)_and_(min-height:700px)]:block w-[336px] h-[288px] -mr-10 [@media(min-width:1536px)]:mr-0 [@media(min-width:1536px)_and_(max-width:1879.98px)]:w-[420px] [@media(min-width:1536px)_and_(max-width:1879.98px)]:h-[360px] [@media(min-width:1880px)]:w-[532px] [@media(min-width:1880px)]:h-[456px]">
+              <div className="absolute left-0 top-0 origin-top-left scale-[0.6] [@media(min-width:1536px)_and_(max-width:1879.98px)]:scale-[0.75] [@media(min-width:1880px)]:scale-[0.95]">
+                <PosScene />
+              </div>
+            </div>
           </div>
+        )}
+
+        <div className="relative flex flex-wrap items-center gap-x-6 gap-y-2 self-start px-5 py-3 rounded-2xl bg-white/[0.06] border border-white/10 text-sm font-semibold">
+          {assurances.map(({ icon: Icon, label }) => (
+            <span key={label} className="inline-flex items-center gap-2"><Icon className="w-4.5 h-4.5 text-emerald-300" /> {label}</span>
+          ))}
         </div>
       </aside>
 
-      {/* Sign-in */}
-      <main className="flex-1 flex flex-col min-h-screen min-w-0">
-        {/* On a phone the brand panel folds into this strip. */}
-        <div className="md:hidden px-6 pt-8 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-teal-700 text-white flex items-center justify-center font-bold text-lg">C</div>
-          <div className="min-w-0">
-            <p className="font-bold leading-tight truncate">{businessName ?? <>Cashly <span className="text-teal-600">POS</span></>}</p>
-            {placeLine && <p className="text-xs text-slate-500 truncate">{placeLine}</p>}
-            {address && !address.fromSubdomain && restaurantHere?.name && (
-              <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex-1 flex items-center justify-center px-6 py-6 [@media(max-height:720px)]:py-3">
-          <div className="w-full max-w-sm space-y-6">
+      {/* ── Right: the sign-in card ── */}
+      <main className="w-full lg:w-[460px] 2xl:w-[540px] shrink-0 flex lg:p-4 min-h-0">
+        <div className="flex-1 flex flex-col min-h-0 bg-white lg:rounded-[28px] lg:shadow-2xl lg:shadow-black/40 overflow-y-auto">
+        <div className="flex-1 flex items-center justify-center px-6 sm:px-10 py-6 [@media(max-height:720px)]:py-3">
+          <div className="w-full max-w-sm space-y-6 [@media(max-height:720px)]:space-y-4">
+            {/* The mark, and on a phone (no left side) whose sign-in this is. */}
+            <div className="flex flex-col items-center gap-2 text-center">
+              <div className="w-14 h-14 [@media(max-height:720px)]:w-10 [@media(max-height:720px)]:h-10 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-extrabold text-2xl [@media(max-height:720px)]:text-lg shadow-lg shadow-emerald-600/30">C</div>
+              {(businessName || placeLine) && (
+                <div className="lg:hidden">
+                  <p className="font-bold text-slate-900">{businessName}</p>
+                  {placeLine && <p className="text-xs text-slate-500">{placeLine}</p>}
+                  {address && !address.fromSubdomain && restaurantHere?.name && (
+                    <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
+                  )}
+                </div>
+              )}
+            </div>
             {twoFactor ? (
               // 2-step sign-in: the password was right; now the code from their phone.
               <form onSubmit={submitCode} className="space-y-5">
@@ -660,28 +788,29 @@ export const LoginGate: React.FC = () => {
                   </button>
                 )}
 
-                <div className="space-y-1">
-                  <h1 className="text-2xl font-bold tracking-tight">{heading.title}</h1>
+                <div className="space-y-1 text-center">
+                  <h1 className="text-3xl [@media(max-height:720px)]:text-2xl font-extrabold tracking-tight">{heading.title}</h1>
                   <p className="text-sm text-slate-500 [@media(max-height:720px)]:hidden">{heading.sub}</p>
                 </div>
 
-                {/* Staff sign in with a PIN; owners and managers with email. */}
-                {mode !== 'platform' && (
-                  <div className="grid grid-cols-2 p-1 rounded-xl bg-slate-100" role="tablist" aria-label="How to sign in">
-                    <button type="button" role="tab" aria-selected={staffTab}
-                      onClick={() => { if (!staffTab) switchMode(tillBranchId ? 'till' : 'username'); }}
-                      className={`py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                        staffTab ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                      }`}>
-                      <Key className="w-3.5 h-3.5" /> Staff PIN
-                    </button>
-                    <button type="button" role="tab" aria-selected={mode === 'email'}
-                      onClick={() => { if (mode !== 'email') switchMode('email'); }}
-                      className={`py-2 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                        mode === 'email' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                      }`}>
-                      <Mail className="w-3.5 h-3.5" /> Email
-                    </button>
+                {/* Who is signing in: a username (then the PIN) or a work email (then the password). */}
+                {mode === 'identify' && (
+                  <div>
+                    <label htmlFor="login-identifier" className={labelClass}>Username or work email</label>
+                    <input
+                      id="login-identifier"
+                      type="text"
+                      inputMode="email"
+                      value={identifier}
+                      onChange={(e) => { setIdentifier(e.target.value); setError(''); }}
+                      autoFocus
+                      autoComplete="username"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      placeholder="e.g. ali or accounts@yourbusiness.com"
+                      className={inputClass}
+                    />
+                    <p className="mt-1.5 text-xs text-slate-500">Till staff: your username · Head office: your work email</p>
                   </div>
                 )}
 
@@ -694,19 +823,21 @@ export const LoginGate: React.FC = () => {
 
                 {mode === 'email' && (
                   <>
-                    <div>
-                      <label htmlFor="login-email" className={labelClass}>Email</label>
-                      <input
-                        id="login-email"
-                        type="email"
-                        value={email}
-                        onChange={(e) => { setEmail(e.target.value); setError(''); }}
-                        autoFocus={!email}
-                        autoComplete="email"
-                        placeholder="you@yourbusiness.com"
-                        className={inputClass}
-                      />
-                    </div>
+                    {identified ? signingInAs(email.trim()) : (
+                      <div>
+                        <label htmlFor="login-email" className={labelClass}>Work email</label>
+                        <input
+                          id="login-email"
+                          type="email"
+                          value={email}
+                          onChange={(e) => { setEmail(e.target.value); setError(''); }}
+                          autoFocus={!email}
+                          autoComplete="email"
+                          placeholder="e.g. accounts@yourbusiness.com"
+                          className={inputClass}
+                        />
+                      </div>
+                    )}
                     <div>
                       <div className="flex items-center justify-between">
                         <label htmlFor="login-password" className={labelClass}>Password</label>
@@ -771,12 +902,14 @@ export const LoginGate: React.FC = () => {
                           placeholder="Your business's name or web address" className={inputClass} />
                       </div>
                     )}
-                    <div>
-                      <label htmlFor="login-username" className={labelClass}>Username</label>
-                      <input id="login-username" type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
-                        onChange={(e) => { setUsername(e.target.value); setError(''); }}
-                        placeholder="e.g. ali.cashier" className={inputClass} />
-                    </div>
+                    {identified ? signingInAs(username.trim()) : (
+                      <div>
+                        <label htmlFor="login-username" className={labelClass}>Username</label>
+                        <input id="login-username" type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
+                          onChange={(e) => { setUsername(e.target.value); setError(''); }}
+                          placeholder="e.g. ali.cashier" className={inputClass} />
+                      </div>
+                    )}
                     {pinDots}
                     {keypad}
                   </>
@@ -844,7 +977,7 @@ export const LoginGate: React.FC = () => {
                   disabled={loading || !ready}
                   className="w-full h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-teal-600/20"
                 >
-                  {loading ? 'Signing in…' : 'Sign in'}
+                  {loading ? 'Signing in…' : mode === 'identify' ? 'Continue' : 'Sign in'}
                 </button>
 
                 {/* Other ways in */}
@@ -859,35 +992,63 @@ export const LoginGate: React.FC = () => {
                       <Monitor className="w-3.5 h-3.5" /> Back to PIN only
                     </button>
                   )}
+                  {/* At a Cashly POS business's address: an owner or manager who has added a work email. */}
+                  {mode === 'username' && !identified && !tillBranchId && (
+                    <button type="button" onClick={changeIdentifier} className={linkClass}>
+                      Have a work email? Sign in with it instead
+                    </button>
+                  )}
                   {(mode === 'till' || mode === 'username') && (
                     <p className="text-xs text-slate-400 text-center">Forgot your PIN? Ask your manager to reset it.</p>
                   )}
                 </div>
 
-                {/* The way in for a new business, on either tab. Only on Cashly's main address — not on
-                    a business's own address, and not on a till that already belongs to one. */}
-                {canRegister && (
-                  <div className="md:hidden pt-4 border-t border-slate-100">
-                    <a href="/signup"
-                      className="flex items-center justify-center w-full h-11 rounded-2xl border-2 border-teal-600 text-teal-700 hover:bg-teal-50 text-sm font-bold transition">
-                      New business? Register — 30-day free trial
+                {/* On a phone (no left side): connecting a new till, under "or". */}
+                {mode === 'identify' && showConnect && (
+                  <div className="lg:hidden space-y-4">
+                    <div className="flex items-center gap-3 text-xs text-slate-400"><span className="flex-1 h-px bg-slate-200" /> or <span className="flex-1 h-px bg-slate-200" /></div>
+                    <a href="/connect"
+                      className="flex items-center justify-center gap-2 w-full h-12 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 text-sm font-bold text-slate-700 transition">
+                      <MonitorSmartphone className="w-4 h-4 text-teal-600" /> Connect a till or tablet
                     </a>
                   </div>
+                )}
+
+                {/* The way in for a new business. Only on Cashly's main address — not on a business's
+                    own address, and not on a till that already belongs to one. */}
+                {canRegister && (mode === 'identify' || mode === 'email' || mode === 'username') && (
+                  <p className="text-center text-sm text-slate-500">
+                    Don&apos;t have an account?{' '}
+                    <a href="/signup" className="font-bold text-teal-700 hover:text-teal-800">Register free →</a>
+                  </p>
                 )}
               </form>
             )}
           </div>
         </div>
 
-        {/* On a phone: what the brand panel's footer holds. */}
-        <div className="md:hidden px-6 pb-8 flex flex-col items-center gap-2.5">
+        {/* The card's foot: the connection, and the platform team's own way in. */}
+        <div className="px-6 sm:px-10 py-3.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
           {statusLine(false)}
-          {showConnect && <a href="/connect" className={linkClass}>Connect a till or tablet →</a>}
-          {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
-            <button type="button" onClick={() => switchMode('platform')} className={linkClass}>Platform admin</button>
-          )}
+          <div className="flex items-center gap-4">
+            {/* On a phone the menu at the top of the left side is not there, so its two panels are here. */}
+            {!tillBranchId && (
+              <>
+                <button type="button" onClick={() => setPanel('pricing')} className={`${linkClass} lg:hidden`}>Pricing</button>
+                <button type="button" onClick={() => setPanel('support')} className={`${linkClass} lg:hidden`}>Support</button>
+              </>
+            )}
+            {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
+              <button type="button" onClick={() => switchMode('platform')} className={linkClass}>Platform admin</button>
+            )}
+          </div>
+        </div>
         </div>
       </main>
+
+      {panel === 'pricing' && <PricingPanel onClose={() => setPanel(null)} />}
+      {panel === 'support' && <SupportPanel onClose={() => setPanel(null)} />}
+      {panel === 'demo' && <DemoPanel onClose={() => setPanel(null)} />}
     </div>
   );
 };

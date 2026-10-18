@@ -14343,6 +14343,14 @@ app.MapGet("/api/public/packages", async (AppDbContext db) =>
 app.MapGet("/api/public/platform-prices", async (AppDbContext db) =>
     Results.Ok(await db.PlatformPrices.AsNoTracking().OrderBy(p => p.Key).ToListAsync()));
 
+// How to reach Cashly, for the sign-in page's Support panel: the contact details the platform owner
+// set in Platform Settings, and nothing else from there (never the bank details).
+app.MapGet("/api/public/support", async (AppDbContext db) =>
+{
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    return Results.Ok(new { companyName = s.CompanyName, s.Phone, s.Email, s.Website, s.City });
+}).RequireRateLimiting("public-lookup");
+
 app.MapGet("/api/admin/platform-prices", async (AppDbContext db, HttpContext http) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
