@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight, Building2, Check, ChevronDown, Copy, Globe, KeyRound, LifeBuoy, Mail, MonitorSmartphone, Phone,
   Pill, PlayCircle, ShoppingBag, ShoppingCart, Store, UtensilsCrossed, X
 } from 'lucide-react';
 import { posApi } from '../../services/api';
-import type { PublicPackage } from '../../types';
-import { ERP_FALLBACK_MONTHLY, PLANS, money, planFigures, planName } from '../../pages/register/registerCatalog';
+import type { PublicPackage, SubscriptionTier } from '../../types';
+import { ERP_FALLBACK_MONTHLY, PLANS, RECOMMENDED_PLAN, deviceLine, money, planFigures, planName } from '../../pages/register/registerCatalog';
 import { useClickOutside } from '../../hooks/useClickOutside';
 
 // ============================================================
@@ -44,56 +44,232 @@ const Modal: React.FC<{ title: string; onClose: () => void; wide?: boolean; chil
 
 /** The kinds of business Cashly serves, and the screens each gets. */
 const KINDS = [
-  { icon: UtensilsCrossed, name: 'Restaurants and cafés', text: 'Tables, waiter tablets, kitchen screens, recipes and delivery.' },
-  { icon: ShoppingBag, name: 'Retail stores', text: 'Barcode selling, stock, suppliers and purchase orders.' },
-  { icon: Pill, name: 'Pharmacies', text: 'Batches and expiry, prescriptions, the controlled register.' },
-  { icon: ShoppingCart, name: 'Marts and cash & carry', text: 'Fast checkout, stock with batches and expiry, credit customers.' }
+  { icon: UtensilsCrossed, name: 'Restaurants and cafés', text: 'Tables, waiter tablets, kitchen screens, recipes and delivery' },
+  { icon: ShoppingBag, name: 'Retail stores', text: 'Barcode selling, stock, suppliers and purchase orders' },
+  { icon: Pill, name: 'Pharmacies', text: 'Batches and expiry, prescriptions and the controlled register' },
+  { icon: ShoppingCart, name: 'Marts and cash & carry', text: 'Fast checkout, batch stock and credit customers' }
 ];
 
-/** "Features ▾": what each kind of business gets, in a menu under the button. */
-export const FeaturesMenu: React.FC = () => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useClickOutside(ref, () => setOpen(false), open);
+/** What every business gets, whatever its kind. */
+const EVERY_BUSINESS = ['Sales and receipts', 'Customers and credit', 'Reports', 'Tax and FBR invoicing', 'Staff and permissions', 'Keeps selling offline'];
+
+/**
+ * A menu under a button in the sign-in page's top bar. It is placed against the window (not the
+ * dark panel, which clips), right-aligned under its button and kept on screen; Esc, a click
+ * outside or resizing the window closes it.
+ */
+const NavMenu: React.FC<{ label: string; width: number; children: (close: () => void) => React.ReactNode }> = ({ label, width, children }) => {
+  const [place, setPlace] = useState<{ top: number; left: number; caret: number } | null>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const open = place !== null;
+  const close = useCallback(() => setPlace(null), []);
+  useClickOutside(wrap, close, open);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('resize', close); };
+  }, [open, close]);
+
+  const toggle = () => {
+    if (open) { close(); return; }
+    const r = button.current?.getBoundingClientRect();
+    if (!r) return;
+    const left = Math.max(16, Math.min(r.right - width, window.innerWidth - width - 16));
+    setPlace({ top: r.bottom + 12, left, caret: r.left + r.width / 2 - 6 });
+  };
+
   return (
-    <div className="relative" ref={ref}>
-      <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open}
-        className="inline-flex items-center gap-1 px-3 h-9 rounded-lg text-sm font-medium text-white/75 hover:text-white hover:bg-white/[0.08] transition cursor-pointer">
-        Features <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
+    <div ref={wrap}>
+      <button ref={button} type="button" onClick={toggle} aria-expanded={open} aria-haspopup="true"
+        className={`inline-flex items-center gap-1 px-3 h-9 rounded-lg text-sm font-medium transition cursor-pointer ${
+          open ? 'text-white bg-white/[0.08]' : 'text-white/75 hover:text-white hover:bg-white/[0.08]'
+        }`}>
+        {label} <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-[380px] rounded-2xl bg-white text-slate-900 shadow-2xl p-2 z-40">
-          {KINDS.map(({ icon: Icon, name, text }) => (
-            <div key={name} className="flex gap-3 p-3 rounded-xl hover:bg-slate-50">
-              <span className="w-10 h-10 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center shrink-0"><Icon className="w-5 h-5" /></span>
-              <span>
-                <span className="block text-sm font-semibold">{name}</span>
-                <span className="block text-xs text-slate-500">{text}</span>
-              </span>
-            </div>
-          ))}
-          <div className="m-1 mt-2 p-3 rounded-xl bg-slate-50 text-xs text-slate-600">
-            Every business: sales and receipts, customers and credit, reports, tax and FBR invoicing, staff and permissions,
-            and the ERP for a head office with several outlets.
+      {place && (
+        <>
+          <span aria-hidden style={{ top: place.top - 6, left: place.caret }}
+            className="fixed z-50 w-3 h-3 rotate-45 rounded-[2px] bg-white transition duration-150 starting:opacity-0" />
+          <div style={{ top: place.top, left: place.left, width }}
+            className="fixed z-40 rounded-2xl bg-white text-slate-900 shadow-2xl shadow-black/30 ring-1 ring-slate-900/5 transition duration-150 ease-out starting:opacity-0 starting:translate-y-1">
+            {children(close)}
           </div>
-        </div>
+        </>
       )}
     </div>
   );
 };
 
-/** Pricing: the plans as the server prices them, for one shop and for a head office with outlets. */
-export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const [packages, setPackages] = useState<PublicPackage[]>([]);
-  const [erpMonthly, setErpMonthly] = useState(ERP_FALLBACK_MONTHLY);
+/** "Features ▾": what each kind of business gets, in a menu under the button. */
+export const FeaturesMenu: React.FC<{ onPricing: () => void }> = ({ onPricing }) => (
+  <NavMenu label="Features" width={600}>
+    {close => (
+      <>
+        <div className="p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Built for your kind of business</p>
+          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-4">
+            {KINDS.map(({ icon: Icon, name, text }) => (
+              <div key={name} className="flex items-start gap-3">
+                <span className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 ring-1 ring-inset ring-teal-100 flex items-center justify-center shrink-0">
+                  <Icon className="w-[18px] h-[18px]" strokeWidth={1.75} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-slate-900">{name}</span>
+                  <span className="block mt-0.5 text-[13px] leading-snug text-slate-500">{text}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 flex items-center gap-3 rounded-xl bg-gradient-to-r from-teal-50 to-emerald-50/50 ring-1 ring-inset ring-teal-100 px-3.5 py-3">
+            <span className="w-9 h-9 rounded-lg bg-white text-teal-700 ring-1 ring-inset ring-teal-100 flex items-center justify-center shrink-0">
+              <Building2 className="w-[18px] h-[18px]" strokeWidth={1.75} />
+            </span>
+            <span className="min-w-0">
+              <span className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-slate-900">A head office with outlets</span>
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-600 text-white">POS + ERP</span>
+              </span>
+              <span className="block mt-0.5 text-[13px] leading-snug text-slate-500">Stock, buying, accounts and payroll for every outlet, from one place</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 rounded-b-2xl bg-slate-50 border-t border-slate-100">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Every business gets</p>
+            <button type="button" onClick={() => { close(); onPricing(); }}
+              className="inline-flex items-center gap-1 text-[13px] font-semibold text-teal-700 hover:text-teal-800 cursor-pointer">
+              Compare plans <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <ul className="mt-2.5 grid grid-cols-3 gap-x-4 gap-y-2">
+            {EVERY_BUSINESS.map(item => (
+              <li key={item} className="flex items-center gap-1.5 text-[13px] text-slate-600">
+                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" strokeWidth={2.5} /> {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </>
+    )}
+  </NavMenu>
+);
+
+/** The price list as the server has it; the built-in figures until it answers (or if it cannot). */
+interface PublicPricing { packages: PublicPackage[]; erpMonthly: number }
+let pricingRequest: Promise<PublicPricing> | null = null;
+function loadPricing(): Promise<PublicPricing> {
+  pricingRequest ??= Promise.all([
+    posApi.getPublicPackages().catch(() => [] as PublicPackage[]),
+    posApi.getPublicPlatformPrices().catch(() => [])
+  ]).then(([rows, prices]) => {
+    const packages = Array.isArray(rows) ? rows : [];
+    if (packages.length === 0) pricingRequest = null; // ask again next time
+    const erp = Array.isArray(prices) ? prices.find(r => r.key === 'HEAD_OFFICE_ERP') : undefined;
+    return { packages, erpMonthly: erp?.monthlyPricePKR || ERP_FALLBACK_MONTHLY };
+  });
+  return pricingRequest;
+}
+function usePublicPricing(): PublicPricing {
+  const [pricing, setPricing] = useState<PublicPricing>({ packages: [], erpMonthly: ERP_FALLBACK_MONTHLY });
   useEffect(() => {
     let cancelled = false;
-    posApi.getPublicPackages().then(rows => { if (!cancelled && Array.isArray(rows)) setPackages(rows); }).catch(() => { /* built-in figures */ });
-    posApi.getPublicPlatformPrices()
-      .then(rows => { const erp = rows.find(r => r.key === 'HEAD_OFFICE_ERP'); if (!cancelled && erp?.monthlyPricePKR) setErpMonthly(erp.monthlyPricePKR); })
-      .catch(() => { /* built-in figure */ });
+    loadPricing().then(p => { if (!cancelled) setPricing(p); });
     return () => { cancelled = true; };
   }, []);
+  return pricing;
+}
+
+/** What each plan is for, in one line (the full list is in the Pricing panel and at registration). */
+const PLAN_SUMMARY: Record<SubscriptionTier, string> = {
+  Starter: 'Sales, receipts, customers and tax reports',
+  Standard: 'Adds stock, suppliers, loyalty and delivery',
+  Professional: 'Adds accounting and payroll'
+};
+
+const PricingMenuBody: React.FC<{ onDetails: () => void }> = ({ onDetails }) => {
+  const { packages, erpMonthly } = usePublicPricing();
+  const outletFrom = Math.min(...PLANS.map(tier => planFigures(tier, packages).branchMonthly));
+  return (
+    <>
+      <div className="p-5">
+        <div className="flex items-baseline justify-between gap-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Cashly POS · one shop</p>
+          <p className="text-xs text-slate-400">Per month, excluding tax</p>
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-3">
+          {PLANS.map(tier => {
+            const f = planFigures(tier, packages);
+            const recommended = tier === RECOMMENDED_PLAN;
+            return (
+              <div key={tier} className={`rounded-xl p-3.5 ring-inset ${recommended ? 'ring-2 ring-teal-500 bg-teal-50/40' : 'ring-1 ring-slate-200'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-900">{planName(tier)}</p>
+                  {recommended && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-600 text-white">Recommended</span>}
+                </div>
+                <p className="mt-2 leading-none">
+                  <span className="text-xl font-semibold tracking-tight text-slate-900">{money(f.monthly)}</span>
+                  <span className="text-xs text-slate-500"> /mo</span>
+                </p>
+                <p className="mt-1 text-[11px] text-slate-400">or {money(f.yearly)} a year</p>
+                <p className="mt-3 text-[13px] leading-snug text-slate-600">{PLAN_SUMMARY[tier]}</p>
+                <p className="mt-1.5 text-[11px] text-slate-400">{deviceLine(f, false)}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-4 flex items-center gap-3 rounded-xl bg-gradient-to-r from-teal-50 to-emerald-50/50 ring-1 ring-inset ring-teal-100 px-3.5 py-3">
+          <span className="w-9 h-9 rounded-lg bg-white text-teal-700 ring-1 ring-inset ring-teal-100 flex items-center justify-center shrink-0">
+            <Building2 className="w-[18px] h-[18px]" strokeWidth={1.75} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900">A head office with outlets</span>
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-600 text-white">POS + ERP</span>
+            </span>
+            <span className="block mt-0.5 text-[13px] leading-snug text-slate-500">The head office ERP, and each outlet on its own plan</span>
+          </span>
+          <span className="shrink-0 text-right">
+            <span className="block text-sm font-semibold text-slate-900">{money(erpMonthly)}<span className="text-xs font-normal text-slate-500"> /mo</span></span>
+            <span className="block text-[11px] text-slate-500">+ outlets from {money(outletFrom)}</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="px-5 py-3.5 rounded-b-2xl bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-4">
+        <p className="flex items-center gap-1.5 text-[13px] text-slate-600">
+          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" strokeWidth={2.5} /> Free for 30 days, no card needed
+        </p>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button type="button" onClick={onDetails}
+            className="h-9 px-3 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-200/70 transition cursor-pointer">
+            Full details
+          </button>
+          <a href="/signup"
+            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[13px] font-semibold transition">
+            Start free trial <ArrowRight className="w-3.5 h-3.5" />
+          </a>
+        </div>
+      </div>
+    </>
+  );
+};
+
+/** "Pricing ▾": the plans at a glance, with the full list one click away. */
+export const PricingMenu: React.FC<{ onDetails: () => void }> = ({ onDetails }) => (
+  <NavMenu label="Pricing" width={640}>
+    {close => <PricingMenuBody onDetails={() => { close(); onDetails(); }} />}
+  </NavMenu>
+);
+
+/** Pricing: the plans as the server prices them, for one shop and for a head office with outlets. */
+export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { packages, erpMonthly } = usePublicPricing();
 
   return (
     <Modal title="Pricing" onClose={onClose} wide>
