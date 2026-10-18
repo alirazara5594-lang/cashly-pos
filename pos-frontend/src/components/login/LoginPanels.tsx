@@ -31,7 +31,7 @@ const Modal: React.FC<{ title: string; onClose: () => void; wide?: boolean; chil
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm cursor-default" />
       <div className={`relative w-full ${wide ? 'max-w-4xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto rounded-3xl bg-white text-slate-900 shadow-2xl`}>
         <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-6 py-4 bg-white/95 backdrop-blur border-b border-slate-100">
-          <h2 className="text-lg font-bold">{title}</h2>
+          <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="w-9 h-9 rounded-xl inline-flex items-center justify-center text-slate-500 hover:bg-slate-100 cursor-pointer">
             <X className="w-5 h-5" />
           </button>
@@ -58,7 +58,7 @@ export const FeaturesMenu: React.FC = () => {
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={() => setOpen(v => !v)} aria-expanded={open}
-        className="inline-flex items-center gap-1 px-3 h-10 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition cursor-pointer">
+        className="inline-flex items-center gap-1 px-3 h-9 rounded-lg text-sm font-medium text-white/75 hover:text-white hover:bg-white/[0.08] transition cursor-pointer">
         Features <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -67,7 +67,7 @@ export const FeaturesMenu: React.FC = () => {
             <div key={name} className="flex gap-3 p-3 rounded-xl hover:bg-slate-50">
               <span className="w-10 h-10 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center shrink-0"><Icon className="w-5 h-5" /></span>
               <span>
-                <span className="block text-sm font-bold">{name}</span>
+                <span className="block text-sm font-semibold">{name}</span>
                 <span className="block text-xs text-slate-500">{text}</span>
               </span>
             </div>
@@ -101,14 +101,14 @@ export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
         <p className="text-sm text-slate-600">Every plan is free for 30 days, with no card needed. Prices are per month and exclude tax.</p>
 
         <section className="space-y-3">
-          <h3 className="flex items-center gap-2 font-bold"><Store className="w-5 h-5 text-teal-600" /> Cashly POS — one shop</h3>
+          <h3 className="flex items-center gap-2 font-semibold"><Store className="w-5 h-5 text-teal-600" /> Cashly POS — one shop</h3>
           <div className="grid sm:grid-cols-3 gap-3">
             {PLANS.map(tier => {
               const f = planFigures(tier, packages);
               return (
-                <div key={tier} className={`rounded-2xl border-2 p-4 ${tier === 'Standard' ? 'border-teal-500 bg-teal-50/40' : 'border-slate-200'}`}>
-                  <p className="font-bold">{planName(tier)}</p>
-                  <p className="mt-1"><span className="text-2xl font-extrabold">{money(f.monthly)}</span><span className="text-sm text-slate-500"> / month</span></p>
+                <div key={tier} className={`rounded-2xl border p-4 ${tier === 'Standard' ? 'border-teal-500 ring-1 ring-teal-500 bg-teal-50/40' : 'border-slate-200'}`}>
+                  <p className="font-semibold">{planName(tier)}</p>
+                  <p className="mt-1"><span className="text-2xl font-semibold tracking-tight">{money(f.monthly)}</span><span className="text-sm text-slate-500"> / month</span></p>
                   <p className="text-xs text-slate-500">or {money(f.yearly)} a year</p>
                   <ul className="mt-3 space-y-1 text-sm text-slate-700">
                     <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> {f.tills} till{f.tills === 1 ? '' : 's'}, {f.tablets} tablets</li>
@@ -123,22 +123,22 @@ export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
         </section>
 
         <section className="space-y-3">
-          <h3 className="flex items-center gap-2 font-bold"><Building2 className="w-5 h-5 text-teal-600" /> Cashly POS + ERP — head office and outlets</h3>
+          <h3 className="flex items-center gap-2 font-semibold"><Building2 className="w-5 h-5 text-teal-600" /> Cashly POS + ERP — head office and outlets</h3>
           <div className="rounded-2xl border border-slate-200 divide-y divide-slate-100">
             <div className="flex items-center justify-between gap-3 p-4">
-              <span><span className="block font-bold">Head office ERP</span><span className="block text-xs text-slate-500">Stock, buying, accounts, payroll and reports for every outlet</span></span>
-              <span className="font-extrabold whitespace-nowrap">{money(erpMonthly)} <span className="text-sm font-normal text-slate-500">/ month</span></span>
+              <span><span className="block font-semibold">Head office ERP</span><span className="block text-xs text-slate-500">Stock, buying, accounts, payroll and reports for every outlet</span></span>
+              <span className="font-semibold whitespace-nowrap">{money(erpMonthly)} <span className="text-sm font-normal text-slate-500">/ month</span></span>
             </div>
             {PLANS.map(tier => (
               <div key={tier} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
-                <span>Each outlet on <strong>{planName(tier)}</strong></span>
-                <span className="font-bold whitespace-nowrap">{money(planFigures(tier, packages).branchMonthly)} <span className="font-normal text-slate-500">/ month</span></span>
+                <span>Each outlet on <span className="font-medium">{planName(tier)}</span></span>
+                <span className="font-semibold whitespace-nowrap">{money(planFigures(tier, packages).branchMonthly)} <span className="font-normal text-slate-500">/ month</span></span>
               </div>
             ))}
           </div>
         </section>
 
-        <a href="/signup" className="flex items-center justify-center gap-2 h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white font-bold transition">
+        <a href="/signup" className="flex items-center justify-center gap-2 h-11 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[15px] font-semibold transition">
           Register free — 30-day trial <ArrowRight className="w-4 h-4" />
         </a>
       </div>
@@ -163,9 +163,9 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
       <Icon className="w-5 h-5 text-teal-600 shrink-0" />
       <span className="min-w-0 flex-1">
         <span className="block text-xs text-slate-500">{label}</span>
-        <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer" className="block text-sm font-bold text-slate-900 truncate hover:text-teal-700">{value}</a>
+        <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer" className="block text-sm font-medium text-slate-900 truncate hover:text-teal-700">{value}</a>
       </span>
-      <button type="button" onClick={() => copy(value)} className="text-xs font-bold text-teal-700 inline-flex items-center gap-1 cursor-pointer">
+      <button type="button" onClick={() => copy(value)} className="text-xs font-semibold text-teal-700 inline-flex items-center gap-1 cursor-pointer">
         {copied === value ? <><Check className="w-3.5 h-3.5" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy</>}
       </button>
     </div>
@@ -183,13 +183,13 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
           ].map(({ icon: Icon, t, d }) => (
             <div key={t} className="flex gap-3 p-3 rounded-xl border border-slate-200">
               <Icon className="w-5 h-5 text-teal-600 shrink-0 mt-0.5" />
-              <span><span className="block text-sm font-bold">{t}</span><span className="block text-sm text-slate-600">{d}</span></span>
+              <span><span className="block text-sm font-semibold">{t}</span><span className="block text-sm text-slate-600">{d}</span></span>
             </div>
           ))}
         </div>
 
         <div className="space-y-2">
-          <h3 className="flex items-center gap-2 text-sm font-bold"><LifeBuoy className="w-4 h-4 text-teal-600" /> Contact {contact?.companyName || 'Cashly'}</h3>
+          <h3 className="flex items-center gap-2 text-sm font-semibold"><LifeBuoy className="w-4 h-4 text-teal-600" /> Contact {contact?.companyName || 'Cashly'}</h3>
           {hasContact ? (
             <>
               {contact?.phone && contactRow(Phone, 'Phone / WhatsApp', contact.phone, `tel:${contact.phone.replace(/[^\d+]/g, '')}`)}
@@ -222,12 +222,12 @@ export const DemoPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => (
             { t: 'Sell, and watch it add up', d: 'Receipts, stock, the Z-report at day end, and reports for every outlet.' }
           ].map((s, i) => (
             <li key={s.t} className="flex gap-3">
-              <span className="w-8 h-8 rounded-full bg-teal-600 text-white text-sm font-bold flex items-center justify-center shrink-0">{i + 1}</span>
-              <span><span className="block font-bold">{s.t}</span><span className="block text-sm text-slate-600">{s.d}</span></span>
+              <span className="w-8 h-8 rounded-full bg-teal-600 text-white text-sm font-semibold flex items-center justify-center shrink-0">{i + 1}</span>
+              <span><span className="block font-semibold">{s.t}</span><span className="block text-sm text-slate-600">{s.d}</span></span>
             </li>
           ))}
         </ol>
-        <a href="/signup" className="flex items-center justify-center gap-2 h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 text-white font-bold transition">
+        <a href="/signup" className="flex items-center justify-center gap-2 h-11 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[15px] font-semibold transition">
           <PlayCircle className="w-5 h-5" /> Start your free trial
         </a>
       </div>

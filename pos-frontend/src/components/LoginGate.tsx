@@ -4,7 +4,7 @@ import {
   Receipt, Boxes, BarChart3, WifiOff, Cloud, Play
 } from 'lucide-react';
 import { DemoPanel, FeaturesMenu, PricingPanel, SupportPanel, type LoginPanel } from './login/LoginPanels';
-import { PosScene } from './login/PosScene';
+import { ScaledPosScene } from './login/PosScene';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { useNavigate } from 'react-router-dom';
@@ -58,7 +58,7 @@ interface PendingBranchChoice {
 }
 
 const inputClass = 'w-full h-11 px-4 bg-white border border-slate-300 rounded-xl text-base text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/15 transition';
-const labelClass = 'block text-sm font-semibold text-slate-700 mb-1.5';
+const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
 
 /**
  * Mandatory full-screen sign-in. The first screen for anyone signed out — including a visitor
@@ -461,18 +461,18 @@ export const LoginGate: React.FC = () => {
   }, []);
 
   // Keys grow on a tall screen; on a laptop they stay compact so the whole sign-in fits without scrolling.
-  const keyBase = 'h-12 [@media(min-height:860px)]:h-14 [@media(max-height:720px)]:h-11 rounded-2xl bg-white border border-slate-200 shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-[0.97] transition select-none cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
+  const keyBase = 'h-12 [@media(min-height:860px)]:h-14 [@media(max-height:720px)]:h-11 rounded-xl bg-white border border-slate-200 shadow-sm hover:bg-slate-50 active:bg-slate-100 active:scale-[0.97] transition select-none cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500';
   const keypad = (
     <div className="grid grid-cols-3 gap-2">
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => (
-        <button key={n} type="button" onClick={() => pressKey(n)} className={`${keyBase} text-xl font-semibold text-slate-900`}>
+        <button key={n} type="button" onClick={() => pressKey(n)} className={`${keyBase} text-xl font-medium text-slate-900`}>
           {n}
         </button>
       ))}
-      <button type="button" onClick={() => pressKey('clear')} className={`${keyBase} text-sm font-semibold text-slate-500`}>
+      <button type="button" onClick={() => pressKey('clear')} className={`${keyBase} text-sm font-medium text-slate-500`}>
         Clear
       </button>
-      <button type="button" onClick={() => pressKey(0)} className={`${keyBase} text-xl font-semibold text-slate-900`}>
+      <button type="button" onClick={() => pressKey(0)} className={`${keyBase} text-xl font-medium text-slate-900`}>
         0
       </button>
       <button type="button" onClick={() => pressKey('back')} aria-label="Delete the last digit" title="Delete the last digit"
@@ -510,7 +510,7 @@ export const LoginGate: React.FC = () => {
   const signingInAs = (who: string) => (
     <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
       <span className="min-w-0 text-sm text-slate-600 truncate">Signing in as <strong className="text-slate-900">{who}</strong></span>
-      <button type="button" onClick={changeIdentifier} className="shrink-0 text-xs font-bold text-teal-700 hover:text-teal-800 cursor-pointer">Not you?</button>
+      <button type="button" onClick={changeIdentifier} className="shrink-0 text-xs font-semibold text-teal-700 hover:text-teal-800 cursor-pointer">Not you?</button>
     </div>
   );
 
@@ -524,10 +524,10 @@ export const LoginGate: React.FC = () => {
     : null;
   const showConnect = (mode === 'identify' || mode === 'email' || mode === 'username') && !tillBranchId;
   const canRegister = !address && !tillBranchId && mode !== 'platform';
-  const linkClass = 'text-xs font-semibold text-slate-500 hover:text-teal-700 transition cursor-pointer';
+  const linkClass = 'text-xs font-medium text-slate-500 hover:text-teal-700 transition cursor-pointer';
 
   const statusLine = (light: boolean) => (
-    <span className={`inline-flex items-center gap-2 text-xs font-semibold ${light ? 'text-teal-50/90' : 'text-slate-500'}`}>
+    <span className={`inline-flex items-center gap-2 text-xs font-medium ${light ? 'text-teal-50/90' : 'text-slate-500'}`}>
       <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
       {isOnline ? 'Online' : 'Offline: staff who signed in here this week can still sign in'}
     </span>
@@ -536,28 +536,28 @@ export const LoginGate: React.FC = () => {
   // The business this screen is for, with "Not …?" off its own /r/ link.
   const businessBlock = businessName && (
     <div className="space-y-2">
-      <p className="text-3xl xl:text-4xl font-bold tracking-tight leading-tight">{businessName}</p>
-      {placeLine && <p className="text-teal-100 font-semibold flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
+      <p className="text-3xl xl:text-4xl font-semibold tracking-tight leading-tight">{businessName}</p>
+      {placeLine && <p className="text-teal-100 font-medium flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
       {address && restaurantHere?.product && (
-        <span className="inline-block text-[11px] font-bold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
+        <span className="inline-block text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
       )}
       {address && restaurantHere?.missing && (
         <p className="text-sm text-amber-200">No business uses this address. Check the link you were given.</p>
       )}
       {address && !address.fromSubdomain && (
-        <button type="button" onClick={leaveRestaurantAddress} className="block text-sm font-semibold text-teal-100 hover:text-white underline-offset-4 hover:underline">
+        <button type="button" onClick={leaveRestaurantAddress} className="block text-sm font-medium text-teal-100 hover:text-white underline-offset-4 hover:underline">
           {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
         </button>
       )}
     </div>
   );
 
-  // What Cashly does, in four tiles — each one something the product really has.
+  // What Cashly does — each one something the product really has.
   const features = [
-    { icon: Receipt, label: 'Fast billing' },
-    { icon: Boxes, label: 'Smart inventory' },
-    { icon: BarChart3, label: 'Powerful reports' },
-    { icon: Building2, label: 'Multi-branch' }
+    { icon: Receipt, title: 'Fast billing', text: 'Quick checkout, receipts and FBR invoices' },
+    { icon: Boxes, title: 'Smart inventory', text: 'Live stock, suppliers and purchase orders' },
+    { icon: BarChart3, title: 'Clear reports', text: 'Sales, profit and tax, day by day' },
+    { icon: Building2, title: 'Multi-branch', text: 'Every outlet run from one head office' }
   ];
   const assurances = [
     { icon: ShieldCheck, label: 'Secure 2-step sign-in' },
@@ -568,127 +568,131 @@ export const LoginGate: React.FC = () => {
   return (
     <div className="h-screen w-full flex bg-[#071f26] text-slate-900 overflow-hidden">
       {/* ── Left: the product (the main address), or the till's lock screen (a connected till) ── */}
-      <aside className="hidden lg:flex flex-1 min-w-0 relative overflow-hidden text-white flex-col px-12 xl:px-16 py-10 [@media(max-height:760px)]:py-6 bg-gradient-to-br from-[#071f26] via-[#0b3940] to-[#0d4a42]">
-        <div aria-hidden className="absolute -top-40 right-0 w-[560px] h-[560px] rounded-full bg-emerald-400/15 blur-3xl" />
-        <div aria-hidden className="absolute -bottom-48 -left-24 w-[520px] h-[520px] rounded-full bg-teal-300/10 blur-3xl" />
-        <div aria-hidden className="absolute inset-0 opacity-[0.06] bg-[linear-gradient(to_right,#fff_1px,transparent_1px),linear-gradient(to_bottom,#fff_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:linear-gradient(to_right,#000_30%,transparent_65%)]" />
+      <aside className="hidden lg:flex flex-1 min-w-0 relative overflow-hidden text-white flex-col px-10 xl:px-14 py-8 [@media(max-height:720px)]:py-5 bg-gradient-to-br from-[#06191f] via-[#0a3138] to-[#0c443d]">
+        <div aria-hidden className="absolute -top-48 -right-24 w-[640px] h-[640px] rounded-full bg-emerald-400/[0.12] blur-3xl" />
+        <div aria-hidden className="absolute -bottom-56 -left-32 w-[560px] h-[560px] rounded-full bg-teal-300/[0.08] blur-3xl" />
 
-        <div className="relative z-20 flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-emerald-900/40">C</div>
-          <span className="text-2xl font-bold tracking-tight">Cashly <span className="text-emerald-300">POS</span></span>
+        <header className="relative z-20 flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-emerald-950/40">C</div>
+          <span className="text-lg font-semibold tracking-tight">Cashly <span className="text-emerald-300">POS</span></span>
           {/* Cashly's own menu — not on a connected till, which belongs to one business. */}
           {!tillBranchId && (
             <nav className="ml-auto flex items-center gap-1" aria-label="Cashly">
               <FeaturesMenu />
               <button type="button" onClick={() => setPanel('pricing')}
-                className="px-3 h-10 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition cursor-pointer">Pricing</button>
+                className="px-3 h-9 rounded-lg text-sm font-medium text-white/75 hover:text-white hover:bg-white/[0.08] transition cursor-pointer">Pricing</button>
               <button type="button" onClick={() => setPanel('support')}
-                className="px-3 h-10 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition cursor-pointer">Support</button>
+                className="px-3 h-9 rounded-lg text-sm font-medium text-white/75 hover:text-white hover:bg-white/[0.08] transition cursor-pointer">Support</button>
             </nav>
           )}
-        </div>
+        </header>
 
         {tillBranchId ? (
           // A connected till: whose till it is, and the time — like a till's lock screen.
           <div className="relative flex-1 flex flex-col justify-center gap-10">
             {businessBlock}
             <div>
-              <p className="text-6xl xl:text-7xl font-bold tabular-nums tracking-tight">
+              <p className="text-6xl xl:text-7xl font-light tabular-nums tracking-tight">
                 {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </p>
-              <p className="mt-1 text-teal-100 font-semibold">
+              <p className="mt-2 text-teal-100/80 font-medium">
                 {now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}
               </p>
             </div>
           </div>
         ) : (
-          <div className="relative flex-1 grid [@media(min-width:1280px)_and_(max-width:1535.98px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_296px] [@media(min-width:1536px)_and_(max-width:1879.98px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_420px] [@media(min-width:1880px)_and_(min-height:700px)]:grid-cols-[minmax(0,1fr)_532px] items-center gap-10">
-            <div className="space-y-7 [@media(max-height:760px)]:space-y-5 min-w-0">
-              {businessName && (
-                <div className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2 rounded-xl bg-white/10 border border-white/10 text-sm">
-                  <span className="text-teal-100">Signing in to <strong className="text-white">{businessName}</strong></span>
-                  {address && !address.fromSubdomain && (
-                    <button type="button" onClick={leaveRestaurantAddress} className="font-semibold text-emerald-300 hover:text-emerald-200">
-                      {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
-                    </button>
+          // Two columns — the words, and the picture — when the panel is wide and tall enough for both;
+          // otherwise just the words. Sized off the panel itself (a container query), not the window.
+          <div className="@container relative flex-1 min-h-0 flex items-center py-8 [@media(max-height:720px)]:py-4">
+            <div className="w-full grid items-center gap-10 @min-[800px]:[@media(min-height:640px)]:grid-cols-[minmax(420px,1fr)_minmax(0,1fr)]">
+              <div className="max-w-[520px]">
+                {businessName && (
+                  <div className="mb-6 inline-flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 rounded-lg bg-white/[0.08] ring-1 ring-inset ring-white/10 text-[13px]">
+                    <span className="text-white/70">Signing in to <span className="font-medium text-white">{businessName}</span></span>
+                    {address && !address.fromSubdomain && (
+                      <button type="button" onClick={leaveRestaurantAddress} className="font-medium text-emerald-300 hover:text-emerald-200">
+                        {restaurantHere?.name ? `Not ${restaurantHere.name}?` : 'Use the main sign-in'}
+                      </button>
+                    )}
+                  </div>
+                )}
+                <h1 className="text-[34px] xl:text-[40px] 2xl:text-[46px] [@media(max-height:720px)]:text-[32px] font-semibold tracking-[-0.02em] leading-[1.12]">
+                  Smart POS for<br />
+                  <span className="relative inline-block">
+                    <span className="bg-gradient-to-r from-emerald-300 to-teal-200 bg-clip-text text-transparent">growing</span>
+                    <svg aria-hidden viewBox="0 0 200 12" className="absolute left-0 -bottom-1.5 w-full h-2.5 text-emerald-400/80" preserveAspectRatio="none">
+                      <path d="M2 9 C 50 2, 120 2, 198 7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                    </svg>
+                  </span>{' '}
+                  businesses
+                </h1>
+                <p className="mt-4 text-[15px] 2xl:text-base leading-relaxed text-white/65 max-w-[460px]">
+                  Sell, manage stock, keep your books and run every branch from one system: Cashly POS, with the ERP for a head office.
+                </p>
+
+                <ul className="mt-8 [@media(max-height:720px)]:mt-6 grid grid-cols-2 gap-x-6 gap-y-5 [@media(max-height:720px)]:gap-y-4 max-w-[480px]">
+                  {features.map(({ icon: Icon, title, text }) => (
+                    <li key={title} className="flex items-start gap-3">
+                      <span className="w-9 h-9 shrink-0 rounded-lg bg-white/[0.07] ring-1 ring-inset ring-white/10 flex items-center justify-center">
+                        <Icon className="w-[18px] h-[18px] text-emerald-300" strokeWidth={1.75} />
+                      </span>
+                      <span className="min-w-0 pt-px">
+                        <span className="block text-sm font-medium text-white">{title}</span>
+                        <span className="block mt-0.5 text-[13px] leading-snug text-white/55">{text}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="mt-9 [@media(max-height:720px)]:mt-7 flex flex-wrap items-center gap-3">
+                  {canRegister && (
+                    <a href="/signup"
+                      className="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-[#04302a] text-sm font-semibold shadow-lg shadow-emerald-950/30 transition">
+                      Register free <ArrowRight className="w-4 h-4" />
+                    </a>
+                  )}
+                  <button type="button" onClick={() => setPanel('demo')}
+                    className="inline-flex items-center gap-2 h-11 pl-3 pr-4 rounded-xl text-sm font-medium text-white/90 ring-1 ring-inset ring-white/20 hover:bg-white/[0.08] transition cursor-pointer">
+                    <span className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center"><Play className="w-3 h-3 ml-px fill-current" /></span>
+                    Watch demo
+                  </button>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-white/55">
+                  {canRegister && <span>30-day free trial for new businesses</span>}
+                  {showConnect && (
+                    <a href="/connect" className="inline-flex items-center gap-1.5 font-medium text-emerald-300 hover:text-emerald-200 transition">
+                      <MonitorSmartphone className="w-4 h-4" strokeWidth={1.75} /> Connect a till or tablet <ArrowRight className="w-3.5 h-3.5" />
+                    </a>
                   )}
                 </div>
-              )}
-              <h1 className="text-5xl 2xl:text-6xl [@media(max-height:760px)]:text-4xl font-extrabold tracking-tight leading-[1.05]">
-                Smart POS for{' '}
-                <span className="relative inline-block">
-                  <span className="bg-gradient-to-r from-emerald-300 to-teal-300 bg-clip-text text-transparent">growing</span>
-                  <svg aria-hidden viewBox="0 0 200 12" className="absolute left-0 -bottom-2 w-full h-3 text-emerald-400" preserveAspectRatio="none">
-                    <path d="M2 9 C 50 2, 120 2, 198 7" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                  </svg>
-                </span>{' '}
-                businesses
-              </h1>
-              <p className="text-lg [@media(max-height:760px)]:text-base text-teal-50/80 max-w-xl">
-                Sell, manage stock, keep your books and run every branch from one system: Cashly POS, with the ERP for a head office.
-              </p>
-
-              <div className="grid grid-cols-4 gap-3 max-w-xl">
-                {features.map(({ icon: Icon, label }) => (
-                  <div key={label} className="rounded-2xl bg-white/[0.06] border border-white/10 backdrop-blur px-2 py-4 [@media(max-height:760px)]:py-3 text-center">
-                    <Icon className="w-7 h-7 mx-auto text-emerald-300" />
-                    <p className="mt-2 text-sm font-semibold leading-tight">{label}</p>
-                  </div>
-                ))}
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
-                {canRegister && (
-                  <a href="/signup"
-                    className="inline-flex items-center gap-3 pl-2 pr-6 h-14 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 font-bold shadow-xl shadow-emerald-900/40 transition">
-                    <span className="w-10 h-10 rounded-xl bg-white text-teal-700 flex items-center justify-center"><ArrowRight className="w-5 h-5" /></span>
-                    <span className="leading-tight text-left">
-                      <span className="block text-base">Register free</span>
-                      <span className="block text-xs font-medium text-white/85">Start your 30-day trial</span>
-                    </span>
-                  </a>
-                )}
-                <button type="button" onClick={() => setPanel('demo')}
-                  className="inline-flex items-center gap-2.5 px-4 2xl:px-5 h-14 rounded-2xl border border-white/25 bg-white/5 hover:bg-white/10 font-bold transition cursor-pointer">
-                  <Play className="w-5 h-5 text-emerald-300 fill-emerald-300" /> Watch demo
-                </button>
-                {showConnect && (
-                  <a href="/connect"
-                    className="inline-flex items-center gap-2.5 px-4 2xl:px-5 h-14 rounded-2xl border border-white/25 bg-white/5 hover:bg-white/10 font-bold transition">
-                    <MonitorSmartphone className="w-5 h-5 text-emerald-300" /> Connect a till
-                  </a>
-                )}
-              </div>
-            </div>
-
-            {/* The till on a shop counter, drawn at 560×480 and scaled to the room there is
-                (on narrower screens it reaches into the empty right margin). */}
-            <div aria-hidden className="relative hidden [@media(min-width:1280px)_and_(min-height:700px)]:block w-[336px] h-[288px] -mr-10 [@media(min-width:1536px)]:mr-0 [@media(min-width:1536px)_and_(max-width:1879.98px)]:w-[420px] [@media(min-width:1536px)_and_(max-width:1879.98px)]:h-[360px] [@media(min-width:1880px)]:w-[532px] [@media(min-width:1880px)]:h-[456px]">
-              <div className="absolute left-0 top-0 origin-top-left scale-[0.6] [@media(min-width:1536px)_and_(max-width:1879.98px)]:scale-[0.75] [@media(min-width:1880px)]:scale-[0.95]">
-                <PosScene />
+              {/* The till on a shop counter. */}
+              <div className="hidden @min-[800px]:[@media(min-height:640px)]:block min-w-0 w-full max-w-[560px] [@media(max-height:800px)]:max-w-[420px] justify-self-center">
+                <ScaledPosScene />
               </div>
             </div>
           </div>
         )}
 
-        <div className="relative flex flex-wrap items-center gap-x-6 gap-y-2 self-start px-5 py-3 rounded-2xl bg-white/[0.06] border border-white/10 text-sm font-semibold">
+        <div className="relative flex flex-wrap items-center gap-x-6 gap-y-2 pt-5 [@media(max-height:720px)]:pt-4 border-t border-white/10 text-[13px] text-white/60">
           {assurances.map(({ icon: Icon, label }) => (
-            <span key={label} className="inline-flex items-center gap-2"><Icon className="w-4.5 h-4.5 text-emerald-300" /> {label}</span>
+            <span key={label} className="inline-flex items-center gap-2"><Icon className="w-4 h-4 text-emerald-300/90" strokeWidth={1.75} /> {label}</span>
           ))}
         </div>
       </aside>
 
       {/* ── Right: the sign-in card ── */}
-      <main className="w-full lg:w-[460px] 2xl:w-[540px] shrink-0 flex lg:p-4 min-h-0">
-        <div className="flex-1 flex flex-col min-h-0 bg-white lg:rounded-[28px] lg:shadow-2xl lg:shadow-black/40 overflow-y-auto">
+      <main className="w-full lg:w-[440px] 2xl:w-[500px] shrink-0 flex lg:p-3 xl:p-4 min-h-0">
+        <div className="flex-1 flex flex-col min-h-0 bg-white lg:rounded-3xl lg:shadow-2xl lg:shadow-black/40 overflow-y-auto">
         <div className="flex-1 flex items-center justify-center px-6 sm:px-10 py-6 [@media(max-height:720px)]:py-3">
-          <div className="w-full max-w-sm space-y-6 [@media(max-height:720px)]:space-y-4">
+          <div className="w-full max-w-[360px] space-y-6 [@media(max-height:720px)]:space-y-4">
             {/* The mark, and on a phone (no left side) whose sign-in this is. */}
             <div className="flex flex-col items-center gap-2 text-center">
-              <div className="w-14 h-14 [@media(max-height:720px)]:w-10 [@media(max-height:720px)]:h-10 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-extrabold text-2xl [@media(max-height:720px)]:text-lg shadow-lg shadow-emerald-600/30">C</div>
+              <div className="w-12 h-12 [@media(max-height:720px)]:w-10 [@media(max-height:720px)]:h-10 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-bold text-xl [@media(max-height:720px)]:text-lg shadow-lg shadow-emerald-600/25">C</div>
               {(businessName || placeLine) && (
                 <div className="lg:hidden">
-                  <p className="font-bold text-slate-900">{businessName}</p>
+                  <p className="font-semibold text-slate-900">{businessName}</p>
                   {placeLine && <p className="text-xs text-slate-500">{placeLine}</p>}
                   {address && !address.fromSubdomain && restaurantHere?.name && (
                     <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
@@ -700,7 +704,7 @@ export const LoginGate: React.FC = () => {
               // 2-step sign-in: the password was right; now the code from their phone.
               <form onSubmit={submitCode} className="space-y-5">
                 <div className="space-y-1">
-                  <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><ShieldCheck className="w-6 h-6 text-teal-600" /> 2-step sign-in</h1>
+                  <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><ShieldCheck className="w-6 h-6 text-teal-600" /> 2-step sign-in</h1>
                   <p className="text-sm text-slate-500">
                     Open your authenticator app (Google Authenticator, Microsoft Authenticator…) and type the 6-digit code for Cashly POS.
                   </p>
@@ -716,11 +720,11 @@ export const LoginGate: React.FC = () => {
                   className="w-full px-3 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-center text-3xl tracking-[0.4em] font-mono text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                 />
                 <p className="text-xs text-slate-400">Lost your phone? Type one of your recovery codes instead (like abcd-2345).</p>
-                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold">{error}</div>}
+                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-medium">{error}</div>}
                 <button
                   type="submit"
                   disabled={loading || code.trim().length < 6}
-                  className="w-full h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full h-11 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[15px] font-semibold transition flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Key className="w-4 h-4" /> {loading ? 'Checking…' : 'Verify'}
                 </button>
@@ -733,7 +737,7 @@ export const LoginGate: React.FC = () => {
               // Only for someone who works at more than one location.
               <div className="space-y-5">
                 <div className="space-y-1">
-                  <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><MapPin className="w-6 h-6 text-teal-600" /> Where are you working today?</h1>
+                  <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><MapPin className="w-6 h-6 text-teal-600" /> Where are you working today?</h1>
                   <p className="text-sm text-slate-500">
                     Signed in as <strong className="text-slate-700">{pending.user.fullName}</strong>. The head office opens the ERP;
                     an outlet opens its POS.
@@ -759,21 +763,21 @@ export const LoginGate: React.FC = () => {
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-1.5">
-                            <span className="text-sm font-bold text-slate-900 truncate">{b.name}</span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-600 text-white shrink-0">{kind.opens}</span>
+                            <span className="text-sm font-semibold text-slate-900 truncate">{b.name}</span>
+                            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-teal-600 text-white shrink-0">{kind.opens}</span>
                           </span>
                           <span className="block text-xs text-slate-500 truncate">
                             {kind.label}{b.city ? ` · ${b.city}` : ''} · {kind.hint}
                           </span>
                         </span>
                         {b.isHome && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">Your branch</span>
+                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 shrink-0">Your branch</span>
                         )}
                       </button>
                     );
                   })}
                 </div>
-                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold">{error}</div>}
+                {error && <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-medium">{error}</div>}
                 <button type="button" onClick={cancelBranchChoice} disabled={loading}
                   className={`${linkClass} w-full flex items-center justify-center gap-1`}>
                   <ArrowLeft className="w-3.5 h-3.5" /> Not you? Back to sign in
@@ -789,7 +793,7 @@ export const LoginGate: React.FC = () => {
                 )}
 
                 <div className="space-y-1 text-center">
-                  <h1 className="text-3xl [@media(max-height:720px)]:text-2xl font-extrabold tracking-tight">{heading.title}</h1>
+                  <h1 className="text-2xl [@media(max-height:720px)]:text-xl font-semibold tracking-tight text-slate-900">{heading.title}</h1>
                   <p className="text-sm text-slate-500 [@media(max-height:720px)]:hidden">{heading.sub}</p>
                 </div>
 
@@ -842,7 +846,7 @@ export const LoginGate: React.FC = () => {
                       <div className="flex items-center justify-between">
                         <label htmlFor="login-password" className={labelClass}>Password</label>
                         <button type="button" onClick={() => { setShowForgot(v => !v); setForgotState({ sending: false }); }}
-                          className="mb-1 text-xs font-semibold text-teal-700 hover:text-teal-800">
+                          className="mb-1 text-xs font-medium text-teal-700 hover:text-teal-800">
                           Forgot password?
                         </button>
                       </div>
@@ -878,7 +882,7 @@ export const LoginGate: React.FC = () => {
                                 type="button"
                                 onClick={sendResetLink}
                                 disabled={!email.trim() || forgotState.sending}
-                                className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-bold transition"
+                                className="w-full py-2 rounded-lg bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-semibold transition"
                               >
                                 {forgotState.sending ? 'Sending…' : 'Email me a reset link'}
                               </button>
@@ -961,7 +965,7 @@ export const LoginGate: React.FC = () => {
                 )}
 
                 {error && (
-                  <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold space-y-1" role="alert">
+                  <div className="px-3 py-2.5 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-sm font-medium space-y-1" role="alert">
                     <div>{error}</div>
                     {deviceNotConnected && (
                       <a href="/connect" className="block underline">Connect this device again</a>
@@ -975,7 +979,7 @@ export const LoginGate: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading || !ready}
-                  className="w-full h-12 rounded-2xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-teal-600/20"
+                  className="w-full h-11 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[15px] font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm shadow-teal-700/20"
                 >
                   {loading ? 'Signing in…' : mode === 'identify' ? 'Continue' : 'Sign in'}
                 </button>
@@ -1008,7 +1012,7 @@ export const LoginGate: React.FC = () => {
                   <div className="lg:hidden space-y-4">
                     <div className="flex items-center gap-3 text-xs text-slate-400"><span className="flex-1 h-px bg-slate-200" /> or <span className="flex-1 h-px bg-slate-200" /></div>
                     <a href="/connect"
-                      className="flex items-center justify-center gap-2 w-full h-12 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 text-sm font-bold text-slate-700 transition">
+                      className="flex items-center justify-center gap-2 w-full h-11 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-sm font-medium text-slate-700 transition">
                       <MonitorSmartphone className="w-4 h-4 text-teal-600" /> Connect a till or tablet
                     </a>
                   </div>
@@ -1019,7 +1023,7 @@ export const LoginGate: React.FC = () => {
                 {canRegister && (mode === 'identify' || mode === 'email' || mode === 'username') && (
                   <p className="text-center text-sm text-slate-500">
                     Don&apos;t have an account?{' '}
-                    <a href="/signup" className="font-bold text-teal-700 hover:text-teal-800">Register free →</a>
+                    <a href="/signup" className="font-semibold text-teal-700 hover:text-teal-800">Register free →</a>
                   </p>
                 )}
               </form>

@@ -1,8 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
 import { BarChart3, Bell, ClipboardList, LayoutDashboard, Package, Search, Settings, ShoppingCart, Users } from 'lucide-react';
 
 // The sign-in page's picture: a Cashly till on a shop counter — the touchscreen on its
 // stand and base, the receipt printer beside it, café lights behind. Drawn at 560×480;
-// the page scales it to fit.
+// ScaledPosScene fits it to the width it is given.
+const SCENE_WIDTH = 560;
 
 const MENU = [
   { icon: LayoutDashboard, label: 'Dashboard' },
@@ -112,6 +114,28 @@ function Screen() {
 
       {/* Glare on the glass. */}
       <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(118deg,rgba(255,255,255,0.22)_0%,rgba(255,255,255,0.04)_34%,transparent_35%)]" />
+    </div>
+  );
+}
+
+/** The picture at whatever width its box has (its height follows, 7:6). */
+export function ScaledPosScene({ className = '' }: { className?: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0);
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setScale(entry.contentRect.width / SCENE_WIDTH));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div ref={box} aria-hidden className={`relative aspect-[7/6] ${className}`}>
+      {scale > 0 && (
+        <div className="absolute left-0 top-0 origin-top-left" style={{ transform: `scale(${scale})` }}>
+          <PosScene />
+        </div>
+      )}
     </div>
   );
 }
