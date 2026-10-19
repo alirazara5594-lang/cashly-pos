@@ -2035,6 +2035,13 @@ export interface BillingDetails {
   taxRatePercent: number;
 }
 
+/** One step under "Watch demo" on the sign-in page, and the video it plays (none yet: "coming soon"). */
+export interface DemoVideoStep {
+  title: string;
+  description?: string | null;
+  videoUrl?: string | null;
+}
+
 /** The platform's own settings (Platform → Settings). Secrets come back only as "is one saved". */
 export interface PlatformSettingsData extends BillingDetails {
   autoInvoice: boolean;

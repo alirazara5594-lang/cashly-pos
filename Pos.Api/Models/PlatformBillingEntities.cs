@@ -29,6 +29,10 @@ public class PlatformSettings
     public string? Email { get; set; }
     public string? Website { get; set; }
 
+    /// <summary>The "Watch demo" steps the platform has changed, per kind of business, as JSON (see
+    /// Services/DemoVideos). A kind not in it plays the videos the app ships with.</summary>
+    public string? DemoVideosJson { get; set; }
+
     // --- How customers pay --------------------------------------------------
     public string? BankName { get; set; }
     public string? BankAccountTitle { get; set; }

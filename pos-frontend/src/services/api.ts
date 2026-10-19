@@ -140,6 +140,7 @@ import type {
   AutomationReport,
   BillingDetails,
   PlatformSettingsData,
+  DemoVideoStep,
   PlatformMessagePage,
   PlatformMessageRow,
   TeamMember,
@@ -1855,12 +1856,17 @@ export const posApi = {
     const res = await api.get<PublicPackage[]>('/api/public/packages');
     return res.data;
   },
-  /** The platform's own prices (the Head Office ERP), as anyone registering sees them. */
   /** How to reach Cashly (Platform Settings contact details), for the sign-in page's Support panel. */
   getPublicSupport: async () => {
     const res = await api.get<{ companyName: string; phone?: string | null; email?: string | null; website?: string | null; city?: string | null }>('/api/public/support');
     return res.data;
   },
+  /** The "Watch demo" steps the platform changed, per kind of business (others play the app's own). */
+  getPublicDemoVideos: async () => (await api.get<Record<string, DemoVideoStep[]>>('/api/public/demo-videos')).data,
+  /** One kind's steps; null puts that kind back to the app's own videos. */
+  saveDemoVideos: async (kind: string, steps: DemoVideoStep[] | null) =>
+    (await api.put<Record<string, DemoVideoStep[]>>('/api/admin/demo-videos', { kind, steps })).data,
+  /** The platform's own prices (the Head Office ERP), as anyone registering sees them. */
   getPublicPlatformPrices: async () => {
     const res = await api.get<PlatformPrice[]>('/api/public/platform-prices');
     return res.data;

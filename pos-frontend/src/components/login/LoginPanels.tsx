@@ -1,23 +1,25 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, Building2, Check, ChevronDown, Copy, Globe, KeyRound, LifeBuoy, Mail, MonitorSmartphone, Phone,
-  Pill, PlayCircle, ShoppingBag, ShoppingCart, Store, UtensilsCrossed, X
+  ArrowLeft, ArrowRight, Building2, Check, ChevronDown, Copy, Globe, KeyRound, LifeBuoy, Mail, MonitorSmartphone, Phone,
+  Pill, Play, ShoppingBag, ShoppingCart, Store, UtensilsCrossed, X
 } from 'lucide-react';
 import { posApi } from '../../services/api';
-import type { PublicPackage, SubscriptionTier } from '../../types';
-import { ERP_FALLBACK_MONTHLY, PLANS, RECOMMENDED_PLAN, deviceLine, money, planFigures, planName } from '../../pages/register/registerCatalog';
+import type { DemoVideoStep, PublicPackage, SubscriptionTier } from '../../types';
+import {
+  BUSINESS_KINDS, ERP_FALLBACK_MONTHLY, PLANS, RECOMMENDED_PLAN, deviceLine, money, planFigures, planName, type KindId
+} from '../../pages/register/registerCatalog';
+import { DEMO_TITLES, demoStepsFor } from '../../utils/demoVideos';
 import { useClickOutside } from '../../hooks/useClickOutside';
+import { videoSource } from '../../utils/videoEmbed';
+import { DemoVideoPlayer } from '../DemoVideoPlayer';
 
 // ============================================================
 // The sign-in page's own menu — Features, Pricing, Support — and its "Watch demo".
-// Each shows something real: the plans as the server prices them, Cashly's contact details from
-// Platform Settings, and the demo video when one is set (VITE_DEMO_VIDEO_URL), else a short
-// walkthrough of how a business starts.
+// Each shows something real: the plans as the server prices them, Cashly's contact details and
+// the demo videos, both from Platform Settings.
 // ============================================================
 
 export type LoginPanel = 'pricing' | 'support' | 'demo';
-
-const DEMO_VIDEO_URL: string | undefined = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
 
 /** A centred panel over the page; Esc or the backdrop closes it. */
 const Modal: React.FC<{ title: string; onClose: () => void; wide?: boolean; children: React.ReactNode }> = ({ title, onClose, wide, children }) => {
@@ -381,32 +383,123 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   );
 };
 
-/** Watch demo: the demo video when one is set, else how a business starts, in four steps. */
-export const DemoPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => (
-  <Modal title="How Cashly works" onClose={onClose} wide={!!DEMO_VIDEO_URL}>
-    {DEMO_VIDEO_URL ? (
-      <div className="aspect-video w-full rounded-2xl overflow-hidden bg-black">
-        <iframe src={DEMO_VIDEO_URL} title="Cashly demo" className="w-full h-full" allow="autoplay; fullscreen; picture-in-picture" allowFullScreen />
+/**
+ * Watch demo: first the kind of business, then its steps, each playing its own video — the app's
+ * own, or the platform's where it changed them (Platform → Settings → Demo videos). A step without
+ * a video shows as coming soon.
+ */
+export const DemoPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [changed, setChanged] = useState<Record<string, DemoVideoStep[]> | null>(null);
+  const [kind, setKind] = useState<KindId | null>(null);
+  const [playing, setPlaying] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getPublicDemoVideos()
+      .then(saved => { if (!cancelled && saved && typeof saved === 'object' && !Array.isArray(saved)) setChanged(saved); })
+      .catch(() => { /* the app's own videos still play */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const business = BUSINESS_KINDS.find(k => k.id === kind);
+  const list = kind ? demoStepsFor(kind, changed) : [];
+  const current = playing !== null ? list[playing] : undefined;
+  const source = current ? videoSource(current.videoUrl) : null;
+  const next = playing !== null ? list.findIndex((s, i) => i > playing && videoSource(s.videoUrl)) : -1;
+
+  if (current && source && playing !== null) {
+    return (
+      <Modal title={current.title} onClose={onClose} wide>
+        <div className="space-y-4">
+          <DemoVideoPlayer source={source} title={current.title} />
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-teal-700">Step {playing + 1} of {list.length}</p>
+              {current.description && <p className="mt-0.5 text-sm text-slate-600">{current.description}</p>}
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button type="button" onClick={() => setPlaying(null)}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-100 transition cursor-pointer">
+                <ArrowLeft className="w-4 h-4" /> All steps
+              </button>
+              {next >= 0 && (
+                <button type="button" onClick={() => setPlaying(next)}
+                  className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[13px] font-semibold transition cursor-pointer">
+                  Next: {list[next].title} <ArrowRight className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  // First: which business they run.
+  if (!business) {
+    return (
+      <Modal title="Watch the demo" onClose={onClose}>
+        <p className="text-sm font-semibold text-slate-900">What kind of business do you run?</p>
+        <p className="mt-0.5 text-[13px] text-slate-500">You will see Cashly set up the way your business works.</p>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {BUSINESS_KINDS.map(k => {
+            const Icon = k.icon;
+            return (
+              <button key={k.id} type="button" onClick={() => setKind(k.id)}
+                className="group flex flex-col items-start gap-3 p-4 rounded-2xl border border-slate-200 text-left hover:border-teal-300 hover:bg-teal-50/40 transition cursor-pointer">
+                <span className="w-10 h-10 rounded-xl bg-teal-50 text-teal-700 ring-1 ring-inset ring-teal-100 flex items-center justify-center group-hover:bg-white transition">
+                  <Icon className="w-5 h-5" strokeWidth={1.75} />
+                </span>
+                <span>
+                  <span className="block text-sm font-semibold text-slate-900">{k.label}</span>
+                  <span className="block mt-0.5 text-[13px] text-slate-500">{k.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title={DEMO_TITLES[business.id]} onClose={onClose}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-[13px] text-slate-500">Click a step to watch it.</p>
+        <button type="button" onClick={() => setKind(null)}
+          className="inline-flex items-center gap-1 text-[13px] font-semibold text-teal-700 hover:text-teal-800 cursor-pointer">
+          <ArrowLeft className="w-3.5 h-3.5" /> Another kind of business
+        </button>
       </div>
-    ) : (
-      <div className="space-y-5">
-        <ol className="space-y-3">
-          {[
-            { t: 'Register your business', d: 'Choose Cashly POS for one shop, or POS + ERP for a head office with outlets. Free for 30 days.' },
-            { t: 'Add your products and prices', d: 'Your menu, catalogue or medicines, with tax set the way your province charges it.' },
-            { t: 'Connect your tills', d: 'Open Cashly on the counter PC or tablet and connect it with a pairing code. Staff sign in with their PIN.' },
-            { t: 'Sell, and watch it add up', d: 'Receipts, stock, the Z-report at day end, and reports for every outlet.' }
-          ].map((s, i) => (
-            <li key={s.t} className="flex gap-3">
-              <span className="w-8 h-8 rounded-full bg-teal-600 text-white text-sm font-semibold flex items-center justify-center shrink-0">{i + 1}</span>
-              <span><span className="block font-semibold">{s.t}</span><span className="block text-sm text-slate-600">{s.d}</span></span>
-            </li>
-          ))}
+      {list.length === 0 ? (
+        <p className="text-sm text-slate-500">The demo videos are on their way.</p>
+      ) : (
+        <ol className="space-y-2">
+          {list.map((step, i) => {
+            const video = videoSource(step.videoUrl);
+            return (
+              <li key={`${i}-${step.title}`}>
+                <button type="button" disabled={!video} onClick={() => setPlaying(i)}
+                  className="group w-full flex items-center gap-4 p-2.5 pr-4 rounded-2xl border border-slate-200 text-left transition enabled:hover:border-teal-300 enabled:hover:bg-teal-50/40 enabled:cursor-pointer disabled:cursor-default">
+                  <span className="relative w-28 aspect-video shrink-0 rounded-xl overflow-hidden bg-gradient-to-br from-[#0b3940] to-[#0d4a42] flex items-center justify-center">
+                    {video?.thumbnail && (
+                      <img src={video.thumbnail} alt="" onError={e => { e.currentTarget.style.display = 'none'; }}
+                        className="absolute inset-0 w-full h-full object-cover" />
+                    )}
+                    <span className={`relative w-9 h-9 rounded-full flex items-center justify-center shadow-lg ${video ? 'bg-white/95 text-teal-700 group-hover:scale-105 transition' : 'bg-white/15 text-white/70'}`}>
+                      {video ? <Play className="w-4 h-4 ml-0.5 fill-current" /> : <span className="text-sm font-semibold">{i + 1}</span>}
+                    </span>
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-slate-900">{i + 1}. {step.title}</span>
+                    {step.description && <span className="block mt-0.5 text-[13px] leading-snug text-slate-500">{step.description}</span>}
+                  </span>
+                  {!video && <span className="shrink-0 text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Coming soon</span>}
+                </button>
+              </li>
+            );
+          })}
         </ol>
-        <a href="/signup" className="flex items-center justify-center gap-2 h-11 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-[15px] font-semibold transition">
-          <PlayCircle className="w-5 h-5" /> Start your free trial
-        </a>
-      </div>
-    )}
-  </Modal>
-);
+      )}
+    </Modal>
+  );
+};

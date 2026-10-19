@@ -1,8 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Save, RefreshCw, Building2, Landmark, Percent, CalendarClock, MessageCircle, ShieldCheck, Send, AlertTriangle } from 'lucide-react';
+import {
+  Save, RefreshCw, Building2, Landmark, Percent, CalendarClock, MessageCircle, ShieldCheck, Send, AlertTriangle,
+  Video, Play, ArrowUp, ArrowDown, Trash2, Plus, Check, RotateCcw
+} from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { usePosStore } from '../../store/posStore';
-import type { PlatformMessageRow, PlatformSettingsData, TaxJurisdiction } from '../../types';
+import type { DemoVideoStep, PlatformMessageRow, PlatformSettingsData, TaxJurisdiction } from '../../types';
+import { VIDEO_LINK_HELP, videoSource } from '../../utils/videoEmbed';
+import { DemoVideoPlayer } from '../../components/DemoVideoPlayer';
+import { demoStepsFor } from '../../utils/demoVideos';
+import { BUSINESS_KINDS, type KindId } from '../register/registerCatalog';
 
 const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500 disabled:bg-slate-50';
 const labelCls = 'block text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1';
@@ -111,6 +118,180 @@ const PlatformTaxDefaults: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
           </table>
         </div>
       )}
+      {note && <p className={`text-[11px] font-semibold ${note.ok ? 'text-teal-700' : 'text-rose-600'}`}>{note.text}</p>}
+    </Card>
+  );
+};
+
+const editable = (list: DemoVideoStep[]): DemoVideoStep[] =>
+  list.map(s => ({ title: s.title ?? '', description: s.description ?? '', videoUrl: s.videoUrl ?? '' }));
+
+/**
+ * The steps under "Watch demo" on the sign-in page, one list per kind of business, each step with
+ * its own video. Every kind starts with the videos the app ships with (recorded from Cashly); the
+ * platform can change a kind's steps or put in its own videos (YouTube Unlisted is fine), and put
+ * it back to the app's own. Saves one kind at a time, on its own.
+ */
+const PlatformDemoVideos: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
+  const [changed, setChanged] = useState<Record<string, DemoVideoStep[]> | null>(null);
+  const [kind, setKind] = useState<KindId>('restaurant');
+  // Unsaved edits, per kind (kept when switching tabs).
+  const [drafts, setDrafts] = useState<Partial<Record<KindId, DemoVideoStep[]>>>({});
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [preview, setPreview] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getPublicDemoVideos()
+      .then(saved => { if (!cancelled) setChanged(saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}); })
+      .catch(() => { if (!cancelled) setChanged({}); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!changed) {
+    return (
+      <Card icon={<Video className="w-4 h-4 text-teal-600" />} title="Demo videos">
+        <p className="text-[11px] text-slate-400">Loading…</p>
+      </Card>
+    );
+  }
+
+  const isChanged = !!changed[kind];
+  const steps = drafts[kind] ?? editable(demoStepsFor(kind, changed));
+  const setSteps = (update: (list: DemoVideoStep[]) => DemoVideoStep[]) => {
+    setDrafts(prev => ({ ...prev, [kind]: update(prev[kind] ?? editable(demoStepsFor(kind, changed))) }));
+    setNote(null);
+  };
+  const change = (i: number, patch: Partial<DemoVideoStep>) => setSteps(list => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const move = (i: number, by: number) => {
+    setSteps(list => {
+      const next = [...list];
+      [next[i], next[i + by]] = [next[i + by], next[i]];
+      return next;
+    });
+    setPreview(null);
+  };
+  const remove = (i: number) => {
+    if (!window.confirm(`Remove step ${i + 1}${steps[i].title ? ` (${steps[i].title})` : ''}?`)) return;
+    setSteps(list => list.filter((_, j) => j !== i));
+    setPreview(null);
+  };
+  const switchKind = (next: KindId) => { setKind(next); setPreview(null); setNote(null); };
+
+  const badLink = steps.findIndex(s => !!s.videoUrl?.trim() && !videoSource(s.videoUrl));
+  const noTitle = steps.findIndex(s => !s.title.trim() && !!(s.description?.trim() || s.videoUrl?.trim()));
+  const withVideo = steps.filter(s => videoSource(s.videoUrl)).length;
+  const kindName = BUSINESS_KINDS.find(k => k.id === kind)?.label ?? kind;
+
+  const send = async (list: DemoVideoStep[] | null) => {
+    setSaving(true);
+    setNote(null);
+    try {
+      setChanged(await posApi.saveDemoVideos(kind, list));
+      setDrafts(prev => ({ ...prev, [kind]: undefined }));
+      setPreview(null);
+      setNote({ ok: true, text: list ? `${kindName}: saved, on the sign-in page now.` : `${kindName}: back to Cashly's own videos.` });
+    } catch (err) {
+      setNote({ ok: false, text: getApiErrorMessage(err, 'Could not save the demo videos.') });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const save = () => send(steps);
+  const useBuiltIn = () => {
+    if (window.confirm(`Put ${kindName} back to the videos Cashly comes with? Your changes to its steps are removed.`)) void send(null);
+  };
+
+  return (
+    <Card icon={<Video className="w-4 h-4 text-teal-600" />} title="Demo videos"
+      hint="Watch demo on the sign-in page: the visitor picks their kind of business, then clicks a step to watch it. Each kind starts with Cashly's own videos; change any of them here.">
+      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Kind of business">
+        {BUSINESS_KINDS.map(k => (
+          <button key={k.id} type="button" role="tab" aria-selected={kind === k.id} onClick={() => switchKind(k.id)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${kind === k.id ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+            {k.label}{drafts[k.id] ? ' •' : ''}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-slate-500">
+        {isChanged ? 'Changed by you.' : "Cashly's own videos."} {withVideo} of {steps.length} steps have a video
+        {steps.length - withVideo > 0 ? '; the others show as "Coming soon".' : '.'}
+      </p>
+
+      <details className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
+        <summary className="font-bold text-slate-700 cursor-pointer">Using your own video</summary>
+        <div className="mt-1.5 space-y-1">
+          <p>1. Record your screen while you do the step in Cashly: on Windows press <span className="font-semibold">Win + Alt + R</span> (Xbox Game Bar), or use OBS Studio (free).</p>
+          <p>2. Upload it to YouTube as <span className="font-semibold">Unlisted</span> (only people with the link can see it) and copy its link.</p>
+          <p>3. Paste the link in the step below, press Play to check it, then Save.</p>
+        </div>
+      </details>
+
+      <div className="space-y-2.5">
+        {steps.map((s, i) => {
+          const source = videoSource(s.videoUrl);
+          const typed = !!s.videoUrl?.trim();
+          return (
+            <div key={i} className="rounded-xl border border-slate-200 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="w-6 h-6 shrink-0 rounded-full bg-teal-600 text-white text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
+                <input disabled={!canEdit} value={s.title} maxLength={80} placeholder="Step title, e.g. Add your products"
+                  aria-label={`Step ${i + 1} title`} onChange={(e) => change(i, { title: e.target.value })} className={`${inputCls} font-semibold`} />
+                {canEdit && (
+                  <div className="flex items-center shrink-0">
+                    <button type="button" onClick={() => move(i, -1)} disabled={i === 0} title="Move up" aria-label="Move up"
+                      className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30"><ArrowUp className="w-3.5 h-3.5" /></button>
+                    <button type="button" onClick={() => move(i, 1)} disabled={i === steps.length - 1} title="Move down" aria-label="Move down"
+                      className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30"><ArrowDown className="w-3.5 h-3.5" /></button>
+                    <button type="button" onClick={() => remove(i)} title="Remove this step" aria-label="Remove this step"
+                      className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+                )}
+              </div>
+              <textarea disabled={!canEdit} rows={2} maxLength={240} value={s.description ?? ''} placeholder="One line about what the video shows"
+                aria-label={`Step ${i + 1} description`} onChange={(e) => change(i, { description: e.target.value })} className={`${inputCls} resize-none`} />
+              <div className="flex gap-2">
+                <input disabled={!canEdit} value={s.videoUrl ?? ''} maxLength={500} placeholder="Video link, e.g. https://youtu.be/…"
+                  aria-label={`Step ${i + 1} video link`} onChange={(e) => change(i, { videoUrl: e.target.value })} className={inputCls} />
+                <button type="button" onClick={() => setPreview(preview === i ? null : i)} disabled={!source}
+                  className="shrink-0 flex items-center gap-1.5 px-3 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+                  <Play className="w-3.5 h-3.5" /> {preview === i ? 'Hide' : 'Play'}
+                </button>
+              </div>
+              <p className={`text-[10px] font-semibold ${source ? 'text-teal-700' : typed ? 'text-rose-600' : 'text-slate-400'}`}>
+                {source ? <span className="inline-flex items-center gap-1"><Check className="w-3 h-3" /> Plays from {source.provider}</span>
+                  : typed ? `This link cannot be played here. ${VIDEO_LINK_HELP}`
+                  : 'No video yet: shows as "Coming soon".'}
+              </p>
+              {preview === i && source && <DemoVideoPlayer source={source} title={s.title || `Step ${i + 1}`} />}
+            </div>
+          );
+        })}
+      </div>
+
+      {canEdit && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button type="button" onClick={() => setSteps(list => [...list, { title: '', description: '', videoUrl: '' }])} disabled={steps.length >= 12}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            <Plus className="w-3.5 h-3.5" /> Add a step
+          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {isChanged && (
+              <button type="button" onClick={useBuiltIn} disabled={saving}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                <RotateCcw className="w-3.5 h-3.5" /> Use Cashly's own videos
+              </button>
+            )}
+            <button type="button" onClick={save} disabled={saving || badLink >= 0 || noTitle >= 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold disabled:opacity-50">
+              <Save className="w-4 h-4" /> {saving ? 'Saving…' : `Save ${kindName}`}
+            </button>
+          </div>
+        </div>
+      )}
+      {badLink >= 0 && <p className="text-[11px] font-semibold text-rose-600">Step {badLink + 1}: fix or clear the video link before saving.</p>}
+      {noTitle >= 0 && <p className="text-[11px] font-semibold text-rose-600">Step {noTitle + 1} needs a title.</p>}
       {note && <p className={`text-[11px] font-semibold ${note.ok ? 'text-teal-700' : 'text-rose-600'}`}>{note.text}</p>}
     </Card>
   );
@@ -327,6 +508,8 @@ export const PlatformSettingsPage: React.FC = () => {
       </Card>
 
       <PlatformTaxDefaults canEdit={canEdit} />
+
+      <PlatformDemoVideos canEdit={canEdit} />
 
       {message && (
         <div className={`px-3 py-2 rounded-xl text-xs font-semibold border ${message.ok ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>{message.text}</div>

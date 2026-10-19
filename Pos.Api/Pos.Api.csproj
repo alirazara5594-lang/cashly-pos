@@ -29,8 +29,10 @@
        running from this same output folder, so starting the API again always works.
        Only that folder: a Release build never touches a Debug backend, and a published service
        elsewhere is never touched. The test project opts out (KeepRunningCashlyApi), so running the
-       tests never closes the backend you are using. -->
-  <Target Name="StopRunningCashlyApi" BeforeTargets="Build"
+       tests never closes the backend you are using.
+       It hooks BeforeBuild, the first step: Build's own steps (compile, then copy into bin) run
+       before anything hooked on Build itself, so the copy would fail before the old copy closed. -->
+  <Target Name="StopRunningCashlyApi" BeforeTargets="BeforeBuild"
           Condition="'$(OS)' == 'Windows_NT' AND '$(DesignTimeBuild)' != 'true' AND '$(KeepRunningCashlyApi)' != 'true'">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Get-Process -Name '$(AssemblyName)' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('$(TargetDir)', [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Write-Host ('Closing the Cashly backend still running (process ' + $_.Id + ') so the new one can start.'); Stop-Process -Id $_.Id -Force; $_.WaitForExit(10000) | Out-Null }&quot;"
           ContinueOnError="true" StandardOutputImportance="high" />

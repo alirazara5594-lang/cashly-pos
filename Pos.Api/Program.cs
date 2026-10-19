@@ -1622,7 +1622,8 @@ using (var scope = app.Services.CreateScope())
         ("Medicine packing and loose sale", EnsurePackingSchemaAsync),
         ("Prescriptions", EnsurePrescriptionSchemaAsync),
         ("Tax setup", EnsureTaxSetupSchemaAsync),
-        ("Registration agreement", EnsureRegistrationSchemaAsync)
+        ("Registration agreement", EnsureRegistrationSchemaAsync),
+        ("Demo videos", EnsureDemoVideosSchemaAsync)
     })
     {
         try
@@ -1953,6 +1954,11 @@ static Task EnsureTaxSetupSchemaAsync(AppDbContext db) => db.Database.ExecuteSql
 static Task EnsureRegistrationSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
     ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsAcceptedAt"" timestamp with time zone NULL;
     ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsVersion"" text NULL;
+");
+
+// The "Watch demo" steps and their video links (Platform → Settings → Demo videos).
+static Task EnsureDemoVideosSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""DemoVideosJson"" text NULL;
 ");
 
 /// <summary>The prescriptions sales of prescription-only and controlled medicines are made against.</summary>
@@ -14351,6 +14357,36 @@ app.MapGet("/api/public/support", async (AppDbContext db) =>
     return Results.Ok(new { companyName = s.CompanyName, s.Phone, s.Email, s.Website, s.City });
 }).RequireRateLimiting("public-lookup");
 
+// "Watch demo" on the sign-in page: the kinds of business whose steps the platform has changed
+// (any other kind plays the videos the app ships with).
+app.MapGet("/api/public/demo-videos", async (AppDbContext db) =>
+    Results.Ok(Pos.Api.Services.DemoVideos.Read(await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db))))
+    .RequireRateLimiting("public-lookup");
+
+// One kind's steps; Steps = null puts that kind back to the app's own videos.
+app.MapPut("/api/admin/demo-videos", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SaveDemoVideosDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var kind = dto.Kind?.Trim().ToLowerInvariant() ?? "";
+    if (!Pos.Api.Services.DemoVideos.Kinds.Contains(kind)) return Results.BadRequest(new { error = "Choose the kind of business these videos are for." });
+    List<Pos.Api.Services.DemoVideos.Step>? steps = null;
+    if (dto.Steps != null)
+    {
+        (steps, var problem) = Pos.Api.Services.DemoVideos.Clean(dto.Steps);
+        if (steps == null) return Results.BadRequest(new { error = problem });
+    }
+
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    s.DemoVideosJson = Pos.Api.Services.DemoVideos.Write(s, kind, steps);
+    s.UpdatedAt = DateTime.UtcNow;
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, Guid.Empty, actingUser, "DemoVideosChanged", "PlatformSettings", null, null,
+        steps == null ? $"Demo videos for {kind}: back to the app's own"
+            : $"Demo videos for {kind}: {steps.Count} step(s), {steps.Count(x => x.VideoUrl != null)} with a video");
+    await db.SaveChangesAsync();
+    return Results.Ok(Pos.Api.Services.DemoVideos.Read(s));
+}).RequireAuthorization();
+
 app.MapGet("/api/admin/platform-prices", async (AppDbContext db, HttpContext http) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
@@ -18523,6 +18559,7 @@ public record SaveTenantNoteDto(string? Kind, string? Body, DateTime? FollowUpAt
 public record UpdateTenantNoteDto(bool? Done, DateTime? FollowUpAt, bool? ClearFollowUp);
 public record SaveAnnouncementDto(string? Title, string? Body, string? Tone, DateTime? StartsAt, DateTime? EndsAt, string? Audience, string? AudienceValue, bool? IsActive);
 public record TestPlatformMessageDto(string? Phone, string? Email);
+public record SaveDemoVideosDto(string? Kind, List<Pos.Api.Services.DemoVideos.Step>? Steps);
 public record SendTenantMessageDto(string? Subject, string Text);
 public record UpdatePlatformSettingsDto(
     string? CompanyName, string? LegalName, string? Ntn, string? Strn, string? Address, string? City, string? Phone, string? Email, string? Website,
