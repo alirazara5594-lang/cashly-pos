@@ -33,6 +33,14 @@ public class PlatformSettings
     /// Services/DemoVideos). A kind not in it plays the videos the app ships with.</summary>
     public string? DemoVideosJson { get; set; }
 
+    // --- AI photos for every business's items (Services/ProductPhotos.cs) ------
+    public bool AiPhotosEnabled { get; set; } = true;
+    /// <summary>Cashly's own OpenAI key, encrypted. Never sent to a browser or a shop's computer.</summary>
+    public string? OpenAiApiKey { get; set; }
+    public string? AiPhotoModel { get; set; }
+    /// <summary>low, medium or high: the price of each photo goes up with it.</summary>
+    public string? AiPhotoQuality { get; set; }
+
     // --- How customers pay --------------------------------------------------
     public string? BankName { get; set; }
     public string? BankAccountTitle { get; set; }

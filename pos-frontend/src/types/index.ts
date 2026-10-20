@@ -409,6 +409,12 @@ export interface Product {
   sellingPricePKR: number;
   unit: string;
   imageUrl?: string;
+  /** Where the photo came from: made by AI, uploaded, or (null) none / a link. */
+  photoSource?: 'ai' | 'upload' | null;
+  /** Where it is in getting an AI photo; null when there is nothing to do. */
+  photoStatus?: 'pending' | 'making' | 'failed' | null;
+  /** Why the last try did not give a photo. */
+  photoError?: string | null;
   station: KitchenStation;
   isActive: boolean;
   modifiers?: ProductModifier[];
@@ -2059,6 +2065,26 @@ export interface PlatformSettingsData extends BillingDetails {
   emailReminders: boolean;
   requireTwoStepForTeam: boolean;
   updatedAt: string;
+}
+
+/** Platform → Settings → AI photos. The key itself never comes back, only its last four characters. */
+export interface AiPhotoSettings {
+  enabled: boolean;
+  /** A key is saved on this page. */
+  hasKey: boolean;
+  /** None saved here, but the server has one of its own (OPENAI_API_KEY). */
+  serverKey: boolean;
+  keyEnding?: string | null;
+  model: string;
+  quality: 'low' | 'medium' | 'high';
+  models: string[];
+  /** Items with an AI photo, across every business. */
+  made: number;
+  waiting: number;
+  failed: number;
+  /** What stopped the queue (a wrong key, no credit…), until it is fixed. */
+  problem?: string | null;
+  problemAt?: string | null;
 }
 
 export interface TeamMember {

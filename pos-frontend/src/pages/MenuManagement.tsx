@@ -14,13 +14,16 @@ import {
   ShieldCheck,
   Package,
   Wand2,
-  MapPin
+  MapPin,
+  Sparkles
 } from 'lucide-react';
 
 import { posApi, getApiErrorMessage } from '../services/api';
 import { usePosStore, hasModuleAccess } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
 import { ManagerOverrideModal, type ManagerOverrideResult } from '../components/ManagerOverrideModal';
+import { ProductPhotoPanel, ProductThumb } from '../components/ProductPhotoPanel';
+import { isMakingPhoto, shrinkPhoto } from '../utils/mediaUrl';
 import { toUrdu } from '../utils/urduTransliterate';
 import { isPacked, looseUnitName, saleUnitOptions } from '../utils/medicine';
 import type { Product, Category, ProductRecipeItem, KitchenStation, BranchPriceInfo, MedicineDetails, MedicineSchedule, TaxTreatment } from '../types';
@@ -86,7 +89,13 @@ const UNITS = ['Piece', 'Plate', 'Portion', 'Glass', 'Bottle', 'Kg', 'Gram', 'Li
  * The PUT leaves them untouched rather than nulling them, so showing them disabled on an
  * edit is honest: the value survives, it just cannot be changed here.
  */
-const CREATE_ONLY_FIELDS = 'SKU, description, unit, image and modifiers';
+const CREATE_ONLY_FIELDS = 'SKU, description, unit and modifiers';
+
+/** A product with another copy's photo: the photo endpoints answer with the bare row (no category or
+ *  modifiers), so only these fields are taken from it. */
+const withPhoto = (p: Product, from: Product): Product => ({
+  ...p, imageUrl: from.imageUrl, photoSource: from.photoSource, photoStatus: from.photoStatus, photoError: from.photoError
+});
 
 export const MenuManagement: React.FC = () => {
   // Kitchen stations, recipes and modifiers are a restaurant's; a shop or a pharmacy keeps a plain
@@ -202,6 +211,12 @@ export const MenuManagement: React.FC = () => {
    *  should never overwrite something a person deliberately typed. */
   const [urduTouched, setUrduTouched] = useState(false);
 
+  // Photos: AI makes one for every item saved without one (components/ProductPhotoPanel.tsx).
+  const [aiPhotos, setAiPhotos] = useState(false);
+  /** Adding: the owner's own photo, uploaded once the item is saved. */
+  const [newPhotoFile, setNewPhotoFile] = useState<File | null>(null);
+  const [fillingPhotos, setFillingPhotos] = useState(false);
+
   const fetchCatalog = async () => {
     // See OrderTab: an unscoped catalogue request 401s for a token that carries no tenant, and
     // the response interceptor treats that as an expired session and signs the user out.
@@ -211,6 +226,11 @@ export const MenuManagement: React.FC = () => {
       const prods = await posApi.getProducts({ tenantId: selectedTenant.id });
       setCategories(cats);
       setProducts(prods);
+      // The item open for editing follows its photo as AI finishes it.
+      setEditingProduct(prev => {
+        const fresh = prev && prods.find(p => p.id === prev.id);
+        return prev && fresh ? withPhoto(prev, fresh) : prev;
+      });
     } catch (err) {
       console.error(err);
     }
@@ -218,7 +238,37 @@ export const MenuManagement: React.FC = () => {
 
   useEffect(() => {
     fetchCatalog();
+    if (selectedTenant?.id) posApi.getAiPhotoAvailability().then(setAiPhotos).catch(() => setAiPhotos(false));
   }, [selectedTenant?.id]);
+
+  // While AI is making photos, look again every few seconds so each one appears when it is ready.
+  const photosMaking = products.some(isMakingPhoto);
+  useEffect(() => {
+    if (!photosMaking) return;
+    const timer = setInterval(fetchCatalog, 4000);
+    return () => clearInterval(timer);
+  }, [photosMaking, selectedTenant?.id]);
+
+  /** A photo change saved from the edit window: shown there and in the list at once. */
+  const handlePhotoChanged = (changed: Product) => {
+    setEditingProduct(prev => (prev && prev.id === changed.id ? withPhoto(prev, changed) : prev));
+    setProducts(prev => prev.map(p => (p.id === changed.id ? withPhoto(p, changed) : p)));
+  };
+
+  const withoutPhoto = products.filter(p => !p.imageUrl && !isMakingPhoto(p)).length;
+  const handleFillPhotos = async () => {
+    if (!window.confirm(`Make AI photos for ${withoutPhoto} item${withoutPhoto === 1 ? '' : 's'} with no photo? Each takes about 20 seconds; they appear as they are ready.`)) return;
+    setFillingPhotos(true);
+    try {
+      const queued = await posApi.fillAiPhotos();
+      setPriceMessage({ type: 'success', text: queued > 0 ? `Making ${queued} photo${queued === 1 ? '' : 's'} with AI. They appear as they are ready.` : 'Every item already has a photo.' });
+      await fetchCatalog();
+    } catch (err) {
+      setPriceMessage({ type: 'error', text: getApiErrorMessage(err, 'Could not start the AI photos.') });
+    } finally {
+      setFillingPhotos(false);
+    }
+  };
 
   /** Open the inline price editor, prompting for a manager override if needed. */
   const startPriceEdit = (product: Product) => {
@@ -412,6 +462,7 @@ export const MenuManagement: React.FC = () => {
     setEditingProduct(null);
     setProdError(null);
     setUrduTouched(false);
+    setNewPhotoFile(null);
     setProdForm({
       ...EMPTY_PRODUCT_FORM,
       // Pre-select whichever category the user is already filtered to, else the first one.
@@ -474,7 +525,10 @@ export const MenuManagement: React.FC = () => {
           taxRatePercent: prodForm.taxTreatment === 'OwnRate' ? prodForm.taxRatePercent : undefined
         });
       } else {
-        await posApi.createProduct({
+        // The owner's own photo is shrunk before the item is saved, so a photo the browser cannot
+        // open stops the save here rather than leaving an item without the photo it was meant to have.
+        const ownPhoto = newPhotoFile ? await shrinkPhoto(newPhotoFile) : null;
+        const created = await posApi.createProduct({
           tenantId: selectedTenant.id,
           categoryId: prodForm.categoryId,
           name: prodForm.name.trim(),
@@ -493,12 +547,22 @@ export const MenuManagement: React.FC = () => {
             .map(m => ({ name: m.name.trim(), pricePKR: m.pricePKR })),
           medicine: medicines ? prodForm.medicine : undefined,
           taxTreatment: prodForm.taxTreatment,
-          taxRatePercent: prodForm.taxTreatment === 'OwnRate' ? prodForm.taxRatePercent : undefined
+          taxRatePercent: prodForm.taxTreatment === 'OwnRate' ? prodForm.taxRatePercent : undefined,
+          // Their own photo follows straight away: no AI photo is made for nothing.
+          aiPhoto: ownPhoto ? false : undefined
         });
+        if (ownPhoto) {
+          try {
+            await posApi.uploadProductPhoto(created.id, ownPhoto);
+          } catch (err) {
+            setPriceMessage({ type: 'error', text: `${created.name} is saved, but its photo was not: ${getApiErrorMessage(err, 'the upload failed')}. Open it to add the photo again.` });
+          }
+        }
       }
       await fetchCatalog();
       setShowProductModal(false);
       setEditingProduct(null);
+      setNewPhotoFile(null);
     } catch (err) {
       setProdError(getApiErrorMessage(err, 'Could not save this product'));
     } finally {
@@ -698,15 +762,20 @@ export const MenuManagement: React.FC = () => {
                   {filteredProducts.map(p => (
                     <tr key={p.id} className="hover:bg-slate-50 transition">
                       <td className="py-3">
-                        <div className="font-bold text-slate-900 text-sm">{p.name}</div>
-                        {p.urduName && <div className="text-[11px] text-slate-500 font-sans">{p.urduName}</div>}
-                        {medicines && (p.genericName || (p.schedule && p.schedule !== 'None' && p.schedule !== 'OverTheCounter')) && (
-                          <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-500">
-                            {p.genericName && <span>{[p.genericName, p.strength, p.dosageForm].filter(Boolean).join(' · ')}</span>}
-                            {p.schedule === 'Prescription' && <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold">Rx</span>}
-                            {p.schedule === 'Controlled' && <span className="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold">Controlled</span>}
+                        <div className="flex items-center gap-3">
+                          <ProductThumb product={p} categoryName={p.category?.name} />
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 text-sm">{p.name}</div>
+                            {p.urduName && <div className="text-[11px] text-slate-500 font-sans">{p.urduName}</div>}
+                            {medicines && (p.genericName || (p.schedule && p.schedule !== 'None' && p.schedule !== 'OverTheCounter')) && (
+                              <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-500">
+                                {p.genericName && <span>{[p.genericName, p.strength, p.dosageForm].filter(Boolean).join(' · ')}</span>}
+                                {p.schedule === 'Prescription' && <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-bold">Rx</span>}
+                                {p.schedule === 'Controlled' && <span className="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold">Controlled</span>}
+                              </div>
+                            )}
                           </div>
-                        )}
+                        </div>
                       </td>
                       <td className="py-3 text-slate-700">{p.category?.name || 'Category'}</td>
                       <td className="py-3 font-mono text-slate-500">{p.barcode}</td>
@@ -882,23 +951,36 @@ export const MenuManagement: React.FC = () => {
                 {products.length} items • Every product belongs to a category
               </p>
             </div>
-            {/* The server requires CanManageMenuAndTax for create/update/delete alike, so a
-                view-only account gets a disabled button rather than a guaranteed 403. */}
-            <button
-              onClick={openAddProduct}
-              disabled={categories.length === 0 || !canEditPricing}
-              title={
-                !canEditPricing
-                  ? 'Your account cannot add menu items'
-                  : categories.length === 0
-                    ? 'Create a category first'
-                    : undefined
-              }
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md shadow-teal-500/25 transition disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add Product</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Items from before AI photos, or whose photo was removed: AI photos for all of them at once. */}
+              {aiPhotos && canEditPricing && withoutPhoto > 0 && (
+                <button
+                  onClick={handleFillPhotos}
+                  disabled={fillingPhotos}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-white border border-teal-200 text-teal-700 hover:bg-teal-50 font-bold text-xs transition disabled:opacity-40"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>{fillingPhotos ? 'Starting…' : `AI photos for ${withoutPhoto} item${withoutPhoto === 1 ? '' : 's'}`}</span>
+                </button>
+              )}
+              {/* The server requires CanManageMenuAndTax for create/update/delete alike, so a
+                  view-only account gets a disabled button rather than a guaranteed 403. */}
+              <button
+                onClick={openAddProduct}
+                disabled={categories.length === 0 || !canEditPricing}
+                title={
+                  !canEditPricing
+                    ? 'Your account cannot add menu items'
+                    : categories.length === 0
+                      ? 'Create a category first'
+                      : undefined
+                }
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md shadow-teal-500/25 transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Product</span>
+              </button>
+            </div>
           </div>
 
           {/* A product cannot exist without a category, so send them there first. */}
@@ -977,8 +1059,13 @@ export const MenuManagement: React.FC = () => {
                         return (
                           <tr key={p.id} className="hover:bg-slate-50 transition">
                             <td className="py-3">
-                              <div className="font-bold text-slate-900 text-sm">{p.name}</div>
-                              {p.urduName && <div className="text-[11px] text-slate-500">{p.urduName}</div>}
+                              <div className="flex items-center gap-3">
+                                <ProductThumb product={p} categoryName={categories.find(c => c.id === p.categoryId)?.name} />
+                                <div className="min-w-0">
+                                  <div className="font-bold text-slate-900 text-sm">{p.name}</div>
+                                  {p.urduName && <div className="text-[11px] text-slate-500">{p.urduName}</div>}
+                                </div>
+                              </div>
                             </td>
                             <td className="py-3 text-slate-600">
                               {categories.find(c => c.id === p.categoryId)?.name || (
@@ -1267,6 +1354,18 @@ export const MenuManagement: React.FC = () => {
                 </div>
               )}
 
+              <ProductPhotoPanel
+                product={editingProduct}
+                name={prodForm.name}
+                categoryName={categories.find(c => c.id === prodForm.categoryId)?.name}
+                aiAvailable={aiPhotos}
+                pendingFile={newPhotoFile}
+                onPendingFile={setNewPhotoFile}
+                link={prodForm.imageUrl}
+                onLink={(url) => setProdField('imageUrl', url)}
+                onChanged={handlePhotoChanged}
+              />
+
               {/* Category is the link the whole catalog hangs off, so it leads. */}
               <div>
                 <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
@@ -1447,19 +1546,6 @@ export const MenuManagement: React.FC = () => {
                     placeholder="Auto"
                     disabled={!!editingProduct}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-mono focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
-                    Image URL <span className="text-slate-400 normal-case">(optional)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={prodForm.imageUrl}
-                    onChange={(e) => setProdField('imageUrl', e.target.value)}
-                    placeholder="https://... — blank uses an emoji"
-                    disabled={!!editingProduct}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>

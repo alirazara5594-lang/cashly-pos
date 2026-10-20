@@ -32,6 +32,11 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       SuperAdmin__Username: ${SUPER_ADMIN_USERNAME:-superadmin}
       SuperAdmin__Pin: ${SUPER_ADMIN_PIN:?set SUPER_ADMIN_PIN in .env}
+      # Optional: Cashly's OpenAI key for AI item photos (or set it in Platform → Settings).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      # Item photos (AI-made and uploaded) — kept across rebuilds.
+      - media_data:/app/media
     ports:
       - "5288:5288"
 
@@ -48,3 +53,4 @@ services:
 
 volumes:
   postgres_data:
+  media_data:

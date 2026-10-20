@@ -34,7 +34,7 @@ export const BUILT_IN_DEMO_STEPS: Record<KindId, DemoVideoStep[]> = {
   pharmacy: [
     { title: 'Register your pharmacy', description: 'Choose Pharmacy, name it and pick a plan.', videoUrl: video('pharmacy-1-register') },
     { title: 'Add your medicines', description: 'Medicines with their formula, packing and price.', videoUrl: video('pharmacy-2-products') },
-    { title: 'Sell a prescription', description: 'Find medicines by name or formula and sell by box or strip.', videoUrl: video('pharmacy-3-sell') },
+    { title: 'Sell at the counter', description: 'Find medicines by name or formula and sell by box or strip.', videoUrl: video('pharmacy-3-sell') },
     { title: 'See your day', description: 'Sales and the day-end report.', videoUrl: video('pharmacy-4-reports') }
   ],
   grocery: [

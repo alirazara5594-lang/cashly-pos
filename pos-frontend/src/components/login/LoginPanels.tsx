@@ -53,7 +53,7 @@ const KINDS = [
 ];
 
 /** What every business gets, whatever its kind. */
-const EVERY_BUSINESS = ['Sales and receipts', 'Customers and credit', 'Reports', 'Tax and FBR invoicing', 'Staff and permissions', 'Keeps selling offline'];
+const EVERY_BUSINESS = ['Sales and receipts', 'Customers and credit', 'Reports', 'Tax invoicing', 'Staff and permissions', 'Keeps selling offline'];
 
 /**
  * A menu under a button in the sign-in page's top bar. It is placed against the window (not the
@@ -86,10 +86,10 @@ const NavMenu: React.FC<{ label: string; width: number; children: (close: () => 
   return (
     <div ref={wrap}>
       <button ref={button} type="button" onClick={toggle} aria-expanded={open} aria-haspopup="true"
-        className={`inline-flex items-center gap-1 px-3 h-9 rounded-lg text-sm font-medium transition cursor-pointer ${
-          open ? 'text-white bg-white/[0.08]' : 'text-white/75 hover:text-white hover:bg-white/[0.08]'
+        className={`inline-flex items-center gap-1.5 px-3.5 h-9 rounded-lg text-sm font-medium transition cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 ${
+          open ? 'text-white bg-white/[0.10] ring-1 ring-inset ring-white/15' : 'text-white/75 hover:text-white hover:bg-white/[0.08]'
         }`}>
-        {label} <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
+        {label} <ChevronDown className={`w-3.5 h-3.5 transition ${open ? 'rotate-180' : ''}`} />
       </button>
       {place && (
         <>
@@ -105,16 +105,29 @@ const NavMenu: React.FC<{ label: string; width: number; children: (close: () => 
   );
 };
 
+/** The small label row at the top of a menu — the same on Features, Pricing and Support. */
+const MenuHead: React.FC<{ label: string; meta?: string }> = ({ label, meta }) => (
+  <div className="flex items-baseline justify-between gap-4">
+    <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+    {meta && <p className="text-xs text-slate-400">{meta}</p>}
+  </div>
+);
+
+/** The grey strip at the bottom of a menu. */
+const MenuFoot: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="px-5 py-4 rounded-b-2xl bg-slate-50 border-t border-slate-100">{children}</div>
+);
+
 /** "Features ▾": what each kind of business gets, in a menu under the button. */
-export const FeaturesMenu: React.FC<{ onPricing: () => void }> = ({ onPricing }) => (
+export const FeaturesMenu: React.FC = () => (
   <NavMenu label="Features" width={600}>
-    {close => (
-      <>
+    {() => (
+      <div>
         <div className="p-5">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Built for your kind of business</p>
-          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-4">
+          <MenuHead label="Built for your kind of business" meta="One system, set up your way" />
+          <div className="mt-3 grid grid-cols-2 gap-1">
             {KINDS.map(({ icon: Icon, name, text }) => (
-              <div key={name} className="flex items-start gap-3">
+              <div key={name} className="flex items-start gap-3 rounded-xl px-2.5 py-2.5 ring-1 ring-transparent transition hover:bg-slate-50 hover:ring-slate-200/70">
                 <span className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 ring-1 ring-inset ring-teal-100 flex items-center justify-center shrink-0">
                   <Icon className="w-[18px] h-[18px]" strokeWidth={1.75} />
                 </span>
@@ -140,14 +153,8 @@ export const FeaturesMenu: React.FC<{ onPricing: () => void }> = ({ onPricing })
           </div>
         </div>
 
-        <div className="px-5 py-4 rounded-b-2xl bg-slate-50 border-t border-slate-100">
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Every business gets</p>
-            <button type="button" onClick={() => { close(); onPricing(); }}
-              className="inline-flex items-center gap-1 text-[13px] font-semibold text-teal-700 hover:text-teal-800 cursor-pointer">
-              Compare plans <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
+        <MenuFoot>
+          <MenuHead label="Every business gets" meta="Included in every plan" />
           <ul className="mt-2.5 grid grid-cols-3 gap-x-4 gap-y-2">
             {EVERY_BUSINESS.map(item => (
               <li key={item} className="flex items-center gap-1.5 text-[13px] text-slate-600">
@@ -155,8 +162,8 @@ export const FeaturesMenu: React.FC<{ onPricing: () => void }> = ({ onPricing })
               </li>
             ))}
           </ul>
-        </div>
-      </>
+        </MenuFoot>
+      </div>
     )}
   </NavMenu>
 );
@@ -199,10 +206,7 @@ const PricingMenuBody: React.FC<{ onDetails: () => void }> = ({ onDetails }) => 
   return (
     <>
       <div className="p-5">
-        <div className="flex items-baseline justify-between gap-4">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Cashly POS · one shop</p>
-          <p className="text-xs text-slate-400">Per month, excluding tax</p>
-        </div>
+        <MenuHead label="Cashly POS · one shop" meta="Per month, excluding tax" />
         <div className="mt-3 grid grid-cols-3 gap-3">
           {PLANS.map(tier => {
             const f = planFigures(tier, packages);
@@ -243,21 +247,23 @@ const PricingMenuBody: React.FC<{ onDetails: () => void }> = ({ onDetails }) => 
         </div>
       </div>
 
-      <div className="px-5 py-3.5 rounded-b-2xl bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-4">
-        <p className="flex items-center gap-1.5 text-[13px] text-slate-600">
-          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" strokeWidth={2.5} /> Free for 30 days, no card needed
-        </p>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button type="button" onClick={onDetails}
-            className="h-9 px-3 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-200/70 transition cursor-pointer">
-            Full details
-          </button>
-          <a href="/signup"
-            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[13px] font-semibold transition">
-            Start free trial <ArrowRight className="w-3.5 h-3.5" />
-          </a>
+      <MenuFoot>
+        <div className="flex items-center justify-between gap-4">
+          <p className="flex items-center gap-1.5 text-[13px] text-slate-600">
+            <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" strokeWidth={2.5} /> Free for 30 days, no card needed
+          </p>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button type="button" onClick={onDetails}
+              className="h-9 px-3 rounded-lg text-[13px] font-semibold text-slate-700 hover:bg-slate-200/70 transition cursor-pointer">
+              Full details
+            </button>
+            <a href="/signup"
+              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[13px] font-semibold transition">
+              Start free trial <ArrowRight className="w-3.5 h-3.5" />
+            </a>
+          </div>
         </div>
-      </div>
+      </MenuFoot>
     </>
   );
 };
@@ -324,8 +330,8 @@ export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   );
 };
 
-/** Support: help with signing in, and how to reach Cashly. */
-export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+/** Cashly's contact details from Platform Settings — shared by the Support menu and panel. */
+const useSupportContact = () => {
   const [contact, setContact] = useState<{ companyName: string; phone?: string | null; email?: string | null; website?: string | null } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => {
@@ -336,6 +342,11 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   const copy = (text: string) => {
     navigator.clipboard?.writeText(text).then(() => { setCopied(text); setTimeout(() => setCopied(null), 1500); }).catch(() => { /* the text is on screen */ });
   };
+  return { contact, copied, copy };
+};
+
+/** The contact rows (phone, email, website) with a copy button for each. */
+const ContactRows: React.FC<{ contact: ReturnType<typeof useSupportContact>['contact']; copied: string | null; copy: (t: string) => void }> = ({ contact, copied, copy }) => {
   const contactRow = (Icon: typeof Phone, label: string, value: string, href: string) => (
     <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50">
       <Icon className="w-5 h-5 text-teal-600 shrink-0" />
@@ -349,16 +360,65 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
     </div>
   );
   const hasContact = !!(contact?.phone || contact?.email || contact?.website);
+  if (!hasContact) return <p className="text-sm text-slate-500">Ask the person who set up Cashly for your business.</p>;
+  return (
+    <div className="space-y-2">
+      {contact?.phone && contactRow(Phone, 'Phone / WhatsApp', contact.phone, `tel:${contact.phone.replace(/[^\d+]/g, '')}`)}
+      {contact?.email && contactRow(Mail, 'Email', contact.email, `mailto:${contact.email}`)}
+      {contact?.website && contactRow(Globe, 'Website', contact.website, contact.website.startsWith('http') ? contact.website : `https://${contact.website}`)}
+    </div>
+  );
+};
+
+/** The short sign-in answers, shown in the Support menu and panel. */
+const HELP_TOPICS = [
+  { icon: KeyRound, t: 'Forgot your PIN?', d: 'Ask your manager or the owner to set a new one in Staff & PINs. Owners: contact us below.' },
+  { icon: Mail, t: 'Forgot your password?', d: 'Type your work email, press Continue, then "Forgot password?" to get a reset link.' },
+  { icon: MonitorSmartphone, t: 'Connecting a new till or tablet?', d: 'Your manager makes a pairing code in Settings → Devices. On the new device press "Connect a till" and type it.' }
+];
+
+/** "Support ▾": the quick answers and how to reach Cashly, in a menu under the button. */
+export const SupportMenu: React.FC = () => {
+  const { contact, copied, copy } = useSupportContact();
+  return (
+    <NavMenu label="Support" width={460}>
+      {() => (
+        <div>
+          <div className="p-5">
+            <MenuHead label="Quick answers" meta={contact?.companyName || 'Cashly'} />
+            <div className="mt-3 space-y-2">
+              {HELP_TOPICS.map(({ icon: Icon, t, d }) => (
+                <div key={t} className="flex gap-3 p-3 rounded-xl ring-1 ring-slate-200/70 transition hover:bg-slate-50">
+                  <Icon className="w-[18px] h-[18px] text-teal-600 shrink-0 mt-0.5" strokeWidth={1.75} />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-slate-900">{t}</span>
+                    <span className="block mt-0.5 text-[13px] leading-snug text-slate-500">{d}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <MenuFoot>
+            <MenuHead label={`Contact ${contact?.companyName || 'Cashly'}`} />
+            <div className="mt-2.5">
+              <ContactRows contact={contact} copied={copied} copy={copy} />
+            </div>
+          </MenuFoot>
+        </div>
+      )}
+    </NavMenu>
+  );
+};
+
+/** Support: help with signing in, and how to reach Cashly. */
+export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const { contact, copied, copy } = useSupportContact();
 
   return (
     <Modal title="Support" onClose={onClose}>
       <div className="space-y-5">
         <div className="space-y-2">
-          {[
-            { icon: KeyRound, t: 'Forgot your PIN?', d: 'Ask your manager or the owner to set a new one in Staff & PINs. Owners: contact us below.' },
-            { icon: Mail, t: 'Forgot your password?', d: 'Type your work email, press Continue, then "Forgot password?" to get a reset link.' },
-            { icon: MonitorSmartphone, t: 'Connecting a new till or tablet?', d: 'Your manager makes a pairing code in Settings → Devices. On the new device press "Connect a till" and type it.' }
-          ].map(({ icon: Icon, t, d }) => (
+          {HELP_TOPICS.map(({ icon: Icon, t, d }) => (
             <div key={t} className="flex gap-3 p-3 rounded-xl border border-slate-200">
               <Icon className="w-5 h-5 text-teal-600 shrink-0 mt-0.5" />
               <span><span className="block text-sm font-semibold">{t}</span><span className="block text-sm text-slate-600">{d}</span></span>
@@ -368,15 +428,7 @@ export const SupportPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
 
         <div className="space-y-2">
           <h3 className="flex items-center gap-2 text-sm font-semibold"><LifeBuoy className="w-4 h-4 text-teal-600" /> Contact {contact?.companyName || 'Cashly'}</h3>
-          {hasContact ? (
-            <>
-              {contact?.phone && contactRow(Phone, 'Phone / WhatsApp', contact.phone, `tel:${contact.phone.replace(/[^\d+]/g, '')}`)}
-              {contact?.email && contactRow(Mail, 'Email', contact.email, `mailto:${contact.email}`)}
-              {contact?.website && contactRow(Globe, 'Website', contact.website, contact.website.startsWith('http') ? contact.website : `https://${contact.website}`)}
-            </>
-          ) : (
-            <p className="text-sm text-slate-500">Ask the person who set up Cashly for your business.</p>
-          )}
+          <ContactRows contact={contact} copied={copied} copy={copy} />
         </div>
       </div>
     </Modal>

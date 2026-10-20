@@ -234,6 +234,19 @@ builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.WhaticketWhatsAppSender>();
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSenderResolver, Pos.Api.Services.WhatsAppSenderResolver>();
 
+// --- AI photos for items (Services/ProductPhotos.cs) ---
+// Made with Cashly's own OpenAI key on a server with no cloud link; a business host linked to the
+// cloud asks the cloud instead, so the key never sits on a shop's computer.
+builder.Services.AddSingleton<Pos.Api.Services.MediaStore>();
+builder.Services.AddSingleton<Pos.Api.Services.HostLink>();
+builder.Services.AddSingleton<Pos.Api.Services.ProductPhotoQueue>();
+builder.Services.AddScoped<Pos.Api.Services.OpenAiPhotoMaker>();
+builder.Services.AddScoped<Pos.Api.Services.IAiPhotoSource>(sp =>
+    sp.GetRequiredService<Pos.Api.Services.HostLink>().Linked
+        ? (Pos.Api.Services.IAiPhotoSource)ActivatorUtilities.CreateInstance<Pos.Api.Services.CloudAiPhotoSource>(sp)
+        : ActivatorUtilities.CreateInstance<Pos.Api.Services.LocalAiPhotoSource>(sp));
+builder.Services.AddHostedService<Pos.Api.Services.ProductPhotoWorker>();
+
 var app = builder.Build();
 
 // --- Global Exception Handler ---
@@ -253,6 +266,30 @@ app.UseExceptionHandler(error =>
         await context.Response.WriteAsJsonAsync(response);
     });
 });
+
+// Item photos (/media/products/...). Before sign-in on purpose: a till, the QR menu and a guest's
+// phone all show them, through a plain <img>. Every file has a name of its own, so it never changes
+// and can be cached for good. Only the image types the server knows are served.
+var mediaStore = app.Services.GetRequiredService<Pos.Api.Services.MediaStore>();
+try
+{
+    Directory.CreateDirectory(mediaStore.Root);
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(mediaStore.Root),
+        RequestPath = "/media",
+        OnPrepareResponse = ctx =>
+        {
+            ctx.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable";
+            ctx.Context.Response.Headers.XContentTypeOptions = "nosniff";
+        }
+    });
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // No photos is a nuisance; a server that will not start is a shop that cannot sell.
+    Console.WriteLine($"[Media] Item photos are off: cannot use {mediaStore.Root} ({ex.Message}). Set Media:Path to a folder this server can write to.");
+}
 
 app.UseCors();
 app.UseRateLimiter();
@@ -1623,7 +1660,8 @@ using (var scope = app.Services.CreateScope())
         ("Prescriptions", EnsurePrescriptionSchemaAsync),
         ("Tax setup", EnsureTaxSetupSchemaAsync),
         ("Registration agreement", EnsureRegistrationSchemaAsync),
-        ("Demo videos", EnsureDemoVideosSchemaAsync)
+        ("Demo videos", EnsureDemoVideosSchemaAsync),
+        ("AI photos", EnsureAiPhotosSchemaAsync)
     })
     {
         try
@@ -1959,6 +1997,21 @@ static Task EnsureRegistrationSchemaAsync(AppDbContext db) => db.Database.Execut
 // The "Watch demo" steps and their video links (Platform → Settings → Demo videos).
 static Task EnsureDemoVideosSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
     ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""DemoVideosJson"" text NULL;
+");
+
+// Item photos made by AI (Services/ProductPhotos.cs): where each item is in getting one, and the
+// platform's OpenAI settings. The partial index keeps the worker's look for queued photos cheap.
+static Task EnsureAiPhotosSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PhotoSource"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PhotoStatus"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PhotoError"" text NULL;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PhotoAttempts"" integer NOT NULL DEFAULT 0;
+    ALTER TABLE ""Products"" ADD COLUMN IF NOT EXISTS ""PhotoNextTryAt"" timestamp with time zone NULL;
+    CREATE INDEX IF NOT EXISTS ""IX_Products_PhotoStatus"" ON ""Products"" (""PhotoStatus"") WHERE ""PhotoStatus"" IS NOT NULL;
+    ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""AiPhotosEnabled"" boolean NOT NULL DEFAULT true;
+    ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""OpenAiApiKey"" text NULL;
+    ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""AiPhotoModel"" text NULL;
+    ALTER TABLE ""PlatformSettings"" ADD COLUMN IF NOT EXISTS ""AiPhotoQuality"" text NULL;
 ");
 
 /// <summary>The prescriptions sales of prescription-only and controlled medicines are made against.</summary>
@@ -6882,7 +6935,8 @@ api.MapPut("/catalog/products/{id:guid}/branch-prices", async (AppDbContext db, 
     return Results.Ok(new { message = "Branch prices saved." });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change prices."));
 
-api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
+api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.IAiPhotoSource photos, Pos.Api.Services.ProductPhotoQueue photoQueue, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
 {
     var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
@@ -6907,10 +6961,115 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
         foreach (var mod in dto.Modifiers)
             product.Modifiers.Add(new ProductModifier { Name = mod.Name, PricePKR = mod.PricePKR });
     }
+    // Saved without a photo: AI makes one in the background, and it appears on the item when ready.
+    var wantsPhoto = string.IsNullOrWhiteSpace(product.ImageUrl) && dto.AiPhoto != false && await photos.AvailableAsync();
+    if (wantsPhoto) Pos.Api.Services.ProductPhotos.Queue(product);
     await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "ProductCreated", "Product", product.Id, null, product.SellingPricePKR.ToString("0.##"));
     await db.SaveChangesAsync();
+    if (wantsPhoto) photoQueue.Nudge();
     return Results.Ok(product);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to add menu items or change prices."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// --- An item's photo: AI, uploaded, a link, or none (Services/ProductPhotos.cs) ---
+
+// Whether AI photos can be made for this business at all (the catalogue shows its AI buttons only then).
+api.MapGet("/catalog/photos/ai", async (Pos.Api.Services.IAiPhotoSource photos) =>
+    Results.Ok(new { available = await photos.AvailableAsync() }));
+
+// A new AI photo for one item, made in the background. The current photo stays until it is ready.
+api.MapPost("/catalog/products/{id:guid}/photo/ai", async (AppDbContext db, HttpContext http, Guid id,
+    Pos.Api.Services.IAiPhotoSource photos, Pos.Api.Services.ProductPhotoQueue photoQueue) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (product == null) return Results.NotFound();
+    if (!await photos.AvailableAsync())
+        return Results.BadRequest(new { message = "AI photos are not set up on this server yet." });
+    Pos.Api.Services.ProductPhotos.Queue(product);
+    await db.SaveChangesAsync();
+    photoQueue.Nudge();
+    return Results.Ok(product);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu items."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// AI photos for every item that has none — for a catalogue that was there before AI photos were.
+api.MapPost("/catalog/products/photos/fill", async (AppDbContext db, HttpContext http,
+    Pos.Api.Services.IAiPhotoSource photos, Pos.Api.Services.ProductPhotoQueue photoQueue) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    if (!await photos.AvailableAsync())
+        return Results.BadRequest(new { message = "AI photos are not set up on this server yet." });
+    var bare = await db.Products
+        .Where(p => p.TenantId == tenantId.Value && p.IsActive && (p.ImageUrl == null || p.ImageUrl == "")
+                    && (p.PhotoStatus == null || p.PhotoStatus == Pos.Api.Services.ProductPhotoStatus.Failed))
+        .ToListAsync();
+    foreach (var product in bare) Pos.Api.Services.ProductPhotos.Queue(product);
+    await db.SaveChangesAsync();
+    if (bare.Count > 0) photoQueue.Nudge();
+    return Results.Ok(new { queued = bare.Count });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu items."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// The owner's own photo (the body is the image: JPEG, PNG or WebP, up to 5 MB — the browser shrinks
+// it first), or a link to one ({ "url": "https://..." } as JSON). Either calls off an AI photo.
+api.MapPut("/catalog/products/{id:guid}/photo", async (AppDbContext db, HttpContext http, Guid id, Pos.Api.Services.MediaStore media) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (product == null) return Results.NotFound();
+    var old = product.ImageUrl;
+
+    if (http.Request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
+    {
+        var link = (await http.Request.ReadFromJsonAsync<ProductPhotoLinkDto>())?.Url?.Trim();
+        if (string.IsNullOrEmpty(link) || link.Length > 500 || link.Any(char.IsWhiteSpace)
+            || !Uri.TryCreate(link, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            return Results.BadRequest(new { message = "Paste a full link to the photo, starting with https://" });
+        Pos.Api.Services.ProductPhotos.Settle(product, link, null);
+    }
+    else
+    {
+        const int maxBytes = 5 * 1024 * 1024;
+        if (http.Request.ContentLength is > maxBytes)
+            return Results.BadRequest(new { message = "That photo is too big. Use one under 5 MB." });
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await http.Request.Body.ReadAsync(chunk)) > 0)
+        {
+            if (buffer.Length + read > maxBytes) return Results.BadRequest(new { message = "That photo is too big. Use one under 5 MB." });
+            buffer.Write(chunk, 0, read);
+        }
+        var image = buffer.ToArray();
+        if (Pos.Api.Services.ImageBytes.Extension(image) == null)
+            return Results.BadRequest(new { message = "Use a JPEG, PNG or WebP photo." });
+        var url = await media.SaveProductPhotoAsync(product.TenantId, product.Id, image);
+        Pos.Api.Services.ProductPhotos.Settle(product, url, Pos.Api.Services.ProductPhotoSource.Upload);
+    }
+
+    await db.SaveChangesAsync();
+    if (old != product.ImageUrl) media.DeleteIfOurs(old);
+    return Results.Ok(product);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu items."))
+  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
+
+// No photo: the till shows the item's emoji. An AI photo still being made is called off.
+api.MapDelete("/catalog/products/{id:guid}/photo", async (AppDbContext db, HttpContext http, Guid id, Pos.Api.Services.MediaStore media) =>
+{
+    var tenantId = ResolveTenantScope(http, null);
+    if (tenantId == null) return Results.Unauthorized();
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && p.TenantId == tenantId.Value);
+    if (product == null) return Results.NotFound();
+    var old = product.ImageUrl;
+    Pos.Api.Services.ProductPhotos.Settle(product, null, null);
+    await db.SaveChangesAsync();
+    media.DeleteIfOurs(old);
+    return Results.Ok(product);
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu items."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
 api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateProductDto dto) =>
@@ -6961,7 +7120,8 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change menu prices."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
-api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id) =>
+api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id,
+    Pos.Api.Services.MediaStore media) =>
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
@@ -6971,6 +7131,7 @@ api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http
     await WriteAuditAsync(db, product.TenantId, currentUser, "ProductDeleted", "Product", product.Id, product.Name, null);
     db.Products.Remove(product);
     await db.SaveChangesAsync();
+    media.DeleteIfOurs(product.ImageUrl);
     return Results.Ok(new { message = "Product deleted successfully" });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
@@ -14387,6 +14548,96 @@ app.MapPut("/api/admin/demo-videos", async (AppDbContext db, HttpContext http, P
     return Results.Ok(Pos.Api.Services.DemoVideos.Read(s));
 }).RequireAuthorization();
 
+// Platform → Settings → AI photos: whether every business's items get one, the OpenAI account they
+// are made with (the key is never sent back, only its last four characters), and how the queue is doing.
+static async Task<object> AiPhotoSettingsViewAsync(AppDbContext db, Pos.Api.Services.OpenAiPhotoMaker maker,
+    Pos.Api.Services.ProductPhotoQueue queue, Pos.Api.Services.SecretProtector protector)
+{
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+    var savedKey = protector.Unprotect(s.OpenAiApiKey);
+    var (_, key, model, quality) = await maker.SettingsAsync();
+    var products = db.Products.IgnoreQueryFilters();
+    return new
+    {
+        enabled = s.AiPhotosEnabled,
+        hasKey = savedKey != null,
+        // A key set on the server itself (OpenAI:ApiKey / OPENAI_API_KEY) is used when none is saved here.
+        serverKey = savedKey == null && key != null,
+        keyEnding = key is { Length: > 8 } ? key[^4..] : null,
+        model, quality,
+        models = Pos.Api.Services.OpenAiPhotoMaker.Models,
+        made = await products.CountAsync(p => p.PhotoSource == Pos.Api.Services.ProductPhotoSource.Ai),
+        waiting = await products.CountAsync(p => p.PhotoStatus == Pos.Api.Services.ProductPhotoStatus.Pending || p.PhotoStatus == Pos.Api.Services.ProductPhotoStatus.Making),
+        failed = await products.CountAsync(p => p.PhotoStatus == Pos.Api.Services.ProductPhotoStatus.Failed),
+        problem = queue.Problem,
+        problemAt = queue.ProblemAt
+    };
+}
+
+app.MapGet("/api/admin/ai-photos", async (AppDbContext db, HttpContext http, Pos.Api.Services.OpenAiPhotoMaker maker,
+    Pos.Api.Services.ProductPhotoQueue queue, Pos.Api.Services.SecretProtector protector) =>
+{
+    if (!http.IsSuperAdmin()) return Results.Forbid();
+    return Results.Ok(await AiPhotoSettingsViewAsync(db, maker, queue, protector));
+}).RequireAuthorization();
+
+app.MapPut("/api/admin/ai-photos", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Pos.Api.Services.SecretProtector protector, Pos.Api.Services.OpenAiPhotoMaker maker, Pos.Api.Services.ProductPhotoQueue queue,
+    SaveAiPhotoSettingsDto dto) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var s = await Pos.Api.Services.PlatformInvoicing.SettingsAsync(db);
+
+    if (dto.Enabled != null) s.AiPhotosEnabled = dto.Enabled.Value;
+    var key = dto.ApiKey?.Trim();
+    var keyChanged = !string.IsNullOrEmpty(key);
+    if (key == "-") s.OpenAiApiKey = null;
+    else if (keyChanged)
+    {
+        if (!key!.StartsWith("sk-", StringComparison.Ordinal) || key.Length < 20 || key.Any(char.IsWhiteSpace))
+            return Results.BadRequest(new { message = "That does not look like an OpenAI key. It starts with sk- (copy it from platform.openai.com → API keys)." });
+        s.OpenAiApiKey = protector.Protect(key);
+    }
+    if (dto.Model != null)
+    {
+        if (!Pos.Api.Services.OpenAiPhotoMaker.Models.Contains(dto.Model)) return Results.BadRequest(new { message = "Choose one of the models listed." });
+        s.AiPhotoModel = dto.Model;
+    }
+    if (dto.Quality != null)
+    {
+        if (!Pos.Api.Services.OpenAiPhotoMaker.Qualities.Contains(dto.Quality)) return Results.BadRequest(new { message = "Quality is low, medium or high." });
+        s.AiPhotoQuality = dto.Quality;
+    }
+    s.UpdatedAt = DateTime.UtcNow;
+
+    var actingUser = await accessor.GetCurrentUserAsync(http);
+    await WriteAuditAsync(db, Guid.Empty, actingUser, "AiPhotosChanged", "PlatformSettings", null, null,
+        $"AI photos {(s.AiPhotosEnabled ? "on" : "off")}, {s.AiPhotoModel ?? Pos.Api.Services.OpenAiPhotoMaker.DefaultModel}, {s.AiPhotoQuality ?? "medium"} quality" +
+        (keyChanged ? (key == "-" ? ", key removed" : ", key changed") : ""));
+    await db.SaveChangesAsync();
+    // A fixed key or a switch turned on should not wait out the pause the old problem started.
+    queue.Resume();
+    return Results.Ok(await AiPhotoSettingsViewAsync(db, maker, queue, protector));
+}).RequireAuthorization();
+
+// One photo, made now and shown on the settings page: checks the key, the model and the account.
+app.MapPost("/api/admin/ai-photos/test", async (HttpContext http, Pos.Api.Services.OpenAiPhotoMaker maker, TestAiPhotoDto dto, CancellationToken ct) =>
+{
+    if (!PlatformCan(http, PlatformRoles.ManagePlatform)) return PlatformDenied();
+    var name = string.IsNullOrWhiteSpace(dto.Name) ? "Chicken Karahi" : dto.Name.Trim();
+    var pack = dto.Kind switch
+    {
+        "retail" => Pos.Api.Data.VerticalPacks.Retail,
+        "grocery" => Pos.Api.Data.VerticalPacks.Grocery,
+        "pharmacy" => Pos.Api.Data.VerticalPacks.Pharmacy,
+        _ => Pos.Api.Data.VerticalPacks.Restaurant
+    };
+    var outcome = await maker.MakeAsync(Guid.Empty, new Pos.Api.Services.PhotoRequest(name, null, null), ct, pack);
+    if (outcome.Image == null) return Results.BadRequest(new { message = outcome.Message });
+    var type = Pos.Api.Services.ImageBytes.Extension(outcome.Image) == "png" ? "image/png" : "image/jpeg";
+    return Results.Ok(new { image = $"data:{type};base64,{Convert.ToBase64String(outcome.Image)}" });
+}).RequireAuthorization();
+
 app.MapGet("/api/admin/platform-prices", async (AppDbContext db, HttpContext http) =>
 {
     if (!http.IsSuperAdmin()) return Results.Forbid();
@@ -18016,6 +18267,38 @@ app.MapGet("/api/sync/catalog", async (
         snapshot.CatalogVersion, unchanged, unchanged ? null : snapshot));
 }).AllowAnonymous().RequireRateLimiting("default");
 
+/// <summary>
+/// An AI photo for one of a business host's own items (Services/ProductPhotos.cs). Made here, with the
+/// platform's OpenAI key, which never leaves this server; the host keeps the photo it gets back.
+/// </summary>
+app.MapPost("/api/sync/ai-photo", async (
+    HttpContext http, Pos.Api.Services.ISyncKeyAuthenticator auth, Pos.Api.Services.OpenAiPhotoMaker maker,
+    string? businessId, Guid? tenantId, Pos.Api.Services.PhotoRequest request, CancellationToken ct) =>
+{
+    var gate = await auth.AuthenticateAsync(
+        businessId, http.Request.Headers[Pos.Api.Services.SyncKeys.HeaderName], tenantId);
+    if (!gate.IsSuccess) return Pos.Api.Services.SyncGate.Failure(gate);
+    if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest(new { message = "The item has no name." });
+
+    var outcome = await maker.MakeAsync(gate.Host!.TenantId, request, ct);
+    if (outcome.Image != null)
+        return Results.File(outcome.Image, Pos.Api.Services.ImageBytes.Extension(outcome.Image) == "png" ? "image/png" : "image/jpeg");
+
+    // The host sorts the answer by its status, as it would OpenAI's: set-up, refused, busy, or try later.
+    switch (outcome.Problem)
+    {
+        case Pos.Api.Services.AiPhotoProblem.Blocked:
+            return Results.Json(new { message = outcome.Message }, statusCode: StatusCodes.Status422UnprocessableEntity);
+        case Pos.Api.Services.AiPhotoProblem.Busy:
+            http.Response.Headers.RetryAfter = ((int)(outcome.RetryAfter ?? TimeSpan.FromSeconds(60)).TotalSeconds).ToString();
+            return Results.Json(new { message = outcome.Message }, statusCode: StatusCodes.Status429TooManyRequests);
+        case Pos.Api.Services.AiPhotoProblem.Failed:
+            return Results.Json(new { message = outcome.Message }, statusCode: StatusCodes.Status502BadGateway);
+        default:
+            return Results.Json(new { message = outcome.Message }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous().RequireRateLimiting("default");
+
 
 // ============================================================
 // SUBSCRIPTION & PLAN
@@ -18478,13 +18761,21 @@ public record AssignRiderDto(Guid OrderId, Guid RiderId);
 public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
 public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers,
-    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null);
+    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null,
+    // False when the owner's own photo is uploaded straight after: no AI photo is made for nothing.
+    bool? AiPhoto = null);
 public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station,
     MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null);
 /// <summary>Every item in a category taxed one way (Tax Setup → Items taxed differently).</summary>
 public record ApplyCategoryTaxDto(TaxTreatment TaxTreatment, decimal? TaxRatePercent);
 public record CreateCategoryDto(Guid TenantId, string Name, string? LocalName, string? Icon, int SortOrder);
 public record CreateProductModifierDto(string Name, decimal PricePKR);
+/// <summary>A link to an item's photo somewhere else on the web.</summary>
+public record ProductPhotoLinkDto(string? Url);
+/// <summary>Platform → Settings → AI photos. ApiKey: blank keeps the one on file, "-" clears it.</summary>
+public record SaveAiPhotoSettingsDto(bool? Enabled, string? ApiKey, string? Model, string? Quality);
+/// <summary>The platform's test photo: an item, and the kind of business it is for.</summary>
+public record TestAiPhotoDto(string? Name, string? Kind);
 public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string? SupplierName, decimal? CostPricePKR, string? BatchNumber, DateTime? ExpiryDate,
     decimal? BonusQuantity = null, decimal? RetailPricePKR = null);
 /// <summary>The batch a receipt goes into: the number and expiry printed on the pack.</summary>

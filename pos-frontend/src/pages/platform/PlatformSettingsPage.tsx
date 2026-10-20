@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   Save, RefreshCw, Building2, Landmark, Percent, CalendarClock, MessageCircle, ShieldCheck, Send, AlertTriangle,
-  Video, Play, ArrowUp, ArrowDown, Trash2, Plus, Check, RotateCcw
+  Video, Play, ArrowUp, ArrowDown, Trash2, Plus, Check, RotateCcw, Sparkles
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
 import { usePosStore } from '../../store/posStore';
-import type { DemoVideoStep, PlatformMessageRow, PlatformSettingsData, TaxJurisdiction } from '../../types';
+import type { AiPhotoSettings, DemoVideoStep, PlatformMessageRow, PlatformSettingsData, TaxJurisdiction } from '../../types';
 import { VIDEO_LINK_HELP, videoSource } from '../../utils/videoEmbed';
 import { DemoVideoPlayer } from '../../components/DemoVideoPlayer';
 import { demoStepsFor } from '../../utils/demoVideos';
@@ -119,6 +119,191 @@ const PlatformTaxDefaults: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </div>
       )}
       {note && <p className={`text-[11px] font-semibold ${note.ok ? 'text-teal-700' : 'text-rose-600'}`}>{note.text}</p>}
+    </Card>
+  );
+};
+
+const QUALITIES: { value: AiPhotoSettings['quality']; label: string }[] = [
+  { value: 'low', label: 'Low — cheapest, quickest' },
+  { value: 'medium', label: 'Medium — recommended' },
+  { value: 'high', label: 'High — sharpest, about 4× the price of medium' }
+];
+
+const TEST_KINDS: { value: string; label: string; example: string }[] = [
+  { value: 'restaurant', label: 'Restaurant', example: 'Chicken Karahi' },
+  { value: 'retail', label: 'Retail store', example: 'Leather Wallet' },
+  { value: 'grocery', label: 'Mart', example: 'Basmati Rice 5kg' },
+  { value: 'pharmacy', label: 'Pharmacy', example: 'Paracetamol 500mg Tablets' }
+];
+
+/**
+ * AI photos for every business's items: on or off, the OpenAI account they are made with, and how
+ * the queue is doing. Businesses use it free; each photo is charged to this OpenAI account. Saves on
+ * its own; the key is never shown again once saved (only its last four characters).
+ */
+const PlatformAiPhotos: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
+  const [data, setData] = useState<AiPhotoSettings | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [apiKey, setApiKey] = useState('');
+  const [model, setModel] = useState('');
+  const [quality, setQuality] = useState<AiPhotoSettings['quality']>('medium');
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testKind, setTestKind] = useState('restaurant');
+  const [testName, setTestName] = useState('');
+  const [testImage, setTestImage] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const show = (d: AiPhotoSettings) => {
+    setData(d);
+    setEnabled(d.enabled);
+    setModel(d.model);
+    setQuality(d.quality);
+    setApiKey('');
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    posApi.getAiPhotoSettings()
+      .then(d => { if (!cancelled) show(d); })
+      .catch(err => { if (!cancelled) setNote({ ok: false, text: getApiErrorMessage(err, 'Could not load the AI photo settings.') }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async (removeKey = false) => {
+    if (removeKey && !window.confirm('Remove the OpenAI key? No more AI photos are made until a new one is saved.')) return;
+    setSaving(true);
+    setNote(null);
+    try {
+      show(await posApi.saveAiPhotoSettings({ enabled, model, quality, apiKey: removeKey ? '-' : apiKey.trim() || undefined }));
+      setNote({ ok: true, text: removeKey ? 'Key removed.' : 'AI photo settings saved.' });
+    } catch (err) {
+      setNote({ ok: false, text: getApiErrorMessage(err, 'Could not save the AI photo settings.') });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestImage(null);
+    setNote(null);
+    try {
+      const example = TEST_KINDS.find(k => k.value === testKind)?.example ?? 'Chicken Karahi';
+      setTestImage(await posApi.testAiPhoto(testName.trim() || example, testKind));
+    } catch (err) {
+      setNote({ ok: false, text: getApiErrorMessage(err, 'No photo could be made.') });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const keyReady = !!data && (data.hasKey || data.serverKey);
+
+  return (
+    <Card icon={<Sparkles className="w-4 h-4 text-teal-600" />} title="AI photos for items"
+      hint="Every item a business saves without a photo gets a realistic one, made by AI from its name. Free for businesses; each photo is charged to your OpenAI account (roughly Rs 3–12 at medium quality).">
+      {!data ? (
+        note ? <p className="text-[11px] font-semibold text-rose-600">{note.text}</p> : <p className="text-[11px] text-slate-400">Loading…</p>
+      ) : (
+        <div className="space-y-3">
+          {data.problem && (
+            <div className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span><span className="font-bold">Photos have stopped:</span> {data.problem} They start again by themselves once this is fixed and saved.</span>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 text-[11px]">
+            <span className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">Made so far <span className="font-bold text-slate-900">{data.made.toLocaleString()}</span></span>
+            <span className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-600">Waiting <span className="font-bold text-slate-900">{data.waiting.toLocaleString()}</span></span>
+            {data.failed > 0 && (
+              <span className="px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-700">Could not be made <span className="font-bold">{data.failed.toLocaleString()}</span></span>
+            )}
+          </div>
+
+          <label className="flex items-start gap-2.5 text-xs text-slate-700 cursor-pointer">
+            <input type="checkbox" disabled={!canEdit} checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="w-4 h-4 mt-0.5 accent-teal-500" />
+            <span><span className="font-bold">Make AI photos for every business</span>
+              <span className="block text-[11px] text-slate-500">Off: no new photos are made. Photos already made stay.</span></span>
+          </label>
+
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div className="sm:col-span-2">
+              <label className={labelCls}>
+                OpenAI key{' '}
+                {data.hasKey && <span className="text-teal-600 normal-case">· saved (…{data.keyEnding})</span>}
+                {data.serverKey && <span className="text-teal-600 normal-case">· set on the server (…{data.keyEnding})</span>}
+              </label>
+              <div className="flex gap-2">
+                <input disabled={!canEdit} type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={data.hasKey ? 'Leave blank to keep the saved key' : 'sk-…'} className={inputCls} />
+                {canEdit && data.hasKey && (
+                  <button onClick={() => save(true)} disabled={saving} className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 text-xs font-semibold whitespace-nowrap disabled:opacity-40">
+                    Remove key
+                  </button>
+                )}
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Model</label>
+              <select disabled={!canEdit} value={model} onChange={(e) => setModel(e.target.value)} className={inputCls}>
+                {data.models.map(m => <option key={m} value={m}>{m}{m === data.models[0] ? ' (newest)' : ''}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Quality</label>
+              <select disabled={!canEdit} value={quality} onChange={(e) => setQuality(e.target.value as AiPhotoSettings['quality'])} className={inputCls}>
+                {QUALITIES.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {canEdit && (
+            <div className="flex justify-end">
+              <button onClick={() => save()} disabled={saving}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold disabled:opacity-50">
+                <Save className="w-3.5 h-3.5" /> {saving ? 'Saving…' : 'Save AI photo settings'}
+              </button>
+            </div>
+          )}
+
+          {canEdit && (
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+              <div className="text-[11px] font-bold text-slate-700">Make a test photo (save the key first)</div>
+              <div className="flex flex-wrap gap-2">
+                <select value={testKind} onChange={(e) => setTestKind(e.target.value)} className={`${inputCls} max-w-[10rem]`}>
+                  {TEST_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+                </select>
+                <input value={testName} onChange={(e) => setTestName(e.target.value)}
+                  placeholder={TEST_KINDS.find(k => k.value === testKind)?.example} className={`${inputCls} max-w-[16rem]`} />
+                <button onClick={test} disabled={testing || !keyReady}
+                  className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold disabled:opacity-40 flex items-center gap-1.5">
+                  {testing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {testing ? 'Making… (up to a minute)' : 'Make a test photo'}
+                </button>
+              </div>
+              {testImage && <img src={testImage} alt="Test photo" className="w-48 h-48 rounded-xl object-cover border border-slate-200" />}
+            </div>
+          )}
+
+          {note && <p className={`text-[11px] font-semibold ${note.ok ? 'text-teal-700' : 'text-rose-600'}`}>{note.text}</p>}
+
+          <details className="group rounded-xl border border-slate-200 bg-white">
+            <summary className="px-3 py-2 text-[11px] font-bold text-slate-700 cursor-pointer select-none">How to get an OpenAI key</summary>
+            <ol className="px-3 pb-3 pl-7 list-decimal space-y-1.5 text-[11px] text-slate-600">
+              <li>Go to <span className="font-mono">platform.openai.com</span> and sign up, or sign in.</li>
+              <li><span className="font-semibold">Settings → Billing:</span> add a payment card and some credit. $10 makes a few hundred photos at medium quality.</li>
+              <li>If OpenAI asks you to <span className="font-semibold">verify your organization</span> (Settings → Organization → General), do it: some accounts need this before image models work.</li>
+              <li><span className="font-semibold">API keys → Create new secret key.</span> Copy it (it starts with <span className="font-mono">sk-</span>); OpenAI shows it only once.</li>
+              <li>Paste it in <span className="font-semibold">OpenAI key</span> above, press <span className="font-semibold">Save AI photo settings</span>, then <span className="font-semibold">Make a test photo</span>.</li>
+            </ol>
+            <p className="px-3 pb-3 text-[11px] text-slate-500">
+              The key stays on this server, encrypted. It is never sent to a business's computer or a browser. Set a monthly spending limit under Billing → Limits so the cost cannot surprise you.
+            </p>
+          </details>
+        </div>
+      )}
     </Card>
   );
 };
@@ -508,6 +693,8 @@ export const PlatformSettingsPage: React.FC = () => {
       </Card>
 
       <PlatformTaxDefaults canEdit={canEdit} />
+
+      <PlatformAiPhotos canEdit={canEdit} />
 
       <PlatformDemoVideos canEdit={canEdit} />
 

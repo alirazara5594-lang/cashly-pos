@@ -514,6 +514,18 @@ public class Product
     public decimal SellingPricePKR { get; set; }
     public string Unit { get; set; } = "Piece"; // Piece, Pack, Kg, Carton
     public string? ImageUrl { get; set; }
+
+    // The item's photo (Services/ProductPhotos.cs): made by AI, uploaded, or a link typed in.
+    /// <summary>"ai", "upload", or null for none / a link.</summary>
+    public string? PhotoSource { get; set; }
+    /// <summary>Where it is in getting an AI photo: "pending", "making", "failed"; null when there is nothing to do.</summary>
+    public string? PhotoStatus { get; set; }
+    /// <summary>Why the last try did not give a photo.</summary>
+    public string? PhotoError { get; set; }
+    public int PhotoAttempts { get; set; }
+    /// <summary>When a photo that failed for a passing reason is tried again.</summary>
+    public DateTime? PhotoNextTryAt { get; set; }
+
     public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
     public bool IsActive { get; set; } = true;
     /// <summary>Part of the sample menu a new business can start with, so a trial can ring up a test

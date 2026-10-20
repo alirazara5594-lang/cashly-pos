@@ -25,15 +25,23 @@ const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const SALES_LINE = 'M0 78 C 15 72, 25 60, 40 62 C 55 64, 65 74, 80 70 C 95 66, 105 40, 120 40 C 135 40, 145 58, 160 55 C 175 52, 185 40, 200 38 C 215 36, 228 22, 240 14';
 
-// A café pendant lamp, out of focus behind the counter.
+// A café pendant lamp, out of focus behind the counter: a brushed metal shade, the warm light
+// on its lip, and the cone of light it throws down onto the counter.
 function Lamp({ className, size, blur }: { className: string; size: number; blur: string }) {
   return (
     <div className={`absolute ${className}`} style={{ transform: `scale(${size})`, filter: `blur(${blur})` }}>
-      <div className="absolute left-1/2 -translate-x-1/2 -top-[160px] w-[260px] h-[260px] rounded-full bg-amber-300/25 blur-3xl" />
-      <div className="absolute left-1/2 -translate-x-1/2 bottom-full w-[2px] h-[520px] bg-gradient-to-b from-transparent via-white/10 to-white/30" />
-      <div className="relative w-[78px] h-[40px] rounded-t-[44px] rounded-b-[6px] bg-gradient-to-b from-[#3d5a56] via-[#1d3634] to-[#0f2422] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]" />
-      <div className="absolute left-1/2 -translate-x-1/2 top-[30px] w-[60px] h-[18px] rounded-[50%] bg-amber-100 blur-[3px]" />
-      <div className="absolute left-1/2 -translate-x-1/2 top-[36px] w-[110px] h-[60px] rounded-[50%] bg-amber-200/40 blur-xl" />
+      {/* The light thrown down onto the counter. */}
+      <div className="absolute left-1/2 -translate-x-1/2 top-[36px] w-[210px] h-[280px] [clip-path:polygon(40%_0,60%_0,98%_100%,2%_100%)] bg-[linear-gradient(to_bottom,rgba(253,230,138,0.28),rgba(253,230,138,0.08)_55%,transparent)] blur-[5px]" />
+      {/* The cord, up out of frame. */}
+      <div className="absolute left-1/2 -translate-x-1/2 bottom-full w-[1.5px] h-[520px] bg-gradient-to-b from-transparent via-white/15 to-white/30" />
+      {/* The shade: brushed metal, warm light on its lip. */}
+      <div className="relative w-[78px] h-[40px] rounded-t-[46px] rounded-b-[5px] bg-gradient-to-b from-[#44605b] via-[#1f3a36] to-[#0f2724] shadow-[inset_0_1.5px_1px_rgba(255,255,255,0.28),inset_0_-6px_10px_rgba(0,0,0,0.45),0_8px_18px_-6px_rgba(0,0,0,0.55)]">
+        <span className="absolute left-3 top-[5px] w-[24px] h-[8px] rounded-[50%] bg-white/15 blur-[1px]" />
+      </div>
+      {/* The lit opening under the shade. */}
+      <div className="absolute left-1/2 -translate-x-1/2 -bottom-[4px] w-[62px] h-[12px] rounded-[50%] bg-gradient-to-b from-[#fde68a] to-[#fbbf24] shadow-[0_0_16px_3px_rgba(252,211,77,0.5)]" />
+      {/* The soft glow just below it. */}
+      <div className="absolute left-1/2 -translate-x-1/2 top-[40px] w-[90px] h-[32px] rounded-[50%] bg-amber-200/40 blur-md" />
     </div>
   );
 }
@@ -179,22 +187,45 @@ export function PosScene() {
         </div>
       </div>
 
-      {/* The receipt printer in front, a receipt coming out of the top. */}
+      {/* The receipt printer in front — a thermal till printer, with the receipt curling out. */}
       <div className="absolute left-[36px] top-[292px] w-[196px] h-[180px]">
-        <div className="absolute inset-x-0 top-[40px] h-[82px] rounded-t-[64px] rounded-b-[6px] bg-gradient-to-b from-[#555c67] via-[#2b3139] to-[#1a1e24] ring-1 ring-white/10" />
-        <div className="absolute left-[42px] -top-[22px] w-[112px] h-[88px] origin-bottom [transform:perspective(400px)_rotateX(-16deg)] bg-gradient-to-b from-white via-white to-slate-300 [clip-path:polygon(0_7%,8%_0,16%_7%,24%_0,32%_7%,40%_0,48%_7%,56%_0,64%_7%,72%_0,80%_7%,88%_0,96%_7%,100%_0,100%_100%,0_100%)] px-3 pt-4 space-y-1.5">
-          <div className="h-1.5 w-1/2 mx-auto rounded bg-slate-400" />
-          <div className="h-1 w-full rounded bg-slate-200" />
-          <div className="h-1 w-5/6 rounded bg-slate-200" />
-          <div className="h-1 w-full rounded bg-slate-200" />
-          <div className="flex justify-between"><div className="h-1.5 w-8 rounded bg-slate-500" /><div className="h-1.5 w-6 rounded bg-slate-500" /></div>
+        {/* The receipt, torn off and curling up out of the slot (behind the printer). */}
+        <div className="absolute left-[48px] -top-[26px] w-[100px] origin-bottom [transform:perspective(500px)_rotateX(-13deg)]">
+          <div className="bg-gradient-to-b from-white via-white to-slate-200 shadow-[0_3px_8px_rgba(0,0,0,0.4)] [clip-path:polygon(0_6px,7%_0,14%_6px,21%_0,28%_6px,35%_0,42%_6px,50%_0,58%_6px,65%_0,72%_6px,79%_0,86%_6px,93%_0,100%_6px,100%_100%,0_100%)] px-2.5 pt-3.5 pb-2 space-y-[5px]">
+            <div className="h-[3px] w-1/2 mx-auto rounded-full bg-slate-400" />
+            <div className="h-[2px] w-full rounded-full bg-slate-200" />
+            <div className="h-[2px] w-5/6 rounded-full bg-slate-200" />
+            <div className="h-[2px] w-full rounded-full bg-slate-200" />
+            <div className="flex justify-between items-center pt-0.5">
+              <span className="h-[3px] w-7 rounded-full bg-slate-500" />
+              <span className="h-[3px] w-10 rounded-full bg-slate-700" />
+            </div>
+            <div className="flex items-end justify-center gap-[2px] pt-1">
+              {[3, 1, 2, 1, 3, 1, 1, 2, 3, 1, 2, 1, 3, 2, 1].map((w, i) => (
+                <span key={i} style={{ width: w }} className="h-2.5 rounded-[0.5px] bg-slate-800/90" />
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="absolute left-[30px] right-[30px] top-[64px] h-[6px] rounded-full bg-black/85 shadow-[0_1px_0_rgba(255,255,255,0.12)]" />
-        <div className="absolute inset-x-[2px] top-[114px] bottom-0 rounded-b-[18px] rounded-t-[6px] bg-gradient-to-b from-[#20252b] to-[#08090c] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
-          <span className="absolute left-[16px] bottom-[16px] w-[28px] h-[6px] rounded-full bg-white/10" />
-          <span className="absolute right-[18px] bottom-[16px] w-[7px] h-[7px] rounded-full bg-emerald-400 shadow-[0_0_8px_2px_rgba(52,211,153,0.6)]" />
+
+        {/* The lid, over the paper roll. */}
+        <div className="absolute inset-x-0 top-[36px] h-[52px] rounded-t-[62px] rounded-b-[3px] bg-gradient-to-b from-[#6d7681] via-[#3c444e] to-[#282e36] ring-1 ring-white/10 shadow-[inset_0_2px_1px_rgba(255,255,255,0.24)]" />
+        {/* The paper slot, at the front edge of the lid. */}
+        <div className="absolute left-[26px] right-[26px] top-[62px] h-[6px] rounded-full bg-[#04060a] shadow-[0_1px_0_rgba(255,255,255,0.16),inset_0_1px_2px_rgba(0,0,0,0.9)]" />
+        {/* The front face, with the controls. */}
+        <div className="absolute inset-x-[2px] top-[88px] bottom-0 rounded-t-[2px] rounded-b-[16px] bg-gradient-to-b from-[#23282f] to-[#090b0e] shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]">
+          {/* Ready (green) and power (amber) LEDs, and the feed button. */}
+          <div className="absolute right-[15px] top-[13px] flex items-center gap-[7px]">
+            <span className="w-[6px] h-[6px] rounded-full bg-emerald-400 shadow-[0_0_8px_2px_rgba(52,211,153,0.55)]" />
+            <span className="w-[6px] h-[6px] rounded-full bg-amber-400/55" />
+            <span className="ml-[3px] w-[24px] h-[9px] rounded-full bg-white/[0.08] ring-1 ring-white/10" />
+          </div>
+          {/* A quiet brand bar, and the seam of the paper tray below. */}
+          <span className="absolute left-[15px] top-[15px] h-[5px] w-[32px] rounded-full bg-white/10" />
+          <span className="absolute left-[16px] right-[16px] bottom-[18px] h-[3px] rounded-full bg-black/50 shadow-[0_1px_0_rgba(255,255,255,0.05)]" />
         </div>
-        <div className="absolute -right-[11px] top-[50px] w-[13px] h-[126px] bg-gradient-to-b from-[#16191e] to-[#040506] [clip-path:polygon(0_10px,100%_0,100%_92%,0_100%)]" />
+        {/* The right side, for depth. */}
+        <div className="absolute -right-[11px] top-[46px] w-[13px] h-[134px] bg-gradient-to-b from-[#1a1e24] to-[#040506] [clip-path:polygon(0_12px,100%_0,100%_90%,0_100%)]" />
       </div>
     </div>
   );

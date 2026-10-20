@@ -10,5 +10,7 @@ WORKDIR /app
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://+:5288
 COPY --from=build /app/publish .
+# Item photos (docker-compose mounts a volume here).
+RUN mkdir -p /app/media
 EXPOSE 5288
 ENTRYPOINT ["dotnet", "Pos.Api.dll"]

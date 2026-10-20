@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ArrowLeftRight } from 'lucide-react';
 import { getEmoji } from '../utils/productEmoji';
 import { strengthAndForm } from '../utils/medicine';
+import { mediaUrl } from '../utils/mediaUrl';
 import type { Product } from '../types';
 
 /**
@@ -53,6 +54,9 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const theme = ACCENTS[accent];
   const hasModifiers = !!product.modifiers && product.modifiers.length > 0;
   const medicineLine = strengthAndForm(product);
+  // A photo that cannot load (a till offline before it has its own copy) falls back to the emoji.
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  const photo = product.imageUrl && product.imageUrl !== brokenUrl ? product.imageUrl : null;
 
   return (
     <div
@@ -60,10 +64,12 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       className={`bg-white border border-slate-200 rounded-2xl p-3 hover:shadow-lg ${theme.border} transition-all cursor-pointer group flex flex-col`}
     >
       <div className="relative w-full h-28 rounded-xl overflow-hidden bg-slate-50 flex items-center justify-center mb-2">
-        {product.imageUrl ? (
+        {photo ? (
           <img
-            src={product.imageUrl}
+            src={mediaUrl(photo)}
             alt={product.name}
+            loading="lazy"
+            onError={() => setBrokenUrl(photo)}
             className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
           />
         ) : (

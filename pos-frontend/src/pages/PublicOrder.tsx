@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Minus, Plus, ShoppingBag, CheckCircle2, UtensilsCrossed } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { mediaUrl } from '../utils/mediaUrl';
 import type { PublicMenu, PublicOrderResult } from '../types';
 
 /**
@@ -153,7 +154,7 @@ export const PublicOrder: React.FC = () => {
           const quantity = cart[p.id] ?? 0;
           return (
             <div key={p.id} className="bg-white border border-slate-200 rounded-xl p-3 flex items-center gap-3">
-              {p.imageUrl && <img src={p.imageUrl} alt="" className="w-14 h-14 rounded-lg object-cover shrink-0" />}
+              {p.imageUrl && <img src={mediaUrl(p.imageUrl)} alt="" loading="lazy" className="w-14 h-14 rounded-lg object-cover shrink-0" />}
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-bold text-slate-900">{p.name}</div>
                 {p.urduName && <div className="text-xs text-slate-500">{p.urduName}</div>}

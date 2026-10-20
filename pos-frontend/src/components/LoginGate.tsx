@@ -3,7 +3,7 @@ import {
   Key, ShieldCheck, Store, Delete, MapPin, ArrowLeft, ArrowRight, Eye, EyeOff, MonitorSmartphone, Building2, Warehouse,
   Receipt, Boxes, BarChart3, WifiOff, Cloud, Play
 } from 'lucide-react';
-import { DemoPanel, FeaturesMenu, PricingMenu, PricingPanel, SupportPanel, type LoginPanel } from './login/LoginPanels';
+import { DemoPanel, FeaturesMenu, PricingMenu, PricingPanel, SupportMenu, SupportPanel, type LoginPanel } from './login/LoginPanels';
 import { ScaledPosScene } from './login/PosScene';
 import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
@@ -563,7 +563,7 @@ export const LoginGate: React.FC = () => {
 
   // What Cashly does — each one something the product really has.
   const features = [
-    { icon: Receipt, title: 'Fast billing', text: 'Quick checkout with FBR invoices' },
+    { icon: Receipt, title: 'Fast billing', text: 'Quick checkout with tax invoices' },
     { icon: Boxes, title: 'Smart inventory', text: 'Live stock and purchase orders' },
     { icon: BarChart3, title: 'Clear reports', text: 'Daily sales, profit and tax' },
     { icon: Building2, title: 'Multi-branch', text: 'All outlets from one head office' }
@@ -581,16 +581,21 @@ export const LoginGate: React.FC = () => {
         <div aria-hidden className="absolute -top-48 -right-24 w-[640px] h-[640px] rounded-full bg-emerald-400/[0.12] blur-3xl" />
         <div aria-hidden className="absolute -bottom-56 -left-32 w-[560px] h-[560px] rounded-full bg-teal-300/[0.08] blur-3xl" />
 
-        <header className="relative z-20 flex items-center gap-2.5">
+        <header className="relative z-20 flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-emerald-950/40">C</div>
           <span className="text-lg font-semibold tracking-tight">Cashly <span className="text-emerald-300">POS</span></span>
+          {!tillBranchId && (
+            <span className="hidden xl:inline-flex items-center gap-2 ml-2 pl-3.5 border-l border-white/15 text-[12.5px] font-medium text-white/60">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_1px_rgba(52,211,153,0.7)]" />
+              Restaurants, shops, pharmacies &amp; marts
+            </span>
+          )}
           {/* Cashly's own menu — not on a connected till, which belongs to one business. */}
           {!tillBranchId && (
             <nav className="ml-auto flex items-center gap-1" aria-label="Cashly">
-              <FeaturesMenu onPricing={() => setPanel('pricing')} />
+              <FeaturesMenu />
               <PricingMenu onDetails={() => setPanel('pricing')} />
-              <button type="button" onClick={() => setPanel('support')}
-                className="px-3 h-9 rounded-lg text-sm font-medium text-white/75 hover:text-white hover:bg-white/[0.08] transition cursor-pointer">Support</button>
+              <SupportMenu />
             </nav>
           )}
         </header>
@@ -624,29 +629,37 @@ export const LoginGate: React.FC = () => {
                     )}
                   </div>
                 )}
-                <h1 className="text-[34px] xl:text-[40px] 2xl:text-[46px] [@media(max-height:720px)]:text-[32px] font-semibold tracking-[-0.02em] leading-[1.12]">
-                  Smart POS for<br />
+                <h1 className="text-[34px] xl:text-[40px] 2xl:text-[46px] [@media(max-height:720px)]:text-[32px] font-semibold tracking-[-0.025em] leading-[1.1] [text-shadow:0_2px_28px_rgba(2,20,18,0.45)]">
+                  Smart POS for{' '}
                   <span className="relative inline-block">
-                    <span className="bg-gradient-to-r from-emerald-300 to-teal-200 bg-clip-text text-transparent">growing</span>
-                    <svg aria-hidden viewBox="0 0 200 12" className="absolute left-0 -bottom-1.5 w-full h-2.5 text-emerald-400/80" preserveAspectRatio="none">
-                      <path d="M2 9 C 50 2, 120 2, 198 7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                    <span className="bg-gradient-to-r from-emerald-300 via-teal-200 to-emerald-300 bg-[length:200%_auto] bg-clip-text text-transparent">growing</span>
+                    <svg aria-hidden viewBox="0 0 200 14" className="absolute left-0 -bottom-1 w-full h-3" preserveAspectRatio="none">
+                      <defs>
+                        <linearGradient id="heroUnderline" x1="0" x2="1" y1="0" y2="0">
+                          <stop offset="0%" stopColor="#6ee7b7" />
+                          <stop offset="100%" stopColor="#2dd4bf" />
+                        </linearGradient>
+                      </defs>
+                      <path d="M3 10 C 45 3, 95 2, 140 4 C 165 5, 185 7, 197 10" fill="none" stroke="url(#heroUnderline)" strokeWidth="3" strokeLinecap="round" />
                     </svg>
-                  </span>{' '}
+                  </span>
+                  <br />
                   businesses
                 </h1>
-                <p className="mt-4 text-[15px] 2xl:text-base leading-relaxed text-white/65 max-w-[460px] 2xl:max-w-[520px] text-pretty">
+                <p className="mt-4 text-[15px] 2xl:text-base leading-relaxed text-white/70 max-w-[460px] 2xl:max-w-[520px] text-pretty">
                   Sell, manage stock, keep your books and run every branch from one system.
                 </p>
 
-                <ul className="mt-8 [@media(max-height:720px)]:mt-6 grid grid-cols-2 gap-x-6 gap-y-5 [@media(max-height:720px)]:gap-y-4 max-w-[480px] 2xl:max-w-[540px]">
+                <ul className="mt-8 [@media(max-height:720px)]:mt-6 grid grid-cols-2 gap-3 max-w-[480px] 2xl:max-w-[540px]">
                   {features.map(({ icon: Icon, title, text }) => (
-                    <li key={title} className="flex items-start gap-3">
-                      <span className="w-9 h-9 shrink-0 rounded-lg bg-white/[0.07] ring-1 ring-inset ring-white/10 flex items-center justify-center">
+                    <li key={title}
+                      className="group flex items-start gap-3 rounded-2xl bg-white/[0.045] ring-1 ring-inset ring-white/[0.08] px-3.5 py-3 transition hover:bg-white/[0.08] hover:ring-white/15">
+                      <span className="w-9 h-9 shrink-0 rounded-xl bg-gradient-to-br from-emerald-400/20 to-teal-400/10 ring-1 ring-inset ring-emerald-400/25 flex items-center justify-center transition group-hover:from-emerald-400/30">
                         <Icon className="w-[18px] h-[18px] text-emerald-300" strokeWidth={1.75} />
                       </span>
-                      <span className="min-w-0 pt-px">
-                        <span className="block text-sm font-medium text-white">{title}</span>
-                        <span className="block mt-0.5 text-[13px] leading-snug text-white/55 text-balance">{text}</span>
+                      <span className="min-w-0 pt-0.5">
+                        <span className="block text-[13.5px] font-semibold text-white">{title}</span>
+                        <span className="block mt-0.5 text-[12.5px] leading-snug text-white/55 text-balance">{text}</span>
                       </span>
                     </li>
                   ))}
@@ -655,7 +668,7 @@ export const LoginGate: React.FC = () => {
                 <div className="mt-9 [@media(max-height:720px)]:mt-7 flex flex-wrap items-center gap-3">
                   {canRegister && (
                     <a href="/signup"
-                      className="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-[#04302a] text-sm font-semibold shadow-lg shadow-emerald-950/30 transition">
+                      className="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-gradient-to-b from-emerald-300 to-emerald-400 hover:from-emerald-200 hover:to-emerald-300 text-[#04302a] text-sm font-bold shadow-lg shadow-emerald-950/40 ring-1 ring-inset ring-white/20 transition">
                       Register free <ArrowRight className="w-4 h-4" />
                     </a>
                   )}
@@ -1014,15 +1027,6 @@ export const LoginGate: React.FC = () => {
                       <MonitorSmartphone className="w-4 h-4 text-teal-600" /> Connect a till or tablet
                     </a>
                   </div>
-                )}
-
-                {/* The way in for a new business. Only on Cashly's main address — not on a business's
-                    own address, and not on a till that already belongs to one. */}
-                {canRegister && (mode === 'identify' || mode === 'email' || mode === 'username') && (
-                  <p className="text-center text-sm text-slate-500">
-                    Don&apos;t have an account?{' '}
-                    <a href="/signup" className="font-semibold text-teal-700 hover:text-teal-800">Register free →</a>
-                  </p>
                 )}
               </form>
             )}

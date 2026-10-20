@@ -141,6 +141,7 @@ import type {
   BillingDetails,
   PlatformSettingsData,
   DemoVideoStep,
+  AiPhotoSettings,
   PlatformMessagePage,
   PlatformMessageRow,
   TeamMember,
@@ -628,6 +629,22 @@ export const posApi = {
     const res = await api.delete(`/api/catalog/products/${id}`);
     return res.data;
   },
+  // An item's photo (made by AI in the background, uploaded, a link, or none).
+  getAiPhotoAvailability: async () =>
+    (await api.get<{ available: boolean }>('/api/catalog/photos/ai')).data.available,
+  /** A new AI photo for one item; it appears when ready (photoStatus goes back to null). */
+  makeAiPhoto: async (id: string) =>
+    (await api.post<Product>(`/api/catalog/products/${id}/photo/ai`)).data,
+  /** AI photos for every item that has none. */
+  fillAiPhotos: async () =>
+    (await api.post<{ queued: number }>('/api/catalog/products/photos/fill')).data.queued,
+  /** The owner's own photo (already shrunk — utils/mediaUrl.ts shrinkPhoto). */
+  uploadProductPhoto: async (id: string, photo: Blob) =>
+    (await api.put<Product>(`/api/catalog/products/${id}/photo`, photo, { headers: { 'Content-Type': photo.type || 'image/jpeg' } })).data,
+  setProductPhotoLink: async (id: string, url: string) =>
+    (await api.put<Product>(`/api/catalog/products/${id}/photo`, { url })).data,
+  removeProductPhoto: async (id: string) =>
+    (await api.delete<Product>(`/api/catalog/products/${id}/photo`)).data,
   createCategory: async (categoryData: any) => {
     const res = await api.post<Category>('/api/catalog/categories', categoryData);
     return res.data;
@@ -1866,6 +1883,14 @@ export const posApi = {
   /** One kind's steps; null puts that kind back to the app's own videos. */
   saveDemoVideos: async (kind: string, steps: DemoVideoStep[] | null) =>
     (await api.put<Record<string, DemoVideoStep[]>>('/api/admin/demo-videos', { kind, steps })).data,
+  /** Platform → Settings → AI photos. */
+  getAiPhotoSettings: async () => (await api.get<AiPhotoSettings>('/api/admin/ai-photos')).data,
+  /** apiKey: blank keeps the saved key, "-" removes it. */
+  saveAiPhotoSettings: async (data: { enabled?: boolean; apiKey?: string; model?: string; quality?: string }) =>
+    (await api.put<AiPhotoSettings>('/api/admin/ai-photos', data)).data,
+  /** One photo made now, to check the key and the look: a data: URL. */
+  testAiPhoto: async (name: string, kind: string) =>
+    (await api.post<{ image: string }>('/api/admin/ai-photos/test', { name, kind }, { timeout: 240000 })).data.image,
   /** The platform's own prices (the Head Office ERP), as anyone registering sees them. */
   getPublicPlatformPrices: async () => {
     const res = await api.get<PlatformPrice[]>('/api/public/platform-prices');
