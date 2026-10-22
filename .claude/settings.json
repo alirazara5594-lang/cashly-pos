@@ -42,7 +42,15 @@
       "PowerShell(Set-Location \"C:\\\\Users\\\\MUHAMM~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Project-cashly-pos\\\\10f50570-7f56-4245-9fb4-ddae58f27129\\\\scratchpad\\\\rec\"; Remove-Item Env:DEMO_TEST -ErrorAction SilentlyContinue; node run.mjs restaurant.mjs --record; \"exit $LASTEXITCODE\")",
       "PowerShell(Set-Location \"C:\\\\Users\\\\MUHAMM~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--Project-cashly-pos\\\\10f50570-7f56-4245-9fb4-ddae58f27129\\\\scratchpad\\\\rec\"; Remove-Item Env:DEMO_TEST -ErrorAction SilentlyContinue; $env:KIND = \"retail\"; node run.mjs shop.mjs --record; \"exit $LASTEXITCODE\")",
       "WebSearch",
-      "Bash(echo \"tsc exit: $?\")"
+      "Bash(echo \"tsc exit: $?\")",
+      "Bash(PGPASSWORD=12345678 '/c/Program Files/PostgreSQL/18/bin/pg_dump.exe' -h localhost -p 5432 -U postgres -Fc -f backups/cashly_pos_db_before_cleanup___TRACKED_VAR__.dump cashly_pos_db)",
+      "Bash(PGPASSWORD=12345678 '/c/Program Files/PostgreSQL/18/bin/psql.exe' -h localhost -U postgres -d cashly_pos_db -P pager=off -c ' *)",
+      "Bash(PGPASSWORD=12345678 \"/c/Program Files/PostgreSQL/18/bin/psql.exe\" -h localhost -U postgres -d cashly_pos_db -P pager=off -v finish=ROLLBACK -f cleanup_test_businesses.sql)",
+      "Bash(PGPASSWORD=12345678 \"/c/Program Files/PostgreSQL/18/bin/psql.exe\" -h localhost -U postgres -d cashly_pos_db -P pager=off -v finish=COMMIT -f cleanup_test_businesses.sql)",
+      "Bash(timeout 180 node plan-shots.mjs \"Restaurant or café\" restaurant)",
+      "Bash(rm -f plan-shots/*.png)",
+      "Bash(timeout 180 node plan-shots.mjs \"Pharmacy\" pharmacy)",
+      "Bash(timeout 240 node plan-shots.mjs \"Restaurant or café\" restaurant)"
     ],
     "additionalDirectories": [
       "\\tmp"

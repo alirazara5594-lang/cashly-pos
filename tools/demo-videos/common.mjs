@@ -77,7 +77,8 @@ export async function register(r, { kind, name, province = 'PK-PB', city, plan, 
   if (city) await r.type({ label: 'City' }, city, t);
   await r.click({ text: 'Continue', contains: true }, { after: 1000 });
   await say('Choose a plan', '3');
-  if (plan) await r.click({ text: `Choose ${plan}`, contains: true }, { after: 800 });
+  // The whole plan card is the choice (a radio); its name opens it.
+  if (plan) await r.click({ text: plan, tag: 'span' }, { after: 800 });
   else await r.sleep(1500);
   await r.click({ text: 'Continue', contains: true }, { after: 1000 });
   await say('Your owner account: you sign in with a username and PIN', '4');

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, Copy, Eye, EyeOff, Link2, Loader2, MonitorSmartphone,
+  ArrowLeft, ArrowRight, Building2, Check, CheckCircle2, Copy, Eye, EyeOff, Link2, Loader2, Minus, MonitorSmartphone,
   Plus, Store, Trash2
 } from 'lucide-react';
 import { posApi, getApiErrorMessage } from '../../services/api';
@@ -9,7 +9,7 @@ import { restaurantLinkParts, restaurantSignInLink, suggestWebName, webNameProbl
 import type { CountryProfile, PublicPackage, SubscriptionTier } from '../../types';
 import {
   BUSINESS_KINDS, ERP_FALLBACK_MONTHLY, PLANS, PRIVACY_URL, TERMS_URL, TERMS_VERSION, deviceLine, emailOk, isEasyPin,
-  money, passwordProblem, planCopy, planFigures, planName, RECOMMENDED_PLAN, type KindId, type ProductKind
+  money, passwordProblem, planCopy, planFeatures, planFigures, planLimits, planName, RECOMMENDED_PLAN, type KindId, type ProductKind
 } from './registerCatalog';
 
 // ============================================================
@@ -538,9 +538,7 @@ export const Register: React.FC = () => {
               <option value="">Choose…</option>
               {states.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
             </select>
-            {errorText('reg-state') || (chosenState && (
-              <p className={hintCls}>Starting tax {chosenState.cashTaxRate ?? 0}%{chosenState.digitalTaxRate != null && chosenState.digitalTaxRate !== chosenState.cashTaxRate ? ` (${chosenState.digitalTaxRate}% by card)` : ''}{chosenState.authorityName ? `, ${chosenState.authorityName}` : ''}. Change it in Tax Setup.</p>
-            ))}
+            {errorText('reg-state')}
           </div>
         )}
         <div>
@@ -577,69 +575,86 @@ export const Register: React.FC = () => {
     </div>
   );
 
+  const features = planFeatures(kindId);
   const planStep = (
-    <div className={stepCls}>
+    <div className="space-y-4 [@media(max-height:820px)]:space-y-3">
       {stepHeader('Choose your plan', `For a ${kind.label.toLowerCase()}. Free for 30 days with every feature; you pay only if you stay.`)}
-      {/* Pricing cards, the way pricing pages read: name, who it is for, price, what is included,
-          and a choose button at the foot of each. Roomy on a big screen, compact on a short one. */}
-      <div className="grid md:grid-cols-3 gap-5 [@media(max-height:760px)]:gap-3 pt-2">
-        {PLANS.map(tier => {
+      {/* Pricing cards that compare line for line: every plan lists the same devices and features,
+          ticked where it has them, so what each plan adds reads straight across. On a wide screen the
+          cards share their rows (CSS subgrid), so a line sits at the same height in all three even
+          where a label wraps. Sized to fit one laptop screen without scrolling: the whole card is the
+          choice (one radio group, so the arrow keys move between plans), and one-line labels. */}
+      <div role="radiogroup" aria-label="Plan" className="flex flex-col gap-4 md:grid md:grid-cols-3 md:gap-x-4 lg:gap-x-5 md:gap-y-0 pt-2">
+        {PLANS.map((tier, idx) => {
           const f = planFigures(tier, packages);
-          const copy = planCopy(kindId, tier);
+          const limits = planLimits(f, kind.food);
           const on = plan === tier;
           const recommended = RECOMMENDED_PLAN === tier;
           const yearlySaving = Math.round(12 - f.yearly / f.monthly);
+          // Name, price, devices, the heading, and a row per feature.
+          const rows = 4 + features.length;
           return (
-            <button key={tier} type="button" onClick={() => setPlan(tier)} aria-pressed={on}
-              className={`relative text-left rounded-3xl border-2 p-6 [@media(max-height:760px)]:p-4 [@media(min-height:860px)]:p-8 flex flex-col gap-4 [@media(max-height:760px)]:gap-2 [@media(min-height:860px)]:gap-5 transition cursor-pointer focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-500/30 ${
-                on ? 'border-teal-500 bg-teal-50/40 shadow-xl shadow-teal-900/10' : 'border-slate-200 bg-white hover:border-teal-300 hover:shadow-lg'
+            <label key={tier} style={{ gridRow: `span ${rows}` }}
+              className={`group relative flex flex-col md:grid md:grid-cols-1 md:grid-rows-subgrid rounded-2xl border bg-white px-4 xl:px-5 py-5 [@media(max-height:820px)]:py-4 [@media(max-height:760px)]:py-3 cursor-pointer transition has-focus-visible:ring-4 has-focus-visible:ring-teal-500/30 ${
+                on ? 'border-teal-600 ring-1 ring-teal-600 shadow-xl shadow-teal-900/10' : 'border-slate-200 hover:border-slate-300 hover:shadow-md'
               }`}>
+              <input type="radio" name="plan" value={tier} checked={on} onChange={() => setPlan(tier)} className="sr-only" />
               {recommended && (
-                <span className="absolute -top-3 left-6 [@media(max-height:760px)]:left-4 text-xs font-bold px-2.5 py-0.5 rounded-full bg-teal-600 text-white shadow-sm">Recommended</span>
+                <span className="absolute -top-2.5 left-5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-teal-600 text-white shadow-sm">Recommended</span>
               )}
 
-              <div className="space-y-1">
+              <div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-2xl [@media(max-height:760px)]:text-lg [@media(min-height:860px)]:text-3xl font-bold text-slate-900">{planName(tier)}</span>
-                  <span className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${on ? 'border-teal-600 bg-teal-600' : 'border-slate-300'}`}>
-                    {on && <Check className="w-3.5 h-3.5 text-white" />}
+                  <span className="text-lg font-semibold text-slate-900">{planName(tier)}</span>
+                  <span aria-hidden="true" className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${on ? 'border-teal-600 bg-teal-600' : 'border-slate-300 group-hover:border-teal-400'}`}>
+                    {on && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                   </span>
                 </div>
-                <p className="text-sm [@media(max-height:760px)]:text-[13px] [@media(min-height:860px)]:text-base text-slate-600 leading-snug min-h-[2.5rem] [@media(max-height:760px)]:min-h-0">{copy.fits}</p>
+                <p className="mt-0.5 text-[13px] text-slate-500 leading-snug">{planCopy(kindId, tier).fits}</p>
               </div>
 
-              <div>
-                <p className="flex items-baseline gap-1">
-                  <span className="text-3xl [@media(max-height:760px)]:text-xl [@media(min-height:860px)]:text-4xl font-extrabold tracking-tight text-slate-900">{money(f.monthly)}</span>
-                  <span className="text-sm [@media(min-height:860px)]:text-base text-slate-500">/ month</span>
+              <div className="pt-3 [@media(max-height:760px)]:pt-2">
+                <p className="flex flex-wrap items-baseline gap-x-1">
+                  <span className="whitespace-nowrap text-2xl [@media(min-height:821px)]:text-[28px] font-semibold tracking-tight text-slate-900">{money(f.monthly)}</span>
+                  <span className="text-sm text-slate-500">/ month</span>
                 </p>
-                <p className="text-xs [@media(min-height:860px)]:text-sm text-slate-500 mt-0.5">
-                  or {money(f.yearly)} a year{yearlySaving > 0 && <span className="ml-1.5 font-semibold text-teal-700">· {yearlySaving} months free</span>}
+                <p className="mt-0.5 text-xs text-slate-500">
+                  <span className="whitespace-nowrap">or {money(f.yearly)} a year</span>
+                  {yearlySaving > 0 && <>{' '}<span className="whitespace-nowrap font-medium text-teal-700">· {yearlySaving} months free</span></>}
                 </p>
               </div>
 
-              <p className="text-sm [@media(max-height:760px)]:text-xs [@media(min-height:860px)]:text-[15px] font-semibold text-teal-800 bg-teal-50 border border-teal-100 rounded-xl px-3 py-2 [@media(max-height:760px)]:py-1 [@media(min-height:860px)]:py-2.5">
-                {deviceLine(f, kind.food)}
-              </p>
-
-              <ul className="space-y-2 [@media(max-height:760px)]:space-y-1 [@media(min-height:860px)]:space-y-3 text-sm [@media(max-height:760px)]:text-[13px] [@media(min-height:860px)]:text-[15px] leading-snug text-slate-700 border-t border-slate-200 pt-4 [@media(max-height:760px)]:pt-2 [@media(min-height:860px)]:pt-5">
-                {tier !== 'Starter' && <li className="text-xs font-bold uppercase tracking-wide text-slate-500">Everything in {planName(PLANS[PLANS.indexOf(tier) - 1])}, plus</li>}
-                {copy.adds.map(a => (
-                  <li key={a} className="flex gap-2"><Check className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" /> {a}</li>
+              {/* The numbers to compare: tills, tablets, kitchen screens and logins, side by side. */}
+              <dl className={`mt-4 [@media(max-height:820px)]:mt-3 [@media(max-height:760px)]:mt-2 grid ${limits.length === 4 ? 'grid-cols-2' : 'grid-cols-3'} gap-px rounded-xl overflow-hidden border border-slate-200 bg-slate-200`}>
+                {limits.map(l => (
+                  <div key={l.label} className={`flex flex-col-reverse justify-end px-2.5 xl:px-3 py-1.5 [@media(max-height:760px)]:py-1 ${on ? 'bg-teal-50/60' : 'bg-slate-50'}`}>
+                    <dt className="text-[11px] text-slate-500 leading-4">{l.label}</dt>
+                    <dd className={`text-[15px] leading-5 tabular-nums ${l.value === '—' ? 'text-slate-300' : 'font-semibold text-slate-900'}`}>
+                      {l.value}{l.value === '—' && <span className="sr-only">None</span>}
+                    </dd>
+                  </div>
                 ))}
-              </ul>
+              </dl>
 
-              <span className={`mt-auto inline-flex items-center justify-center gap-1.5 h-11 [@media(max-height:760px)]:h-9 [@media(min-height:860px)]:h-12 [@media(min-height:860px)]:text-base rounded-xl text-sm font-bold transition ${
-                on ? 'bg-teal-600 text-white' : 'border-2 border-teal-600 text-teal-700'
-              }`}>
-                {on ? <><Check className="w-4 h-4" /> Selected</> : `Choose ${planName(tier)}`}
-              </span>
-            </button>
+              <p className="pt-4 [@media(max-height:820px)]:pt-3 [@media(max-height:760px)]:pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Features</p>
+              {features.map(ft => {
+                const has = idx >= ft.from;
+                return (
+                  <div key={ft.label} title={ft.detail}
+                    className={`flex items-start gap-2 py-1 [@media(max-height:820px)]:py-0.5 text-xs xl:text-[13px] leading-5 ${has ? 'text-slate-700' : 'text-slate-400'}`}>
+                    {has
+                      ? <Check className="w-4 h-4 mt-0.5 shrink-0 text-teal-600" />
+                      : <Minus className="w-4 h-4 mt-0.5 shrink-0 text-slate-300" />}
+                    <span>{ft.label}{!has && <span className="sr-only"> (not included)</span>}</span>
+                  </div>
+                );
+              })}
+            </label>
           );
         })}
       </div>
-      <p className="text-xs text-slate-500 text-center">
-        Prices exclude tax. Extra tills, tablets and per-shop services (FBR / PRA invoicing, online payments, QR ordering) can be added any time from Plan &amp; Add-ons.
+      <p className="text-xs text-slate-500 text-center text-pretty">
+        Prices exclude tax. Logins are for owners and managers; cashiers and waiters sign in free. Add tills, tablets and services any time.
       </p>
     </div>
   );
@@ -957,7 +972,7 @@ export const Register: React.FC = () => {
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className={`${pageWidth} mx-auto px-5 md:px-10 py-6 [@media(max-height:760px)]:py-4`}>
+          <div className={`${pageWidth} mx-auto px-5 md:px-10 py-6 [@media(max-height:820px)]:py-4`}>
             {created ? success : !product ? chooser : stepContent[step.id]}
             {generalProblem && !created && (
               <div className="mt-6 px-4 py-3 rounded-xl bg-rose-50 border border-rose-200 text-sm font-semibold text-rose-700" role="alert">{generalProblem}</div>

@@ -195,6 +195,8 @@ export async function launchApp({ edge, profile, appUrl, apiUrl }) {
   const r = {
     sleep,
     evaluate,
+    /** Any DevTools call (a script checking a layout at another window size, say). */
+    send,
     async ensureOverlay() { await evaluate(OVERLAY + `; window.__rec.ensure(); window.__rec.move(${cursor.x}, ${cursor.y}, 0);`); },
     async goto(path, { wait = 1500 } = {}) {
       await send('Page.navigate', { url: new URL(path, appUrl).toString() });

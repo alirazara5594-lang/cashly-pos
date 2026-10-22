@@ -39,47 +39,89 @@ export const BUSINESS_KINDS: BusinessKind[] = [
 export const PLANS: SubscriptionTier[] = ['Starter', 'Standard', 'Professional'];
 export const planName = (tier: SubscriptionTier) => (tier === 'Professional' ? 'Enterprise' : tier);
 
-/** What one plan is for, and what it adds over the one before, for this kind of business. */
+/** What one plan is for, for this kind of business. */
 export interface PlanCopy {
   fits: string;
-  adds: string[];
 }
 
-const food = (tier: SubscriptionTier): PlanCopy =>
-  tier === 'Starter' ? { fits: 'Takeaway, kiosk or a small café', adds: ['Sales, receipts and returns', 'Tables and waiter tablets', 'Customers, Z-report and tax reports'] }
-    : tier === 'Standard' ? { fits: 'A dine-in restaurant or busy café', adds: ['Kitchen screens', 'Recipes, ingredient stock and food cost', 'Delivery and cash on delivery', 'Loyalty, gift cards and promo codes', 'Staff rota, advanced reports, dashboard'] }
-    : { fits: 'High-volume fast food or a big dining hall', adds: ['Unlimited kitchen screens', 'Accounting: ledger, profit and loss, balance sheet', 'Payroll, payslips and leave'] };
-
-const shop = (tier: SubscriptionTier): PlanCopy =>
-  tier === 'Starter' ? { fits: 'A small shop selling at one counter', adds: ['Sales, receipts and returns', 'Customers and credit (khata)', 'Z-report and tax reports'] }
-    : tier === 'Standard' ? { fits: 'A shop that tracks stock and suppliers', adds: ['Stock counts and adjustments', 'Suppliers and purchase orders', 'Loyalty, gift cards and promo codes', 'Delivery and cash on delivery', 'Staff rota, advanced reports, dashboard'] }
-    : { fits: 'A large store with its own accounts', adds: ['Accounting: ledger, profit and loss, balance sheet', 'Payroll, payslips and leave'] };
-
-const mart = (tier: SubscriptionTier): PlanCopy =>
-  tier === 'Starter' ? { fits: 'A small mart with one till', adds: ['Sales, receipts and returns', 'Customers and credit (khata)', 'Z-report and tax reports'] }
-    : tier === 'Standard' ? { fits: 'A mart that tracks stock, batches and expiry', adds: ['Stock with batches and expiry dates', 'Suppliers and purchase orders', 'Loyalty, gift cards and promo codes', 'Delivery and cash on delivery', 'Staff rota, advanced reports, dashboard'] }
-    : { fits: 'A large cash & carry with its own accounts', adds: ['Accounting: ledger, profit and loss, balance sheet', 'Payroll, payslips and leave'] };
-
-const pharmacy = (tier: SubscriptionTier): PlanCopy =>
-  tier === 'Starter' ? { fits: 'Counter sales only, without batch tracking', adds: ['Sales by box, strip or tablet', 'Prescriptions at the till', 'Search by formula'] }
-    : tier === 'Standard' ? { fits: 'A full pharmacy', adds: ['Batches and expiry, earliest expiry sold first', 'Expired stock blocked at the till', 'Controlled-medicine register', 'Supplier returns, write-offs, pharmacy reports', 'Suppliers, purchase orders, loyalty, staff rota'] }
-    : { fits: 'A large pharmacy with its own accounts', adds: ['Accounting: ledger, profit and loss, balance sheet', 'Payroll, payslips and leave'] };
+const FITS: Record<KindId, [string, string, string]> = {
+  restaurant: ['Takeaway, kiosk or a small café', 'A dine-in restaurant or busy café', 'High-volume fast food or a big dining hall'],
+  retail: ['A small shop selling at one counter', 'A shop that tracks stock and suppliers', 'A large store with its own accounts'],
+  grocery: ['A small mart with one till', 'A mart that tracks stock, batches and expiry', 'A large cash & carry with its own accounts'],
+  pharmacy: ['Counter sales only, without batch tracking', 'A full pharmacy', 'A large pharmacy with its own accounts']
+};
 
 export function planCopy(kind: KindId, tier: SubscriptionTier): PlanCopy {
-  if (kind === 'restaurant') return food(tier);
-  if (kind === 'pharmacy') return pharmacy(tier);
-  if (kind === 'grocery') return mart(tier);
-  return shop(tier);
+  return { fits: FITS[kind][PLANS.indexOf(tier)] };
 }
+
+/**
+ * One line of the plan comparison, and the first plan that has it: 0 Starter, 1 Standard,
+ * 2 Enterprise. Every plan lists the same lines, ticked or not, so the differences read across.
+ * Kept equal to FeatureCatalog.cs (inventory, purchasing, recipes, delivery, loyalty, staff rota and
+ * advanced reports from Standard; accounting and payroll from Enterprise).
+ *
+ * Labels stay short enough for one line in a card, so the whole step fits on one screen; `detail`
+ * is the fuller description, shown on hover.
+ */
+export interface PlanFeature {
+  label: string;
+  detail?: string;
+  from: 0 | 1 | 2;
+}
+
+const BOOKS: PlanFeature = { label: 'Accounting and payroll', detail: 'Ledger, profit and loss, balance sheet; payroll, payslips and leave', from: 2 };
+const GROWTH: PlanFeature[] = [
+  { label: 'Delivery, cash on delivery', from: 1 },
+  { label: 'Loyalty, gift cards, promos', detail: 'Loyalty points, gift cards and promo codes', from: 1 },
+  { label: 'Staff rota, advanced reports', detail: 'Staff rota, the dashboard and advanced reports', from: 1 }
+];
+
+const shopFeatures = (stock: PlanFeature): PlanFeature[] => [
+  { label: 'Sales, receipts, returns', from: 0 },
+  { label: 'Customers and khata credit', from: 0 },
+  { label: 'Z-report and tax reports', from: 0 },
+  stock,
+  { label: 'Suppliers, purchase orders', from: 1 },
+  ...GROWTH,
+  BOOKS
+];
+
+const FEATURES: Record<KindId, PlanFeature[]> = {
+  restaurant: [
+    { label: 'Sales, receipts, returns', from: 0 },
+    { label: 'Tables and waiter tablets', from: 0 },
+    { label: 'Customers and tax reports', detail: 'Customers, the Z-report and tax reports', from: 0 },
+    { label: 'Recipes and food cost', detail: 'Recipes, ingredient stock and food cost', from: 1 },
+    { label: 'Suppliers, purchase orders', from: 1 },
+    ...GROWTH,
+    BOOKS
+  ],
+  retail: shopFeatures({ label: 'Stock counts, adjustments', from: 1 }),
+  grocery: shopFeatures({ label: 'Stock, batches and expiry', detail: 'Stock with batch numbers and expiry dates', from: 1 }),
+  pharmacy: [
+    { label: 'Sell by box, strip or tablet', from: 0 },
+    { label: 'Prescriptions at the till', from: 0 },
+    { label: 'Search by formula', from: 0 },
+    { label: 'Batches and expiry dates', detail: 'Batches and expiry dates; the earliest expiry is sold first', from: 1 },
+    { label: 'Expired stock blocked', detail: 'The till will not sell an expired batch', from: 1 },
+    { label: 'Controlled-medicine register', from: 1 },
+    { label: 'Suppliers and returns', detail: 'Suppliers, purchase orders, supplier returns and write-offs', from: 1 },
+    { label: 'Loyalty, rota, reports', detail: 'Loyalty, staff rota, the dashboard and pharmacy reports', from: 1 },
+    BOOKS
+  ]
+};
+
+export const planFeatures = (kind: KindId): PlanFeature[] => FEATURES[kind];
 
 /** The plan most businesses of every kind should start on: the first with stock tracking. */
 export const RECOMMENDED_PLAN: SubscriptionTier = 'Standard';
 
 /** Built-in figures, used only until the server's price list answers. Kept equal to FeatureCatalog.cs. */
-const FALLBACK: Record<SubscriptionTier, { monthly: number; yearly: number; branchMonthly: number; branchYearly: number; tills: number; tablets: number; kds: number }> = {
-  Starter: { monthly: 5000, yearly: 50000, branchMonthly: 3000, branchYearly: 30000, tills: 1, tablets: 2, kds: 0 },
-  Standard: { monthly: 12000, yearly: 120000, branchMonthly: 6000, branchYearly: 60000, tills: 3, tablets: 8, kds: 2 },
-  Professional: { monthly: 25000, yearly: 250000, branchMonthly: 10000, branchYearly: 100000, tills: 8, tablets: 20, kds: 999 }
+const FALLBACK: Record<SubscriptionTier, { monthly: number; yearly: number; branchMonthly: number; branchYearly: number; tills: number; tablets: number; kds: number; users: number }> = {
+  Starter: { monthly: 5000, yearly: 50000, branchMonthly: 3000, branchYearly: 30000, tills: 1, tablets: 2, kds: 0, users: 3 },
+  Standard: { monthly: 12000, yearly: 120000, branchMonthly: 6000, branchYearly: 60000, tills: 3, tablets: 8, kds: 2, users: 10 },
+  Professional: { monthly: 25000, yearly: 250000, branchMonthly: 10000, branchYearly: 100000, tills: 8, tablets: 20, kds: 999, users: 999 }
 };
 
 /** A plan's prices and device allowance, from the server when it has answered. */
@@ -93,8 +135,21 @@ export function planFigures(tier: SubscriptionTier, packages: PublicPackage[]) {
     branchYearly: pkg?.branchYearlyPricePKR || f.branchYearly,
     tills: pkg?.maxCounters ?? f.tills,
     tablets: pkg?.maxOrderTabs ?? f.tablets,
-    kitchenScreens: pkg?.maxKitchenDisplays ?? f.kds
+    kitchenScreens: pkg?.maxKitchenDisplays ?? f.kds,
+    /** Back-office logins (owners, managers); cashiers, waiters and kitchen staff are not counted. */
+    users: pkg && pkg.maxUsers > 0 ? pkg.maxUsers : f.users
   };
+}
+
+/** The plan comparison's countable lines: devices and back-office logins, in this trade's words. */
+export function planLimits(f: ReturnType<typeof planFigures>, food: boolean): { label: string; value: string }[] {
+  return [
+    { label: 'Tills', value: countText(f.tills) },
+    { label: food ? 'Waiter tablets' : 'Tablets', value: countText(f.tablets) },
+    ...(food ? [{ label: 'Kitchen screens', value: f.kitchenScreens > 0 ? countText(f.kitchenScreens) : '—' }] : []),
+    // Owners' and managers' logins; the note under the plans says cashiers and waiters are free.
+    { label: 'Logins', value: countText(f.users) }
+  ];
 }
 
 export const ERP_FALLBACK_MONTHLY = 15000;
