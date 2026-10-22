@@ -957,6 +957,8 @@ export const Register: React.FC = () => {
   // Three pricing cards side by side want more room than a form does.
   const pageWidth = !created && product && step.id === 'plan' ? 'max-w-6xl' : 'max-w-4xl';
   const progressLabel = useMemo(() => (product ? `Step ${stepIndex + 1} of ${steps.length}` : ''), [product, stepIndex, steps.length]);
+  /** The last step, with the terms not yet agreed to: "Create my business" waits for the tick. */
+  const mustAgree = step?.id === 'review' && !agreed;
 
   return (
     <div className="h-screen w-full flex bg-white text-slate-900">
@@ -989,8 +991,15 @@ export const Register: React.FC = () => {
                 <ArrowLeft className="w-4 h-4" /> {stepIndex === 0 ? 'Change setup' : 'Back'}
               </button>
               <span className="hidden sm:block text-xs font-semibold text-slate-400">{progressLabel}</span>
-              <button type="button" onClick={next} disabled={submitting}
-                className="inline-flex items-center gap-2 h-11 px-6 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white text-sm font-bold transition shadow-lg shadow-teal-600/20 cursor-pointer">
+              {/* "Create my business" works once the terms are agreed to: until the box is ticked it
+                  is greyed out, rather than answering a click with an error. */}
+              <button type="button" onClick={next} disabled={submitting || mustAgree}
+                title={mustAgree ? 'Tick the box to agree to the terms first' : undefined}
+                className={`inline-flex items-center gap-2 h-11 px-6 rounded-xl text-sm font-bold transition cursor-pointer ${
+                  mustAgree
+                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    : 'bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white shadow-lg shadow-teal-600/20'
+                }`}>
                 {submitting ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating…</>
                   : step.id === 'review' ? <>Create my business <ArrowRight className="w-4 h-4" /></>
                   : <>Continue <ArrowRight className="w-4 h-4" /></>}
