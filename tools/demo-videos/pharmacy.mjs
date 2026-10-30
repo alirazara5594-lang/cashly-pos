@@ -1,6 +1,6 @@
 // "Cashly for pharmacies": register, add medicines with formula and batches, sell by box or strip,
 // see the day.
-import { signIn, hideChecklist, register, addCategory, stockIn } from './common.mjs';
+import { signIn, register, addCategory, stockIn } from './common.mjs';
 export const name = 'pharmacy';
 
 const test = process.env.DEMO_TEST;
@@ -86,7 +86,6 @@ export default async function ({ r, video }) {
   if (skipSetup) {
     // The pharmacy and its medicines are already there; pick up at the till.
     await signIn(r, biz.slug, owner.username, owner.pin, { quick: true });
-    await hideChecklist(r);
     await r.goto('/', { wait: 3000 });
   } else {
     // 1 — Register.
@@ -98,7 +97,6 @@ export default async function ({ r, video }) {
     });
 
     await signIn(r, biz.slug, owner.username, owner.pin, { quick: true });
-    await hideChecklist(r);
     await r.goto('/menu', { wait: 2500 });
 
     // 2 — Medicines.

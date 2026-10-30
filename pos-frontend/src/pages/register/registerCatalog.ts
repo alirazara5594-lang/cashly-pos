@@ -58,8 +58,8 @@ export function planCopy(kind: KindId, tier: SubscriptionTier): PlanCopy {
 /**
  * One line of the plan comparison, and the first plan that has it: 0 Starter, 1 Standard,
  * 2 Enterprise. Every plan lists the same lines, ticked or not, so the differences read across.
- * Kept equal to FeatureCatalog.cs (inventory, purchasing, recipes, delivery, loyalty, staff rota and
- * advanced reports from Standard; accounting and payroll from Enterprise).
+ * Kept equal to FeatureCatalog.cs (inventory, purchasing, recipes, delivery, staff rota and
+ * advanced reports from Standard; loyalty, accounting and payroll from Enterprise).
  *
  * Labels stay short enough for one line in a card, so the whole step fits on one screen; `detail`
  * is the fuller description, shown on hover.
@@ -73,7 +73,7 @@ export interface PlanFeature {
 const BOOKS: PlanFeature = { label: 'Accounting and payroll', detail: 'Ledger, profit and loss, balance sheet; payroll, payslips and leave', from: 2 };
 const GROWTH: PlanFeature[] = [
   { label: 'Delivery, cash on delivery', from: 1 },
-  { label: 'Loyalty, gift cards, promos', detail: 'Loyalty points, gift cards and promo codes', from: 1 },
+  { label: 'Loyalty, gift cards, promos', detail: 'Loyalty points, gift cards and promo codes', from: 2 },
   { label: 'Staff rota, advanced reports', detail: 'Staff rota, the dashboard and advanced reports', from: 1 }
 ];
 
@@ -107,7 +107,7 @@ const FEATURES: Record<KindId, PlanFeature[]> = {
     { label: 'Expired stock blocked', detail: 'The till will not sell an expired batch', from: 1 },
     { label: 'Controlled-medicine register', from: 1 },
     { label: 'Suppliers and returns', detail: 'Suppliers, purchase orders, supplier returns and write-offs', from: 1 },
-    { label: 'Loyalty, rota, reports', detail: 'Loyalty, staff rota, the dashboard and pharmacy reports', from: 1 },
+    { label: 'Rota, reports', detail: 'Staff rota, the dashboard and pharmacy reports', from: 1 },
     BOOKS
   ]
 };

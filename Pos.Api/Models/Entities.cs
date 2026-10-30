@@ -529,7 +529,7 @@ public class Product
     public KitchenStation Station { get; set; } = KitchenStation.MainKitchen;
     public bool IsActive { get; set; } = true;
     /// <summary>Part of the sample menu a new business can start with, so a trial can ring up a test
-    /// sale straight away. "Remove sample menu" deletes these (or hides one that has been sold).</summary>
+    /// sale straight away. The business can delete these like any other item once its own arrive.</summary>
     public bool IsSample { get; set; }
 
     // A medicine's details (Models/PharmacyEntities.cs). Empty for anything that is not a medicine.

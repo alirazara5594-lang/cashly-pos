@@ -56,12 +56,6 @@ export async function stockIn(r, product, qty, { supplier, batch, expiry, quick 
   await r.click({ text: 'Confirm Stock-In', contains: true }, { after: 1500, ...o });
 }
 
-/** Close the "Getting started" checklist (it stays closed in this browser). */
-export async function hideChecklist(r) {
-  const spec = { css: 'button[title="Hide the checklist"], button[aria-label="Hide the checklist"]' };
-  if (await r.has(spec)) { await r.click(spec, { after: 700, ms: 200 }); }
-}
-
 /** Register a Cashly POS business through the sign-up screens. */
 export async function register(r, { kind, name, province = 'PK-PB', city, plan, owner, mobile, username, pin, sampleItems }, { captions = false, quick = false } = {}) {
   const say = async (text, key) => { if (captions) await r.caption(text, key); };

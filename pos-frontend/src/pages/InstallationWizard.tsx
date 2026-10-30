@@ -2327,7 +2327,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
               </div>
 
               <div className={`grid grid-cols-1 gap-4 ${signupMode ? 'md:grid-cols-2' : ''}`}>
-                {/* A few items to try a sale with straight away; one click removes them later. */}
+                {/* A few items to try a sale with straight away; they can be deleted from Menu later. */}
                 {signupMode && (
                   <label className="flex items-start gap-3 p-4 rounded-2xl border border-slate-200 bg-white cursor-pointer hover:bg-slate-50 transition">
                     <input
@@ -2338,7 +2338,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
                     />
                     <span className="text-xs text-slate-600">
                       <strong className="block text-sm font-semibold text-slate-900">Start with a sample menu</strong>
-                      Five food items to try a sale straight away; remove them in one click from Getting started.
+                      Five food items to try a sale straight away; delete them from Menu whenever you like.
                     </span>
                   </label>
                 )}

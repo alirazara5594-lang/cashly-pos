@@ -1,5 +1,5 @@
 // "Cashly for restaurants and cafés": register, set up the menu, sell, see the day.
-import { signIn, hideChecklist, register } from './common.mjs';
+import { signIn, register } from './common.mjs';
 export const name = 'restaurant';
 
 const test = process.env.DEMO_TEST;
@@ -18,9 +18,8 @@ export default async function ({ r, video }) {
     await r.sleep(3500);
   });
 
-  // Signed in, checklist closed, on the menu's products.
+  // Signed in, on the menu's products.
   await signIn(r, biz.slug, owner.username, owner.pin, { quick: true });
-  await hideChecklist(r);
   await r.goto('/menu', { wait: 2500 });
   await r.click({ text: 'Products', contains: true, tag: 'button' }, { after: 900, ms: 150 });
 

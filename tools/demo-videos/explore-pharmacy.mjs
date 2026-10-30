@@ -1,5 +1,5 @@
 // Explore: a pharmacy — sidebar, catalog, the medicine form, the till.
-import { signIn, hideChecklist, register } from './common.mjs';
+import { signIn, register } from './common.mjs';
 export const name = 'explore-pharmacy';
 
 const listButtons = r => r.evaluate(`[...document.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0).map(b => (b.getAttribute('aria-label') || b.title || b.textContent).trim().slice(0, 40)).join(' | ')`);
@@ -9,7 +9,6 @@ const listFields = r => r.evaluate(`[...document.querySelectorAll('input,select,
 export default async function ({ r, shot }) {
   await register(r, { kind: 'Pharmacy', name: 'Explore Pharmacy', city: 'Lahore', mobile: '0300 1110003', owner: 'Dr Bilal', username: 'bilal', pin: '739461' }, { quick: true });
   await signIn(r, 'explore-pharmacy', 'bilal', '739461', { quick: true });
-  await hideChecklist(r);
   await shot('pos');
   console.log('links:\n' + await listLinks(r));
   console.log('pos buttons:', await listButtons(r));

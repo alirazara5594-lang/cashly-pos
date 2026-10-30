@@ -190,7 +190,7 @@ public static class FeatureCatalog
         // Allowed on every version; how many messages go out is the monthly allowance
         // (SaaSPackageConfig.WhatsAppMessagesPerMonth) plus any message bundles bought.
         [FeatureCodes.WhatsApp]     = (true,  true,  true),
-        [FeatureCodes.Loyalty]      = (false, true,  true),
+        [FeatureCodes.Loyalty]      = (false, false, true),
         [FeatureCodes.Labor]        = (false, true,  true),
         [FeatureCodes.Payroll]      = (false, false, true),
         // Add-on only: see FeatureCodes.SoldSeparately.
@@ -236,7 +236,7 @@ public static class FeatureCatalog
     public static readonly (string Code, string Name, string Description, decimal Monthly, decimal Yearly, int Rank)[] Plans =
     {
         ("starter", "Starter", "For a takeaway, kiosk, small café or retail counter: one till, two tablets, receipts, cash shifts and daily reports.", 5000m, 50000m, 1),
-        ("standard", "Standard", "For a dine-in restaurant, busy café or mart: three tills, eight tablets, kitchen screens, delivery, loyalty, inventory and staff scheduling.", 12000m, 120000m, 2),
+        ("standard", "Standard", "For a dine-in restaurant, busy café or mart: three tills, eight tablets, kitchen screens, delivery, inventory and staff scheduling.", 12000m, 120000m, 2),
         // Sold as "Enterprise". The code ("professional") and package key ("Professional") stay as
         // they were: they are what saved data and API guards reference.
         ("professional", "Enterprise", "For high-volume fast food, big dining halls and food courts: eight tills, twenty tablets, unlimited kitchen screens, full accounting and payroll.", 25000m, 250000m, 3)

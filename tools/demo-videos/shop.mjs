@@ -1,6 +1,6 @@
 // "Cashly for retail stores" / "for marts and cash & carry": register, add products and stock,
 // sell by barcode, see the day. KIND=retail (default) or KIND=grocery.
-import { signIn, hideChecklist, register, addCategory, addProduct, stockIn } from './common.mjs';
+import { signIn, register, addCategory, addProduct, stockIn } from './common.mjs';
 
 const kind = process.env.KIND || 'retail';
 export const name = kind;
@@ -49,7 +49,6 @@ export default async function ({ r, video }) {
   if (skipSetup) {
     // The business and its stock are already there; pick up at the till.
     await signIn(r, biz.slug, K.owner.username, K.owner.pin, { quick: true });
-    await hideChecklist(r);
     await r.goto('/', { wait: 3000 });
   } else {
   // 1 — Register.
@@ -61,7 +60,6 @@ export default async function ({ r, video }) {
   });
 
   await signIn(r, biz.slug, K.owner.username, K.owner.pin, { quick: true });
-  await hideChecklist(r);
   await r.goto('/menu', { wait: 2500 });
 
   // 2 — Products and stock.

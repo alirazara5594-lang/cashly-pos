@@ -1275,27 +1275,6 @@ export interface RenewalsSummary {
   addOn: RenewalCounts;
 }
 
-/** What a new business has done so far, for the Getting started checklist. */
-export interface OnboardingStatus {
-  email: string | null;
-  emailConfirmed: boolean;
-  /** False until the server can send email (SMTP + App:PublicUrl). */
-  emailEnabled: boolean;
-  /** The business's own active menu items, not counting the sample menu. */
-  ownMenuItems: number;
-  sampleMenuItems: number;
-  /** Active staff other than the owner. */
-  staff: number;
-  /** Tills, tablets and screens connected and not revoked. */
-  devices: number;
-  hasSale: boolean;
-  /** Locations that sell. A head office registered alone has none yet. */
-  outlets?: number;
-  status: string;
-  trialEndsAt: string | null;
-  hasHeadOffice: boolean;
-}
-
 /** The signed-in person's own sign-in settings. */
 export interface AccountSecurity {
   email: string | null;

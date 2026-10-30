@@ -12,7 +12,6 @@ import { usePosStore, normalizeRole } from './store/posStore';
 import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { GettingStarted } from './components/GettingStarted';
 import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { webNameFromPath } from './services/restaurantAddress';
 import { OFFLINE_SESSION_TOKEN } from './services/offlineStaff';
@@ -407,11 +406,6 @@ function MainLayoutInner() {
 
         {/* Messages from Cashly to every business (or some), until closed. */}
         {!supportSession && <AnnouncementBanner tenantId={currentUser?.tenantId && currentUser.tenantId !== '00000000-0000-0000-0000-000000000000' ? currentUser.tenantId : null} />}
-
-        {/* The owner's first-days checklist; gone once it is all done or they hide it. */}
-        {normalizeRole(currentUser?.role) === 'OwnerAdmin' && !supportSession && currentUser?.tenantId && (
-          <GettingStarted key={currentUser.tenantId} tenantId={currentUser.tenantId} />
-        )}
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <Suspense fallback={<RouteLoadingFallback />}>

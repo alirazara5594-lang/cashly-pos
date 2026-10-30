@@ -27,7 +27,7 @@ export const ConfirmEmail: React.FC = () => {
       const res = await posApi.confirmEmail(token);
       setConfirmedEmail(res.email ?? '');
     } catch (err) {
-      setError(getApiErrorMessage(err, 'This link has expired or was already used. Sign in and ask for a new one from Getting started.'));
+      setError(getApiErrorMessage(err, 'This link has expired or was already used. Sign in and request a new confirmation link.'));
     } finally {
       setBusy(false);
     }

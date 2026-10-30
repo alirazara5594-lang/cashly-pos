@@ -196,7 +196,7 @@ function usePublicPricing(): PublicPricing {
 /** What each plan is for, in one line (the full list is in the Pricing panel and at registration). */
 const PLAN_SUMMARY: Record<SubscriptionTier, string> = {
   Starter: 'Sales, receipts, customers and tax reports',
-  Standard: 'Adds stock, suppliers, loyalty and delivery',
+  Standard: 'Adds stock, suppliers and delivery',
   Professional: 'Adds accounting and payroll'
 };
 
@@ -297,7 +297,7 @@ export const PricingPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => 
                   <ul className="mt-3 space-y-1 text-sm text-slate-700">
                     <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> {f.tills} till{f.tills === 1 ? '' : 's'}, {f.tablets} tablets</li>
                     {tier === 'Starter' && <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> Sales, receipts, customers</li>}
-                    {tier === 'Standard' && <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> Stock, purchasing, loyalty, delivery</li>}
+                    {tier === 'Standard' && <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> Stock, purchasing, delivery</li>}
                     {tier === 'Professional' && <li className="flex gap-1.5"><Check className="w-4 h-4 text-teal-600 mt-0.5 shrink-0" /> Accounting and payroll</li>}
                   </ul>
                 </div>

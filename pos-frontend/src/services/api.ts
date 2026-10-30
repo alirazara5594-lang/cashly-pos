@@ -131,7 +131,6 @@ import type {
   FiscalEnvironment,
   PublicMenu,
   PublicOrderResult,
-  OnboardingStatus,
   SubscriptionPartRow,
   RenewalsSummary,
   SubscriptionInvoiceDetail,
@@ -419,21 +418,6 @@ export const posApi = {
   /** Opens the link from a "confirm your email" message. Works signed in or not. */
   confirmEmail: async (token: string) => {
     const res = await api.post<{ message: string; email?: string }>('/api/auth/confirm-email', { token });
-    return res.data;
-  },
-  /** Emails the signed-in person a link to confirm their address. */
-  sendEmailConfirmation: async () => {
-    const res = await api.post<{ emailEnabled: boolean; confirmed: boolean; message?: string }>('/api/auth/send-email-confirmation');
-    return res.data;
-  },
-  /** What a new business has done so far, for the Getting started checklist. */
-  getOnboardingStatus: async () => {
-    const res = await api.get<OnboardingStatus>('/api/onboarding/status');
-    return res.data;
-  },
-  /** Removes the sample menu (an item already sold is hidden rather than deleted). */
-  removeSampleMenu: async () => {
-    const res = await api.delete<{ removed: number; hidden: number; message: string }>('/api/onboarding/sample-menu');
     return res.data;
   },
   // The signed-in person's own sign-in settings.

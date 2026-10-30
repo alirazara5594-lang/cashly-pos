@@ -1661,7 +1661,8 @@ using (var scope = app.Services.CreateScope())
         ("Tax setup", EnsureTaxSetupSchemaAsync),
         ("Registration agreement", EnsureRegistrationSchemaAsync),
         ("Demo videos", EnsureDemoVideosSchemaAsync),
-        ("AI photos", EnsureAiPhotosSchemaAsync)
+        ("AI photos", EnsureAiPhotosSchemaAsync),
+        ("Loyalty is an add-on for Standard", ApplyLoyaltyAddOnAsync)
     })
     {
         try
@@ -2784,7 +2785,7 @@ static async Task ApplyPosVersions202610Async(AppDbContext db)
         (nameof(SaaSPackageConfig.HasKitchenDisplay), "Kitchen display", "A kitchen screen for a shop on Starter.", 2000m, 20000m),
         (nameof(SaaSPackageConfig.HasDeliveryCOD), "Delivery & cash on delivery", "Delivery board, riders and cash-on-delivery settlement for a shop on Starter.", 2000m, 20000m),
         (nameof(SaaSPackageConfig.HasInventoryManagement), "Inventory, recipes & purchasing", "Stock, recipes, suppliers and purchase orders for a shop on Starter.", 3000m, 30000m),
-        (Pos.Api.Data.FeatureCodes.Loyalty, "Loyalty, gift cards & promos", "Loyalty points, gift cards and promo codes for a shop on Starter.", 1500m, 15000m),
+        (Pos.Api.Data.FeatureCodes.Loyalty, "Loyalty, gift cards & promos", "Loyalty points, gift cards and promo codes for a shop on Starter or Standard.", 1500m, 15000m),
         (Pos.Api.Data.FeatureCodes.Accounting, "Accounting", "Ledger, profit & loss and balance sheet for a shop on Standard.", 3000m, 30000m),
         (Pos.Api.Data.FeatureCodes.Payroll, "Payroll & HR", "Payroll periods, payslips and leave for a shop on Standard.", 2500m, 25000m),
         (Pos.Api.Data.FeatureCodes.FiscalInvoicing, "FBR / PRA / SRB fiscal invoicing", "Reports every sale to the tax authority and prints its fiscal invoice number and QR code. Per shop.", 2000m, 20000m),
@@ -2837,6 +2838,36 @@ static async Task ApplyEnterpriseNameAsync(AppDbContext db)
         package.DisplayName = "Enterprise";
     foreach (var plan in await db.Plans.Where(p => p.Code == "professional" && p.Name == "Professional").ToListAsync())
         plan.Name = "Enterprise";
+
+    db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
+    await db.SaveChangesAsync();
+}
+
+/// <summary>
+/// Loyalty, gift cards and promo codes left the Standard version and became an add-on every
+/// version may buy. Turns the feature row off for the Standard plan, and touches the Standard
+/// package row: a package row edited after a snapshot is what makes every Standard tenant's
+/// cached entitlements stale (EntitlementService.IsStaleAsync), so the change reaches them.
+/// </summary>
+static async Task ApplyLoyaltyAddOnAsync(AppDbContext db)
+{
+    const string marker = "loyalty-addon-2026-10";
+    if (await db.PlatformDataVersions.AnyAsync(v => v.Key == marker)) return;
+
+    var standard = await db.Plans.FirstOrDefaultAsync(p => p.Code == "standard");
+    if (standard != null)
+    {
+        var loyalty = await db.PlanFeatures.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(f => f.PlanId == standard.Id && f.FeatureCode == Pos.Api.Data.FeatureCodes.Loyalty);
+        if (loyalty != null)
+        {
+            loyalty.Enabled = false;
+            loyalty.Level = FeatureLevel.None;
+        }
+    }
+
+    var package = await db.SaaSPackageConfigs.FirstOrDefaultAsync(p => p.PackageKey == "Standard");
+    if (package != null) package.UpdatedAt = DateTime.UtcNow;
 
     db.PlatformDataVersions.Add(new PlatformDataVersion { Key = marker });
     await db.SaveChangesAsync();
@@ -2962,7 +2993,7 @@ static (Company Company, Branch? HeadOffice, List<Branch> Branches) CreateInitia
 
 /// <summary>
 /// A small sample menu, so a new business can ring up a test sale in its first two minutes. Every
-/// row is marked IsSample, which is what "Remove sample menu" deletes. The caller saves.
+/// row is marked IsSample, so the business can tell them apart from its own items. The caller saves.
 /// </summary>
 static void SeedSampleMenu(AppDbContext db, Guid tenantId)
 {
@@ -5406,7 +5437,7 @@ authApi.MapPost("/send-email-confirmation", async (AppDbContext db, HttpContext 
 
 authApi.MapPost("/confirm-email", async (AppDbContext db, ConfirmEmailDto dto) =>
 {
-    var expired = Results.BadRequest(new { message = "This link has expired or was already used. Sign in and ask for a new one from Getting started." });
+    var expired = Results.BadRequest(new { message = "This link has expired or was already used. Sign in and request a new confirmation link." });
     if (string.IsNullOrWhiteSpace(dto.Token)) return expired;
     var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(dto.Token.Trim())));
     var token = await db.EmailConfirmationTokens.IgnoreQueryFilters().FirstOrDefaultAsync(t => t.TokenHash == hash);
@@ -7133,100 +7164,6 @@ api.MapDelete("/catalog/products/{id}", async (AppDbContext db, HttpContext http
     await db.SaveChangesAsync();
     media.DeleteIfOurs(product.ImageUrl);
     return Results.Ok(new { message = "Product deleted successfully" });
-}).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
-  .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
-
-// --- Getting started: the checklist a new business sees in its first days ---
-
-api.MapGet("/onboarding/status", async (AppDbContext db, HttpContext http, Pos.Api.Services.IEmailSender emailSender) =>
-{
-    var tenantId = ResolveTenantScope(http, null);
-    if (tenantId == null) return Results.Unauthorized();
-    var userId = http.GetUserId();
-    var me = userId == null ? null : await db.Users.IgnoreQueryFilters()
-        .Where(u => u.Id == userId.Value)
-        .Select(u => new { u.Email, u.EmailConfirmedAt })
-        .FirstOrDefaultAsync();
-    var tenant = await db.Tenants.IgnoreQueryFilters()
-        .Where(t => t.Id == tenantId.Value)
-        .Select(t => new { t.Status, t.TrialEndsAt, t.DeploymentMode })
-        .FirstOrDefaultAsync();
-    if (tenant == null) return Results.NotFound();
-
-    var ownMenuItems = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId && p.IsActive && !p.IsSample);
-    var sampleMenuItems = await db.Products.IgnoreQueryFilters().CountAsync(p => p.TenantId == tenantId && p.IsActive && p.IsSample);
-    // Everyone but the owner: the checklist asks for the people who will actually use the tills.
-    var staff = await db.Users.IgnoreQueryFilters().CountAsync(u => u.TenantId == tenantId && u.IsActive
-        && u.Role != UserRole.OwnerAdmin && u.Role != UserRole.SuperAdmin);
-    var devices = await db.Terminals.IgnoreQueryFilters().CountAsync(t => t.TenantId == tenantId && t.IsActive && t.RevokedAt == null);
-    var hasSale = await db.Orders.IgnoreQueryFilters().AnyAsync(o => o.TenantId == tenantId);
-    // The places that sell. A head office registered without any has to add one before a till or a sale.
-    var outlets = await db.Branches.IgnoreQueryFilters().CountAsync(b => b.TenantId == tenantId && b.CanSell);
-
-    return Results.Ok(new
-    {
-        email = me?.Email,
-        emailConfirmed = me?.EmailConfirmedAt != null,
-        emailEnabled = emailSender.IsConfigured,
-        ownMenuItems,
-        sampleMenuItems,
-        staff,
-        devices,
-        hasSale,
-        outlets,
-        status = tenant.Status.ToString(),
-        trialEndsAt = tenant.TrialEndsAt,
-        hasHeadOffice = tenant.DeploymentMode == DeploymentMode.HeadOffice
-    });
-});
-
-// Takes the sample menu away. An item that has been sold, stocked or used anywhere is hidden rather
-// than deleted, so no sale, stock record or report ever points at nothing.
-api.MapDelete("/onboarding/sample-menu", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
-{
-    var tenantId = ResolveTenantScope(http, null);
-    if (tenantId == null) return Results.Unauthorized();
-
-    var samples = await db.Products.IgnoreQueryFilters().Where(p => p.TenantId == tenantId && p.IsSample).ToListAsync();
-    if (samples.Count == 0) return Results.Ok(new { removed = 0, hidden = 0, message = "There is no sample menu to remove." });
-    var ids = samples.Select(p => p.Id).ToList();
-
-    var used = new HashSet<Guid>();
-    used.UnionWith(await db.OrderItems.IgnoreQueryFilters().Where(i => ids.Contains(i.ProductId)).Select(i => i.ProductId).Distinct().ToListAsync());
-    used.UnionWith(await db.OrderReturnLines.IgnoreQueryFilters().Where(i => ids.Contains(i.ProductId)).Select(i => i.ProductId).Distinct().ToListAsync());
-    used.UnionWith(await db.BranchStocks.IgnoreQueryFilters().Where(s => ids.Contains(s.ProductId)).Select(s => s.ProductId).Distinct().ToListAsync());
-    used.UnionWith(await db.BranchProductPrices.IgnoreQueryFilters().Where(s => ids.Contains(s.ProductId)).Select(s => s.ProductId).Distinct().ToListAsync());
-    used.UnionWith(await db.ProductRecipeItems.IgnoreQueryFilters().Where(r => ids.Contains(r.ProductId)).Select(r => r.ProductId).Distinct().ToListAsync());
-    used.UnionWith(await db.StockLedgerEntries.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
-    used.UnionWith(await db.StockTransferItems.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
-    used.UnionWith(await db.PurchaseOrderItems.IgnoreQueryFilters().Where(e => e.ProductId != null && ids.Contains(e.ProductId.Value)).Select(e => e.ProductId!.Value).Distinct().ToListAsync());
-
-    var toDelete = samples.Where(p => !used.Contains(p.Id)).ToList();
-    var toHide = samples.Where(p => used.Contains(p.Id)).ToList();
-    foreach (var product in toHide) product.IsActive = false;
-    db.Products.RemoveRange(toDelete);
-
-    // A sample category goes once nothing else is filed under it.
-    var deletedIds = toDelete.Select(p => p.Id).ToHashSet();
-    var sampleCategories = await db.Categories.IgnoreQueryFilters().Where(c => c.TenantId == tenantId && c.IsSample).ToListAsync();
-    foreach (var category in sampleCategories)
-    {
-        var stillUsed = await db.Products.IgnoreQueryFilters().AnyAsync(p => p.CategoryId == category.Id && !deletedIds.Contains(p.Id));
-        if (!stillUsed) db.Categories.Remove(category);
-    }
-
-    var currentUser = await accessor.GetCurrentUserAsync(http);
-    await WriteAuditAsync(db, tenantId.Value, currentUser, "SampleMenuRemoved", "Product", null, null,
-        $"{toDelete.Count} deleted, {toHide.Count} hidden (already used)");
-    await db.SaveChangesAsync();
-    return Results.Ok(new
-    {
-        removed = toDelete.Count,
-        hidden = toHide.Count,
-        message = toHide.Count == 0
-            ? "The sample menu is gone. Add your own items in Menu."
-            : $"The sample menu is gone. {toHide.Count} item(s) already used in a sale are hidden rather than deleted, so past receipts still show them."
-    });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to remove menu items."))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequireCatalogEditFilter());
 
