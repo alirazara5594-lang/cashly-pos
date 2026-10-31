@@ -3218,6 +3218,16 @@ static async Task<PlanChangeImpact> AssessPlanChangeAsync(
 static string HashToken(string raw) =>
     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
 
+// A date-only query string ("2026-10-24") binds as Kind=Unspecified, and Npgsql refuses to send
+// that into a timestamp-with-time-zone parameter. The string already names the day it means, so
+// the kind is stamped as UTC — not shifted, which ToUniversalTime would do to an Unspecified value.
+static DateTime UtcQueryDate(DateTime value) => value.Kind switch
+{
+    DateTimeKind.Utc => value,
+    DateTimeKind.Local => value.ToUniversalTime(),
+    _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+};
+
 // Combined helper: resolves tenant then branch in one shot for the common endpoint shape.
 static async Task<(Guid? TenantId, Guid? BranchId, IResult? Error)> ResolveScopeAsync(HttpContext http, AppDbContext db, Guid? clientTenantId, Guid? requestedBranchId)
 {
@@ -16741,8 +16751,8 @@ api.MapGet("/labor/schedules", async (AppDbContext db, HttpContext http, Guid? b
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
 
-    var start = from ?? DateTime.UtcNow.Date.AddDays(-7);
-    var end = to ?? DateTime.UtcNow.Date.AddDays(14);
+    var start = from.HasValue ? UtcQueryDate(from.Value) : DateTime.UtcNow.Date.AddDays(-7);
+    var end = to.HasValue ? UtcQueryDate(to.Value) : DateTime.UtcNow.Date.AddDays(14);
 
     var rows = await db.StaffShiftSchedules
         .Where(s => s.TenantId == scopedTenantId!.Value && s.BranchId == scopedBranchId!.Value
@@ -16883,8 +16893,8 @@ api.MapGet("/labor/timesheet", async (AppDbContext db, HttpContext http, Guid? u
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
 
-    var start = from ?? DateTime.UtcNow.Date.AddDays(-14);
-    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+    var start = from.HasValue ? UtcQueryDate(from.Value) : DateTime.UtcNow.Date.AddDays(-14);
+    var end = (to.HasValue ? UtcQueryDate(to.Value) : DateTime.UtcNow.Date).AddDays(1);
 
     var query = db.TimeClockEntries.Where(t => t.TenantId == scopedTenantId!.Value && t.BranchId == scopedBranchId!.Value
                                                && t.ClockInAt >= start && t.ClockInAt < end);
@@ -16920,8 +16930,8 @@ api.MapGet("/labor/timesheet/export", async (AppDbContext db, HttpContext http, 
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
 
-    var start = from ?? DateTime.UtcNow.Date.AddDays(-14);
-    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+    var start = from.HasValue ? UtcQueryDate(from.Value) : DateTime.UtcNow.Date.AddDays(-14);
+    var end = (to.HasValue ? UtcQueryDate(to.Value) : DateTime.UtcNow.Date).AddDays(1);
 
     var query = db.TimeClockEntries.Where(t => t.TenantId == scopedTenantId!.Value && t.BranchId == scopedBranchId!.Value
                                                && t.ClockInAt >= start && t.ClockInAt < end);
@@ -17328,8 +17338,10 @@ api.MapGet("/accounting/journal-entries", async (AppDbContext db, HttpContext ht
     var query = db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
         .Where(j => j.TenantId == scopedTenantId.Value).AsQueryable();
     if (companyId.HasValue) query = query.Where(j => j.CompanyId == companyId.Value);
-    if (from.HasValue) query = query.Where(j => j.EntryDate >= from.Value);
-    if (to.HasValue) query = query.Where(j => j.EntryDate <= to.Value);
+    var fromUtc = from.HasValue ? UtcQueryDate(from.Value) : (DateTime?)null;
+    var toUtc = to.HasValue ? UtcQueryDate(to.Value) : (DateTime?)null;
+    if (fromUtc.HasValue) query = query.Where(j => j.EntryDate >= fromUtc.Value);
+    if (toUtc.HasValue) query = query.Where(j => j.EntryDate <= toUtc.Value);
     if (!string.IsNullOrEmpty(referenceType)) query = query.Where(j => j.ReferenceType == referenceType);
     var rows = await query.OrderByDescending(j => j.EntryDate).ThenByDescending(j => j.EntryNumber).Take(500).ToListAsync();
     return Results.Ok(rows.Select(j => new
@@ -17546,8 +17558,8 @@ api.MapGet("/accounting/profit-loss", async (AppDbContext db, HttpContext http, 
 {
     var scopedTenantId = ResolveTenantScope(http, tenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
-    var start = from ?? DateTime.UtcNow.AddMonths(-1);
-    var end = to ?? DateTime.UtcNow;
+    var start = from.HasValue ? UtcQueryDate(from.Value) : DateTime.UtcNow.AddMonths(-1);
+    var end = to.HasValue ? UtcQueryDate(to.Value) : DateTime.UtcNow;
     var lines = await StatementLines(db, scopedTenantId.Value, companyId)
         .Where(l => l.JournalEntry!.EntryDate >= start && l.JournalEntry!.EntryDate <= end
             && (l.Account!.Type == AccountType.Revenue || l.Account!.Type == AccountType.Expense))
@@ -17627,8 +17639,8 @@ api.MapGet("/analytics/menu-engineering", async (AppDbContext db, HttpContext ht
     var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, branchId);
     if (scopeError != null) return scopeError;
 
-    var start = from ?? DateTime.UtcNow.Date.AddDays(-30);
-    var end = (to ?? DateTime.UtcNow.Date).AddDays(1);
+    var start = from.HasValue ? UtcQueryDate(from.Value) : DateTime.UtcNow.Date.AddDays(-30);
+    var end = (to.HasValue ? UtcQueryDate(to.Value) : DateTime.UtcNow.Date).AddDays(1);
 
     var soldLines = await db.OrderItems
         .Where(oi => oi.Order != null && oi.Order.BranchId == scopedBranchId!.Value
