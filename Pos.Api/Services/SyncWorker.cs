@@ -22,12 +22,16 @@ public class SyncWorker : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _config;
+    private readonly HostLink _link;
+    private readonly IHttpClientFactory _clients;
     private readonly ILogger<SyncWorker> _log;
 
-    public SyncWorker(IServiceScopeFactory scopeFactory, IConfiguration config, ILogger<SyncWorker> log)
+    public SyncWorker(IServiceScopeFactory scopeFactory, IConfiguration config, HostLink link, IHttpClientFactory clients, ILogger<SyncWorker> log)
     {
         _scopeFactory = scopeFactory;
         _config = config;
+        _link = link;
+        _clients = clients;
         _log = log;
     }
 
@@ -54,17 +58,6 @@ public class SyncWorker : BackgroundService
             return;
         }
 
-        var cloudUrl = _config["Host:CloudUrl"] ?? Environment.GetEnvironmentVariable("CLOUD_URL");
-        if (string.IsNullOrWhiteSpace(cloudUrl))
-        {
-            // A perfectly valid configuration: a single shop with no head office and no cloud
-            // subscription. It should not log an error every five minutes about it.
-            _log.LogInformation("Sync worker idle: no cloud URL configured (standalone business host).");
-            return;
-        }
-
-        _log.LogInformation("Sync worker started — every {Interval} to {Cloud}", Interval, cloudUrl);
-
         // A short settle before the first run: at startup the database may still be applying
         // schema changes, and an immediate sync would just fail and start a backoff for nothing.
         try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); }
@@ -74,7 +67,7 @@ public class SyncWorker : BackgroundService
         {
             try
             {
-                await RunOnceAsync(stoppingToken);
+                if (_link.Linked) await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -87,7 +80,7 @@ public class SyncWorker : BackgroundService
                 _log.LogError(ex, "Sync run failed; will retry next interval.");
             }
 
-            try { await Task.Delay(Interval, stoppingToken); }
+            try { await Task.Delay(_link.Linked ? Interval : TimeSpan.FromSeconds(10), stoppingToken); }
             catch (OperationCanceledException) { break; }
         }
 
@@ -131,22 +124,23 @@ public class SyncWorker : BackgroundService
             if (!catalog.Ok)
                 _log.LogWarning("Sync: catalogue pull failed — {Error}", catalog.Error);
 
-            await TouchHostAsync(db, tenantId, ct);
+            await CheckInAsync(ct);
         }
     }
 
     /// <summary>Records that this host is alive and when it last synced, so the console can show
     /// a shop as healthy rather than simply unheard-from.</summary>
-    private async Task TouchHostAsync(AppDbContext db, Guid tenantId, CancellationToken ct)
+    private async Task CheckInAsync(CancellationToken ct)
     {
-        var businessId = _config["Host:BusinessId"] ?? Environment.GetEnvironmentVariable("BUSINESS_ID");
-        if (string.IsNullOrWhiteSpace(businessId)) return;
-
-        var host = await db.BusinessHosts.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(h => h.HostCode == businessId && h.TenantId == tenantId, ct);
-        if (host == null) return;
-
-        host.LastSeenAt = DateTime.UtcNow;
-        await db.SaveChangesAsync(ct);
+        if (_link.CloudUrl is not string cloud || _link.BusinessId is not string id || _link.SyncKey is not string key)
+            return;
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{cloud.TrimEnd('/')}/api/host/checkin")
+        {
+            Content = System.Net.Http.Json.JsonContent.Create(new { businessId = id })
+        };
+        request.Headers.Add(SyncKeys.HeaderName, key);
+        using var response = await _clients.CreateClient("host-enrollment").SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+            _log.LogWarning("Headquarters refused the host check-in ({Status}).", response.StatusCode);
     }
 }

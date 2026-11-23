@@ -43,7 +43,7 @@ const ERP_STEPS: StepDef[] = [
 ];
 const PHASES: Record<1 | 2 | 3, string> = { 1: 'Install the ERP', 2: 'Add outlets', 3: "Link each outlet's POS" };
 
-interface Outlet { name: string; city: string; address: string; edition: SubscriptionTier }
+interface Outlet { name: string; city: string; address: string; stateCode: string; edition: SubscriptionTier }
 interface Problem { field?: string; text: string }
 interface Created { product: ProductKind; name: string; webName: string; username: string; email?: string; outlets: string[] }
 
@@ -79,6 +79,8 @@ export const Register: React.FC = () => {
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
   const [legalName, setLegalName] = useState('');
+  const [sameLegalAddress, setSameLegalAddress] = useState(true);
+  const [legalAddress, setLegalAddress] = useState('');
   const [ntn, setNtn] = useState('');
   const [strn, setStrn] = useState('');
 
@@ -142,6 +144,7 @@ export const Register: React.FC = () => {
   const countryName = countryList.find(c => c.iso2 === countryIso)?.name ?? 'Pakistan';
   const states = country?.states ?? [];
   const chosenState = states.find(s => s.code === stateCode) ?? null;
+  const needsOutletProvince = countryName === 'Pakistan' && states.length > 0;
 
   // The web address is checked with the server as it is typed.
   useEffect(() => {
@@ -177,6 +180,8 @@ export const Register: React.FC = () => {
       if (states.length > 0 && !stateCode) return { field: 'reg-state', text: 'Choose your province. It sets your starting sales tax rate.' };
     }
     if (id === 'headOffice' && !hqName.trim()) return { field: 'reg-hq-name', text: 'Give the head office a name.' };
+    if (id === 'headOffice' && !sameLegalAddress && !legalAddress.trim())
+      return { field: 'reg-legal-address', text: 'Enter the company’s legal address.' };
     if (id === 'owner') {
       if (!fullName.trim()) return { field: 'reg-owner-name', text: 'Enter your full name.' };
       if (mobile.replace(/\D/g, '').length < 10) return { field: 'reg-mobile', text: 'Enter your mobile number, for example 0300 1234567.' };
@@ -195,6 +200,8 @@ export const Register: React.FC = () => {
     if (id === 'outlets') {
       const unnamed = outlets.findIndex(o => !o.name.trim());
       if (unnamed >= 0) return { field: `reg-outlet-${unnamed}`, text: 'Give this outlet a name, or remove it.' };
+      const withoutProvince = needsOutletProvince ? outlets.findIndex(o => !states.some(s => s.code === o.stateCode)) : -1;
+      if (withoutProvince >= 0) return { field: `reg-outlet-province-${withoutProvince}`, text: 'Choose this outlet’s tax province.' };
     }
     if (id === 'review' && !agreed) return { field: 'reg-agree', text: 'Please agree to the Terms of Service and Privacy Policy.' };
     return null;
@@ -234,7 +241,7 @@ export const Register: React.FC = () => {
     setProblem(null);
     const isErp = product === 'erp';
     try {
-      await posApi.signup({
+      const result = await posApi.signup({
         restaurantName: name.trim(),
         contactName: fullName.trim(),
         email: isErp ? email.trim() : undefined,
@@ -255,14 +262,15 @@ export const Register: React.FC = () => {
         deploymentMode: isErp ? 'MultiBranch' : 'Standalone',
         businessStructure: isErp ? 'ChainWithHeadOffice' : 'SingleShop',
         branches: isErp
-          ? outlets.map(o => ({ name: o.name.trim(), city: o.city.trim() || undefined, address: o.address.trim() || undefined, posEdition: o.edition }))
+          ? outlets.map(o => ({ name: o.name.trim(), city: o.city.trim() || undefined, address: o.address.trim() || undefined, stateCode: needsOutletProvince ? o.stateCode : undefined, posEdition: o.edition }))
           : [{ name: `${name.trim()} — Main Branch`, city: city.trim() || undefined, address: address.trim() || undefined, phone: mobile.trim() }],
-        company: isErp && (legalName.trim() || ntn.trim() || strn.trim())
+        company: isErp
           ? {
               legalName: legalName.trim() || undefined,
               tradeName: legalName.trim() && legalName.trim() !== name.trim() ? name.trim() : undefined,
               taxRegistrationNumber: ntn.trim() || undefined,
-              salesTaxRegistrationNumber: strn.trim() || undefined
+              salesTaxRegistrationNumber: strn.trim() || undefined,
+              address: (sameLegalAddress ? address : legalAddress).trim() || undefined
             }
           : undefined,
         headOffice: isErp ? { name: hqName.trim(), city: city.trim() || undefined, address: address.trim() || undefined, phone: mobile.trim(), holdsStock: hqHoldsStock } : undefined,
@@ -284,8 +292,9 @@ export const Register: React.FC = () => {
         localStorage.setItem('cashly_restaurant', name.trim());
       } catch { /* optional */ }
       setCreated({
-        product: isErp ? 'erp' : 'pos', name: name.trim(), webName, username: username.trim().toLowerCase(),
-        email: isErp ? email.trim() : undefined, outlets: outlets.map(o => o.name.trim())
+        product: isErp ? 'erp' : 'pos', name: result.tenant.name, webName: result.tenant.slug, username: result.admin.username,
+        email: isErp ? email.trim() : undefined,
+        outlets: result.branches.filter((branch: { canSell: boolean }) => branch.canSell).map((branch: { name: string }) => branch.name)
       });
     } catch (err) {
       setProblem({ step: 'review', text: getApiErrorMessage(err, 'Registration did not go through. Check your connection and try again.') });
@@ -661,7 +670,7 @@ export const Register: React.FC = () => {
 
   const headOfficeStep = (
     <div className={stepCls}>
-      {stepHeader('Your head office', 'The ERP runs here: products and prices, buying, stock, accounts and reports for every outlet. The head office itself does not sell.')}
+      {stepHeader('Your head office', 'Set up the office that manages products, buying, stock, accounts and reports for your outlets.')}
       <div className={gridCls}>
         <div>
           <label htmlFor="reg-hq-name" className={labelCls}>Head office name{req}</label>
@@ -677,6 +686,19 @@ export const Register: React.FC = () => {
             </span>
           </label>
         </div>
+      </div>
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <input type="checkbox" checked={sameLegalAddress} onChange={e => { setSameLegalAddress(e.target.checked); setProblem(null); }} className="accent-teal-600" />
+          Use the business address as the company’s legal address
+        </label>
+        {!sameLegalAddress && (
+          <>
+            <label htmlFor="reg-legal-address" className={labelCls}>Legal company address{req}</label>
+            <input id="reg-legal-address" value={legalAddress} onChange={e => { setLegalAddress(e.target.value); setProblem(null); }} className={inputCls + ring('reg-legal-address')} />
+            {errorText('reg-legal-address')}
+          </>
+        )}
       </div>
       <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 grid sm:grid-cols-3 gap-4 text-sm">
         {[
@@ -755,7 +777,7 @@ export const Register: React.FC = () => {
     </div>
   );
 
-  const addOutlet = () => setOutlets(list => [...list, { name: '', city: city.trim(), address: '', edition: 'Standard' }]);
+  const addOutlet = () => setOutlets(list => [...list, { name: '', city: city.trim(), address: '', stateCode: '', edition: 'Standard' }]);
   const outletsStep = (
     <div className={stepCls}>
       {stepHeader('Your outlets and their POS', 'Each outlet sells with its own POS and pays for its own version. Add them now, or later from the ERP (Locations).')}
@@ -810,6 +832,21 @@ export const Register: React.FC = () => {
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
+                  <div className={needsOutletProvince ? 'col-span-7' : 'col-span-12'}>
+                    <input aria-label={`Outlet ${i + 1} street address`} value={o.address} placeholder="Street address"
+                      onChange={e => { const v = e.target.value; setOutlets(list => list.map((x, j) => j === i ? { ...x, address: v } : x)); }} className={inputCls} />
+                  </div>
+                  {needsOutletProvince && (
+                    <div className="col-span-5">
+                      <select id={`reg-outlet-province-${i}`} aria-label={`Outlet ${i + 1} tax province`} value={o.stateCode}
+                        onChange={e => { const v = e.target.value; setOutlets(list => list.map((x, j) => j === i ? { ...x, stateCode: v } : x)); setProblem(null); }}
+                        className={inputCls + ring(`reg-outlet-province-${i}`)}>
+                        <option value="">Tax province</option>
+                        {states.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
+                      </select>
+                      {errorText(`reg-outlet-province-${i}`)}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -840,9 +877,10 @@ export const Register: React.FC = () => {
         {reviewRow('Location', [city.trim(), chosenState?.name, countryName].filter(Boolean).join(', '), 'business')}
         {reviewRow('Staff sign-in address', signInAddress, 'business')}
         {product === 'pos' && reviewRow('Plan', `${planName(plan)} · ${money(planFigures(plan, packages).monthly)} / month`, 'plan')}
+        {product === 'erp' && reviewRow('Legal company', [legalName.trim() || name.trim(), (sameLegalAddress ? address : legalAddress).trim()].filter(Boolean).join(' · '), 'headOffice')}
         {product === 'erp' && reviewRow('Head office', `${hqName.trim()}${hqHoldsStock ? ' · keeps stock' : ''}`, 'headOffice')}
         {product === 'erp' && reviewRow('Outlets', outlets.length === 0 ? 'None yet. Add them from the ERP.'
-          : outlets.map(o => `${o.name.trim()} (${planName(o.edition)})`).join(', '), 'outlets')}
+          : outlets.map(o => [o.name.trim(), planName(o.edition), states.find(s => s.code === o.stateCode)?.name].filter(Boolean).join(' · ')).join(', '), 'outlets')}
         {reviewRow('Owner', `${fullName.trim()} · ${mobile.trim()}`, 'owner')}
         {reviewRow('Owner signs in with', product === 'erp' ? `${email.trim()} and password; username ${username.trim().toLowerCase()} + PIN at tills` : `username ${username.trim().toLowerCase()} and 6-digit PIN`, 'owner')}
       </div>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Net.Http.Json;
 using System.Linq;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -228,6 +229,10 @@ builder.Services.AddSingleton<Pos.Api.Services.IDeliveryPlatformResolver, Pos.Ap
 // --- WhatsApp senders (Twilio/Meta genuinely call out once configured; Manual/Whaticket are
 // honest no-op/best-effort — see Services/WhatsAppSender.cs for details on each) ---
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("host-enrollment", client => client.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("cloud-sync")
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.ManualWhatsAppSender>();
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.TwilioWhatsAppSender>();
 builder.Services.AddSingleton<Pos.Api.Services.IWhatsAppSender, Pos.Api.Services.MetaWhatsAppSender>();
@@ -248,6 +253,7 @@ builder.Services.AddScoped<Pos.Api.Services.IAiPhotoSource>(sp =>
 builder.Services.AddHostedService<Pos.Api.Services.ProductPhotoWorker>();
 
 var app = builder.Build();
+var databaseReady = 0;
 
 // --- Global Exception Handler ---
 app.UseExceptionHandler(error =>
@@ -293,6 +299,23 @@ catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 
 app.UseCors();
 app.UseRateLimiter();
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path;
+    if (path.StartsWithSegments("/api") && !path.StartsWithSegments("/api/health")
+        && Volatile.Read(ref databaseReady) == 0)
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsJsonAsync(new { message = "Cashly is starting. Try again when the database is ready." });
+        return;
+    }
+    await next();
+});
+app.MapGet("/api/health", () => Results.Ok(new { status = "healthy" }));
+app.MapGet("/api/health/ready", async (AppDbContext db, CancellationToken ct) =>
+    Volatile.Read(ref databaseReady) == 1 && await db.Database.CanConnectAsync(ct)
+        ? Results.Ok(new { status = "ready" })
+        : Results.Json(new { status = "unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable));
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<TenantIsolationMiddleware>();
@@ -333,20 +356,15 @@ if (app.Environment.IsDevelopment())
 // on port 5288 for several minutes on a new or large database.
 _ = Task.Run(async () =>
 {
+var startupSucceeded = true;
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     try
     {
-        // Use migrations in production, EnsureCreated for dev
-        if (app.Environment.IsDevelopment())
-        {
-            await db.Database.EnsureCreatedAsync();
-        }
-        else
-        {
-            await db.Database.MigrateAsync();
-        }
+        // A new installation uses the current model. Existing installations were created
+        // with EnsureCreated and are upgraded by the idempotent schema steps below.
+        await db.Database.EnsureCreatedAsync();
 
         // Ensure tables exist via raw SQL (EF Core may not know about them)
         await db.Database.ExecuteSqlRawAsync(@"
@@ -1627,6 +1645,7 @@ using (var scope = app.Services.CreateScope())
     }
     catch (Exception ex)
     {
+        startupSucceeded = false;
         Console.WriteLine($"[Seeder Error / Note]: {ex.Message}");
     }
 }
@@ -1660,6 +1679,9 @@ using (var scope = app.Services.CreateScope())
         ("Prescriptions", EnsurePrescriptionSchemaAsync),
         ("Tax setup", EnsureTaxSetupSchemaAsync),
         ("Registration agreement", EnsureRegistrationSchemaAsync),
+        ("Branch host enrollment", EnsureHostEnrollmentSchemaAsync),
+        ("Terminal cash drawers", EnsureCashDrawerSchemaAsync),
+        ("Partial purchase receipts", EnsurePurchaseReceiptSchemaAsync),
         ("Demo videos", EnsureDemoVideosSchemaAsync),
         ("AI photos", EnsureAiPhotosSchemaAsync),
         ("Loyalty is an add-on for Standard", ApplyLoyaltyAddOnAsync)
@@ -1671,10 +1693,13 @@ using (var scope = app.Services.CreateScope())
         }
         catch (Exception ex)
         {
+            startupSucceeded = false;
             Console.WriteLine($"[Schema Note] {name}: {ex.Message}");
         }
     }
 }
+
+if (!startupSucceeded) return;
 
 // Seed TenantSettings for existing tenants
 using (var scope = app.Services.CreateScope())
@@ -1688,7 +1713,19 @@ using (var scope = app.Services.CreateScope())
         db.TenantSettings.Add(new TenantSettings { TenantId = tenant.Id });
     }
     if (tenantsWithoutSettings.Count > 0) await db.SaveChangesAsync();
+    var enrolledHost = await db.BusinessHosts.IgnoreQueryFilters().AsNoTracking()
+        .FirstOrDefaultAsync(h => h.CloudUrl != null && h.ProtectedSyncKey != null);
+    if (enrolledHost != null)
+    {
+        var key = scope.ServiceProvider.GetRequiredService<Pos.Api.Services.SecretProtector>()
+            .Unprotect(enrolledHost.ProtectedSyncKey);
+        if (key == null) throw new InvalidOperationException("The outlet sync key could not be read. Check the installation signing key.");
+        scope.ServiceProvider.GetRequiredService<Pos.Api.Services.HostLink>()
+            .UseEnrolledHost(enrolledHost.CloudUrl!, enrolledHost.HostCode, key);
+    }
 }
+Volatile.Write(ref databaseReady, 1);
+await RetrySaleJournalsAsync(app.Services, app.Lifetime.ApplicationStopping);
 });
 
 // ============================================================
@@ -1824,8 +1861,6 @@ static Task EnsurePlatformSchemaAsync(AppDbContext db) => db.Database.ExecuteSql
         ""RequireTwoStepForTeam"" boolean NOT NULL DEFAULT true,
         ""UpdatedAt"" timestamp with time zone NOT NULL DEFAULT now()
     );
-    INSERT INTO ""PlatformSettings"" (""Id"") VALUES (1) ON CONFLICT (""Id"") DO NOTHING;
-
     CREATE TABLE IF NOT EXISTS ""SubscriptionInvoiceParts"" (
         ""Id"" uuid NOT NULL PRIMARY KEY,
         ""InvoiceId"" uuid NOT NULL,
@@ -1993,6 +2028,44 @@ static Task EnsureTaxSetupSchemaAsync(AppDbContext db) => db.Database.ExecuteSql
 static Task EnsureRegistrationSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
     ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsAcceptedAt"" timestamp with time zone NULL;
     ALTER TABLE ""Tenants"" ADD COLUMN IF NOT EXISTS ""TermsVersion"" text NULL;
+");
+
+static Task EnsureHostEnrollmentSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""EnrollmentCodeHash"" text;
+    ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""EnrollmentExpiresAt"" timestamp with time zone;
+    ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""EnrollmentRedeemedKeyHash"" text;
+    ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""CloudUrl"" text;
+    ALTER TABLE ""BusinessHosts"" ADD COLUMN IF NOT EXISTS ""ProtectedSyncKey"" text;
+");
+
+static Task EnsureCashDrawerSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""CashShifts"" ADD COLUMN IF NOT EXISTS ""TerminalId"" uuid;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""CashShiftId"" uuid;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""PaidAt"" timestamp with time zone;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""JournalPending"" boolean NOT NULL DEFAULT false;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""JournalRetryAt"" timestamp with time zone;
+    ALTER TABLE ""Orders"" ADD COLUMN IF NOT EXISTS ""HostReportedStockCostPKR"" numeric;
+    ALTER TABLE ""OrderReturns"" ADD COLUMN IF NOT EXISTS ""ExternalRefundReference"" text;
+    CREATE INDEX IF NOT EXISTS ""IX_CashShifts_BranchId_TerminalId_OpenedAt"" ON ""CashShifts"" (""BranchId"", ""TerminalId"", ""OpenedAt"");
+    CREATE INDEX IF NOT EXISTS ""IX_Orders_CashShiftId"" ON ""Orders"" (""CashShiftId"") WHERE ""CashShiftId"" IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS ""IX_Orders_JournalRetryAt"" ON ""Orders"" (""JournalRetryAt"") WHERE ""JournalPending"";
+");
+
+static Task EnsurePurchaseReceiptSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
+    ALTER TABLE ""PurchaseOrderItems"" ADD COLUMN IF NOT EXISTS ""QuantityReceived"" numeric NOT NULL DEFAULT 0;
+    UPDATE ""PurchaseOrderItems"" i SET ""QuantityReceived"" = i.""Quantity""
+        FROM ""PurchaseOrders"" p WHERE p.""Id"" = i.""PurchaseOrderId"" AND p.""Status"" = 3
+            AND i.""QuantityReceived"" = 0;
+    CREATE TABLE IF NOT EXISTS ""PurchaseReceiptRequests"" (
+        ""PurchaseOrderId"" uuid NOT NULL REFERENCES ""PurchaseOrders"" (""Id""),
+        ""RequestId"" uuid NOT NULL,
+        PRIMARY KEY (""PurchaseOrderId"", ""RequestId"")
+    );
+    CREATE TABLE IF NOT EXISTS ""TransferReceiptRequests"" (
+        ""TransferId"" uuid NOT NULL REFERENCES ""StockTransferOrders"" (""Id""),
+        ""RequestId"" uuid NOT NULL,
+        PRIMARY KEY (""TransferId"", ""RequestId"")
+    );
 ");
 
 // The "Watch demo" steps and their video links (Platform → Settings → Demo videos).
@@ -2267,6 +2340,12 @@ static long HighestNumberSuffix(IEnumerable<string> numbers)
 // --- Helper: Generate unique order number ---
 static async Task<string> GenerateOrderNumberAsync(AppDbContext db, Guid tenantId, string prefix = "ORD")
 {
+    if (prefix == "ORD")
+    {
+        var hostCode = await db.BusinessHosts.IgnoreQueryFilters()
+            .Where(h => h.TenantId == tenantId && h.CloudUrl != null).Select(h => h.HostCode).FirstOrDefaultAsync();
+        if (hostCode != null) prefix = $"ORD-{hostCode}";
+    }
     var series = $"{prefix}-{DateTime.UtcNow:yyMMdd}";
     var seq = await NextDocumentSequenceAsync(db, tenantId, series, () => db.Orders.IgnoreQueryFilters()
         .Where(o => o.TenantId == tenantId && o.OrderNumber.StartsWith(series + "-"))
@@ -2328,8 +2407,42 @@ static async Task<string> GenerateReturnNumberAsync(AppDbContext db, Guid tenant
 /// taken out (paid-outs and refunds). Closing used to count only the float and sales, so every
 /// paid-out showed up as a shortage at the end of the shift.
 /// </summary>
-static void RecalculateExpectedCash(CashShift shift) =>
+static void RecalculateExpectedCash(CashShift shift)
+{
     shift.ExpectedCashPKR = shift.OpeningFloatPKR + shift.CashSalesPKR + shift.CashReceivedPKR - shift.CashPaidOutPKR;
+    if (shift.IsClosed) shift.VariancePKR = shift.ActualCashCountedPKR - shift.ExpectedCashPKR;
+}
+
+static Task LockOrderAsync(AppDbContext db, Guid orderId) =>
+    db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({orderId.ToString()}, 73570213))");
+
+static Task LockDrawerAsync(AppDbContext db, Guid branchId) =>
+    db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({branchId.ToString()}, 73570214))");
+
+static Task<bool> TerminalBelongsToBranchAsync(AppDbContext db, Guid? terminalId, Guid branchId) =>
+    terminalId == null ? Task.FromResult(true) :
+        db.Terminals.AnyAsync(t => t.Id == terminalId && t.BranchId == branchId);
+
+static Task<CashShift?> FindDrawerAsync(AppDbContext db, Guid branchId, Guid? terminalId, DateTime? capturedAt = null)
+{
+    var shifts = db.CashShifts.Where(s => s.BranchId == branchId && s.TerminalId == terminalId);
+    shifts = capturedAt.HasValue
+        ? shifts.Where(s => s.OpenedAt <= capturedAt && (s.ClosedAt == null || s.ClosedAt >= capturedAt))
+        : shifts.Where(s => !s.IsClosed);
+    return shifts.OrderByDescending(s => s.OpenedAt).FirstOrDefaultAsync();
+}
+
+static async Task RecordOrderCashAsync(AppDbContext db, Order order, Guid? terminalId, DateTime? capturedAt = null)
+{
+    order.PaidAt = capturedAt ?? DateTime.UtcNow;
+    order.JournalPending = true;
+    if (order.PaymentMethod != PaymentMethod.Cash) return;
+    var shift = await FindDrawerAsync(db, order.BranchId, terminalId, capturedAt);
+    if (shift == null) return;
+    order.CashShiftId = shift.Id;
+    shift.CashSalesPKR += order.TotalPKR;
+    RecalculateExpectedCash(shift);
+}
 
 // --- The business's own calendar ---
 // Sales are stored in UTC, but "today" and a report's date mean the shop's local day: counted in
@@ -3716,6 +3829,13 @@ static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, Bat
 
         if (mirrorFrom is { } sent)
         {
+            var priorReceipts = await db.StockLedgerEntries
+                .Where(e => e.ReferenceType == sent.Type && e.ReferenceId == sent.Id && e.ProductId == productId
+                    && e.BranchId == entry.BranchId && e.QuantityChange > 0)
+                .SumAsync(e => (decimal?)e.QuantityChange) ?? 0;
+            priorReceipts += db.StockLedgerEntries.Local.Where(e => e.Id != entry.Id && e.ReferenceType == sent.Type
+                && e.ReferenceId == sent.Id && e.ProductId == productId && e.BranchId == entry.BranchId
+                && e.QuantityChange > 0 && db.Entry(e).State == EntityState.Added).Sum(e => e.QuantityChange);
             var sentEntries = await db.StockLedgerEntries
                 .Where(e => e.ReferenceType == sent.Type && e.ReferenceId == sent.Id && e.ProductId == productId
                          && e.BranchId != entry.BranchId && e.QuantityChange < 0)
@@ -3728,10 +3848,13 @@ static async Task ApplyBatchesAsync(AppDbContext db, StockLedgerEntry entry, Bat
                 group m by new { b.BatchNumber, b.ExpiryDate, b.UnitCostPKR, b.RetailPricePKR, b.SupplierName } into g
                 select new { g.Key.BatchNumber, g.Key.ExpiryDate, g.Key.UnitCostPKR, g.Key.RetailPricePKR, g.Key.SupplierName, Qty = -g.Sum(m => m.QuantityChange) }
             ).ToListAsync();
-            foreach (var s in sentBatches.OrderBy(s => s.ExpiryDate ?? DateTime.MaxValue))
+            foreach (var s in sentBatches.OrderBy(s => s.ExpiryDate ?? DateTime.MaxValue).ThenBy(s => s.BatchNumber).ThenBy(s => s.UnitCostPKR))
             {
                 if (remaining <= 0) break;
-                var put = Math.Min(s.Qty, remaining);
+                var skipped = Math.Min(priorReceipts, s.Qty);
+                priorReceipts -= skipped;
+                var put = Math.Min(s.Qty - skipped, remaining);
+                if (put <= 0) continue;
                 var batch = FindOrAdd(s.BatchNumber, s.ExpiryDate, s.UnitCostPKR);
                 batch.RetailPricePKR ??= s.RetailPricePKR;
                 batch.SupplierName ??= s.SupplierName;
@@ -4167,48 +4290,67 @@ static async Task PostIntercompanyTransferAsync(AppDbContext db, StockTransferOr
 /// </summary>
 static async Task PostSaleJournalIfNeededAsync(AppDbContext db, Order order)
 {
-    // A bill paid in full by a gift card or points still reaches the books, so the test is the bill.
-    if (!order.IsPaid || order.Status == OrderStatus.Cancelled || Pos.Api.Services.SaleMath.BillBeforeCredits(order) <= 0) return;
-    if (!await HasAccountingAsync(db, order.TenantId)) return;
-
-    // The original sale entry, not a reversal of it: a voided sale keeps its reversed original.
-    var alreadyPosted = await db.JournalEntries.AnyAsync(j => j.TenantId == order.TenantId
-        && j.ReferenceType == "Order" && j.ReferenceId == order.Id && j.ReversalOfEntryId == null);
-    if (alreadyPosted) return;
-
-    JournalEntry? entry = null;
+    if (!order.IsPaid && !order.JournalPending) return;
+    await using var tx = await db.Database.BeginTransactionAsync();
     try
     {
-        // The cost of what left the shelves for this sale, exactly as the stock ledger recorded it:
-        // counted products at this location's cost, recipe ingredients at theirs. Purchases put that
-        // cost INTO Inventory (1200); until now nothing took it out again, so the books showed every
-        // sale as pure profit.
-        var costOfSale = Math.Round(await db.StockLedgerEntries
-            .Where(e => e.TenantId == order.TenantId && e.ReferenceType == "Order" && e.ReferenceId == order.Id
-                     && e.MovementType == StockMovementType.SaleConsumption)
-            .SumAsync(e => (decimal?)(-e.QuantityChange * e.UnitCostPKR)) ?? 0m, 2);
-        // Revenue is the bill less its tax, so the entry balances with the tax inside the prices or on
-        // top, and with part of the bill paid by a gift card or points (Services/SaleMath.cs).
-        var lines = Pos.Api.Services.SaleMath.SaleJournalLines(order, costOfSale);
-        // A chart seeded before the discounts account existed gets it now.
-        if (lines.Any(l => l.Account == "4900")) await EnsureStandardAccountsAsync(db, order.TenantId);
-
-        // Dated when the sale happened: an offline sale belongs to the day the customer paid, not
-        // the day the terminal got its connection back.
-        entry = await PostJournalEntryAsync(db, order.TenantId, order.BranchId, order.CapturedAt ?? order.CreatedAt,
-            $"Sale — Order #{order.OrderNumber}", "Order", order.Id, order.CashierName ?? "System", lines);
+        await LockOrderAsync(db, order.Id);
+        await db.Entry(order).ReloadAsync();
+        if (db.Entry(order).State == EntityState.Detached) return;
+        var shouldPost = order.IsPaid && order.Status != OrderStatus.Cancelled
+            && Pos.Api.Services.SaleMath.BillBeforeCredits(order) > 0
+            && await HasAccountingAsync(db, order.TenantId);
+        if (shouldPost && !await db.JournalEntries.AnyAsync(j => j.TenantId == order.TenantId
+            && j.ReferenceType == "Order" && j.ReferenceId == order.Id && j.ReversalOfEntryId == null))
+        {
+            var costOfSale = Math.Round(order.HostReportedStockCostPKR ?? await db.StockLedgerEntries
+                .Where(e => e.TenantId == order.TenantId && e.ReferenceType == "Order" && e.ReferenceId == order.Id
+                    && e.MovementType == StockMovementType.SaleConsumption)
+                .SumAsync(e => (decimal?)(-e.QuantityChange * e.UnitCostPKR)) ?? 0m, 2);
+            var lines = Pos.Api.Services.SaleMath.SaleJournalLines(order, costOfSale);
+            if (lines.Any(l => l.Account == "4900")) await EnsureStandardAccountsAsync(db, order.TenantId);
+            await PostJournalEntryAsync(db, order.TenantId, order.BranchId, order.PaidAt ?? order.CapturedAt ?? order.CreatedAt,
+                $"Sale — Order #{order.OrderNumber}", "Order", order.Id, order.CashierName ?? "System", lines);
+        }
+        order.JournalPending = false;
+        order.JournalRetryAt = null;
         await db.SaveChangesAsync();
+        await tx.CommitAsync();
     }
     catch (Exception ex)
     {
-        // Accounting can lag or fail; the sale never can. Unstage the half-posted entry so the
-        // caller's next save does not trip over it.
-        if (entry != null)
-        {
-            foreach (var line in entry.Lines) db.Entry(line).State = EntityState.Detached;
-            db.Entry(entry).State = EntityState.Detached;
-        }
+        await tx.RollbackAsync();
+        db.ChangeTracker.Clear();
+        var retryAt = DateTime.UtcNow.AddMinutes(1);
+        await db.Orders.Where(o => o.Id == order.Id).ExecuteUpdateAsync(setters => setters
+            .SetProperty(o => o.JournalPending, true).SetProperty(o => o.JournalRetryAt, retryAt));
         Console.WriteLine($"[Accounting] Failed to post journal entry for order {order.OrderNumber}: {ex.Message}");
+    }
+}
+
+static async Task RetrySaleJournalsAsync(IServiceProvider services, CancellationToken ct)
+{
+    using var timer = new PeriodicTimer(TimeSpan.FromSeconds(20));
+    while (await timer.WaitForNextTickAsync(ct))
+    {
+        try
+        {
+            using var scope = services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTime.UtcNow;
+            var pending = await db.Orders.Where(o => o.JournalPending && (o.JournalRetryAt == null || o.JournalRetryAt <= now))
+                .OrderBy(o => o.JournalRetryAt).ThenBy(o => o.CreatedAt).Take(40).ToListAsync(ct);
+            foreach (var order in pending)
+            {
+                if (ct.IsCancellationRequested) return;
+                if (db.Entry(order).State == EntityState.Detached) db.Attach(order);
+                await PostSaleJournalIfNeededAsync(db, order);
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Console.WriteLine($"[Accounting] Sale journal retry was interrupted: {ex.Message}");
+        }
     }
 }
 
@@ -5768,12 +5910,26 @@ api.MapPost("/auth/verify-pin", async (AppDbContext db, HttpContext http, Pos.Ap
 // --- Setup & Installation Wizard ---
 // Anyone can call this, so it says only whether the server has a business yet. It used to list
 // every business with its branches, which handed a stranger the whole customer list.
-api.MapGet("/setup/status", async (AppDbContext db) =>
-    Results.Ok(new { isConfigured = await db.Tenants.IgnoreQueryFilters().AnyAsync() }))
+bool CanInitializeLocalHost(HttpContext http)
+{
+    var mode = builder.Configuration["Host:Mode"] ?? Environment.GetEnvironmentVariable("HOST_MODE");
+    var local = http.Connection.RemoteIpAddress is { } ip && System.Net.IPAddress.IsLoopback(ip);
+    return local && (string.Equals(mode, "BusinessHost", StringComparison.OrdinalIgnoreCase)
+        || (app.Environment.IsDevelopment() && string.IsNullOrWhiteSpace(mode)));
+}
+
+api.MapGet("/setup/status", async (AppDbContext db, HttpContext http) =>
+{
+    var isConfigured = await db.Tenants.IgnoreQueryFilters().AnyAsync();
+    return Results.Ok(new { isConfigured, canInitialize = !isConfigured && CanInitializeLocalHost(http) });
+})
     .AllowAnonymous(); // bootstrap: must be reachable before any user exists
 
-api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
+api.MapPost("/setup/initialize", async (AppDbContext db, HttpContext http, SetupInitDto dto) =>
 {
+    if (!CanInitializeLocalHost(http)) return Results.NotFound();
+    await using var setupTransaction = await db.Database.BeginTransactionAsync();
+    await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(73570211)");
     // Bootstrap only. This creates the FIRST business on a fresh install, with no login. Once any
     // business exists, new ones register through /auth/signup (plan limits, slug checks), which is
     // what the installation wizard already switches to on a configured server. Like signup it
@@ -5784,6 +5940,10 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
             statusCode: StatusCodes.Status409Conflict);
 
     // The web name (sign-in address), made from the restaurant's name.
+    if (string.IsNullOrWhiteSpace(dto.RestaurantName) || string.IsNullOrWhiteSpace(dto.AdminFullName)
+        || !System.Text.RegularExpressions.Regex.IsMatch(dto.AdminUsername ?? "", @"^[a-zA-Z0-9._-]{3,64}$")
+        || !System.Text.RegularExpressions.Regex.IsMatch(dto.AdminPin ?? "", @"^\d{4,6}$"))
+        return Results.BadRequest(new { message = "Enter the business name, owner name, username and a 4–6 digit PIN." });
     var slug = await FreeWebNameAsync(db, SuggestWebName(dto.RestaurantName));
 
     var structure = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode);
@@ -5836,7 +5996,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
     var createdBranches = headOffice == null ? sellingBranches : sellingBranches.Prepend(headOffice).ToList();
 
     // Create Admin User
-    var adminPin = string.IsNullOrWhiteSpace(dto.AdminPin) ? "1234" : dto.AdminPin.Trim();
+    var adminPin = dto.AdminPin!.Trim();
     var pinHash = BCrypt.Net.BCrypt.HashPassword(adminPin);
     var adminUser = new AppUser
     {
@@ -5904,6 +6064,7 @@ api.MapPost("/setup/initialize", async (AppDbContext db, SetupInitDto dto) =>
         await db.SaveChangesAsync();
         if (dto.SetUpAccounting)
             await EnsureChartOfAccountsSeededAsync(db, tenant.Id);
+        await setupTransaction.CommitAsync();
     }
     catch (Exception ex)
     {
@@ -5950,6 +6111,7 @@ api.MapPost("/sync/batch-orders", async (
     var pricedByOrder = new Dictionary<Guid, ServerPricedOrder>();
     var createdOrders = new List<Order>();
     var kitchenByTenant = new Dictionary<Guid, bool>();
+    await using var cashTransaction = await db.Database.BeginTransactionAsync();
     // How old an offline sale may be and still reach the kitchen screen.
     var offlineKitchenTicketWindow = TimeSpan.FromMinutes(15);
 
@@ -5963,7 +6125,11 @@ api.MapPost("/sync/batch-orders", async (
         }
 
         var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
-        if (branch == null) continue;
+        if (branch == null || !branch.CanSell || !await TerminalBelongsToBranchAsync(db, dto.TerminalId, branch.Id))
+        {
+            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Selling outlet or terminal is invalid." });
+            continue;
+        }
 
         // Idempotency. Checked before anything is created, and backed by a unique index on
         // (TenantId, ClientLocalId) so two concurrent syncs of the same batch cannot both win.
@@ -6140,14 +6306,10 @@ api.MapPost("/sync/batch-orders", async (
             if (table != null) { table.IsOccupied = true; table.CurrentOrderId = order.Id; }
         }
 
-        if (dto.IsPaid && dto.PaymentMethod == PaymentMethod.Cash)
+        if (dto.IsPaid)
         {
-            var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
-            if (activeShift != null)
-            {
-                activeShift.CashSalesPKR += order.TotalPKR;
-                RecalculateExpectedCash(activeShift);
-            }
+            await LockDrawerAsync(db, branch.Id);
+            await RecordOrderCashAsync(db, order, dto.TerminalId, order.CapturedAt);
         }
 
         // The goods left the shop while it was offline; take them off the books now. This path
@@ -6162,6 +6324,7 @@ api.MapPost("/sync/batch-orders", async (
     }
 
     await db.SaveChangesAsync();
+    await cashTransaction.CommitAsync();
 
     // Fiscal e-invoicing (inert stub today — wired for a future FBR integration).
     foreach (var order in createdOrders)
@@ -6976,21 +7139,42 @@ api.MapPut("/catalog/products/{id:guid}/branch-prices", async (AppDbContext db, 
     return Results.Ok(new { message = "Branch prices saved." });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to change prices."));
 
+static async Task<IResult?> ProductIdentityProblemAsync(AppDbContext db, Guid tenantId, Guid productId, string? sku, string? barcode)
+{
+    var skuKey = sku?.Trim().ToUpperInvariant();
+    var barcodeKey = barcode?.Trim().ToUpperInvariant();
+    var products = db.Products.Where(p => p.TenantId == tenantId && p.Id != productId);
+    if (skuKey != null && await products.AnyAsync(p => p.SKU.Trim().ToUpper() == skuKey))
+        return Results.Conflict(new { message = "A product in this business already uses that SKU.", field = "sku" });
+    if (barcodeKey != null && await products.AnyAsync(p => p.Barcode.Trim().ToUpper() == barcodeKey))
+        return Results.Conflict(new { message = "A product in this business already uses that barcode.", field = "barcode" });
+    return null;
+}
+
 api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     Pos.Api.Services.IAiPhotoSource photos, Pos.Api.Services.ProductPhotoQueue photoQueue, [Microsoft.AspNetCore.Mvc.FromBody] CreateProductDto dto) =>
 {
     var scopedTenantId = ResolveTenantScope(http, dto.TenantId);
     if (scopedTenantId == null) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(dto.Name) || dto.SellingPricePKR < 0 || dto.CostPricePKR < 0
+        || dto.Modifiers?.Any(m => string.IsNullOrWhiteSpace(m.Name) || m.PricePKR < 0) == true)
+        return Results.BadRequest(new { message = "Enter a product name and valid, nonnegative prices." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({scopedTenantId.Value.ToString()}, 73570215))");
+    if (!await db.Categories.AnyAsync(c => c.Id == dto.CategoryId && c.TenantId == scopedTenantId.Value))
+        return Results.BadRequest(new { message = "Choose a category in this business." });
     var currentUser = await accessor.GetCurrentUserAsync(http);
 
     var product = new Product
     {
         TenantId = scopedTenantId.Value, CategoryId = dto.CategoryId, Name = dto.Name, UrduName = dto.UrduName,
-        SKU = string.IsNullOrWhiteSpace(dto.SKU) ? $"SKU-{Random.Shared.Next(1000, 9999)}" : dto.SKU,
-        Barcode = string.IsNullOrWhiteSpace(dto.Barcode) ? $"{Random.Shared.NextInt64(1000000000, 9999999999)}" : dto.Barcode,
+        SKU = NullIfBlank(dto.SKU) ?? $"SKU-{Guid.NewGuid():N}"[..16],
+        Barcode = NullIfBlank(dto.Barcode) ?? $"{Random.Shared.NextInt64(1000000000, 9999999999)}",
         Description = dto.Description ?? string.Empty, CostPricePKR = dto.CostPricePKR, SellingPricePKR = dto.SellingPricePKR,
         Unit = dto.Unit ?? "Piece", Station = dto.Station, ImageUrl = dto.ImageUrl, IsActive = true
     };
+    var identityProblem = await ProductIdentityProblemAsync(db, product.TenantId, product.Id, product.SKU, product.Barcode);
+    if (identityProblem != null) return identityProblem;
     ApplyMedicineDetails(product, dto.Medicine);
     var taxRefused = ApplyProductTax(product, dto.TaxTreatment, dto.TaxRatePercent);
     if (taxRefused != null) return Results.BadRequest(new { message = taxRefused });
@@ -7007,6 +7191,7 @@ api.MapPost("/catalog/products", async (AppDbContext db, HttpContext http, Pos.A
     if (wantsPhoto) Pos.Api.Services.ProductPhotos.Queue(product);
     await WriteAuditAsync(db, scopedTenantId.Value, currentUser, "ProductCreated", "Product", product.Id, null, product.SellingPricePKR.ToString("0.##"));
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     if (wantsPhoto) photoQueue.Nudge();
     return Results.Ok(product);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageMenuAndTax, "You don't have permission to add menu items or change prices."))
@@ -7118,9 +7303,28 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
 
-    var product = await db.Products.Include(p => p.Modifiers)
-        .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (product == null) return Results.NotFound();
+
+    if (dto.Name != null && string.IsNullOrWhiteSpace(dto.Name) || dto.SellingPricePKR < 0 || dto.CostPricePKR < 0
+        || dto.Modifiers?.Any(m => string.IsNullOrWhiteSpace(m.Name) || m.PricePKR < 0) == true)
+        return Results.BadRequest(new { message = "Enter a product name and valid, nonnegative prices." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({product.TenantId.ToString()}, 73570215))");
+    await db.Entry(product).ReloadAsync();
+    if (db.Entry(product).State == EntityState.Detached) return Results.NotFound();
+    if (!await db.Categories.AnyAsync(c => c.Id == dto.CategoryId && c.TenantId == product.TenantId))
+        return Results.BadRequest(new { message = "Choose a category in this business." });
+    var sku = NullIfBlank(dto.SKU) ?? product.SKU;
+    var barcode = NullIfBlank(dto.Barcode) ?? product.Barcode;
+    var identityProblem = await ProductIdentityProblemAsync(db, product.TenantId, id,
+        string.Equals(sku, product.SKU, StringComparison.OrdinalIgnoreCase) ? null : sku,
+        string.Equals(barcode, product.Barcode, StringComparison.OrdinalIgnoreCase) ? null : barcode);
+    if (identityProblem != null) return identityProblem;
+    var unit = NullIfBlank(dto.Unit) ?? product.Unit;
+    if (!string.Equals(unit, product.Unit, StringComparison.OrdinalIgnoreCase)
+        && (await db.BranchStocks.AnyAsync(s => s.ProductId == id) || await db.OrderItems.AnyAsync(i => i.ProductId == id)))
+        return Results.Conflict(new { message = "The unit cannot change after this product has stock or sales. Set up a new product for a different unit." });
 
     var oldPrice = product.SellingPricePKR;
     var oldPacking = (product.PackUnits, product.StripUnits);
@@ -7129,7 +7333,21 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
     product.UrduName = dto.UrduName ?? product.UrduName;
     product.SellingPricePKR = dto.SellingPricePKR;
     product.CostPricePKR = dto.CostPricePKR;
-    product.Barcode = dto.Barcode ?? product.Barcode;
+    product.SKU = sku;
+    product.Barcode = barcode;
+    product.Unit = unit;
+    product.Description = dto.Description?.Trim() ?? product.Description;
+    if (dto.Modifiers != null)
+    {
+        await db.Entry(product).Collection(p => p.Modifiers).LoadAsync();
+        db.RemoveRange(product.Modifiers);
+        product.Modifiers.Clear();
+        foreach (var input in dto.Modifiers)
+        {
+            var modifier = new ProductModifier { ProductId = product.Id, Name = input.Name.Trim(), PricePKR = input.PricePKR };
+            db.Add(modifier);
+        }
+    }
     product.CategoryId = dto.CategoryId;
     product.Station = dto.Station;
     ApplyMedicineDetails(product, dto.Medicine);
@@ -7138,7 +7356,6 @@ api.MapPut("/catalog/products/{id}", async (AppDbContext db, HttpContext http, P
 
     // Setting packing the first time converts the stock already counted in boxes into tablets, at
     // every location; that and the product's own change are saved together or not at all.
-    await using var tx = await db.Database.BeginTransactionAsync();
     var packingRefused = await ApplyPackingAsync(db, product, dto.Medicine);
     if (packingRefused != null) return Results.BadRequest(new { message = packingRefused });
 
@@ -7293,7 +7510,8 @@ api.MapPost("/orders", async (
         loyaltyDiscountPKR = order.LoyaltyDiscountPKR,
         loyaltyRejectedReason = priced?.LoyaltyRejectedReason,
         amountPaidPKR = order.AmountPaidPKR, changeDuePKR = order.ChangeDuePKR,
-        fiscalInvoiceNumber = order.FiscalInvoiceNumber
+        fiscalInvoiceNumber = order.FiscalInvoiceNumber,
+        fiscalQrPayload = order.FiscalQrPayload
     });
 // Selling is the last thing a tenant loses. PastDue and Restricted both still pass this gate.
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireTenantStateFilter(Pos.Api.Middlewares.RequireTenantStateFilter.Need.Sell));
@@ -7311,6 +7529,11 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     // A head office that only runs the back office, or a warehouse, does not sell.
     if (!branch.CanSell)
         return (Results.BadRequest(new { message = $"{branch.Name} does not sell. Ring this sale up at a selling branch." }), null, null);
+    if (!await TerminalBelongsToBranchAsync(db, dto.TerminalId, branch.Id))
+        return (Results.BadRequest(new { message = "That terminal does not belong to this outlet." }), null, null);
+    await using var saleTransaction = await db.Database.BeginTransactionAsync();
+    // Serialize receipt creation at this outlet, including retries and drawer updates.
+    await LockDrawerAsync(db, branch.Id);
 
     // The till names each sale once (ClientLocalId). Pressing Charge again after a dropped response
     // finds the sale already saved and returns it, rather than saving it a second time.
@@ -7392,15 +7615,7 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     }
 
     // Update cash shift (using the server-computed total, not the client's)
-    if (dto.IsPaid && dto.PaymentMethod == PaymentMethod.Cash)
-    {
-        var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == branch.Id && !s.IsClosed);
-        if (activeShift != null)
-        {
-            activeShift.CashSalesPKR += order.TotalPKR;
-            RecalculateExpectedCash(activeShift);
-        }
-    }
+    if (dto.IsPaid) await RecordOrderCashAsync(db, order, dto.TerminalId);
 
     // A. Whether a counted item the system thinks is out of stock may still be sold. By default it
     // may (TenantSettings.AllowNegativeStock): the item is at the counter, so the count is what is
@@ -7436,10 +7651,12 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
     {
         // The same sale arrived twice at the same moment and the other copy was saved first
         // (the unique index on the till's id refused this one): hand back that one.
+        await saleTransaction.RollbackAsync();
         db.ChangeTracker.Clear();
         if (await FindOrderByClientIdAsync(db, branch.TenantId, clientId) is { } first) return (null, first, null);
         throw;
     }
+    await saleTransaction.CommitAsync();
 
     // CRM visit/spend counters and loyalty accrual — only meaningful once the sale is committed.
     await ApplyPostSaleCustomerUpdatesAsync(db, order, priced);
@@ -7518,6 +7735,8 @@ api.MapGet("/orders", async (AppDbContext db, HttpContext http, Guid branchId, O
 api.MapPost("/orders/{id:guid}/settle", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     Pos.Api.Services.IFiscalInvoiceProvider fiscal, Guid id, SettleOrderDto dto) =>
 {
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
     if (order == null) return Results.NotFound(new { message = "Order not found." });
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
@@ -7540,15 +7759,10 @@ api.MapPost("/orders/{id:guid}/settle", async (AppDbContext db, HttpContext http
     order.CompletedAt = DateTime.UtcNow;
     if (actingUser != null) order.CashierName = actingUser.FullName;
 
-    if (dto.PaymentMethod == PaymentMethod.Cash)
-    {
-        var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == order.BranchId && !s.IsClosed);
-        if (shift != null)
-        {
-            shift.CashSalesPKR += order.TotalPKR;
-            RecalculateExpectedCash(shift);
-        }
-    }
+    if (!await TerminalBelongsToBranchAsync(db, dto.TerminalId, order.BranchId))
+        return Results.BadRequest(new { message = "That terminal does not belong to this outlet." });
+    await LockDrawerAsync(db, order.BranchId);
+    await RecordOrderCashAsync(db, order, dto.TerminalId);
     if (dto.PaymentMethod == PaymentMethod.CustomerKhata)
     {
         var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId!.Value);
@@ -7569,6 +7783,7 @@ api.MapPost("/orders/{id:guid}/settle", async (AppDbContext db, HttpContext http
     await WriteAuditAsync(db, order.TenantId, actingUser, "OrderSettled", "Order", order.Id, null,
         $"{order.OrderNumber}: {order.TotalPKR:0.##} by {dto.PaymentMethod}");
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
 
     await PostSaleJournalIfNeededAsync(db, order);
     var (fiscalNumber, fiscalQr) = await fiscal.IssueInvoiceAsync(order.TenantId, order.Id, order.TotalPKR, order.TaxPKR);
@@ -7905,91 +8120,53 @@ app.MapPost("/api/public/order/{token}", async (AppDbContext db, Pos.Api.Service
 
 api.MapPost("/orders/{id}/void", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] VoidOrderDto dto) =>
 {
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
     if (order == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
     if (scopeError != null) return scopeError;
     if (order.Status == OrderStatus.Cancelled) return Results.BadRequest(new { message = "Order already cancelled" });
+    if (order.IsPaid || order.RefundedPKR > 0 || await db.OrderReturns.AnyAsync(r => r.OrderId == id))
+        return Results.Conflict(new { message = "This sale was paid. Use Returns for any items still eligible for a refund." });
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
     order.Status = OrderStatus.Cancelled;
     order.CancelledAt = DateTime.UtcNow;
-
-    // Restore finished-product (retail) stock, through the ledger like every other movement.
-    var productIds = order.Items.Select(i => i.ProductId).Distinct().ToList();
-    var stockDict = await db.BranchStocks.Include(s => s.Product)
-        .Where(s => s.BranchId == order.BranchId && productIds.Contains(s.ProductId))
-        .ToDictionaryAsync(s => s.ProductId);
-    foreach (var item in order.Items)
+    await LockDrawerAsync(db, order.BranchId);
+    var movements = await db.StockLedgerEntries.Where(e => e.TenantId == order.TenantId && e.BranchId == order.BranchId
+        && e.ReferenceType == "Order" && e.ReferenceId == order.Id
+        && e.MovementType == StockMovementType.SaleConsumption && e.QuantityChange < 0).ToListAsync();
+    var staffName = currentUser?.FullName ?? "System";
+    foreach (var movement in movements)
     {
-        if (stockDict.TryGetValue(item.ProductId, out var stock))
+        if (movement.ProductId is Guid productId)
         {
-            var returned = RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment, item.Quantity * item.UnitsPerSaleUnit,
-                UnitCostOf(stock, stock.Product), "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
-            await ApplyBatchesAsync(db, returned, restoreFrom: ("Order", order.Id));
+            var stock = await db.BranchStocks.FirstOrDefaultAsync(s => s.BranchId == order.BranchId && s.ProductId == productId);
+            if (stock == null) return Results.Conflict(new { message = "Restore the product’s stock record before voiding this order." });
+            var restored = RecordProductStockMovement(db, stock, order.TenantId, StockMovementType.Adjustment,
+                -movement.QuantityChange, movement.UnitCostPKR, "OrderVoid", id, staffName, $"Order {order.OrderNumber} voided");
+            await ApplyBatchesAsync(db, restored, restoreFrom: ("Order", id));
         }
-    }
-
-    // Restore recipe-based raw ingredients that were consumed, through the ledger (not a raw
-    // mutation) so the audit trail shows the reversal, not just an unexplained stock jump. Resolved
-    // to this branch's own rows exactly as the sale consumed them.
-    var recipes = await db.ProductRecipeItems.Include(r => r.Ingredient)
-        .Where(r => productIds.Contains(r.ProductId)).ToListAsync();
-    var ingredientDict = await ResolveBranchIngredientsAsync(db, order.TenantId, order.BranchId,
-        recipes.Where(r => r.Ingredient != null).Select(r => r.Ingredient!).DistinctBy(i => i.Id).ToList(),
-        createMissing: false);
-    foreach (var item in order.Items)
-    {
-        foreach (var recipe in recipes.Where(r => r.ProductId == item.ProductId))
+        else if (movement.IngredientId is Guid ingredientId)
         {
-            if (!ingredientDict.TryGetValue(recipe.IngredientId, out var ingredient)) continue;
-            var totalQty = recipe.QuantityRequired * item.Quantity;
+            var ingredient = await db.Ingredients.FirstOrDefaultAsync(i => i.Id == ingredientId && i.BranchId == order.BranchId);
+            if (ingredient == null) return Results.Conflict(new { message = "Restore the ingredient’s stock record before voiding this order." });
             RecordStockLedgerEntry(db, ingredient, order.TenantId, order.BranchId, StockMovementType.Adjustment,
-                totalQty, ingredient.CostPerUnitPKR, "Order", order.Id, currentUser?.FullName ?? "System", $"Order {order.OrderNumber} voided — stock returned");
+                -movement.QuantityChange, movement.UnitCostPKR, "OrderVoid", id, staffName, $"Order {order.OrderNumber} voided");
         }
     }
-
-    // A CustomerKhata order added to what the customer owes — voiding removes that debt, and
-    // the visit/spend stats it contributed (loyalty points earned are left alone: a minor,
-    // non-monetary balance, not worth the risk of a wrong reversal formula drifting from config).
-    if (order.CustomerId != null && order.IsPaid)
-    {
-        var customer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId.Value);
-        if (customer != null)
-        {
-            customer.TotalVisits = Math.Max(0, customer.TotalVisits - 1);
-            customer.TotalSpentPKR = Math.Max(0, customer.TotalSpentPKR - order.TotalPKR);
-            if (order.PaymentMethod == PaymentMethod.CustomerKhata)
-                customer.CurrentBalancePKR = Math.Max(0, customer.CurrentBalancePKR - order.TotalPKR);
-        }
-    }
-
-    // Reverse the sale's journal entry, if accounting was active when it was posted.
-    var saleEntry = await db.JournalEntries.Include(j => j.Lines).ThenInclude(l => l.Account)
-        .FirstOrDefaultAsync(j => j.ReferenceType == "Order" && j.ReferenceId == order.Id && j.Status == JournalEntryStatus.Posted);
-    if (saleEntry != null)
-    {
-        try
-        {
-            var reversalLines = saleEntry.Lines.Select(l => (l.Account!.Code, l.CreditPKR, l.DebitPKR)).ToList();
-            var reversal = await PostJournalEntryAsync(db, order.TenantId, order.BranchId, DateTime.UtcNow,
-                $"Reversal of {saleEntry.EntryNumber} — Order #{order.OrderNumber} voided", "Order", order.Id,
-                currentUser?.FullName ?? "System", reversalLines);
-            reversal.ReversalOfEntryId = saleEntry.Id;
-            saleEntry.Status = JournalEntryStatus.Reversed;
-        }
-        catch (Exception ex)
-        {
-            // Same rule as every other auto-post: accounting can lag or fail, the void itself never can.
-            Console.WriteLine($"[Accounting] Failed to reverse journal entry for voided order {order.OrderNumber}: {ex.Message}");
-        }
-    }
+    var table = await db.DiningTables.FirstOrDefaultAsync(t => t.CurrentOrderId == id && t.BranchId == order.BranchId);
+    if (table != null) { table.IsOccupied = false; table.CurrentOrderId = null; }
+    var tickets = await db.KitchenTickets.Where(t => t.OrderId == id).ToListAsync();
+    foreach (var ticket in tickets) ticket.Status = "Cancelled";
 
     await WriteAuditAsync(db, order.TenantId, currentUser, "OrderVoided", "Order", order.Id,
         oldValue: $"{order.OrderNumber} / {order.TotalPKR:0.##}", newValue: dto?.Reason ?? "(no reason given)");
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Order voided — stock, customer balance, and accounting reversed", orderId = order.Id });
+    await tx.CommitAsync();
+    return Results.Ok(new { message = "Unpaid order voided. Recorded stock usage was reversed.", orderId = order.Id });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanVoidOrders, "You don't have permission to void orders. Ask a manager to approve."));
 
 // ============================================================
@@ -8031,6 +8208,8 @@ api.MapGet("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http
 api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
     Pos.Api.Services.IFiscalInvoiceProvider fiscal, Guid id, CreateReturnDto dto) =>
 {
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.Orders.Include(o => o.Items).FirstOrDefaultAsync(o => o.Id == id);
     if (order == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
@@ -8051,6 +8230,21 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
 
     var currentUser = await accessor.GetCurrentUserAsync(http);
     var refundMethod = dto.RefundMethod ?? (order.PaymentMethod == PaymentMethod.Split ? PaymentMethod.Cash : order.PaymentMethod);
+    if (refundMethod is not (PaymentMethod.Cash or PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast or PaymentMethod.CustomerKhata))
+        return Results.BadRequest(new { message = "Choose an available refund method." });
+    var externalReference = NullIfBlank(dto.ExternalRefundReference);
+    if (refundMethod is PaymentMethod.Card or PaymentMethod.JazzCash or PaymentMethod.EasyPaisa or PaymentMethod.Raast)
+    {
+        if (externalReference == null || externalReference.Length > 128)
+            return Results.BadRequest(new { message = "Complete the refund with the payment provider and enter its confirmation reference." });
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({order.TenantId.ToString() + externalReference}, 73570216))");
+        if (await db.OrderReturns.AnyAsync(r => r.TenantId == order.TenantId && r.RefundMethod == refundMethod && r.ExternalRefundReference == externalReference))
+            return Results.Conflict(new { message = "That external refund reference was already recorded." });
+    }
+    else externalReference = null;
+    if (refundMethod == PaymentMethod.CustomerKhata && order.CustomerId == null)
+        return Results.BadRequest(new { message = "Select a refund method for a sale without a customer account." });
+    await LockDrawerAsync(db, order.BranchId);
     var ret = new OrderReturn
     {
         TenantId = order.TenantId,
@@ -8058,6 +8252,7 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         OrderId = order.Id,
         ReturnNumber = await GenerateReturnNumberAsync(db, order.TenantId),
         RefundMethod = refundMethod,
+        ExternalRefundReference = externalReference,
         Restocked = dto.Restock ?? true,
         Reason = NullIfBlank(dto.Reason),
         CreatedBy = currentUser?.FullName ?? "System",
@@ -8123,7 +8318,9 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
     // The money: out of this shift's drawer, or off the customer's tab.
     if (refundMethod == PaymentMethod.Cash)
     {
-        var shift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == order.BranchId && !s.IsClosed);
+        if (!await TerminalBelongsToBranchAsync(db, dto.TerminalId, order.BranchId))
+            return Results.BadRequest(new { message = "That terminal does not belong to this outlet." });
+        var shift = await FindDrawerAsync(db, order.BranchId, dto.TerminalId);
         if (shift != null)
         {
             db.CashEntries.Add(new CashEntry
@@ -8178,16 +8375,13 @@ api.MapPost("/orders/{id:guid}/returns", async (AppDbContext db, HttpContext htt
         }
         catch (Exception ex)
         {
-            if (entry != null)
-            {
-                foreach (var line in entry.Lines) db.Entry(line).State = EntityState.Detached;
-                db.Entry(entry).State = EntityState.Detached;
-            }
             Console.WriteLine($"[Accounting] Failed to post return {ret.ReturnNumber}: {ex.Message}");
+            return Results.Conflict(new { message = "The return could not be posted to accounting. Check that the accounting period is open." });
         }
     }
 
     // A shop that reports sales to the tax authority reports the return too, as a credit note.
+    await tx.CommitAsync();
     await fiscal.IssueReturnAsync(order.TenantId, ret.Id);
 
     return Results.Ok(new
@@ -9261,16 +9455,25 @@ api.MapPost("/cash-shifts/open", async (AppDbContext db, HttpContext http, [Micr
 {
     var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
     if (scopeError != null) return scopeError;
-    var activeShift = await db.CashShifts.FirstOrDefaultAsync(s => s.BranchId == scopedBranchId!.Value && !s.IsClosed);
-    if (activeShift != null) return Results.BadRequest(new { message = "An active shift already exists. Close it first." });
+    var branchId = scopedBranchId!.Value;
+    if (!await db.Branches.AnyAsync(b => b.Id == branchId && b.CanSell))
+        return Results.BadRequest(new { message = "Only a selling outlet can open a cash drawer." });
+    if (dto.OpeningFloatPKR < 0 || !await TerminalBelongsToBranchAsync(db, dto.TerminalId, branchId))
+        return Results.BadRequest(new { message = "Enter a valid opening float and a terminal for this outlet." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, branchId);
+    var activeShift = await FindDrawerAsync(db, branchId, dto.TerminalId);
+    if (activeShift != null) return Results.BadRequest(new { message = "This drawer already has an open shift." });
 
     var shift = new CashShift
     {
-        BranchId = scopedBranchId!.Value, TerminalName = dto.TerminalName, CashierName = dto.CashierName,
+        BranchId = branchId, TerminalId = dto.TerminalId, TerminalName = dto.TerminalName, CashierName = dto.CashierName,
         OpeningFloatPKR = dto.OpeningFloatPKR, OpenedAt = DateTime.UtcNow, IsClosed = false
     };
+    RecalculateExpectedCash(shift);
     db.CashShifts.Add(shift);
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(shift);
 });
 
@@ -9280,14 +9483,20 @@ api.MapPost("/cash-shifts/{id}/close", async (AppDbContext db, HttpContext http,
     if (shift == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
     if (scopeError != null) return scopeError;
+    if (dto.ActualCashCounted < 0) return Results.BadRequest(new { message = "Cash counted cannot be negative." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, shift.BranchId);
+    await db.Entry(shift).ReloadAsync();
     if (shift.IsClosed) return Results.BadRequest(new { message = "Shift already closed" });
 
     shift.ActualCashCountedPKR = dto.ActualCashCounted;
+    shift.Notes = NullIfBlank(dto.Notes);
     RecalculateExpectedCash(shift);
     shift.VariancePKR = dto.ActualCashCounted - shift.ExpectedCashPKR;
     shift.ClosedAt = DateTime.UtcNow;
     shift.IsClosed = true;
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(shift);
 });
 
@@ -9298,6 +9507,12 @@ api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, HttpContex
     if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
     if (scopeError != null) return scopeError;
+    if (dto.AmountPKR <= 0 || string.IsNullOrWhiteSpace(dto.Description)
+        || dto.EntryType is not (CashEntryType.Received or CashEntryType.PaidOut))
+        return Results.BadRequest(new { message = "Enter a positive amount, entry type and description." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, shift.BranchId);
+    await db.Entry(shift).ReloadAsync();
     if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot add entries to a closed shift" });
 
     var entry = new CashEntry
@@ -9321,6 +9536,7 @@ api.MapPost("/cash-shifts/{shiftId}/entries", async (AppDbContext db, HttpContex
     RecalculateExpectedCash(shift);
 
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(new { message = "Cash entry added", entry.Id });
 });
 
@@ -9343,9 +9559,12 @@ api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db
     if (shift == null) return Results.NotFound(new { error = "Cash shift not found" });
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
     if (scopeError != null) return scopeError;
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, shift.BranchId);
+    await db.Entry(shift).ReloadAsync();
     if (shift.IsClosed) return Results.BadRequest(new { error = "Cannot delete entries from a closed shift" });
 
-    var entry = await db.CashEntries.FindAsync(entryId);
+    var entry = await db.CashEntries.FirstOrDefaultAsync(e => e.Id == entryId && e.CashShiftId == shiftId);
     if (entry == null) return Results.NotFound(new { error = "Entry not found" });
 
     // A refund is a record of money handed to a customer, tied to a return document; it is not
@@ -9362,6 +9581,7 @@ api.MapDelete("/cash-shifts/{shiftId}/entries/{entryId}", async (AppDbContext db
 
     db.CashEntries.Remove(entry);
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(new { message = "Entry deleted" });
 });
 
@@ -9440,14 +9660,10 @@ api.MapGet("/cash-shifts/{shiftId}/tally", async (AppDbContext db, HttpContext h
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, shift.BranchId);
     if (scopeError != null) return scopeError;
 
-    var cashSales = await db.Orders
-        .Where(o => o.BranchId == shift.BranchId && o.CreatedAt >= shift.OpenedAt 
-            && (!shift.ClosedAt.HasValue || o.CreatedAt <= shift.ClosedAt.Value)
-            && o.PaymentMethod == PaymentMethod.Cash)
-        .SumAsync(o => o.TotalPKR);
+    var cashSales = shift.CashSalesPKR;
 
-    var cashPaidOut = shift.Entries.Where(e => e.EntryType == CashEntryType.PaidOut).Sum(e => e.AmountPKR);
-    var cashReceived = shift.Entries.Where(e => e.EntryType == CashEntryType.Received).Sum(e => e.AmountPKR);
+    var cashPaidOut = shift.CashPaidOutPKR;
+    var cashReceived = shift.CashReceivedPKR;
 
     var expectedCash = shift.OpeningFloatPKR + cashSales + cashReceived - cashPaidOut;
 
@@ -10573,7 +10789,8 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
     var (dayStart, dayEnd) = BusinessDayUtc(targetDate, zone);
     // A sale belongs to the day it was made: one rung up offline counts on that day, not the day it synced.
     var orders = await db.Orders.Include(o => o.Items)
-        .Where(o => branchIds.Contains(o.BranchId) && (o.CapturedAt ?? o.CreatedAt) >= dayStart && (o.CapturedAt ?? o.CreatedAt) < dayEnd && o.IsPaid).ToListAsync();
+        .Where(o => branchIds.Contains(o.BranchId) && (o.PaidAt ?? o.CapturedAt ?? o.CreatedAt) >= dayStart
+            && (o.PaidAt ?? o.CapturedAt ?? o.CreatedAt) < dayEnd && o.IsPaid && o.Status != OrderStatus.Cancelled).ToListAsync();
     var cashOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Cash).ToList();
     var cardOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.Card).ToList();
     var digitalOrders = orders.Where(o => o.PaymentMethod == PaymentMethod.JazzCash || o.PaymentMethod == PaymentMethod.EasyPaisa || o.PaymentMethod == PaymentMethod.Raast).ToList();
@@ -10587,22 +10804,14 @@ api.MapGet("/reports/daily-z", async (AppDbContext db, HttpContext http, Guid? b
     // that opened no till has no float — never an invented one.
     var shifts = await db.CashShifts.Where(s => branchIds.Contains(s.BranchId) && s.OpenedAt >= dayStart && s.OpenedAt < dayEnd)
         .OrderByDescending(s => s.OpenedAt).ToListAsync();
-    var closingShifts = shifts.GroupBy(s => s.BranchId).ToDictionary(g => g.Key, g => g.First());
-    var openingFloat = closingShifts.Values.Sum(s => s.OpeningFloatPKR);
+    var openingFloat = shifts.Sum(s => s.OpeningFloatPKR);
     var cashSales = cashOrders.Sum(o => o.TotalPKR);
     var cashRefunded = cashRefunds.Sum(r => r.TotalRefundedPKR);
-    var expectedCash = openingFloat + cashSales - cashRefunded;
-    // A location that has not counted its drawer yet counts as expected, so it shows no variance.
-    var actualCash = branchIds.Sum(id =>
-    {
-        var shift = closingShifts.GetValueOrDefault(id);
-        var branchExpected = (shift?.OpeningFloatPKR ?? 0) + cashOrders.Where(o => o.BranchId == id).Sum(o => o.TotalPKR)
-            - cashRefunds.Where(r => r.BranchId == id).Sum(r => r.TotalRefundedPKR);
-        return shift?.ActualCashCountedPKR > 0 ? shift.ActualCashCountedPKR : branchExpected;
-    });
+    var expectedCash = shifts.Sum(s => s.ExpectedCashPKR);
+    var actualCash = shifts.Sum(s => s.IsClosed ? s.ActualCashCountedPKR : s.ExpectedCashPKR);
     var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
     // The drawer is counted at one till, so only a one-location report can open the cash tally.
-    var tallyShift = branchIds.Count == 1 ? closingShifts.GetValueOrDefault(branchIds[0]) : null;
+    var tallyShift = branchIds.Count == 1 && shifts.Count == 1 ? shifts[0] : null;
     return Results.Ok(new
     {
         period = targetDate.ToString("yyyy-MM-dd"), shiftId = tallyShift?.Id.ToString(),
@@ -10901,9 +11110,14 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.StockTransferOrders.Include(t => t.Items)
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
+    var (_, _, dispatchScopeError) = await ResolveScopeAsync(http, db, null, order.SourceBranchId);
+    if (dispatchScopeError != null) return dispatchScopeError;
+    await LockDrawerAsync(db, order.SourceBranchId);
     if (order.Status != TransferStatus.Requested) return Results.BadRequest($"Cannot dispatch in {order.Status} state");
     var dispatchedBy = dto.DispatchedBy ?? "Central Commissary Team";
     foreach (var item in order.Items)
@@ -10940,6 +11154,7 @@ api.MapPost("/transfers/{id}/dispatch", async (AppDbContext db, HttpContext http
     if (!string.IsNullOrEmpty(dto.VehicleOrDriver)) order.VehicleOrDriver = dto.VehicleOrDriver;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = dto.Notes;
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(order);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to dispatch stock."));
@@ -10948,17 +11163,37 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    await using var receiveTransaction = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.StockTransferOrders.Include(t => t.Items)
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
+    var (_, _, receiveScopeError) = await ResolveScopeAsync(http, db, null, order.DestinationBranchId);
+    if (receiveScopeError != null) return receiveScopeError;
+    if (dto.RequestId is Guid requestId)
+    {
+        var inserted = await db.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO ""TransferReceiptRequests"" (""TransferId"", ""RequestId"") VALUES ({id}, {requestId})
+            ON CONFLICT DO NOTHING");
+        if (inserted == 0) return Results.Ok(order);
+    }
     if (order.Status != TransferStatus.InTransit) return Results.BadRequest($"Cannot receive in {order.Status} state");
+    var lines = dto.Lines ?? new List<ReceiveTransferLineDto>();
+    if (lines.GroupBy(l => l.ItemId).Any(g => g.Count() != 1 || order.Items.All(i => i.Id != g.Key)))
+        return Results.BadRequest(new { message = "Each received line must name an item on this transfer." });
+    var submitted = lines.ToDictionary(l => l.ItemId, l => l.QuantityReceived);
+    var quantities = order.Items.ToDictionary(i => i.Id, i => dto.Lines == null
+        ? i.QuantityDispatched - i.QuantityReceived : submitted.GetValueOrDefault(i.Id));
+    if (order.Items.Any(i => quantities[i.Id] < 0 || quantities[i.Id] > i.QuantityDispatched - i.QuantityReceived)
+        || quantities.Values.All(q => q == 0))
+        return Results.BadRequest(new { message = "Enter a positive quantity within what is still in transit." });
+    await LockDrawerAsync(db, order.DestinationBranchId);
     var receivedBy = dto.ReceivedBy ?? "Branch Manager";
     foreach (var item in order.Items)
     {
-        // Only what was dispatched can arrive. Falling back to the requested quantity when nothing
-        // was sent created stock out of nothing at the destination.
-        var qtyToReceive = item.QuantityDispatched;
-        item.QuantityReceived = qtyToReceive;
+        var qtyToReceive = quantities[item.Id];
+        if (qtyToReceive == 0) continue;
+        item.QuantityReceived += qtyToReceive;
 
         if (item.ProductId is Guid productId)
         {
@@ -10986,26 +11221,29 @@ api.MapPost("/transfers/{id}/receive", async (AppDbContext db, HttpContext http,
         if (qtyToReceive > 0)
             RecordStockLedgerEntry(db, destIng, order.TenantId, order.DestinationBranchId, StockMovementType.TransferIn, qtyToReceive, destIng.CostPerUnitPKR, "StockTransfer", order.Id, receivedBy, $"Transfer {order.TransferNumber}");
     }
-    order.Status = TransferStatus.Received;
+    var fullyReceived = order.Items.All(i => i.QuantityReceived >= i.QuantityDispatched);
+    if (fullyReceived) order.Status = TransferStatus.Received;
     order.ReceivedAt = DateTime.UtcNow;
     order.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) order.Notes = (order.Notes != null ? order.Notes + " • " : "") + dto.Notes;
-    // The outlet's request this transfer answered is now met.
-    foreach (var answered in await db.StockRequests.Where(r => r.TransferOrderId == order.Id).ToListAsync())
-        answered.Status = StockRequestStatus.Fulfilled;
+    if (fullyReceived)
+        foreach (var answered in await db.StockRequests.Where(r => r.TransferOrderId == order.Id).ToListAsync())
+            answered.Status = StockRequestStatus.Fulfilled;
     await db.SaveChangesAsync();
 
     // Between two of the business's companies the books record it too. The goods have arrived
     // whatever happens here.
     try
     {
-        await PostIntercompanyTransferAsync(db, order, receivedBy);
+        if (fullyReceived) await PostIntercompanyTransferAsync(db, order, receivedBy);
         await db.SaveChangesAsync();
     }
     catch (Exception ex)
     {
         Console.WriteLine($"[Accounting] Intercompany posting for transfer {order.TransferNumber} failed: {ex.Message}");
+        return Results.Conflict(new { message = "The transfer receipt could not be posted to accounting." });
     }
+    await receiveTransaction.CommitAsync();
     return Results.Ok(order);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive stock transfers."));
@@ -11014,9 +11252,16 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var order = await db.StockTransferOrders.Include(t => t.Items)
         .FirstOrDefaultAsync(t => t.Id == id && (http.IsSuperAdmin() || t.TenantId == scopedTenantId!.Value));
     if (order == null) return Results.NotFound("Transfer order not found");
+    var (_, _, cancelScopeError) = await ResolveScopeAsync(http, db, null, order.SourceBranchId);
+    if (cancelScopeError != null) return cancelScopeError;
+    await LockDrawerAsync(db, order.SourceBranchId);
+    if (order.Items.Any(i => i.QuantityReceived > 0))
+        return Results.Conflict(new { message = "Goods have already arrived on this transfer. Reconcile the outstanding quantity before closing it." });
     // Once received, the stock is at the destination; cancelling then would erase a real movement.
     if (order.Status is TransferStatus.Received or TransferStatus.Cancelled)
         return Results.BadRequest(new { message = $"This transfer is already {order.Status.ToString().ToLowerInvariant()} and cannot be cancelled." });
@@ -11051,6 +11296,7 @@ api.MapPost("/transfers/{id}/cancel", async (AppDbContext db, HttpContext http, 
         answered.ReviewNotes = $"Transfer {order.TransferNumber} was cancelled.";
     }
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(new { success = true, status = "Cancelled" });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasStockTransfers)))
   .AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to cancel stock transfers."));
@@ -11252,7 +11498,8 @@ api.MapPost("/procurement/purchase-orders", async (AppDbContext db, HttpContext 
     decimal totalCost = 0;
     foreach (var item in dto.Items)
     {
-        if (item.Quantity <= 0) return Results.BadRequest(new { message = "Every line needs a quantity above zero." });
+        if (item.Quantity <= 0 || item.UnitCostPKR < 0)
+            return Results.BadRequest(new { message = "Every line needs a positive quantity and a nonnegative unit cost." });
         var lineTotal = item.Quantity * item.UnitCostPKR;
         totalCost += lineTotal;
 
@@ -11287,17 +11534,39 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
 {
     var scopedTenantId = ResolveTenantScope(http, null);
     if (scopedTenantId == null && !http.IsSuperAdmin()) return Results.Unauthorized();
+    await using var receiptTransaction = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, id);
     var po = await db.PurchaseOrders.Include(p => p.Items)
         .FirstOrDefaultAsync(p => p.Id == id && (http.IsSuperAdmin() || p.TenantId == scopedTenantId!.Value));
     if (po == null) return Results.NotFound("Purchase order not found");
     // Staff kept to one branch receive only that branch's orders.
     var (_, _, poScopeError) = await ResolveScopeAsync(http, db, null, po.BranchId);
     if (poScopeError != null) return poScopeError;
-    if (po.Status != POStatus.Ordered) return Results.BadRequest($"Cannot receive PO in {po.Status} status");
+    if (dto.RequestId is Guid requestId)
+    {
+        var inserted = await db.Database.ExecuteSqlInterpolatedAsync($@"
+            INSERT INTO ""PurchaseReceiptRequests"" (""PurchaseOrderId"", ""RequestId"") VALUES ({id}, {requestId})
+            ON CONFLICT DO NOTHING");
+        if (inserted == 0) return Results.Ok(po);
+    }
+    if (po.Status is not (POStatus.Ordered or POStatus.PartiallyReceived))
+        return Results.BadRequest(new { message = $"Cannot receive PO in {po.Status} status." });
+    var submitted = dto.Lines ?? new List<ReceivePOLineDto>();
+    if (submitted.GroupBy(l => l.ItemId).Any(g => g.Count() != 1 || po.Items.All(i => i.Id != g.Key)))
+        return Results.BadRequest(new { message = "Each line must name a different item on this purchase order." });
+    var detail = submitted.ToDictionary(l => l.ItemId);
+    var explicitQuantities = submitted.Any(l => l.QuantityReceived.HasValue);
+    var quantities = po.Items.ToDictionary(i => i.Id, i => explicitQuantities
+        ? detail.GetValueOrDefault(i.Id)?.QuantityReceived ?? 0 : i.Quantity - i.QuantityReceived);
+    if (po.Items.Any(i => quantities[i.Id] < 0 || quantities[i.Id] > i.Quantity - i.QuantityReceived)
+        || quantities.Values.All(q => q == 0))
+        return Results.BadRequest(new { message = "Receive a positive quantity within what is still outstanding." });
+    var receiptItems = po.Items.Where(i => quantities[i.Id] > 0).ToList();
+    var costReceived = receiptItems.Sum(i => quantities[i.Id] * i.UnitCostPKR);
 
     // The same rules as receiving stock by hand: a business whose stock carries batches names each
     // product's batch and expiry as it arrives, and an expired batch is sent back, not received.
-    var productItems = po.Items.Where(i => i.ProductId != null).ToList();
+    var productItems = receiptItems.Where(i => i.ProductId != null).ToList();
     if (productItems.Count > 0)
     {
         var ent = await entitlements.GetAsync(po.TenantId);
@@ -11318,8 +11587,11 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     var receivedBy = dto.ReceivedBy ?? "Store Inward In-Charge";
     var poProductIds = productItems.Select(i => i.ProductId!.Value).Distinct().ToList();
     var poProducts = await db.Products.Where(p => poProductIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id);
-    foreach (var item in po.Items)
+    await LockDrawerAsync(db, po.BranchId);
+    foreach (var item in receiptItems)
     {
+        var quantity = quantities[item.Id];
+        item.QuantityReceived += quantity;
         // Goods bought to resell go onto this location's shelf, at this location's cost.
         if (item.ProductId is Guid productId)
         {
@@ -11334,8 +11606,8 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
             var perBox = poProducts.TryGetValue(productId, out var poProduct) ? Pos.Api.Services.MedicinePacking.UnitsPerBox(poProduct) : 1;
             var receivedLine = dto.Lines?.FirstOrDefault(l => l.ItemId == item.Id);
             var bonus = Math.Max(0, receivedLine?.BonusQuantity ?? 0);
-            var unitsIn = (item.Quantity + bonus) * perBox;
-            var costEach = unitsIn > 0 ? Math.Round(item.Quantity * item.UnitCostPKR / unitsIn, 4) : item.UnitCostPKR / perBox;
+            var unitsIn = (quantity + bonus) * perBox;
+            var costEach = Math.Round(quantity * item.UnitCostPKR / unitsIn, 4);
             ApplyReceiptToAverageCost(stock, unitsIn, costEach);
             var poReceipt = RecordProductStockMovement(db, stock, po.TenantId, StockMovementType.PurchaseReceipt, unitsIn, costEach,
                 "PurchaseOrder", po.Id, receivedBy, bonus > 0 ? $"PO {po.PONumber} (incl. {bonus:0.##} bonus)" : $"PO {po.PONumber}");
@@ -11349,9 +11621,9 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
                 item.Unit, item.UnitCostPKR, "Direct Purchased", po.SupplierName);
         if (item.UnitCostPKR > 0) ing.CostPerUnitPKR = item.UnitCostPKR;
         if (!string.IsNullOrEmpty(po.SupplierName)) ing.SupplierName = po.SupplierName;
-        RecordStockLedgerEntry(db, ing, po.TenantId, po.BranchId, StockMovementType.PurchaseReceipt, item.Quantity, item.UnitCostPKR, "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
+        RecordStockLedgerEntry(db, ing, po.TenantId, po.BranchId, StockMovementType.PurchaseReceipt, quantity, item.UnitCostPKR, "PurchaseOrder", po.Id, receivedBy, $"PO {po.PONumber}");
     }
-    po.Status = POStatus.Received;
+    po.Status = po.Items.All(i => i.QuantityReceived >= i.Quantity) ? POStatus.Received : POStatus.PartiallyReceived;
     po.ReceivedAt = DateTime.UtcNow;
     po.ReceivedBy = receivedBy;
     if (!string.IsNullOrEmpty(dto.Notes)) po.Notes = (po.Notes != null ? po.Notes + " • " : "") + dto.Notes;
@@ -11360,10 +11632,10 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
     if (po.SupplierId.HasValue)
     {
         var supplier = await db.Suppliers.FirstOrDefaultAsync(s => s.Id == po.SupplierId.Value);
-        if (supplier != null) supplier.CurrentBalancePKR += po.TotalCostPKR;
+        if (supplier != null) supplier.CurrentBalancePKR += costReceived;
     }
 
-    if (await HasAccountingAsync(db, po.TenantId) && po.TotalCostPKR > 0)
+    if (await HasAccountingAsync(db, po.TenantId) && costReceived > 0)
     {
         try
         {
@@ -11373,18 +11645,20 @@ api.MapPost("/procurement/purchase-orders/{id}/receive", async (AppDbContext db,
                 $"Goods received — PO #{po.PONumber} ({po.SupplierName})", "PurchaseOrder", po.Id, receivedBy,
                 new List<(string, decimal, decimal)>
                 {
-                    ("1200", po.TotalCostPKR, 0),
-                    (creditAccount, 0, po.TotalCostPKR)
+                    ("1200", costReceived, 0),
+                    (creditAccount, 0, costReceived)
                 });
             await db.SaveChangesAsync();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[Accounting] Failed to post journal entry for PO {po.PONumber}: {ex.Message}");
+            return Results.Conflict(new { message = "The receipt could not be posted to accounting. Check that the accounting period is open." });
         }
     }
 
     await db.SaveChangesAsync();
+    await receiptTransaction.CommitAsync();
     return Results.Ok(po);
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequirePermissionFilter(u => u.CanManageInventory, "You don't have permission to receive purchase orders."));
 
@@ -11584,6 +11858,8 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     // when, and to which edition, is kept with the business.
     if (!dto.AcceptedTerms)
         return Results.BadRequest(new { error = "Please agree to the Terms of Service and Privacy Policy to register." });
+    if (string.IsNullOrWhiteSpace(dto.RestaurantName) || string.IsNullOrWhiteSpace(dto.ContactName))
+        return Results.BadRequest(new { error = "Enter the business name and the owner's full name." });
 
     // The restaurant's web name is its sign-in address: /r/<name> now, <name>.yourdomain.com once
     // there is a domain. The owner picks it; an older client that sends none gets one made from
@@ -11606,9 +11882,9 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     // check meant the first business to register "admin" took that name away from every business
     // that would ever sign up afterwards. A brand-new tenant has no users, so the only real
     // constraint here is that the name is well-formed.
-    var desiredUsername = dto.AdminUsername.ToLower().Trim();
-    if (desiredUsername.Length < 3)
-        return Results.BadRequest(new { error = "Username must be at least 3 characters." });
+    var desiredUsername = (dto.AdminUsername ?? "").Trim().ToLowerInvariant();
+    if (!System.Text.RegularExpressions.Regex.IsMatch(desiredUsername, @"^[a-z0-9._-]{3,64}$"))
+        return Results.BadRequest(new { error = "Use 3 to 64 letters, numbers, dots, dashes or underscores for the username." });
     var ownerPin = dto.AdminPin?.Trim() ?? "";
     if (!System.Text.RegularExpressions.Regex.IsMatch(ownerPin, @"^\d{4,6}$"))
         return Results.BadRequest(new { error = "The PIN must be 4 to 6 digits." });
@@ -11620,9 +11896,10 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     // forgotten PIN.
     var hasHeadOffice = BusinessStructures.Resolve(dto.BusinessStructure, dto.DeploymentMode) != BusinessStructures.SingleShop;
     var ownerEmail = NormalizeEmail(dto.Email);
-    if (hasHeadOffice && (ownerEmail == null || !ownerEmail.Contains('@')))
-        return Results.BadRequest(new { error = "A valid email address is required to run a head office." });
-    if (ownerEmail != null && !ownerEmail.Contains('@'))
+    if (hasHeadOffice && (ownerEmail == null || string.IsNullOrEmpty(dto.AdminPassword)))
+        return Results.BadRequest(new { error = "An email address and password are required to run a head office." });
+    if (ownerEmail != null && (!System.Net.Mail.MailAddress.TryCreate(ownerEmail, out var mailbox)
+        || !string.Equals(mailbox.Address, ownerEmail, StringComparison.OrdinalIgnoreCase)))
         return Results.BadRequest(new { error = "That email address does not look right." });
     if (ownerEmail != null && await db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == ownerEmail))
         return Results.BadRequest(new { error = "An account with this email already exists. Sign in with it instead, or use a different email." });
@@ -11675,6 +11952,14 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
     var requestedBranches = (dto.Branches ?? new List<SignupBranchDto>())
         .Where(b => !string.IsNullOrWhiteSpace(b.Name))
         .ToList();
+    if (hasHeadOffice && countryProfile.Iso2 == "PK" && countryProfile.States is { Count: > 0 } provinces)
+    {
+        if (matchedState == null)
+            return Results.BadRequest(new { error = "Choose the head office's province." });
+        var missingProvince = requestedBranches.FirstOrDefault(b => !provinces.Any(p => p.Code == b.StateCode));
+        if (missingProvince != null)
+            return Results.BadRequest(new { error = $"Choose a valid province for {missingProvince.Name.Trim()}." });
+    }
 
     // No location ceiling to check: a single shop has exactly one location, and with a head office
     // the ERP is the same for everyone and each branch is sold by its own POS version.
@@ -11691,9 +11976,10 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
             ContactName = dto.ContactName.Trim(),
             // Empty for Cashly POS alone: its billing reminders then stay in the app (Plan & Add-ons).
             ContactEmail = ownerEmail ?? string.Empty,
-            ContactPhone = dto.Phone.Trim(),
+            ContactPhone = NullIfBlank(dto.Phone) ?? ownerMobile,
             ContactMobile = ownerMobile,
             City = dto.City?.Trim(),
+            Address = NullIfBlank(dto.Address),
             Country = countryProfile.Name,
             State = matchedState?.Name ?? dto.StateName?.Trim(),
             BusinessType = dto.BusinessType ?? BusinessType.Restaurant,
@@ -11732,7 +12018,7 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
             // their own outlets, which is the opposite of what owning the chain should mean.
             BranchId = null,
             FullName = dto.ContactName.Trim(),
-            Username = dto.AdminUsername.ToLower().Trim(),
+            Username = desiredUsername,
             PinCodeHash = BCrypt.Net.BCrypt.HashPassword(ownerPin),
             // Signs in by PIN at a till, and by email + password in the back office.
             PinLookup = PinLookupFor(builder.Configuration, tenant.Id, ownerPin),
@@ -11802,13 +12088,12 @@ authApi.MapPost("/signup", async (AppDbContext db, HttpContext http, Pos.Api.Ser
         if (dto.SetUpAccounting)
             await EnsureChartOfAccountsSeededAsync(db, tenant.Id);
 
-        await transaction.CommitAsync();
-
         // Build the entitlement snapshot now, so the very first request from this tenant reads
         // the same resolved limits as every request after it.
         var newEntitlements = await http.RequestServices
             .GetRequiredService<Pos.Api.Services.IEntitlementService>()
             .RecomputeAsync(tenant.Id);
+        await transaction.CommitAsync();
 
         // Ask the owner to confirm their email, when they gave one. Never a reason for signup to fail.
         var confirmationSent = false;
@@ -16434,6 +16719,15 @@ api.MapDelete("/promo-codes/{id:guid}", async (AppDbContext db, HttpContext http
 // 200 with success:false and an actionable message rather than failing the request.
 // ============================================================
 
+api.MapGet("/payments/providers", (Pos.Api.Services.IPaymentGatewayResolver gateways) =>
+    Results.Ok(gateways.All.Select(g => new
+    {
+        provider = g.ProviderName, isConfigured = g.IsConfigured,
+        note = g.IsConfigured ? null : g.ProviderName == "Card"
+            ? "Integrated card acquiring is unavailable. Use your external card terminal."
+            : "Merchant credentials are required to use this payment provider."
+    }))).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("admin", "view"));
+
 api.MapPost("/payments/initiate", async (
     AppDbContext db, HttpContext http,
     Pos.Api.Services.IPaymentGatewayResolver gateways,
@@ -17782,8 +18076,16 @@ app.MapPost("/api/host/register", async (
     if (actingUser.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
         return Results.Json(new { message = "Only an owner or branch manager can register a business host." }, statusCode: 403);
 
+    var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (scopeError != null) return scopeError;
+    if (dto.ForEnrollment && actingUser.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin))
+        return Results.Forbid();
+
     var branch = await db.Branches.FirstOrDefaultAsync(b => b.Id == dto.BranchId && b.TenantId == tenantId.Value);
     if (branch == null) return Results.BadRequest(new { message = "Branch not found." });
+    if (dto.ForEnrollment && !branch.CanSell) return Results.BadRequest(new { message = "Choose a selling outlet to enroll." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({dto.BranchId.ToString()}, 73570212))");
 
     // One host per branch is the normal case. Re-registering updates the existing row rather than
     // accumulating stale hosts every time the office PC gets a new DHCP lease.
@@ -17811,12 +18113,15 @@ app.MapPost("/api/host/register", async (
     }
 
     host.HostName = string.IsNullOrWhiteSpace(dto.HostName) ? $"{branch.Name} Host" : dto.HostName.Trim();
-    host.LanAddress = dto.LanAddress?.Trim();
-    host.Port = dto.Port > 0 ? dto.Port : 5288;
+    if (!dto.ForEnrollment)
+    {
+        host.LanAddress = dto.LanAddress?.Trim();
+        host.Port = dto.Port > 0 ? dto.Port : 5288;
+        host.LastSeenAt = DateTime.UtcNow;
+    }
     host.MachineName = dto.MachineName?.Trim();
     host.OperatingSystem = dto.OperatingSystem?.Trim();
     host.AppVersion = dto.AppVersion?.Trim();
-    host.LastSeenAt = DateTime.UtcNow;
     host.IsActive = true;
 
     // Issue or rotate the sync key this host must present on every push and pull. This endpoint
@@ -17825,8 +18130,16 @@ app.MapPost("/api/host/register", async (
     // cloud never reads it back, so re-registering is also the recovery path when the host's copy
     // is lost.
     string? issuedKey = null;
+    string? enrollmentCode = null;
     var suppliedKey = string.IsNullOrWhiteSpace(dto.SyncKey) ? null : dto.SyncKey.Trim();
-    if (suppliedKey != null)
+    if (dto.ForEnrollment)
+    {
+        enrollmentCode = Pos.Api.Services.SyncKeys.NewKey();
+        host.EnrollmentCodeHash = Pos.Api.Services.SyncKeys.Hash(enrollmentCode);
+        host.EnrollmentExpiresAt = DateTime.UtcNow.AddMinutes(15);
+        host.EnrollmentRedeemedKeyHash = null;
+    }
+    else if (suppliedKey != null)
     {
         host.SyncKeyHash = Pos.Api.Services.SyncKeys.Hash(suppliedKey);
         issuedKey = suppliedKey;
@@ -17840,6 +18153,7 @@ app.MapPost("/api/host/register", async (
     await WriteAuditAsync(db, tenantId.Value, actingUser, "BusinessHostRegistered", "BusinessHost", host.Id,
         null, $"{host.HostName} at {host.LanAddress}:{host.Port}");
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
 
     return Results.Ok(new
     {
@@ -17853,19 +18167,151 @@ app.MapPost("/api/host/register", async (
         branchCode = branch.Code,
         // Null when this host already has a key on file and supplied none — the caller already
         // holds it, so echoing it back would only widen the number of places a live secret lands.
-        syncKey = issuedKey
+        syncKey = issuedKey,
+        enrollmentCode,
+        enrollmentExpiresAt = dto.ForEnrollment ? host.EnrollmentExpiresAt : null
     });
 }).RequireAuthorization();
 
+app.MapPost("/api/host/redeem-enrollment", async (AppDbContext db, RedeemHostEnrollmentDto dto, CancellationToken ct) =>
+{
+    var code = dto.BusinessId?.Trim().ToUpperInvariant() ?? "";
+    var grant = dto.EnrollmentCode?.Trim() ?? "";
+    var syncKey = dto.SyncKey?.Trim() ?? "";
+    if (code.Length != 6 || grant.Length != 47 || syncKey.Length != 47
+        || !syncKey.StartsWith("ck_", StringComparison.Ordinal))
+        return Results.Unauthorized();
+
+    await using var tx = await db.Database.BeginTransactionAsync(ct);
+    var host = await db.BusinessHosts.FromSqlInterpolated(
+        $@"SELECT * FROM ""BusinessHosts"" WHERE ""HostCode"" = {code} AND ""IsActive"" FOR UPDATE")
+        .IgnoreQueryFilters().FirstOrDefaultAsync(ct);
+    if (host?.EnrollmentCodeHash == null || host.EnrollmentExpiresAt is not DateTime expiresAt
+        || expiresAt <= DateTime.UtcNow || !Pos.Api.Services.SyncKeys.Matches(host.EnrollmentCodeHash, grant)
+        || (host.EnrollmentRedeemedKeyHash != null && (!Pos.Api.Services.SyncKeys.Matches(host.EnrollmentRedeemedKeyHash, syncKey)
+            || host.EnrollmentRedeemedKeyHash != host.SyncKeyHash)))
+        return Results.Unauthorized();
+
+    var tenant = await db.Tenants.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(t => t.Id == host.TenantId && t.IsActive, ct);
+    var branch = await db.Branches.IgnoreQueryFilters().AsNoTracking()
+        .FirstOrDefaultAsync(b => b.Id == host.BranchId && b.TenantId == host.TenantId && b.CanSell, ct);
+    if (tenant == null || branch == null) return Results.NotFound();
+    var company = await db.Companies.IgnoreQueryFilters().AsNoTracking()
+        .FirstOrDefaultAsync(c => c.Id == branch.CompanyId && c.TenantId == tenant.Id, ct);
+    var settings = await db.TenantSettings.IgnoreQueryFilters().AsNoTracking().FirstAsync(s => s.TenantId == tenant.Id, ct);
+    var packs = await db.TenantVerticalPacks.IgnoreQueryFilters().AsNoTracking().Where(p => p.TenantId == tenant.Id).ToListAsync(ct);
+    var tax = await db.TenantTaxRegionRates.IgnoreQueryFilters().AsNoTracking().Where(t => t.TenantId == tenant.Id && t.RegionCode == branch.RegionCode).ToListAsync(ct);
+
+    if (host.EnrollmentRedeemedKeyHash == null)
+    {
+        host.SyncKeyHash = Pos.Api.Services.SyncKeys.Hash(syncKey);
+        host.EnrollmentRedeemedKeyHash = host.SyncKeyHash;
+        host.LastSyncedAt = null;
+        await WriteAuditAsync(db, tenant.Id, null, "BranchHostEnrolled", "BusinessHost", host.Id, null, branch.Code);
+        await db.SaveChangesAsync(ct);
+    }
+    await tx.CommitAsync(ct);
+    return Results.Ok(new HostEnrollmentSnapshot(host.Id, host.HostCode, host.HostName,
+        new HostTenantIdentity(tenant.Id, tenant.Slug, tenant.Name, tenant.City, tenant.Address, tenant.Country,
+            tenant.BusinessType, branch.PosEdition ?? tenant.Tier, tenant.Status, tenant.IsTrialActive,
+            tenant.TrialEndsAt, tenant.SubscriptionPaidUntil),
+        branch, company, settings, packs, tax));
+}).AllowAnonymous().RequireRateLimiting("auth");
+
+app.MapPost("/api/setup/attach-host", async (AppDbContext db, HttpContext http, IHttpClientFactory clients,
+    Pos.Api.Services.HostLink link, Pos.Api.Services.SecretProtector protector, Pos.Api.Services.ISyncService sync,
+    Microsoft.Extensions.Options.IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions> json,
+    AttachHostDto dto, CancellationToken ct) =>
+{
+    if (!CanInitializeLocalHost(http)) return Results.NotFound();
+    if (!Uri.TryCreate(dto.CloudUrl?.Trim(), UriKind.Absolute, out var cloud)
+        || (cloud.Scheme != Uri.UriSchemeHttps && !(cloud.Scheme == Uri.UriSchemeHttp && cloud.IsLoopback))
+        || !string.IsNullOrEmpty(cloud.UserInfo) || cloud.AbsolutePath != "/" || !string.IsNullOrEmpty(cloud.Query)
+        || !string.IsNullOrEmpty(cloud.Fragment))
+        return Results.BadRequest(new { message = "Enter the HTTPS address of the headquarters API." });
+    if (string.IsNullOrWhiteSpace(dto.FullName) || !System.Text.RegularExpressions.Regex.IsMatch(dto.Username ?? "", @"^[a-zA-Z0-9._-]{3,64}$")
+        || !System.Text.RegularExpressions.Regex.IsMatch(dto.Pin ?? "", @"^\d{6}$"))
+        return Results.BadRequest(new { message = "Enter a local manager name, username and six-digit PIN." });
+
+    await using var tx = await db.Database.BeginTransactionAsync(ct);
+    await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(73570211)", ct);
+    if (await db.Tenants.IgnoreQueryFilters().AnyAsync(ct))
+        return Results.Conflict(new { message = "This server already has a business configured." });
+
+    var grant = dto.EnrollmentCode?.Trim() ?? "";
+    if (grant.Length != 47)
+        return Results.BadRequest(new { message = "Enter the enrollment code issued by headquarters." });
+    // The same installation can retry the same grant if it lost the response before saving.
+    var installKey = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("cashly-host-enrollment:" + jwtKey));
+    var syncKey = "ck_" + Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(installKey, Encoding.UTF8.GetBytes(grant)));
+    HostEnrollmentSnapshot? snapshot;
+    try
+    {
+        using var response = await clients.CreateClient("host-enrollment").PostAsJsonAsync(
+            new Uri(cloud, "/api/host/redeem-enrollment"), new RedeemHostEnrollmentDto(dto.BusinessId, grant, syncKey), ct);
+        if (!response.IsSuccessStatusCode)
+            return Results.BadRequest(new { message = "Headquarters refused the enrollment. Check the server address, Business ID and code." });
+        snapshot = await response.Content.ReadFromJsonAsync<HostEnrollmentSnapshot>(json.Value.SerializerOptions, ct);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException or TaskCanceledException && !ct.IsCancellationRequested)
+    {
+        return Results.Json(new { message = "The headquarters server did not complete enrollment. Try again." }, statusCode: 502);
+    }
+    if (snapshot == null) return Results.BadRequest(new { message = "Headquarters did not return the outlet setup." });
+    var identity = snapshot.Tenant;
+    db.Tenants.Add(new Tenant
+    {
+        Id = identity.Id, Slug = identity.Slug, Name = identity.Name, City = identity.City, Address = identity.Address, Country = identity.Country,
+        BusinessType = identity.BusinessType, Tier = identity.Tier, DeploymentMode = DeploymentMode.HeadOffice,
+        Status = identity.Status, IsTrialActive = identity.IsTrialActive, TrialEndsAt = identity.TrialEndsAt,
+        SubscriptionPaidUntil = identity.SubscriptionPaidUntil
+    });
+    snapshot.Branch.RegionId = null; // ERP reporting groups live on HQ.
+    if (snapshot.Company != null) db.Companies.Add(snapshot.Company);
+    db.Branches.Add(snapshot.Branch);
+    db.TenantSettings.Add(snapshot.Settings);
+    db.TenantVerticalPacks.AddRange(snapshot.Packs);
+    db.TenantTaxRegionRates.AddRange(snapshot.Tax);
+    var origin = cloud.GetLeftPart(UriPartial.Authority);
+    db.BusinessHosts.Add(new BusinessHost
+    {
+        Id = snapshot.HostId, TenantId = identity.Id, BranchId = snapshot.Branch.Id,
+        HostCode = snapshot.HostCode, HostName = snapshot.HostName,
+        CloudUrl = origin, ProtectedSyncKey = protector.Protect(syncKey)
+    });
+    db.Users.Add(new AppUser
+    {
+        TenantId = identity.Id, BranchId = snapshot.Branch.Id, FullName = dto.FullName!.Trim(), Username = dto.Username!.ToLowerInvariant(),
+        Role = UserRole.BranchManager, IsActive = true, PinCodeHash = BCrypt.Net.BCrypt.HashPassword(dto.Pin!),
+        PinLookup = PinLookupFor(builder.Configuration, identity.Id, dto.Pin!), CanManageInventory = true, CanGiveDiscounts = true, CanVoidOrders = true
+    });
+    await db.SaveChangesAsync(ct);
+    await tx.CommitAsync(ct);
+    link.UseEnrolledHost(origin, snapshot.HostCode, syncKey);
+    var entitlementResult = await sync.PullEntitlementsAsync(identity.Id, ct);
+    var catalogueResult = await sync.PullCatalogAsync(identity.Id, ct);
+    return Results.Ok(new
+    {
+        business = identity.Name, outlet = snapshot.Branch.Name, branchId = snapshot.Branch.Id,
+        catalogueSynced = catalogueResult.Ok && snapshot.Settings.CatalogControl == CatalogControl.HeadOfficeOnly,
+        entitlementsSynced = entitlementResult.Ok
+    });
+}).AllowAnonymous().RequireRateLimiting("auth");
+
 /// <summary>Hosts registered for this tenant, with how long since each was last heard from.</summary>
-app.MapGet("/api/host/list", async (AppDbContext db, HttpContext http) =>
+app.MapGet("/api/host/list", async (AppDbContext db, HttpContext http,
+    Pos.Api.Middlewares.ICurrentUserAccessor accessor) =>
 {
     var tenantId = http.GetTenantId();
     if (tenantId == null || tenantId == Guid.Empty) return Results.Unauthorized();
+    var user = await accessor.GetCurrentUserAsync(http);
+    if (user?.Role is not (UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.BranchManager or UserRole.SuperAdmin))
+        return Results.Forbid();
+    var branchId = http.GetBranchId();
 
     var now = DateTime.UtcNow;
     var hosts = await db.BusinessHosts
-        .Where(h => h.TenantId == tenantId.Value)
+        .Where(h => h.TenantId == tenantId.Value && (branchId == null || h.BranchId == branchId))
         .Join(db.Branches, h => h.BranchId, b => b.Id, (h, b) => new { h, b })
         .ToListAsync();
 
@@ -17873,6 +18319,7 @@ app.MapGet("/api/host/list", async (AppDbContext db, HttpContext http) =>
     {
         x.h.Id,
         businessId = x.h.HostCode,
+        branchId = x.h.BranchId,
         x.h.HostName,
         x.h.LanAddress,
         x.h.Port,
@@ -18088,7 +18535,15 @@ app.MapPost("/api/sync/receive", async (
     {
         // The write itself lives in SyncReceiver: idempotent, tenant-forced, and it reports what
         // it could not resolve rather than pretending every record landed.
-        result = await receiver.ReceiveAsync(host.TenantId, dto.EntityType, dto.Records);
+        var isHeadOfficeHost = await db.Branches.IgnoreQueryFilters()
+            .AnyAsync(b => b.Id == host.BranchId && b.TenantId == host.TenantId && b.IsHeadOffice);
+        var branchRecords = isHeadOfficeHost ? dto.Records : dto.Records.Where(r => r.TryGetValue("branchId", out var value)
+            && value.ValueKind == System.Text.Json.JsonValueKind.String && value.TryGetGuid(out var branchId)
+            && branchId == host.BranchId).ToList();
+        result = await receiver.ReceiveAsync(host.TenantId, dto.EntityType, branchRecords);
+        if (branchRecords.Count != attempted)
+            result = result with { Rejected = result.Rejected + attempted - branchRecords.Count,
+                Reasons = result.Reasons.Append("A record did not belong to the enrolled outlet.").ToList() };
     }
     catch (Exception ex)
     {
@@ -18130,7 +18585,7 @@ app.MapPost("/api/sync/receive", async (
         CompletedAt = DateTime.UtcNow
     });
 
-    host.LastSyncedAt = DateTime.UtcNow;
+    if (result.Rejected == 0) host.LastSyncedAt = DateTime.UtcNow;
     host.LastSeenAt = DateTime.UtcNow;
     await db.SaveChangesAsync();
 
@@ -18696,7 +19151,7 @@ public record SaveRegionDto(string? Name, string? Code);
 /// Both are optional so the ordinary online checkout path is unchanged.
 /// </summary>
 public record CreateOrderDto(Guid BranchId, OrderType OrderType, string? TableNumber, string? CustomerName, string? CustomerPhone, string? DeliveryAddress, decimal SubTotalPKR, decimal DiscountPKR, decimal TaxPKR, decimal TotalPKR, PaymentMethod PaymentMethod, decimal AmountPaidPKR, decimal ChangeDuePKR, bool IsPaid, string? CashierName, string? CreatedByRole, List<CreateOrderItemDto> Items, string? PromoCode = null, string? GiftCardCode = null, decimal? GiftCardRedeemAmount = null, int? LoyaltyPointsRedeemed = null, string? ClientLocalId = null, DateTime? CapturedAt = null,
-    PrescriptionDto? Prescription = null);
+    PrescriptionDto? Prescription = null, Guid? TerminalId = null);
 /// <summary>
 /// The prescription a sale of prescription-only or controlled medicines is made against
 /// (Models/PharmacyEntities.cs). PhotoDataUrl: a data: URL of its photo, already shrunk by the till.
@@ -18714,7 +19169,8 @@ public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, stri
     // False when the owner's own photo is uploaded straight after: no AI photo is made for nothing.
     bool? AiPhoto = null);
 public record UpdateProductDto(Guid CategoryId, string? Name, string? UrduName, string? Barcode, decimal CostPricePKR, decimal SellingPricePKR, KitchenStation Station,
-    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null);
+    MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null,
+    string? SKU = null, string? Description = null, string? Unit = null, List<CreateProductModifierDto>? Modifiers = null);
 /// <summary>Every item in a category taxed one way (Tax Setup → Items taxed differently).</summary>
 public record ApplyCategoryTaxDto(TaxTreatment TaxTreatment, decimal? TaxRatePercent);
 public record CreateCategoryDto(Guid TenantId, string Name, string? LocalName, string? Icon, int SortOrder);
@@ -18730,7 +19186,8 @@ public record StockInDto(Guid BranchId, Guid ProductId, decimal Quantity, string
 /// <summary>The batch a receipt goes into: the number and expiry printed on the pack.</summary>
 public record BatchIn(string? BatchNumber, DateTime? ExpiryDate, decimal? RetailPricePKR = null, string? SupplierName = null);
 /// <summary>One purchase-order line as it arrived: its batch, and any bonus units.</summary>
-public record ReceivePOLineDto(Guid ItemId, string? BatchNumber, DateTime? ExpiryDate, decimal? BonusQuantity = null, decimal? RetailPricePKR = null);
+public record ReceivePOLineDto(Guid ItemId, string? BatchNumber, DateTime? ExpiryDate, decimal? BonusQuantity = null, decimal? RetailPricePKR = null,
+    decimal? QuantityReceived = null);
 /// <summary>A medicine's details on its product (Models/PharmacyEntities.cs).</summary>
 public record MedicineDetailsDto(string? GenericName, string? Strength, string? DosageForm, string? Manufacturer,
     string? DrapRegistrationNo, string? RackLocation, MedicineSchedule? Schedule,
@@ -18771,12 +19228,13 @@ public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid De
 /// <summary>A line names a raw ingredient (IngredientId) or a finished product (ProductId).</summary>
 public record CreateTransferItemDto(Guid? IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit, Guid? ProductId = null);
 public record DispatchTransferDto(string? DispatchedBy, string? VehicleOrDriver, string? Notes);
-public record ReceiveTransferDto(string? ReceivedBy, string? Notes);
+public record ReceiveTransferDto(string? ReceivedBy, string? Notes, List<ReceiveTransferLineDto>? Lines = null, Guid? RequestId = null);
+public record ReceiveTransferLineDto(Guid ItemId, decimal QuantityReceived);
 public record CreatePODto(Guid TenantId, Guid BranchId, string SupplierName, string? Notes, List<CreatePOItemDto> Items, Guid? SupplierId = null);
 /// <summary>A line buys a raw ingredient (IngredientId, or a new one by IngredientName) or goods to
 /// resell (ProductId).</summary>
 public record CreatePOItemDto(Guid? IngredientId, string IngredientName, decimal Quantity, string? Unit, decimal UnitCostPKR, Guid? ProductId = null);
-public record ReceivePODto(string? ReceivedBy, string? Notes, List<ReceivePOLineDto>? Lines = null);
+public record ReceivePODto(string? ReceivedBy, string? Notes, List<ReceivePOLineDto>? Lines = null, Guid? RequestId = null);
 public record CreateWarehouseDto(Guid? TenantId, Guid BranchId, string Name, string? Code);
 public record UpdateWarehouseDto(string? Name, string? Code, bool? IsActive);
 /// <summary>An invoice for the parts named (each from the end of what it covers); with none named, everything due soon.
@@ -18825,9 +19283,10 @@ public record SetUserBranchAccessDto(List<Guid> BranchIds);
 public record RefreshTokenDto(string RefreshToken);
 public record VoidOrderDto(string? Reason);
 /// <summary>RefundMethod defaults to how the sale was paid; Restock defaults to true.</summary>
-public record CreateReturnDto(List<ReturnLineDto> Lines, PaymentMethod? RefundMethod = null, bool? Restock = null, string? Reason = null);
+public record CreateReturnDto(List<ReturnLineDto> Lines, PaymentMethod? RefundMethod = null, bool? Restock = null, string? Reason = null,
+    Guid? TerminalId = null, string? ExternalRefundReference = null);
 public record ReturnLineDto(Guid OrderItemId, int Quantity);
-public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR);
+public record OpenCashShiftDto(Guid BranchId, string TerminalName, string CashierName, decimal OpeningFloatPKR, Guid? TerminalId = null);
 public record CloseCashShiftDto(decimal ActualCashCounted, string? Notes);
 public record SetupInitDto(
     string DeploymentMode,
@@ -18933,7 +19392,7 @@ public record EnableHeadOfficeDto(string? Name, string? City, string? Address, s
 public record SignupBranchDto(string Name, string? Code, string? City, string? Address, string? Phone, string? StateCode,
     SubscriptionTier? PosEdition = null);
 /// <summary>Taking payment for an order placed unpaid. AmountPaidPKR defaults to the order total.</summary>
-public record SettleOrderDto(PaymentMethod PaymentMethod, decimal? AmountPaidPKR);
+public record SettleOrderDto(PaymentMethod PaymentMethod, decimal? AmountPaidPKR, Guid? TerminalId = null);
 /// <summary>A shop's tax-authority connection. AccessToken is only replaced when a new one is given.</summary>
 public record SaveFiscalIntegrationDto(FiscalAuthority Authority, FiscalEnvironment Environment, string? PosId, string? AccessToken,
     string? ApiUrl, string? DefaultPctCode, bool IsEnabled);
@@ -19050,7 +19509,13 @@ public record UpdateExpenseDto(string? Category, string? Description, string? Pa
     Guid? ExpenseAccountId, Guid? PaidFromAccountId, string? ReceiptReference);
 public record RejectExpenseDto(string Reason);
 public record RegisterHostDto(Guid BranchId, string? HostName, string? LanAddress, int Port,
-    string? MachineName, string? OperatingSystem, string? AppVersion, string? SyncKey);
+    string? MachineName, string? OperatingSystem, string? AppVersion, string? SyncKey, bool ForEnrollment = false);
+public record RedeemHostEnrollmentDto(string? BusinessId, string? EnrollmentCode, string? SyncKey);
+public record AttachHostDto(string? CloudUrl, string? BusinessId, string? EnrollmentCode, string? FullName, string? Username, string? Pin);
+public record HostTenantIdentity(Guid Id, string Slug, string Name, string? City, string? Address, string Country, BusinessType BusinessType,
+    SubscriptionTier Tier, TenantStatus Status, bool IsTrialActive, DateTime TrialEndsAt, DateTime? SubscriptionPaidUntil);
+public record HostEnrollmentSnapshot(Guid HostId, string HostCode, string HostName, HostTenantIdentity Tenant,
+    Branch Branch, Company? Company, TenantSettings Settings, List<TenantVerticalPack> Packs, List<TenantTaxRegionRate> Tax);
 public record HostCheckinDto(string BusinessId, string? LanAddress, int Port, string? AppVersion);
 public record CreateSyncLogDto(Guid? BranchId, Guid? DeviceId, string? HostIdentifier, SyncDirection? Direction,
     string EntityType, string? BatchId, int RecordsAttempted, int RecordsSucceeded, string? ErrorMessage, int? DurationMs);

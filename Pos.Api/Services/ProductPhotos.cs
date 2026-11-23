@@ -429,17 +429,22 @@ public sealed class CloudAiPhotoSource : IAiPhotoSource
 /// <summary>This server's link to the cloud, when it is a business host that has one.</summary>
 public sealed class HostLink
 {
-    public string? CloudUrl { get; }
-    public string? BusinessId { get; }
-    public string? SyncKey { get; }
+    private sealed record Connection(string? CloudUrl, string? BusinessId, string? SyncKey);
+    private volatile Connection _connection;
+    public string? CloudUrl => _connection.CloudUrl;
+    public string? BusinessId => _connection.BusinessId;
+    public string? SyncKey => _connection.SyncKey;
     public bool Linked => !string.IsNullOrWhiteSpace(CloudUrl);
 
     public HostLink(IConfiguration config)
     {
-        CloudUrl = config["Host:CloudUrl"] ?? Environment.GetEnvironmentVariable("CLOUD_URL");
-        BusinessId = config["Host:BusinessId"] ?? Environment.GetEnvironmentVariable("BUSINESS_ID");
-        SyncKey = config["Host:SyncKey"] ?? Environment.GetEnvironmentVariable("SYNC_KEY");
+        _connection = new(config["Host:CloudUrl"] ?? Environment.GetEnvironmentVariable("CLOUD_URL"),
+            config["Host:BusinessId"] ?? Environment.GetEnvironmentVariable("BUSINESS_ID"),
+            config["Host:SyncKey"] ?? Environment.GetEnvironmentVariable("SYNC_KEY"));
     }
+
+    public void UseEnrolledHost(string cloudUrl, string businessId, string syncKey) =>
+        _connection = new(cloudUrl, businessId, syncKey);
 }
 
 // --- The queue ---------------------------------------------------------------------

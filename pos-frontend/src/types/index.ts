@@ -1400,10 +1400,11 @@ export interface StockLedgerEntry {
   createdBy: string;
 }
 
-export type POStatus = 'Draft' | 'Ordered' | 'Received' | 'Cancelled';
+export type POStatus = 'Draft' | 'Ordered' | 'PartiallyReceived' | 'Received' | 'Cancelled';
 
 /** A line buys an ingredient OR goods to resell; ingredientName is the item's name either way. */
 export interface PurchaseOrderItem {
+  quantityReceived?: number;
   id: string;
   purchaseOrderId: string;
   ingredientId?: string | null;
@@ -1597,6 +1598,7 @@ export interface SetupInitPayload {
 /** Public, so it only says whether the server has a business yet — never which ones. */
 export interface SetupStatusResponse {
   isConfigured: boolean;
+  canInitialize?: boolean;
 }
 
 /**

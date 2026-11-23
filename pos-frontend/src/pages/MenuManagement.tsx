@@ -510,13 +510,15 @@ export const MenuManagement: React.FC = () => {
     setProdError(null);
     try {
       if (editingProduct) {
-        // UpdateProductDto is narrower than CreateProductDto — it carries only these seven
-        // fields, and the server leaves everything else on the row as it was.
         await posApi.updateProduct(editingProduct.id, {
           categoryId: prodForm.categoryId,
           name: prodForm.name.trim(),
           urduName: prodForm.urduName.trim() || undefined,
           barcode: prodForm.barcode.trim() || undefined,
+          sku: prodForm.sku.trim() || undefined,
+          description: prodForm.description.trim(),
+          unit: prodForm.unit,
+          modifiers: prodForm.modifiers.filter(m => m.name.trim()).map(m => ({ name: m.name.trim(), pricePKR: m.pricePKR })),
           costPricePKR: prodForm.costPricePKR,
           sellingPricePKR: prodForm.sellingPricePKR,
           station: prodForm.station,
@@ -1518,7 +1520,6 @@ export const MenuManagement: React.FC = () => {
                   <select
                     value={prodForm.unit}
                     onChange={(e) => setProdField('unit', e.target.value)}
-                    disabled={!!editingProduct}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
@@ -1544,7 +1545,6 @@ export const MenuManagement: React.FC = () => {
                     value={prodForm.sku}
                     onChange={(e) => setProdField('sku', e.target.value)}
                     placeholder="Auto"
-                    disabled={!!editingProduct}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 font-mono focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
@@ -1558,7 +1558,6 @@ export const MenuManagement: React.FC = () => {
                   rows={2}
                   value={prodForm.description}
                   onChange={(e) => setProdField('description', e.target.value)}
-                  disabled={!!editingProduct}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed resize-none"
                 />
               </div>
@@ -1720,7 +1719,7 @@ export const MenuManagement: React.FC = () => {
                   <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     Modifiers <span className="text-slate-400 normal-case">(add-ons priced separately)</span>
                   </label>
-                  {!editingProduct && (
+                  {(
                     <button
                       onClick={() => setProdField('modifiers', [...prodForm.modifiers, { name: '', pricePKR: 0 }])}
                       className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px] font-bold transition"
@@ -1750,7 +1749,6 @@ export const MenuManagement: React.FC = () => {
                             setProdField('modifiers', next);
                           }}
                           placeholder="e.g. Extra Cheese"
-                          disabled={!!editingProduct}
                           className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:border-teal-500 focus:outline-none disabled:opacity-50"
                         />
                         <input
@@ -1762,10 +1760,9 @@ export const MenuManagement: React.FC = () => {
                             next[i] = { ...next[i], pricePKR: Number(e.target.value) };
                             setProdField('modifiers', next);
                           }}
-                          disabled={!!editingProduct}
                           className="w-24 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 font-mono focus:border-teal-500 focus:outline-none disabled:opacity-50"
                         />
-                        {!editingProduct && (
+                        {(
                           <button
                             onClick={() => setProdField('modifiers', prodForm.modifiers.filter((_, j) => j !== i))}
                             className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition"

@@ -185,6 +185,13 @@ public class BusinessHost
     /// response, never here.
     /// </summary>
     public string? SyncKeyHash { get; set; }
+    public string? EnrollmentCodeHash { get; set; }
+    public DateTime? EnrollmentExpiresAt { get; set; }
+    public string? EnrollmentRedeemedKeyHash { get; set; }
+
+    // These are only populated on the outlet's own server.
+    public string? CloudUrl { get; set; }
+    public string? ProtectedSyncKey { get; set; }
 
     /// <summary>Last known LAN address, reported by the host itself on check-in. Advisory only —
     /// a DHCP lease can move it, which is exactly why terminals are told to re-discover rather

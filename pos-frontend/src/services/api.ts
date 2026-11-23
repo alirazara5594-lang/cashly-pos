@@ -721,7 +721,7 @@ export const posApi = {
     return res.data;
   },
   /** Take payment for an order placed unpaid (waiter tablet, QR code, pickup link). */
-  settleOrder: async (orderId: string, data: { paymentMethod: PaymentMethod; amountPaidPKR?: number }) => {
+  settleOrder: async (orderId: string, data: { paymentMethod: PaymentMethod; amountPaidPKR?: number; terminalId?: string }) => {
     const res = await api.post<{
       id: string; orderNumber: string; totalPKR: number; amountPaidPKR: number; changeDuePKR: number;
       paymentMethod: string; fiscalInvoiceNumber?: string | null; fiscalQrPayload?: string | null;
@@ -833,6 +833,8 @@ export const posApi = {
     refundMethod?: PaymentMethod;
     restock?: boolean;
     reason?: string;
+    terminalId?: string;
+    externalRefundReference?: string;
   }) => {
     const res = await api.post<{
       id: string;
@@ -1052,10 +1054,10 @@ export const posApi = {
 
   // Cash Shifts
   getCashShifts: async (branchId: string) => {
-    const res = await api.get<any[]>('/api/cash-shifts', { params: { branchId } });
+    const res = await api.get<Array<{ id: string; terminalId?: string | null; terminalName: string; openingFloatPKR: number; isClosed: boolean }>>('/api/cash-shifts', { params: { branchId } });
     return res.data;
   },
-  openCashShift: async (data: { branchId: string; terminalName: string; cashierName: string; openingFloatPKR: number }) => {
+  openCashShift: async (data: { branchId: string; terminalId?: string; terminalName: string; cashierName: string; openingFloatPKR: number }) => {
     const res = await api.post('/api/cash-shifts/open', data);
     return res.data;
   },
@@ -1322,7 +1324,7 @@ export const posApi = {
     const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/dispatch`, data);
     return res.data;
   },
-  receiveTransferOrder: async (id: string, data: { receivedBy?: string; notes?: string; }) => {
+  receiveTransferOrder: async (id: string, data: { receivedBy?: string; notes?: string; requestId?: string; lines?: { itemId: string; quantityReceived: number }[] }) => {
     const res = await api.post<StockTransferOrder>(`/api/transfers/${id}/receive`, data);
     return res.data;
   },
@@ -1351,8 +1353,9 @@ export const posApi = {
   receivePurchaseOrder: async (id: string, data: {
     receivedBy?: string;
     notes?: string;
+    requestId?: string;
     /** Each product line's batch, expiry and bonus, for a business whose stock has batches. */
-    lines?: { itemId: string; batchNumber?: string; expiryDate?: string; bonusQuantity?: number; retailPricePKR?: number }[];
+    lines?: { itemId: string; batchNumber?: string; expiryDate?: string; bonusQuantity?: number; retailPricePKR?: number; quantityReceived?: number }[];
   }) => {
     const res = await api.post<PurchaseOrder>(`/api/procurement/purchase-orders/${id}/receive`, data);
     return res.data;
@@ -1508,12 +1511,24 @@ export const posApi = {
   },
 
   // First-Run Setup & Installation Wizard
+  createHostEnrollment: async (branchId: string) => {
+    const res = await api.post<{ businessId: string; enrollmentCode: string; enrollmentExpiresAt: string; branchName: string }>('/api/host/register', { branchId, forEnrollment: true });
+    return res.data;
+  },
+  getBusinessHosts: async () => {
+    const res = await api.get<Array<{ id: string; branchId: string; branchName: string; syncHealth: string; lastSeenAt: string; lastSyncedAt?: string }>>('/api/host/list');
+    return res.data;
+  },
+  attachBranchHost: async (data: { cloudUrl: string; businessId: string; enrollmentCode: string; fullName: string; username: string; pin: string }) => {
+    const res = await api.post<{ outlet: string; catalogueSynced: boolean }>('/api/setup/attach-host', data);
+    return res.data;
+  },
   getSetupStatus: async () => {
     const res = await api.get<SetupStatusResponse>('/api/setup/status');
     return res.data;
   },
-  initializeSetup: async (data: SetupInitPayload) => {
-    const res = await api.post<{
+  initializeSetup: async (data: SetupInitPayload, serverUrl: string) => {
+    const res = await axios.post<{
       success: boolean;
       message: string;
       tenantId: string;
@@ -1521,7 +1536,7 @@ export const posApi = {
       deploymentMode: string;
       businessStructure?: BusinessStructure;
       branches: Array<{ id: string; name: string; code: string; city: string; isHeadOffice: boolean; locationType?: LocationType; canSell?: boolean }>;
-    }>('/api/setup/initialize', data);
+    }>('/api/setup/initialize', data, { baseURL: serverUrl.trim() || api.defaults.baseURL });
     return res.data;
   },
 
@@ -1624,7 +1639,7 @@ export const posApi = {
     deploymentMode?: string;
     /** Outlets to create beneath the head office. Read only for MultiBranch, and validated
      *  server-side against the chosen plan's multi-branch flag and branch allowance. */
-    branches?: { name: string; code?: string; city?: string; address?: string; phone?: string; posEdition?: SubscriptionTier }[];
+    branches?: { name: string; code?: string; city?: string; address?: string; phone?: string; stateCode?: string; posEdition?: SubscriptionTier }[];
     /** The three-way answer; wins over deploymentMode when sent. */
     businessStructure?: BusinessStructure;
     company?: SetupCompanyPayload;
@@ -1642,7 +1657,12 @@ export const posApi = {
     /** Which edition of those documents was shown. */
     termsVersion?: string;
   }) => {
-    const res = await api.post('/api/auth/signup', data);
+    const res = await api.post<{
+      tenant: { id: string; name: string; slug: string };
+      admin: { id: string; username: string };
+      branches: { id: string; name: string; canSell: boolean }[];
+      confirmationEmailSent: boolean;
+    }>('/api/auth/signup', data);
     return res.data;
   },
   getCountries: async (verticalPack?: string) => {

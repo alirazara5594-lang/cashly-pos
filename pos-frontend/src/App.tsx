@@ -87,6 +87,7 @@ function MainLayoutInner() {
     setIsOnline,
     refreshOfflineCount,
     checkInstallationStatus,
+    canInitialize,
     autoSyncOnReconnect,
     currentUser,
     token,
@@ -263,14 +264,6 @@ function MainLayoutInner() {
     return <Navigate to="/" replace />;
   }
 
-  // The sign-in screen comes first for everyone signed out. The setup wizard is for someone
-  // already signed in (Settings → Re-run Setup Wizard); a visitor who lands on /setup — an old
-  // bookmark, or the redirect older versions made — goes to sign in. New businesses register at
-  // /signup and new devices connect at /connect, both linked from the sign-in screen.
-  if (location.pathname === '/setup') {
-    return isAuthenticated ? <InstallationWizard /> : <Navigate to="/" replace />;
-  }
-
   // The link from a "forgot password" email. Reachable signed out, like /signup.
   if (location.pathname === '/reset-password') {
     return (
@@ -332,6 +325,11 @@ function MainLayoutInner() {
       </div>
     );
   }
+
+  if (location.pathname === '/setup') {
+    return isAuthenticated || canInitialize ? <InstallationWizard /> : <Navigate to="/" replace />;
+  }
+  if (!isAuthenticated && canInitialize) return <Navigate to="/setup" replace />;
 
   // MANDATORY LOGIN GATE — runs after installation checks, before the route tree.
   // No application screen is reachable by URL without an authenticated session.

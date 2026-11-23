@@ -26,6 +26,7 @@ public class OrderReturn
 
     /// <summary>How the customer was paid back.</summary>
     public PaymentMethod RefundMethod { get; set; } = PaymentMethod.Cash;
+    public string? ExternalRefundReference { get; set; }
 
     /// <summary>The goods' value after the sale's discount, before tax.</summary>
     public decimal SubTotalRefundedPKR { get; set; }

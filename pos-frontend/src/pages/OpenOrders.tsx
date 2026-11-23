@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Wallet, RefreshCw, QrCode, Tablet, ShoppingBag, X } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { getStoredTerminal } from '../services/deviceLicense';
 import type { Order, PaymentMethod } from '../types';
 
 const METHODS: { value: PaymentMethod; label: string }[] = [
@@ -86,8 +87,10 @@ export const OpenOrders: React.FC = () => {
     }
     setSaving(true);
     try {
+      const terminal = getStoredTerminal();
       const res = await posApi.settleOrder(paying.id, {
         paymentMethod: method,
+        terminalId: terminal?.branchId === paying.branchId ? terminal.id : undefined,
         amountPaidPKR: method === 'Cash' ? amount : undefined
       });
       setMessage({

@@ -37,6 +37,7 @@ import { posApi, setApiBaseUrl, getApiErrorMessage } from '../services/api';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { usePosStore } from '../store/posStore';
 import { activate as activateDevice, getStoredTerminal } from '../services/deviceLicense';
+import { AttachBranchHost } from '../components/AttachBranchHost';
 import { tierLabel } from '../utils/tierLabel';
 import type { 
   BusinessType, 
@@ -104,6 +105,8 @@ const isEasyPin = (pin: string) => {
 export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceSignup = false }) => {
   const navigate = useNavigate();
   const { setTenants, setDeploymentMode, setIsInstalled } = usePosStore();
+  const canInitialize = usePosStore(s => s.canInitialize);
+  const [attachToHq, setAttachToHq] = useState(false);
 
   const [step, setStep] = useState<number>(1);
   const [loading, setLoading] = useState(false);
@@ -209,7 +212,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   // visitor is an account anyone can guess.
   const [adminFullName, setAdminFullName] = useState(forceSignup ? '' : 'Restaurant Owner');
   const [adminUsername, setAdminUsername] = useState(forceSignup ? '' : 'admin');
-  const [adminPin, setAdminPin] = useState(forceSignup ? '' : '1234');
+  const [adminPin, setAdminPin] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   // Back-office sign-in for a new registration (email + password); the PIN is for the tills.
   const [adminPassword, setAdminPassword] = useState('');
@@ -783,7 +786,7 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
         appSurface: isChain && erpRole === 'ERP_SERVER' ? 'Erp' : 'Pos'
       };
 
-      await posApi.initializeSetup(payload);
+      await posApi.initializeSetup(payload, apiUrl);
 
       setDeploymentMode(deploymentMode);
       setIsInstalled(true);
@@ -887,6 +890,8 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
   }
 
   // SUCCESS SCREEN
+  if (attachToHq) return <AttachBranchHost onBack={() => setAttachToHq(false)} />;
+
   if (signupSuccess) {
     const isErp = signupSuccess.systemType === 'POS_ERP' && signupSuccess.erpRole === 'ERP_SERVER';
     const firstName = adminFullName.trim().split(/\s+/)[0];
@@ -1249,6 +1254,11 @@ export const InstallationWizard: React.FC<{ forceSignup?: boolean }> = ({ forceS
           {' · '}
           <span className="text-teal-700">{wizardSteps.find(s => s.num === step)?.label}</span>
         </span>
+        {canInitialize && !signupMode && (
+          <button type="button" onClick={() => setAttachToHq(true)} className="text-sm font-semibold text-teal-700">
+            Attach to existing HQ
+          </button>
+        )}
         {signupMode && (
           <button type="button" onClick={() => navigate('/')} className="hidden md:inline text-[13px] text-slate-500 hover:text-slate-700 cursor-pointer">
             Already have an account? <span className="font-bold text-teal-700">Sign in</span>

@@ -658,6 +658,11 @@ public class DiningTable
 
 public class Order
 {
+    public Guid? CashShiftId { get; set; }
+    public DateTime? PaidAt { get; set; }
+    public bool JournalPending { get; set; }
+    public DateTime? JournalRetryAt { get; set; }
+    public decimal? HostReportedStockCostPKR { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
     public Guid BranchId { get; set; }
@@ -829,6 +834,7 @@ public class CashShift
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid BranchId { get; set; }
+    public Guid? TerminalId { get; set; }
     public string TerminalName { get; set; } = string.Empty;
     public string CashierName { get; set; } = string.Empty;
     public DateTime OpenedAt { get; set; } = DateTime.UtcNow;
@@ -1156,7 +1162,8 @@ public enum POStatus
     Draft = 1,
     Ordered = 2,
     Received = 3,
-    Cancelled = 4
+    Cancelled = 4,
+    PartiallyReceived = 5
 }
 
 public class Supplier
@@ -1204,6 +1211,7 @@ public class PurchaseOrder
 /// (ProductId). IngredientName is the line's item name whichever it is.</remarks>
 public class PurchaseOrderItem
 {
+    public decimal QuantityReceived { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid PurchaseOrderId { get; set; }
     public PurchaseOrder? PurchaseOrder { get; set; }

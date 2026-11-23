@@ -33,6 +33,7 @@ import { useSector } from '../hooks/useSector';
 import { posApi, getApiErrorMessage } from '../services/api';
 import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
 import { getStoredTerminal } from '../services/deviceLicense';
+import { CashDrawer } from '../components/CashDrawer';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary, PrescriptionInput } from '../types';
 import { daysUntil, formatDay } from '../utils/expiry';
 import { isSubstitute, saleUnitOptions, formatPacked, looseUnitName } from '../utils/medicine';
@@ -418,8 +419,10 @@ export const PosTerminal: React.FC = () => {
 
     // Cash handed over (the server works out the change against its own total).
     const amountPaid = paymentMethod === 'Cash' ? Math.max(cashTendered || 0, grandTotal) : grandTotal;
+    const terminal = getStoredTerminal();
     const orderPayload = {
       branchId: selectedBranch.id,
+      terminalId: terminal?.branchId === selectedBranch.id ? terminal.id : undefined,
       orderType,
       tableNumber: orderType === 'DineIn' ? selectedTable : undefined,
       customerName: customerName || (orderType === 'Delivery' ? 'Delivery Customer' : undefined),
@@ -546,8 +549,8 @@ export const PosTerminal: React.FC = () => {
           taxPKR: tax,
           totalPKR: grandTotal,
           paymentMethod,
-          amountPaidPKR: paymentMethod === 'Cash' ? (cashTendered || grandTotal) : grandTotal,
-          changeDuePKR: 0,
+          amountPaidPKR: amountPaid,
+          changeDuePKR: amountPaid - grandTotal,
           isPaid: true,
           createdAt: new Date().toISOString(),
           taxLines: cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).lines,
@@ -621,6 +624,7 @@ export const PosTerminal: React.FC = () => {
       <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center gap-3">
+            {selectedBranch?.id && <CashDrawer key={selectedBranch.id} branchId={selectedBranch.id} />}
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input

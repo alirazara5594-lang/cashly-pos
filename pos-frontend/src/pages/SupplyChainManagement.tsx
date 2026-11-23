@@ -49,6 +49,11 @@ const locationTag = (b: Branch) => {
   return type === 'HeadOffice' ? '(Head office)' : type === 'Warehouse' ? '(Warehouse)' : '';
 };
 
+function receiptRequestId() {
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+}
+
 export const SupplyChainManagement: React.FC = () => {
   const { selectedTenant, selectedBranch, currentUser } = usePosStore();
   const location = useLocation();
@@ -103,6 +108,10 @@ export const SupplyChainManagement: React.FC = () => {
   const [dispatchOrder, setDispatchOrder] = useState<StockTransferOrder | null>(null);
   const [dispatchDriver, setDispatchDriver] = useState('');
   const [receiveOrder, setReceiveOrder] = useState<StockTransferOrder | null>(null);
+  const [transferQuantities, setTransferQuantities] = useState<Record<string, number>>({});
+  const [transferReceiptId, setTransferReceiptId] = useState('');
+  const [receivingTransfer, setReceivingTransfer] = useState(false);
+  const [receiveError, setReceiveError] = useState('');
   const [receiverName, setReceiverName] = useState(me);
 
   // New PO Modal
@@ -123,6 +132,8 @@ export const SupplyChainManagement: React.FC = () => {
   // (a medicine's as the month on its pack), free bonus units and printed retail price.
   const { batchExpiry, medicines } = useSector();
   const [grnPo, setGrnPo] = useState<PurchaseOrder | null>(null);
+  const [grnQuantities, setGrnQuantities] = useState<Record<string, number>>({});
+  const [grnRequestId, setGrnRequestId] = useState('');
   const [grnLines, setGrnLines] = useState<Record<string, { batchNumber: string; expiryDate: string; bonusQuantity: number; retailPrice: string }>>({});
   const [grnError, setGrnError] = useState<string | null>(null);
   const [grnSaving, setGrnSaving] = useState(false);
@@ -326,19 +337,31 @@ export const SupplyChainManagement: React.FC = () => {
     }
   };
 
+  const openTransferReceipt = (order: StockTransferOrder) => {
+    setTransferQuantities(Object.fromEntries(order.items.map(i => [i.id, Math.max(0, i.quantityDispatched - i.quantityReceived)])));
+    setTransferReceiptId(receiptRequestId());
+    setReceiveError('');
+    setReceiveOrder(order);
+  };
+
   const handleReceive = async () => {
-    if (!receiveOrder) return;
+    if (!receiveOrder || receivingTransfer) return;
+    setReceivingTransfer(true);
+    setReceiveError('');
     try {
-      await posApi.receiveTransferOrder(receiveOrder.id, {
-        receivedBy: receiverName.trim() || me || undefined
+      const updated = await posApi.receiveTransferOrder(receiveOrder.id, {
+        receivedBy: receiverName.trim() || me || undefined,
+        requestId: transferReceiptId,
+        lines: Object.entries(transferQuantities).map(([itemId, quantityReceived]) => ({ itemId, quantityReceived }))
       });
       setReceiveOrder(null);
-      setStatusMsg(`Transfer #${receiveOrder.transferNumber} RECEIVED! Raw ingredients updated at branch kitchen inventory.`);
+      setStatusMsg(`Transfer #${receiveOrder.transferNumber} receipt saved.${updated.status === 'InTransit' ? ' The remaining goods are still in transit.' : ''}`);
       setTimeout(() => setStatusMsg(null), 4500);
       fetchData();
     } catch (err) {
-      console.error(err);
-      alert('Failed to receive transfer');
+      setReceiveError(getApiErrorMessage(err, 'Could not record the transfer receipt.'));
+    } finally {
+      setReceivingTransfer(false);
     }
   };
 
@@ -397,28 +420,13 @@ export const SupplyChainManagement: React.FC = () => {
     }
   };
 
-  const handleReceivePO = async (po: PurchaseOrder) => {
-    if (batchExpiry && po.items?.some(it => it.productId)) {
-      setGrnLines(Object.fromEntries(po.items.filter(it => it.productId)
-        .map(it => [it.id, { batchNumber: '', expiryDate: '', bonusQuantity: 0, retailPrice: '' }])));
-      setGrnError(null);
-      setGrnPo(po);
-      return;
-    }
-    if (!window.confirm(`Inward GRN for PO #${po.poNumber}? This will increment physical stock for all ordered raw ingredients.`)) {
-      return;
-    }
-    try {
-      await posApi.receivePurchaseOrder(po.id, {
-        receivedBy: me || undefined
-      });
-      setStatusMsg(`PO #${po.poNumber} marked as RECEIVED! Raw ingredients updated.`);
-      setTimeout(() => setStatusMsg(null), 4000);
-      fetchData();
-    } catch (err) {
-      console.error(err);
-      alert('Failed to receive PO');
-    }
+  const handleReceivePO = (po: PurchaseOrder) => {
+    setGrnQuantities(Object.fromEntries(po.items.map(it => [it.id, Math.max(0, it.quantity - (it.quantityReceived ?? 0))])));
+    setGrnLines(Object.fromEntries(po.items.filter(it => batchExpiry && it.productId)
+      .map(it => [it.id, { batchNumber: '', expiryDate: '', bonusQuantity: 0, retailPrice: '' }])));
+    setGrnRequestId(receiptRequestId());
+    setGrnError(null);
+    setGrnPo(po);
   };
 
   const setGrnLine = (itemId: string, patch: Partial<{ batchNumber: string; expiryDate: string; bonusQuantity: number; retailPrice: string }>) => {
@@ -428,7 +436,13 @@ export const SupplyChainManagement: React.FC = () => {
 
   const submitGrn = async () => {
     if (!grnPo) return;
-    const productLines = grnPo.items.filter(it => it.productId);
+    const receiving = grnPo.items.filter(it => (grnQuantities[it.id] ?? 0) > 0);
+    if (receiving.length === 0 || grnPo.items.some(it => (grnQuantities[it.id] ?? 0) < 0
+      || (grnQuantities[it.id] ?? 0) > it.quantity - (it.quantityReceived ?? 0))) {
+      setGrnError('Enter a positive received quantity within what is still outstanding.');
+      return;
+    }
+    const productLines = receiving.filter(it => batchExpiry && it.productId);
     for (const it of productLines) {
       const line = grnLines[it.id];
       if (!line?.batchNumber.trim() || !line.expiryDate) {
@@ -447,21 +461,23 @@ export const SupplyChainManagement: React.FC = () => {
     setGrnSaving(true);
     setGrnError(null);
     try {
-      await posApi.receivePurchaseOrder(grnPo.id, {
+      const updated = await posApi.receivePurchaseOrder(grnPo.id, {
         receivedBy: me || undefined,
-        lines: productLines.map(it => {
+        requestId: grnRequestId,
+        lines: receiving.map(it => {
           const line = grnLines[it.id];
-          const printed = Number(line.retailPrice);
+          const printed = Number(line?.retailPrice);
           return {
             itemId: it.id,
-            batchNumber: line.batchNumber.trim(),
-            expiryDate: expiryToIso(line.expiryDate),
-            bonusQuantity: line.bonusQuantity > 0 ? line.bonusQuantity : undefined,
+            quantityReceived: grnQuantities[it.id],
+            batchNumber: line?.batchNumber.trim(),
+            expiryDate: line?.expiryDate ? expiryToIso(line.expiryDate) : undefined,
+            bonusQuantity: line && line.bonusQuantity > 0 ? line.bonusQuantity : undefined,
             retailPricePKR: printed > 0 ? printed : undefined
           };
         })
       });
-      setStatusMsg(`PO #${grnPo.poNumber} received. Each batch is now in stock with its expiry.`);
+      setStatusMsg(`PO #${grnPo.poNumber} receipt saved.${updated.status === 'PartiallyReceived' ? ' Outstanding items are still open.' : ''}`);
       setTimeout(() => setStatusMsg(null), 4000);
       setGrnPo(null);
       fetchData();
@@ -767,7 +783,7 @@ export const SupplyChainManagement: React.FC = () => {
 
                             {tr.status === 'InTransit' && (
                               <button
-                                onClick={() => setReceiveOrder(tr)}
+                                onClick={() => openTransferReceipt(tr)}
                                 className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
                               >
                                 <PackageCheck className="w-3.5 h-3.5" />
@@ -804,7 +820,7 @@ export const SupplyChainManagement: React.FC = () => {
               <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200">
                 <span className="text-xs text-blue-600 block">Pending Delivery</span>
                 <span className="text-lg font-bold text-blue-600">
-                  {purchaseOrders.filter(p => p.status === 'Ordered').length}
+                  {purchaseOrders.filter(p => p.status === 'Ordered' || p.status === 'PartiallyReceived').length}
                 </span>
               </div>
               <div className="p-2.5 rounded-xl bg-teal-50 border border-teal-200">
@@ -879,6 +895,7 @@ export const SupplyChainManagement: React.FC = () => {
                                 Ordered (Awaiting Delivery)
                               </span>
                             )}
+                            {po.status === 'PartiallyReceived' && <span className="font-semibold text-amber-700">Partially received</span>}
                             {po.status === 'Received' && (
                               <span className="px-2 py-1 rounded-md bg-teal-50 text-teal-600 border border-teal-200 text-[10px] font-bold flex items-center gap-1 w-fit">
                                 <CheckCircle className="w-3 h-3" /> Received GRN
@@ -891,7 +908,7 @@ export const SupplyChainManagement: React.FC = () => {
                             )}
                           </td>
                           <td className="p-3 text-right">
-                            {po.status === 'Ordered' && (
+                            {(po.status === 'Ordered' || po.status === 'PartiallyReceived') && (
                               <button
                                 onClick={() => handleReceivePO(po)}
                                 className="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5 ml-auto"
@@ -1498,7 +1515,7 @@ export const SupplyChainManagement: React.FC = () => {
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1 text-xs">
               <div className="text-slate-500">Requisition: <strong className="text-slate-900 font-mono">{receiveOrder.transferNumber}</strong></div>
               <div className="text-teal-600 font-bold text-[11px] pt-1">
-                Notice: Confirming receipt will increment raw materials directly at this branch's kitchen.
+                Enter the quantities that arrived. Any remaining goods stay in transit.
               </div>
             </div>
 
@@ -1512,9 +1529,27 @@ export const SupplyChainManagement: React.FC = () => {
               />
             </div>
 
+            <div className="max-h-60 space-y-2 overflow-auto">
+              {receiveOrder.items.map(item => {
+                const outstanding = Math.max(0, item.quantityDispatched - item.quantityReceived);
+                return (
+                  <label key={item.id} className="flex items-center justify-between gap-3 text-xs">
+                    <span>{item.ingredientName} · {outstanding} {item.unit} in transit</span>
+                    <input type="number" min="0" max={outstanding} step="any" value={transferQuantities[item.id] ?? 0}
+                      disabled={outstanding === 0 || receivingTransfer} onChange={e => {
+                        const quantity = Number(e.target.value);
+                        setTransferQuantities(prev => ({ ...prev, [item.id]: quantity }));
+                      }} className="w-20 rounded-lg border px-2 py-1 text-right" />
+                  </label>
+                );
+              })}
+            </div>
+            {receiveError && <p role="alert" className="text-xs text-rose-700">{receiveError}</p>}
+
             <button
               onClick={handleReceive}
-              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition"
+              disabled={receivingTransfer || Object.values(transferQuantities).every(q => q <= 0)}
+              className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg transition disabled:opacity-50"
             >
               Verify Goods & Stock-In to Branch
             </button>
@@ -1533,7 +1568,7 @@ export const SupplyChainManagement: React.FC = () => {
                   <span>Receive PO #{grnPo.poNumber}</span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  From <span className="font-semibold text-slate-700">{grnPo.supplierName}</span>. Copy each batch number and expiry from the pack; add any free bonus units.
+                  From <span className="font-semibold text-slate-700">{grnPo.supplierName}</span>. Enter the quantities that actually arrived.
                 </p>
               </div>
               <button onClick={() => setGrnPo(null)} className="p-1 rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition" aria-label="Close">
@@ -1556,6 +1591,12 @@ export const SupplyChainManagement: React.FC = () => {
                 <tbody className="divide-y divide-slate-100">
                   {grnPo.items.map(it => {
                     const line = grnLines[it.id];
+                    const outstanding = Math.max(0, it.quantity - (it.quantityReceived ?? 0));
+                    const received = grnQuantities[it.id] ?? 0;
+                    const quantityInput = <input aria-label={`Quantity received for ${it.ingredientName}`} type="number"
+                      min="0" max={outstanding} step="any" value={received} disabled={outstanding === 0}
+                      onChange={e => { const amount = Number(e.target.value); setGrnQuantities(prev => ({ ...prev, [it.id]: amount })); setGrnError(null); }}
+                      className="w-20 rounded border border-slate-200 px-2 py-1 text-right" />;
                     if (!it.productId || !line) {
                       return (
                         <tr key={it.id} className="text-slate-500">
@@ -1563,12 +1604,12 @@ export const SupplyChainManagement: React.FC = () => {
                             <div className="font-semibold text-slate-700">{it.ingredientName}</div>
                             <div className="text-[10px]">{it.quantity} {it.unit} @ {it.unitCostPKR.toLocaleString()}</div>
                           </td>
-                          <td colSpan={4} className="py-2.5 px-2 text-[11px] italic">Received as ordered — not batch tracked</td>
-                          <td className="py-2.5 px-4 text-right font-mono">{it.quantity}</td>
+                          <td colSpan={4} className="py-2.5 px-2 text-[11px]">{outstanding} {it.unit} outstanding</td>
+                          <td className="py-2.5 px-4 text-right">{quantityInput}</td>
                         </tr>
                       );
                     }
-                    const costEach = line.bonusQuantity > 0 ? it.quantity * it.unitCostPKR / (it.quantity + line.bonusQuantity) : null;
+                    const costEach = line.bonusQuantity > 0 ? received * it.unitCostPKR / (received + line.bonusQuantity) : null;
                     return (
                       <tr key={it.id} className="align-top">
                         <td className="py-2.5 px-4">
@@ -1617,7 +1658,8 @@ export const SupplyChainManagement: React.FC = () => {
                           />
                         </td>
                         <td className="py-2.5 px-4 text-right">
-                          <div className="font-mono font-bold text-slate-900">{it.quantity + (line.bonusQuantity > 0 ? line.bonusQuantity : 0)} {it.unit}</div>
+                          {quantityInput}
+                          <div className="font-mono font-bold text-slate-900">{received + (received > 0 ? line.bonusQuantity : 0)} {it.unit}</div>
                           {costEach != null && (
                             <div className="text-[10px] text-teal-700">Rs {costEach.toLocaleString(undefined, { maximumFractionDigits: 2 })} each</div>
                           )}

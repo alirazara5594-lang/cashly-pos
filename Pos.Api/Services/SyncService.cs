@@ -55,6 +55,7 @@ public class SyncService : ISyncService
     private readonly AppDbContext _db;
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _config;
+    private readonly HostLink _link;
     private readonly HostEntitlementMirror _mirror;
     private readonly CatalogMirror _catalog;
     private readonly ILogger<SyncService> _log;
@@ -63,6 +64,7 @@ public class SyncService : ISyncService
         AppDbContext db,
         IHttpClientFactory httpFactory,
         IConfiguration config,
+        HostLink link,
         HostEntitlementMirror mirror,
         CatalogMirror catalog,
         ILogger<SyncService> log)
@@ -70,14 +72,15 @@ public class SyncService : ISyncService
         _db = db;
         _httpFactory = httpFactory;
         _config = config;
+        _link = link;
         _mirror = mirror;
         _catalog = catalog;
         _log = log;
     }
 
-    private string? CloudUrl => _config["Host:CloudUrl"] ?? Environment.GetEnvironmentVariable("CLOUD_URL");
-    private string? BusinessId => _config["Host:BusinessId"] ?? Environment.GetEnvironmentVariable("BUSINESS_ID");
-    private string? SyncKey => _config["Host:SyncKey"] ?? Environment.GetEnvironmentVariable("SYNC_KEY");
+    private string? CloudUrl => _link.CloudUrl;
+    private string? BusinessId => _link.BusinessId;
+    private string? SyncKey => _link.SyncKey;
 
     public async Task<IReadOnlyList<SyncOutcome>> PushAllAsync(Guid tenantId, CancellationToken ct = default)
     {
@@ -257,6 +260,12 @@ public class SyncService : ISyncService
                 var prescriptions = await _db.Prescriptions.IgnoreQueryFilters().AsNoTracking()
                     .Where(p => orderIds.Contains(p.OrderId))
                     .ToDictionaryAsync(p => p.OrderId, ct);
+                var stockCosts = await _db.StockLedgerEntries.IgnoreQueryFilters().AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && e.ReferenceType == "Order" && e.ReferenceId != null
+                        && orderIds.Contains(e.ReferenceId.Value) && e.MovementType == StockMovementType.SaleConsumption)
+                    .GroupBy(e => e.ReferenceId!.Value)
+                    .Select(g => new { Id = g.Key, Cost = g.Sum(e => -e.QuantityChange * e.UnitCostPKR) })
+                    .ToDictionaryAsync(x => x.Id, x => x.Cost, ct);
 
                 var records = rows.Select(o => (object)new
                 {
@@ -265,6 +274,7 @@ public class SyncService : ISyncService
                     o.SubTotalPKR, o.DiscountPKR, o.TaxPKR, o.TotalPKR,
                     paymentMethod = o.PaymentMethod.ToString(),
                     o.AmountPaidPKR, o.ChangeDuePKR, o.IsPaid,
+                    o.PaidAt, o.CashShiftId, stockCostPKR = stockCosts.GetValueOrDefault(o.Id),
                     o.CashierName, o.CreatedByRole, o.CreatedAt, o.CompletedAt,
                     // Provenance travels with the sale so the cloud can reconcile an offline
                     // capture against the price the catalogue would give today.
@@ -332,7 +342,7 @@ public class SyncService : ISyncService
 
                 var records = rows.Select(s => (object)new
                 {
-                    s.Id, s.BranchId, s.TerminalName, s.CashierName, s.OpenedAt, s.ClosedAt,
+                    s.Id, s.BranchId, s.TerminalId, s.TerminalName, s.CashierName, s.OpenedAt, s.ClosedAt,
                     s.OpeningFloatPKR, s.CashSalesPKR, s.CashReceivedPKR, s.CashPaidOutPKR,
                     s.ExpectedCashPKR, s.ActualCashCountedPKR, s.VariancePKR, s.Notes
                 }).ToList();

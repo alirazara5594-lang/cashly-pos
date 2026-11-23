@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RotateCcw, Search, RefreshCw, Receipt, X, Check } from 'lucide-react';
 import { usePosStore } from '../store/posStore';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { getStoredTerminal } from '../services/deviceLicense';
 import type { Order, PaymentMethod, ReturnableOrder } from '../types';
 
 const REFUND_METHODS: { value: PaymentMethod; label: string }[] = [
@@ -41,6 +42,8 @@ export const ReturnsManagement: React.FC = () => {
   const [selected, setSelected] = useState<ReturnableOrder | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [refundMethod, setRefundMethod] = useState<PaymentMethod>('Cash');
+  const [refundReference, setRefundReference] = useState('');
+  const externalRefund = ['Card', 'JazzCash', 'EasyPaisa', 'Raast'].includes(refundMethod);
   const [restock, setRestock] = useState(true);
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -119,15 +122,18 @@ export const ReturnsManagement: React.FC = () => {
     setQuantities(prev => ({ ...prev, [orderItemId]: Math.max(0, Math.min(max, Math.floor(value) || 0)) }));
 
   const submit = async () => {
-    if (!selected || itemsChosen === 0) return;
+    if (!selected || itemsChosen === 0 || (externalRefund && !refundReference.trim())) return;
     setSaving(true);
     setMessage(null);
     try {
+      const terminal = getStoredTerminal();
       const res = await posApi.createOrderReturn(selected.orderId, {
         lines: Object.entries(quantities)
           .filter(([, quantity]) => quantity > 0)
           .map(([orderItemId, quantity]) => ({ orderItemId, quantity })),
         refundMethod,
+        terminalId: terminal?.branchId === branchId ? terminal?.id : undefined,
+        externalRefundReference: externalRefund ? refundReference.trim() : undefined,
         restock,
         reason: reason.trim() || undefined
       });
@@ -136,6 +142,7 @@ export const ReturnsManagement: React.FC = () => {
         text: `${res.returnNumber}: ${money(res.totalRefundedPKR)} refunded (${res.refundMethod})${res.restocked ? ' — goods are back in stock' : ''}.`
       });
       closeOrder();
+      setRefundReference('');
       await load();
     } catch (err) {
       setMessage({ type: 'error', text: getApiErrorMessage(err, 'Could not record the return.') });
@@ -290,7 +297,7 @@ export const ReturnsManagement: React.FC = () => {
                     <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Refund by</label>
                     <select
                       value={refundMethod}
-                      onChange={(e) => setRefundMethod(e.target.value as PaymentMethod)}
+                      onChange={(e) => { setRefundMethod(e.target.value as PaymentMethod); setRefundReference(''); }}
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-500"
                     >
                       {REFUND_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
@@ -307,6 +314,12 @@ export const ReturnsManagement: React.FC = () => {
                     />
                   </div>
                 </div>
+                {externalRefund && (
+                  <label className="block text-xs text-slate-700">Provider refund confirmation reference
+                    <input value={refundReference} onChange={e => setRefundReference(e.target.value)} maxLength={128}
+                      className="mt-1 block w-full rounded-xl border border-slate-200 px-3 py-2" />
+                  </label>
+                )}
 
                 <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                   <input type="checkbox" checked={restock} onChange={(e) => setRestock(e.target.checked)} className="w-4 h-4 accent-teal-500" />
@@ -320,7 +333,7 @@ export const ReturnsManagement: React.FC = () => {
                   </div>
                   <button
                     onClick={submit}
-                    disabled={saving || itemsChosen === 0}
+                    disabled={saving || itemsChosen === 0 || (externalRefund && !refundReference.trim())}
                     className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-2 transition cursor-pointer"
                   >
                     <Check className="w-3.5 h-3.5" />

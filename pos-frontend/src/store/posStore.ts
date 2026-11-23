@@ -268,6 +268,7 @@ interface PosState {
   activePackage: SubscriptionTier;
   deploymentMode: 'Single' | 'MultiBranch';
   isInstalled: boolean;
+  canInitialize: boolean;
 
   // Terminal Profile & Role-Based Control
   terminalMode: TerminalOperatingMode;
@@ -386,6 +387,7 @@ export const usePosStore = create<PosState>((set, get) => ({
   activePackage: 'Professional',
   deploymentMode: (localStorage.getItem('cashly_deployment_mode') as 'Single' | 'MultiBranch') || 'Single',
   isInstalled: localStorage.getItem('cashly_is_installed') === 'true',
+  canInitialize: false,
 
   terminalMode: (localStorage.getItem('cashly_terminal_mode') as TerminalOperatingMode) || 'CounterPOS',
   activeDepartment: (localStorage.getItem('cashly_active_department') as DepartmentRole) || 'Owner',
@@ -510,7 +512,7 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   setIsInstalled: (isInstalled) => {
     localStorage.setItem('cashly_is_installed', isInstalled ? 'true' : 'false');
-    set({ isInstalled });
+    set(isInstalled ? { isInstalled, canInitialize: false } : { isInstalled });
   },
 
   checkInstallationStatus: async () => {
@@ -520,7 +522,7 @@ export const usePosStore = create<PosState>((set, get) => ({
       localStorage.setItem('cashly_is_installed', isInstalled ? 'true' : 'false');
       // The business's shape (single shop or head office) comes from the signed-in user's own
       // tenant after login (setTenants), not from this public check.
-      set({ isInstalled });
+      set({ isInstalled, canInitialize: status.canInitialize === true });
       return isInstalled;
     } catch (err) {
       console.warn('Backend setup status check failed, using local flag:', err);

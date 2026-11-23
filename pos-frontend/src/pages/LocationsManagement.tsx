@@ -131,6 +131,18 @@ export const LocationsManagement: React.FC = () => {
   // A branch's POS version is what the business pays for: the owner sets it, never the branch
   // (nor an HQ admin, who runs the business but not its bill).
   const canSetEdition = canEdit && !currentUser?.branchId && isOwner;
+  const canEnrollHost = canSetPolicies && ['OwnerAdmin', 'HqAdmin'].includes(normalizeRole(currentUser?.role) ?? '');
+  const [hostEnrollment, setHostEnrollment] = useState<Awaited<ReturnType<typeof posApi.createHostEnrollment>> | null>(null);
+  const [enrollingBranch, setEnrollingBranch] = useState<string | null>(null);
+  const [hosts, setHosts] = useState<Awaited<ReturnType<typeof posApi.getBusinessHosts>>>([]);
+  useEffect(() => {
+    if (!canEnrollHost || !selectedTenant?.id) return;
+    let cancelled = false;
+    const load = () => posApi.getBusinessHosts().then(rows => { if (!cancelled) setHosts(rows); }).catch(() => {});
+    void load();
+    const timer = window.setInterval(load, 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [canEnrollHost, selectedTenant?.id]);
 
   const [tab, setTab] = useState<Tab>('locations');
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -434,6 +446,21 @@ export const LocationsManagement: React.FC = () => {
             <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200">{warehouseCount} warehouse{warehouseCount === 1 ? '' : 's'}</span>
           </div>
         </div>
+
+        {hostEnrollment && (
+          <section aria-label="Outlet server enrollment" className="rounded-xl border border-teal-200 bg-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="font-semibold">Enroll a server for {hostEnrollment.branchName}</h2>
+              <button type="button" onClick={() => setHostEnrollment(null)} aria-label="Close enrollment details"><X className="h-4 w-4" /></button>
+            </div>
+            <p className="mt-2 text-sm text-slate-600">Open Attach to existing HQ on the new outlet server. Enter this headquarters API address along with the Business ID and code below.</p>
+            <dl className="mt-3 grid gap-2 text-sm">
+              <div><dt className="font-medium">Business ID</dt><dd className="font-mono">{hostEnrollment.businessId}</dd></div>
+              <div><dt className="font-medium">Enrollment code</dt><dd className="break-all font-mono">{hostEnrollment.enrollmentCode}</dd></div>
+              <div><dt className="font-medium">Expires</dt><dd>{new Date(hostEnrollment.enrollmentExpiresAt).toLocaleTimeString()}</dd></div>
+            </dl>
+          </section>
+        )}
 
         {/* Tabs */}
         <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-200 pb-2 text-xs font-semibold">
@@ -771,6 +798,22 @@ export const LocationsManagement: React.FC = () => {
                               <td className="py-2.5 pr-3 text-slate-600">{companyName(b.companyId)}</td>
                               <td className="py-2.5 pr-3 text-slate-600">{regionName(b.regionId)}</td>
                               <td className="py-2.5 text-right whitespace-nowrap">
+                                {canEnrollHost && b.canSell !== false && (
+                                  <button type="button" disabled={enrollingBranch !== null}
+                                    onClick={async () => {
+                                      setEnrollingBranch(b.id);
+                                      try {
+                                        setHostEnrollment(await posApi.createHostEnrollment(b.id));
+                                      } catch (err) {
+                                        flash('error', getApiErrorMessage(err, 'Could not issue a host enrollment code.'));
+                                      } finally {
+                                        setEnrollingBranch(null);
+                                      }
+                                    }}
+                                    className="mr-1 rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-50">
+                                    {enrollingBranch === b.id ? 'Issuing…' : 'Enroll server'}
+                                  </button>
+                                )}
                                 {b.canSell !== false && (
                                   <button
                                     onClick={() => connectTill(b.id)}
@@ -784,6 +827,11 @@ export const LocationsManagement: React.FC = () => {
                                   <button onClick={() => openEditLocation(b)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-teal-600 cursor-pointer" title="Edit">
                                     <Pencil className="w-3.5 h-3.5" />
                                   </button>
+                                )}
+                                {canEnrollHost && hosts.some(host => host.branchId === b.id) && (
+                                  <div className="mt-1 text-[10px] text-slate-500">
+                                    Server sync {hosts.find(host => host.branchId === b.id)?.syncHealth}
+                                  </div>
                                 )}
                               </td>
                             </tr>
