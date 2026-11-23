@@ -53,7 +53,7 @@ const KINDS = [
 ];
 
 /** What every business gets, whatever its kind. */
-const EVERY_BUSINESS = ['Sales and receipts', 'Customers and credit', 'Reports', 'Tax invoicing', 'Staff and permissions', 'Keeps selling offline'];
+const EVERY_BUSINESS = ['Sales and receipts', 'Customers and credit', 'Reports', 'Tax invoicing', 'Staff and permissions', 'Offline cash sales on paired tills'];
 
 /**
  * A menu under a button in the sign-in page's top bar. It is placed against the window (not the

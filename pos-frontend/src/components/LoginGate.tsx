@@ -8,7 +8,7 @@ import { ScaledPosScene } from './login/PosScene';
 import { posApi, getApiErrorMessage, getApiErrorStatus, isApiUnavailable } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { useNavigate } from 'react-router-dom';
-import { OFFLINE_SESSION_TOKEN, forgetOfflineStaff, rememberForOffline, signInOffline } from '../services/offlineStaff';
+import { OFFLINE_SESSION_TOKEN, forgetOfflineStaff, hasOfflineStaff, rememberForOffline, signInOffline } from '../services/offlineStaff';
 import { currentRestaurantAddress, isPlatformAdminAddress, restaurantSignInLink } from '../services/restaurantAddress';
 import { usePosStore, LOGIN_BRANCH_KEY } from '../store/posStore';
 import type { AuthPermissions, CurrentUser, LoginResponse, MyBranch } from '../types';
@@ -444,6 +444,7 @@ export const LoginGate: React.FC = () => {
       } else if (e.key === 'Escape') {
         setPinCode('');
       } else if (e.key === 'Enter') {
+        if (el?.closest('button, a[href]')) return;
         e.preventDefault();
         formRef.current?.requestSubmit();
       }
@@ -500,7 +501,7 @@ export const LoginGate: React.FC = () => {
 
   const heading =
     mode === 'till' ? { title: 'Enter your PIN', sub: 'Your 4 to 6 digit staff PIN.' }
-      : mode === 'identify' ? { title: 'Welcome back', sub: 'Sign in to continue to your Cashly account.' }
+      : mode === 'identify' ? { title: 'Sign in to Cashly', sub: null }
       : mode === 'email' ? { title: 'Enter your password', sub: 'The password for your work email.' }
       : mode === 'username' ? (identified ? { title: 'Enter your PIN', sub: 'Your 4 to 6 digit PIN.' } : { title: 'Sign in', sub: 'Your username and PIN.' })
       : { title: 'Cashly platform', sub: 'For the Cashly team only.' };
@@ -527,24 +528,24 @@ export const LoginGate: React.FC = () => {
   const businessName = address
     ? restaurantHere?.name ?? (restaurantHere?.missing ? 'Unknown address' : '…')
     : selectedTenant?.name ?? null;
-  const placeLine = !address && mode === 'till'
+  const placeLine = tillBranchId
     ? [tillBranchName, terminal?.name].filter(Boolean).join(' · ') || 'This till'
     : null;
   const showConnect = (mode === 'identify' || mode === 'email' || mode === 'username') && !tillBranchId;
   const canRegister = !address && !tillBranchId && mode !== 'platform';
+  const showAdminLink = mode !== 'till' && mode !== 'platform' && showPlatformAdmin;
   const linkClass = 'text-xs font-medium text-slate-500 hover:text-teal-700 transition cursor-pointer';
 
-  const statusLine = (light: boolean) => (
-    <span className={`inline-flex items-center gap-2 text-xs font-medium ${light ? 'text-teal-50/90' : 'text-slate-500'}`}>
-      <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-      {isOnline ? 'Online' : 'Offline: staff who signed in here this week can still sign in'}
-    </span>
-  );
+  const offlineMessage = mode === 'till' && tillBranchId
+    ? hasOfflineStaff(tillBranchId)
+      ? 'Use a staff PIN that was used online on this till in the last 7 days.'
+      : 'Sign in online on this till first to enable offline PIN access.'
+    : 'Connect to Cashly to sign in on this screen.';
 
   // The business this screen is for, with "Not …?" off its own /r/ link.
-  const businessBlock = businessName && (
+  const businessBlock = (businessName || placeLine) && (
     <div className="space-y-2">
-      <p className="text-3xl xl:text-4xl font-semibold tracking-tight leading-tight">{businessName}</p>
+      {businessName && <p className="text-3xl xl:text-4xl font-semibold tracking-tight leading-tight">{businessName}</p>}
       {placeLine && <p className="text-teal-100 font-medium flex items-center gap-2"><Store className="w-4 h-4" /> {placeLine}</p>}
       {address && restaurantHere?.product && (
         <span className="inline-block text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white/15 text-white">{restaurantHere.product}</span>
@@ -562,25 +563,27 @@ export const LoginGate: React.FC = () => {
 
   // What Cashly does — each one something the product really has.
   const features = [
-    { icon: Receipt, title: 'Fast billing', text: 'Quick checkout with tax invoices' },
-    { icon: Boxes, title: 'Smart inventory', text: 'Live stock and purchase orders' },
-    { icon: BarChart3, title: 'Clear reports', text: 'Daily sales, profit and tax' },
-    { icon: Building2, title: 'Multi-branch', text: 'All outlets from one head office' }
+    { icon: Receipt, title: 'Checkout', text: 'Barcode sales and tax invoices' },
+    { icon: Boxes, title: 'Stock and purchasing', text: 'Inventory, suppliers and purchase orders' },
+    { icon: BarChart3, title: 'Accounting and reports', text: 'Track sales, profit and tax' },
+    { icon: Building2, title: 'Head office', text: 'Manage outlets and warehouses' }
   ];
   const assurances = [
-    { icon: ShieldCheck, label: 'Secure 2-step sign-in' },
-    { icon: WifiOff, label: 'Keeps selling offline' },
-    { icon: Cloud, label: 'Cloud-based, any device' }
+    { icon: ShieldCheck, label: '2-step sign-in' },
+    { icon: WifiOff, label: 'Offline cash sales on paired tills' },
+    { icon: Cloud, label: 'Cloud access' }
   ];
 
   return (
-    <div className="h-screen w-full flex bg-[#071f26] text-slate-900 overflow-hidden">
+    <div className="h-dvh w-full flex bg-[#071f26] text-slate-900 overflow-hidden">
       {/* ── Left: the product (the main address), or the till's lock screen (a connected till) ── */}
-      <aside className="hidden lg:flex flex-1 min-w-0 relative overflow-hidden text-white flex-col px-10 2xl:px-14 py-8 [@media(max-height:720px)]:py-5 bg-gradient-to-br from-[#06191f] via-[#0a3138] to-[#0c443d]">
-        <div aria-hidden className="absolute -top-48 -right-24 w-[640px] h-[640px] rounded-full bg-emerald-400/[0.12] blur-3xl" />
-        <div aria-hidden className="absolute -bottom-56 -left-32 w-[560px] h-[560px] rounded-full bg-teal-300/[0.08] blur-3xl" />
+      <aside className="hidden lg:flex flex-1 min-w-0 relative overflow-x-hidden overflow-y-auto text-white flex-col px-10 2xl:px-14 py-8 [@media(max-height:720px)]:py-5 bg-gradient-to-br from-[#06191f] via-[#0a3138] to-[#0c443d]">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-48 -right-24 w-[640px] h-[640px] rounded-full bg-emerald-400/[0.12] blur-3xl" />
+          <div className="absolute -bottom-56 -left-32 w-[560px] h-[560px] rounded-full bg-teal-300/[0.08] blur-3xl" />
+        </div>
 
-        <header className="relative z-20 flex items-center gap-3">
+        <header className="relative z-20 flex shrink-0 items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-emerald-950/40">C</div>
           <span className="text-lg font-semibold tracking-tight">Cashly <span className="text-emerald-300">POS</span></span>
           {!tillBranchId && (
@@ -615,7 +618,7 @@ export const LoginGate: React.FC = () => {
         ) : (
           // Two columns — the words, and the picture — when the panel is wide and tall enough for both;
           // otherwise just the words. Sized off the panel itself (a container query), not the window.
-          <div className="@container relative flex-1 min-h-0 flex items-center py-8 [@media(max-height:720px)]:py-4">
+          <div className="@container relative flex-1 flex items-center py-8 [@media(max-height:720px)]:py-4">
             <div className="w-full grid items-center gap-10 @min-[720px]:[@media(min-height:640px)]:grid-cols-[minmax(380px,5fr)_minmax(0,4fr)]">
               <div className="max-w-[520px] 2xl:max-w-[560px]">
                 {businessName && (
@@ -628,11 +631,11 @@ export const LoginGate: React.FC = () => {
                     )}
                   </div>
                 )}
-                <h1 className="text-[34px] xl:text-[40px] 2xl:text-[46px] [@media(max-height:720px)]:text-[32px] font-semibold tracking-[-0.025em] leading-[1.1] [text-shadow:0_2px_28px_rgba(2,20,18,0.45)]">
+                <h2 className="text-[34px] xl:text-[40px] 2xl:text-[46px] [@media(max-height:720px)]:text-[32px] font-semibold tracking-[-0.025em] leading-[1.1] [text-shadow:0_2px_28px_rgba(2,20,18,0.45)]">
                   Smart POS for{' '}
                   <span className="relative inline-block">
                     <span className="bg-gradient-to-r from-emerald-300 via-teal-200 to-emerald-300 bg-[length:200%_auto] bg-clip-text text-transparent">growing</span>
-                    <svg aria-hidden viewBox="0 0 200 14" className="absolute left-0 -bottom-1 w-full h-3" preserveAspectRatio="none">
+                    <svg aria-hidden="true" viewBox="0 0 200 14" className="absolute left-0 -bottom-1 w-full h-3" preserveAspectRatio="none">
                       <defs>
                         <linearGradient id="heroUnderline" x1="0" x2="1" y1="0" y2="0">
                           <stop offset="0%" stopColor="#6ee7b7" />
@@ -644,7 +647,7 @@ export const LoginGate: React.FC = () => {
                   </span>
                   <br />
                   businesses
-                </h1>
+                </h2>
                 <p className="mt-4 text-[15px] 2xl:text-base leading-relaxed text-white/70 max-w-[460px] 2xl:max-w-[520px] text-pretty">
                   Sell, manage stock, keep your books and run every branch from one system.
                 </p>
@@ -658,7 +661,7 @@ export const LoginGate: React.FC = () => {
                       </span>
                       <span className="min-w-0 pt-0.5">
                         <span className="block text-[13.5px] font-semibold text-white">{title}</span>
-                        <span className="block mt-0.5 text-[12.5px] leading-snug text-white/55 text-balance">{text}</span>
+                        <span className="block mt-0.5 text-[12.5px] leading-snug text-white/70">{text}</span>
                       </span>
                     </li>
                   ))}
@@ -668,7 +671,7 @@ export const LoginGate: React.FC = () => {
                   {canRegister && (
                     <a href="/signup"
                       className="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-gradient-to-b from-emerald-300 to-emerald-400 hover:from-emerald-200 hover:to-emerald-300 text-[#04302a] text-sm font-bold shadow-lg shadow-emerald-950/40 ring-1 ring-inset ring-white/20 transition">
-                      Register free <ArrowRight className="w-4 h-4" />
+                      Start a free trial <ArrowRight className="w-4 h-4" />
                     </a>
                   )}
                   <button type="button" onClick={() => setPanel('demo')}
@@ -677,14 +680,7 @@ export const LoginGate: React.FC = () => {
                     Watch demo
                   </button>
                 </div>
-                <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px] text-white/55">
-                  {canRegister && <span>30-day free trial for new businesses</span>}
-                  {showConnect && (
-                    <a href="/connect" className="inline-flex items-center gap-1.5 font-medium text-emerald-300 hover:text-emerald-200 transition">
-                      <MonitorSmartphone className="w-4 h-4" strokeWidth={1.75} /> Connect a till or tablet <ArrowRight className="w-3.5 h-3.5" />
-                    </a>
-                  )}
-                </div>
+                {canRegister && <p className="mt-3 text-[13px] text-white/65">30 days for new businesses</p>}
               </div>
 
               {/* The till on a shop counter. */}
@@ -695,11 +691,13 @@ export const LoginGate: React.FC = () => {
           </div>
         )}
 
-        <div className="relative flex flex-wrap items-center gap-x-6 gap-y-2 pt-5 [@media(max-height:720px)]:pt-4 border-t border-white/10 text-[13px] text-white/60">
-          {assurances.map(({ icon: Icon, label }) => (
-            <span key={label} className="inline-flex items-center gap-2"><Icon className="w-4 h-4 text-emerald-300/90" strokeWidth={1.75} /> {label}</span>
-          ))}
-        </div>
+        {!tillBranchId && (
+          <div className="relative flex shrink-0 flex-wrap items-center gap-x-6 gap-y-2 pt-5 [@media(max-height:720px)]:pt-4 border-t border-white/10 text-[13px] text-white/70">
+            {assurances.map(({ icon: Icon, label }) => (
+              <span key={label} className="inline-flex items-center gap-2"><Icon className="w-4 h-4 text-emerald-300/90" strokeWidth={1.75} /> {label}</span>
+            ))}
+          </div>
+        )}
       </aside>
 
       {/* ── Right: the sign-in card ── */}
@@ -716,15 +714,13 @@ export const LoginGate: React.FC = () => {
                 </button>
               )}
               <div className="w-12 h-12 [@media(max-height:720px)]:w-10 [@media(max-height:720px)]:h-10 rounded-2xl bg-gradient-to-br from-emerald-400 to-teal-600 text-white flex items-center justify-center font-bold text-xl [@media(max-height:720px)]:text-lg shadow-lg shadow-emerald-600/25">C</div>
-              {(businessName || placeLine) && (
-                <div className="lg:hidden">
-                  <p className="font-semibold text-slate-900">{businessName}</p>
-                  {placeLine && <p className="text-xs text-slate-500">{placeLine}</p>}
-                  {address && !address.fromSubdomain && restaurantHere?.name && (
-                    <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
-                  )}
-                </div>
-              )}
+              <div className={tillBranchId ? '' : 'lg:hidden'}>
+                {businessName && <p className="font-semibold text-slate-900">{businessName}</p>}
+                {placeLine && <p className="text-xs font-medium text-slate-600">{placeLine}</p>}
+                {address && !address.fromSubdomain && restaurantHere?.name && (
+                  <button type="button" onClick={leaveRestaurantAddress} className="text-xs font-semibold text-slate-500 hover:text-teal-700">Not {restaurantHere.name}?</button>
+                )}
+              </div>
             </div>
             {twoFactor ? (
               // 2-step sign-in: the password was right; now the code from their phone.
@@ -809,8 +805,18 @@ export const LoginGate: React.FC = () => {
               <form ref={formRef} onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-1 text-center">
                   <h1 className="text-2xl [@media(max-height:720px)]:text-xl font-semibold tracking-tight text-slate-900">{heading.title}</h1>
-                  <p className="text-sm text-slate-500 [@media(max-height:720px)]:hidden">{heading.sub}</p>
+                  {heading.sub && <p className="text-sm text-slate-600">{heading.sub}</p>}
                 </div>
+
+                {!isOnline && (
+                  <div role="status" className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                    <WifiOff aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <p className="font-semibold">Offline</p>
+                      <p className="mt-0.5 text-xs leading-relaxed">{offlineMessage}</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Who is signing in: a username (then the PIN) or a work email (then the password). */}
                 {mode === 'identify' && (
@@ -818,18 +824,19 @@ export const LoginGate: React.FC = () => {
                     <label htmlFor="login-identifier" className={labelClass}>Username or work email</label>
                     <input
                       id="login-identifier"
+                      name="username"
                       type="text"
-                      inputMode="email"
                       value={identifier}
                       onChange={(e) => { setIdentifier(e.target.value); setError(''); }}
-                      autoFocus
                       autoComplete="username"
                       autoCapitalize="none"
                       spellCheck={false}
-                      placeholder="e.g. ali or you@business.com"
+                      aria-describedby="login-identifier-help"
                       className={inputClass}
                     />
-                    <p className="mt-1.5 text-xs text-slate-500">Till staff: your username · Head office: your work email</p>
+                    <p id="login-identifier-help" className="mt-2 text-xs leading-relaxed text-slate-600">
+                      Use your staff username for PIN sign-in, or your work email for password sign-in.
+                    </p>
                   </div>
                 )}
 
@@ -842,16 +849,22 @@ export const LoginGate: React.FC = () => {
 
                 {mode === 'email' && (
                   <>
-                    {identified ? signingInAs(email.trim()) : (
+                    {identified ? (
+                      <>
+                        <input type="hidden" name="username" autoComplete="username" value={email} />
+                        {signingInAs(email.trim())}
+                      </>
+                    ) : (
                       <div>
                         <label htmlFor="login-email" className={labelClass}>Work email</label>
                         <input
                           id="login-email"
+                          name="username"
                           type="email"
                           value={email}
                           onChange={(e) => { setEmail(e.target.value); setError(''); }}
                           autoFocus={!email}
-                          autoComplete="email"
+                          autoComplete="username"
                           placeholder="e.g. accounts@yourbusiness.com"
                           className={inputClass}
                         />
@@ -868,6 +881,7 @@ export const LoginGate: React.FC = () => {
                       <div className="relative">
                         <input
                           id="login-password"
+                          name="password"
                           type={showPassword ? 'text' : 'password'}
                           value={password}
                           onChange={(e) => { setPassword(e.target.value); setError(''); }}
@@ -924,7 +938,7 @@ export const LoginGate: React.FC = () => {
                     {identified ? signingInAs(username.trim()) : (
                       <div>
                         <label htmlFor="login-username" className={labelClass}>Username</label>
-                        <input id="login-username" type="text" value={username} autoFocus={!(restaurantNeeded && !address)} autoComplete="username"
+                        <input id="login-username" name="username" type="text" value={username} autoComplete="username"
                           onChange={(e) => { setUsername(e.target.value); setError(''); }}
                           placeholder="e.g. ali.cashier" className={inputClass} />
                       </div>
@@ -994,37 +1008,38 @@ export const LoginGate: React.FC = () => {
                 <button
                   type="submit"
                   disabled={loading || !ready}
-                  className="w-full h-11 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[15px] font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm shadow-teal-700/20"
+                  className="w-full h-11 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none disabled:cursor-not-allowed text-white text-[15px] font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm shadow-teal-700/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700"
                 >
                   {loading ? 'Signing in…' : mode === 'identify' ? 'Continue' : 'Sign in'}
                 </button>
 
-                {/* Other ways in */}
-                <div className="flex flex-col items-center gap-2.5">
-                  {mode === 'till' && (
-                    <button type="button" onClick={() => switchMode('username')} className={linkClass}>
-                      Use username and PIN instead
-                    </button>
-                  )}
-                  {/* At a Cashly POS business's address: an owner or manager who has added a work email. */}
-                  {mode === 'username' && !identified && !tillBranchId && (
-                    <button type="button" onClick={changeIdentifier} className={linkClass}>
-                      Have a work email? Sign in with it instead
-                    </button>
-                  )}
-                  {(mode === 'till' || mode === 'username') && (
+                {(mode === 'till' || mode === 'username') && (
+                  <div className="flex flex-col items-center gap-2.5">
+                    {mode === 'till' && (
+                      <button type="button" onClick={() => switchMode('username')} className={linkClass}>
+                        Use username and PIN instead
+                      </button>
+                    )}
+                    {mode === 'username' && !identified && !tillBranchId && (
+                      <button type="button" onClick={changeIdentifier} className={linkClass}>
+                        Sign in with a work email
+                      </button>
+                    )}
                     <p className="text-xs text-slate-400 text-center">Forgot your PIN? Ask your manager to reset it.</p>
-                  )}
-                </div>
+                  </div>
+                )}
 
-                {/* On a phone (no left side): connecting a new till, under "or". */}
-                {mode === 'identify' && showConnect && (
-                  <div className="lg:hidden space-y-4">
-                    <div className="flex items-center gap-3 text-xs text-slate-400"><span className="flex-1 h-px bg-slate-200" /> or <span className="flex-1 h-px bg-slate-200" /></div>
+                {showConnect && (
+                  <div className="space-y-3 border-t border-slate-200 pt-4">
                     <a href="/connect"
-                      className="flex items-center justify-center gap-2 w-full h-11 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-sm font-medium text-slate-700 transition">
-                      <MonitorSmartphone className="w-4 h-4 text-teal-600" /> Connect a till or tablet
+                      className="flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-center text-sm font-semibold text-teal-800 transition hover:border-teal-300 hover:bg-teal-50">
+                      <MonitorSmartphone aria-hidden="true" className="w-4 h-4 shrink-0" /> Connect a till or tablet
                     </a>
+                    {mode === 'identify' && canRegister && (
+                      <a href="/signup" className="block text-center text-sm font-medium text-teal-800 hover:underline lg:hidden">
+                        Start a 30-day free trial
+                      </a>
+                    )}
                   </div>
                 )}
               </form>
@@ -1032,22 +1047,24 @@ export const LoginGate: React.FC = () => {
           </div>
         </div>
 
-        {/* The card's foot: the connection, and the platform team's own way in. */}
-        <div className="px-6 sm:px-10 py-3.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-          {statusLine(false)}
-          <div className="flex items-center gap-4">
-            {/* On a phone the menu at the top of the left side is not there, so its two panels are here. */}
+        {(!tillBranchId || (mode === 'till' && isOnline) || showAdminLink) && (
+          <footer className={`px-6 sm:px-10 py-3.5 border-t border-slate-100 flex flex-wrap items-center gap-4 ${!tillBranchId && !showAdminLink ? 'lg:hidden' : ''}`}>
+            {mode === 'till' && isOnline && (
+              <p role="status" className="flex items-center gap-2 text-xs font-medium text-slate-600">
+                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-emerald-500" /> Connected to Cashly
+              </p>
+            )}
             {!tillBranchId && (
               <>
                 <button type="button" onClick={() => setPanel('pricing')} className={`${linkClass} lg:hidden`}>Pricing</button>
                 <button type="button" onClick={() => setPanel('support')} className={`${linkClass} lg:hidden`}>Support</button>
               </>
             )}
-            {mode !== 'till' && mode !== 'platform' && showPlatformAdmin && (
+            {showAdminLink && (
               <button type="button" onClick={() => switchMode('platform')} className={linkClass}>Platform admin</button>
             )}
-          </div>
-        </div>
+          </footer>
+        )}
         </div>
       </main>
 

@@ -58,6 +58,11 @@ function readStaff(): OfflineStaff[] {
   }
 }
 
+/** Whether this branch has any staff PINs within their offline sign-in window. */
+export function hasOfflineStaff(branchId: string): boolean {
+  return !!subtle && readStaff().some(entry => entry.branchId === branchId);
+}
+
 function writeStaff(rows: OfflineStaff[]) {
   try { localStorage.setItem(STAFF_KEY, JSON.stringify(rows)); } catch { /* full or blocked: offline sign-in just is not available */ }
 }
@@ -94,8 +99,8 @@ export type OfflineSignIn =
 
 /** Checks a PIN on the till itself, for when the server cannot be reached. */
 export async function signInOffline(pin: string, branchId: string): Promise<OfflineSignIn> {
-  const noInternet = 'No internet connection, and that PIN has not been used on this till in the last 7 days. Try again when the internet is back.';
-  if (!subtle) return { ok: false, message: noInternet };
+  const needsOnlineSignIn = 'Sign in online on this till before using your PIN offline.';
+  if (!subtle) return { ok: false, message: needsOnlineSignIn };
 
   // The same lock as the server's: 10 wrong PINs, then 5 minutes.
   let lock = { wrong: 0, until: 0 };
@@ -120,5 +125,5 @@ export async function signInOffline(pin: string, branchId: string): Promise<Offl
       ? { wrong: 0, until: Date.now() + LOCK_MINUTES * 60000 }
       : { wrong, until: 0 }));
   } catch { /* blocked */ }
-  return { ok: false, message: candidates.length === 0 ? noInternet : 'Wrong PIN. (No internet: checked on this till.)' };
+  return { ok: false, message: candidates.length === 0 ? needsOnlineSignIn : 'Wrong PIN for offline sign-in.' };
 }
