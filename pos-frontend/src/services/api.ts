@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { authStorage } from './authStorage';
+import { OFFLINE_SESSION_TOKEN } from './offlineStaff';
 import type { 
   Tenant, 
   Branch, 
@@ -172,6 +173,83 @@ export const api = axios.create({
   },
 });
 
+export function getApiServer(): string {
+  return new URL(api.defaults.baseURL || '/', window.location.origin).href.replace(/\/+$/, '');
+}
+
+export async function isApiReachable(signal: AbortSignal): Promise<boolean> {
+  try {
+    const readyUrl = new URL(`${getApiServer()}/api/health/ready`);
+    // Also avoids any response stored by an older version of the service worker.
+    readyUrl.searchParams.set('_probe', Date.now().toString());
+    const response = await fetch(readyUrl, { cache: 'no-store', signal, redirect: 'error' });
+    return response.ok && (await response.json()).status === 'ready';
+  } catch {
+    return false;
+  }
+}
+
+export function isApiUnavailable(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  if (error.response) return [502, 503, 504].includes(error.response.status);
+  return ['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT', 'CASHLY_ORDER_UNCONFIRMED'].includes(error.code ?? '');
+}
+
+export interface CreateOrderPayload {
+  branchId: string;
+  orderType: OrderType;
+  tableNumber?: string;
+  customerName?: string;
+  customerPhone?: string;
+  deliveryAddress?: string;
+  subTotalPKR: number;
+  discountPKR: number;
+  taxPKR: number;
+  totalPKR: number;
+  paymentMethod: PaymentMethod;
+  amountPaidPKR: number;
+  changeDuePKR: number;
+  isPaid: boolean;
+  cashierName?: string;
+  createdByRole?: string;
+  /**
+   * CRM / loyalty extras. All optional and additive — a checkout that omits
+   * them behaves exactly as it did before these fields existed.
+   */
+  customerId?: string;
+  promoCode?: string;
+  giftCardCode?: string;
+  giftCardRedeemAmount?: number;
+  /** Named as the server reads it (CreateOrderDto.LoyaltyPointsRedeemed). */
+  loyaltyPointsRedeemed?: number;
+  /**
+   * This sale's own id, the same on every attempt to send it: a retry after a dropped response
+   * returns the sale already saved instead of saving it twice.
+   */
+  clientLocalId?: string;
+  capturedAt?: string;
+  items: {
+    productId: string;
+    productName: string;
+    quantity: number;
+    unitPricePKR: number;
+    modifiersSummary?: string;
+    specialNotes?: string;
+    station: string;
+    /** A medicine sold loose: what one of the quantity is. The server prices it itself. */
+    saleUnit?: SaleUnit;
+  }[];
+  /** Required by the server for a prescription-only or controlled medicine. */
+  prescription?: PrescriptionInput;
+}
+
+export interface OfflineOrderAcknowledgement {
+  clientLocalId?: string | null;
+  status: string;
+  orderId?: string | null;
+  reason?: string | null;
+}
+
 /**
  * Re-point this device at a different server (e.g. a branch pairing to its Head Office).
  * Persists the choice and updates the live client in one step, so the very next call —
@@ -189,7 +267,7 @@ export function setApiBaseUrl(url: string) {
 // JWT Auth interceptor
 api.interceptors.request.use((config) => {
   const token = authStorage.getItem('cashly_pos_token');
-  if (token) {
+  if (token && token !== OFFLINE_SESSION_TOKEN) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -378,7 +456,7 @@ export const posApi = {
   },
   /** A paired till: the PIN alone. The device's licence says which business and branch it is. */
   pinLogin: async (pinCode: string, license: string, deviceFingerprint: string) => {
-    const res = await api.post<LoginResponse>('/api/auth/pin-login', { pinCode, license, deviceFingerprint });
+    const res = await api.post<LoginResponse>('/api/auth/pin-login', { pinCode, license, deviceFingerprint }, { timeout: 4000 });
     storeSession(res.data);
     return res.data;
   },
@@ -492,7 +570,7 @@ export const posApi = {
 
   // Tenancy
   getTenants: async () => {
-    const res = await api.get<Tenant[]>('/api/tenants');
+    const res = await api.get<Tenant[]>('/api/tenants', { timeout: 5000 });
     return res.data;
   },
   getBranches: async (tenantId?: string) => {
@@ -661,53 +739,11 @@ export const posApi = {
   },
 
   // Mode 1 Parallel Order Dispatch
-  createOrder: async (orderData: {
-    branchId: string;
-    orderType: OrderType;
-    tableNumber?: string;
-    customerName?: string;
-    customerPhone?: string;
-    deliveryAddress?: string;
-    subTotalPKR: number;
-    discountPKR: number;
-    taxPKR: number;
-    totalPKR: number;
-    paymentMethod: PaymentMethod;
-    amountPaidPKR: number;
-    changeDuePKR: number;
-    isPaid: boolean;
-    cashierName?: string;
-    createdByRole?: string;
-    /**
-     * CRM / loyalty extras. All optional and additive — a checkout that omits
-     * them behaves exactly as it did before these fields existed.
-     */
-    customerId?: string;
-    promoCode?: string;
-    giftCardCode?: string;
-    giftCardRedeemAmount?: number;
-    /** Named as the server reads it (CreateOrderDto.LoyaltyPointsRedeemed). */
-    loyaltyPointsRedeemed?: number;
-    /**
-     * This sale's own id, the same on every attempt to send it: a retry after a dropped response
-     * returns the sale already saved instead of saving it twice.
-     */
-    clientLocalId?: string;
-    items: {
-      productId: string;
-      productName: string;
-      quantity: number;
-      unitPricePKR: number;
-      modifiersSummary?: string;
-      specialNotes?: string;
-      station: string;
-      /** A medicine sold loose: what one of the quantity is. The server prices it itself. */
-      saleUnit?: SaleUnit;
-    }[];
-    /** Required by the server for a prescription-only or controlled medicine. */
-    prescription?: PrescriptionInput;
-  }) => {
-    const res = await api.post('/api/orders', orderData);
+  createOrder: async (orderData: CreateOrderPayload) => {
+    const res = await api.post('/api/orders', orderData, { timeout: 8000 });
+    if (typeof res.data?.orderId !== 'string' || typeof res.data?.orderNumber !== 'string') {
+      throw new axios.AxiosError('The server did not confirm the sale.', 'CASHLY_ORDER_UNCONFIRMED');
+    }
     return res.data;
   },
 
@@ -1008,7 +1044,7 @@ export const posApi = {
   },
   /** Renew the licence. This is also where revocations, downgrades and suspensions land. */
   terminalHeartbeat: async (license: string, deviceFingerprint: string) => {
-    const res = await api.post<HeartbeatResponse>('/api/terminals/heartbeat', { license, deviceFingerprint });
+    const res = await api.post<HeartbeatResponse>('/api/terminals/heartbeat', { license, deviceFingerprint }, { timeout: 4000 });
     return res.data;
   },
 
@@ -1524,7 +1560,7 @@ export const posApi = {
     return res.data;
   },
   getSetupStatus: async () => {
-    const res = await api.get<SetupStatusResponse>('/api/setup/status');
+    const res = await api.get<SetupStatusResponse>('/api/setup/status', { timeout: 4000 });
     return res.data;
   },
   initializeSetup: async (data: SetupInitPayload, serverUrl: string) => {
@@ -1541,8 +1577,8 @@ export const posApi = {
   },
 
   // Offline Batch Orders Sync
-  syncBatchOrders: async (orders: any[]) => {
-    const res = await api.post<{ count: number; orders: any[] }>('/api/sync/batch-orders', orders);
+  syncBatchOrders: async (orders: CreateOrderPayload[]) => {
+    const res = await api.post<{ count: number; orders: OfflineOrderAcknowledgement[] }>('/api/sync/batch-orders', orders, { timeout: 20000 });
     return res.data;
   },
 

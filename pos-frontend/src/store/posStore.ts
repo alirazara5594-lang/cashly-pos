@@ -26,8 +26,9 @@ import type { SaleUnitOption } from '../utils/medicine';
 import { cartTax } from '../utils/tax';
 
 import { offlineDb, saveSetting, getSetting, type OfflineOrder } from '../services/offlineDb';
-import { posApi } from '../services/api';
+import { getApiErrorMessage, getApiServer, isApiUnavailable, posApi } from '../services/api';
 import { getStoredTerminal, isActivated } from '../services/deviceLicense';
+import { OFFLINE_SESSION_TOKEN } from '../services/offlineStaff';
 // The signed-in session: one tab's in the back office, the device's on a connected till.
 import { authStorage } from '../services/authStorage';
 
@@ -35,6 +36,11 @@ export const AUTH_USER_STORAGE_KEY = 'cashly_pos_user';
 export const AUTH_TOKEN_STORAGE_KEY = 'cashly_pos_token';
 const AUTH_PERMISSIONS_STORAGE_KEY = 'cashly_pos_permissions';
 const AUTH_MODULE_PERMISSIONS_STORAGE_KEY = 'cashly_pos_module_permissions';
+if (authStorage.getItem(AUTH_TOKEN_STORAGE_KEY) === OFFLINE_SESSION_TOKEN) {
+  authStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  authStorage.removeItem(AUTH_USER_STORAGE_KEY);
+  authStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+}
 
 /** Backend AppRole enum ordinal -> role name. Mirrors UserManagement's roleNumberMap. */
 const ROLE_BY_ORDINAL: Record<number, UserRole> = {
@@ -183,26 +189,6 @@ function pickActiveBranch(branches: Branch[], sessionBranchId?: string | null): 
 }
 
 // Retry with exponential backoff
-async function syncWithRetry(
-  fn: () => Promise<any>,
-  maxRetries = 3,
-  baseDelay = 2000
-): Promise<{ success: boolean; data?: any; error?: string }> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const data = await fn();
-      return { success: true, data };
-    } catch (err: any) {
-      if (attempt === maxRetries) {
-        return { success: false, error: err?.message || 'Sync failed after retries' };
-      }
-      const delay = baseDelay * Math.pow(2, attempt);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-  return { success: false, error: 'Unreachable' };
-}
-
 // Offline sales go up a few at a time, not all at once: a pharmacy's sale carries its prescription
 // photo, and a day of them in one request would be refused for its size. The server keeps each sale
 // once (by its clientLocalId), so a batch that fails part-way is safe to send again.
@@ -227,24 +213,37 @@ function inSyncBatches(sales: OfflineOrder[]): OfflineOrder[][] {
   return batches;
 }
 
-/**
- * Sends offline sales batch by batch, marking each batch synced as it lands. Stops at the first batch
- * that fails, and returns it with the batches after it as still unsent.
- */
-async function sendOfflineSales(sales: OfflineOrder[]): Promise<{ synced: number; error?: string; unsent: OfflineOrder[] }> {
-  const batches = inSyncBatches(sales);
+async function sendOfflineSales(sales: OfflineOrder[], canContinue: () => boolean) {
   let synced = 0;
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    const result = await syncWithRetry(() => posApi.syncBatchOrders(batch.map(o => o.orderData)));
-    if (!result.success) return { synced, error: result.error, unsent: batches.slice(i).flat() };
-    for (const sale of batch) {
-      // Stored as 1/0, not true/false: the offline database indexes it, and booleans cannot be indexed.
-      if (sale.id) await offlineDb.offlineOrders.update(sale.id, { isSynced: 1 as unknown as boolean });
+  let error: string | undefined;
+  for (const batch of inSyncBatches(sales)) {
+    if (!canContinue()) break;
+    let acknowledgements;
+    try {
+      const result = await posApi.syncBatchOrders(batch.map(o => o.orderData));
+      acknowledgements = Array.isArray(result?.orders) ? result.orders : [];
+    } catch (err) {
+      return { synced, error: getApiErrorMessage(err, 'Could not reach Cashly to send sales.'), disconnected: isApiUnavailable(err) };
     }
-    synced += result.data?.count || batch.length;
+    const legacyResponse = acknowledgements.length === batch.length &&
+      acknowledgements.every(row => row && typeof row === 'object' && !('clientLocalId' in row));
+    const byId = new Map(acknowledgements.filter(row => row?.clientLocalId).map(row => [row.clientLocalId, row]));
+    await offlineDb.transaction('rw', offlineDb.offlineOrders, async () => {
+      for (const [index, sale] of batch.entries()) {
+        if (sale.id === undefined) continue;
+        const ack = legacyResponse ? acknowledgements[index] : byId.get(sale.orderData.clientLocalId);
+        if (typeof ack?.orderId === 'string' && ack.orderId && (ack.status === 'Synced' || ack.status === 'AlreadySynced')) {
+          await offlineDb.offlineOrders.update(sale.id, { isSynced: 1, lastSyncError: undefined });
+          synced++;
+        } else {
+          const message = ack?.reason || 'The server did not confirm this sale.';
+          error ??= message;
+          await offlineDb.offlineOrders.update(sale.id, { syncRetries: (sale.syncRetries ?? 0) + 1, lastSyncError: message });
+        }
+      }
+    });
   }
-  return { synced, unsent: [] };
+  return { synced, error, disconnected: false };
 }
 
 export interface ParkedBill {
@@ -345,9 +344,7 @@ interface PosState {
   selectBranch: (branch: Branch) => void;
   setActivePackage: (tier: SubscriptionTier) => void;
   setIsOnline: (online: boolean) => void;
-  setOfflinePendingCount: (count: number) => void;
   refreshOfflineCount: () => Promise<number>;
-  autoSyncOnReconnect: () => Promise<number>;
   
   // Cart Actions
   /** `unit`: a medicine sold loose — the box, a strip or a tablet, at its own price (utils/medicine.ts). */
@@ -436,13 +433,18 @@ export const usePosStore = create<PosState>((set, get) => ({
     const normalized: CurrentUser = { ...user, role: normalizeRole(user.role) ?? 'Cashier' };
     // The axios request interceptor reads the token straight out of the session store,
     // so these two keys must stay in sync with the store.
-    authStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(normalized));
-    authStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
-    if (permissions) {
-      authStorage.setItem(AUTH_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
-    } else {
+    if (token === OFFLINE_SESSION_TOKEN) {
+      authStorage.removeItem(AUTH_USER_STORAGE_KEY);
+      authStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
       authStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
+      authStorage.removeItem('cashly_pos_refresh_token');
+    } else {
+      authStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(normalized));
+      authStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+      if (permissions) authStorage.setItem(AUTH_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
+      else authStorage.removeItem(AUTH_PERMISSIONS_STORAGE_KEY);
     }
+    authStorage.removeItem(AUTH_MODULE_PERMISSIONS_STORAGE_KEY);
     set({ currentUser: normalized, token, permissions: permissions ?? null, modulePermissions: [], packageFeatures: null, packageInfo: null });
   },
 
@@ -470,23 +472,36 @@ export const usePosStore = create<PosState>((set, get) => ({
   },
 
   loadMyModulePermissions: async () => {
+    const { currentUser, token, isOnline } = get();
+    if (!currentUser || !token || token === OFFLINE_SESSION_TOKEN || !isOnline) return;
     try {
       const data = await posApi.getMyPermissions();
-      get().setModulePermissions(Array.isArray(data) ? data : []);
+      if (get().currentUser === currentUser) get().setModulePermissions(Array.isArray(data) ? data : []);
     } catch (err) {
       console.warn('Failed to load module permissions:', err);
     }
   },
 
   loadMyPackageFeatures: async () => {
+    const { currentUser, token, isOnline } = get();
+    if (!currentUser || !token) return;
+    const cacheKey = `package:${getApiServer()}:${currentUser.tenantId}:${currentUser.id}`;
+    const apply = (info: MyPackageInfo) => {
+      if (get().currentUser === currentUser) set({ packageFeatures: info.features, packageInfo: info });
+    };
+    const cached = await getSetting(cacheKey).catch(() => null) as MyPackageInfo | null;
+    if (cached) apply(cached);
+    if (token === OFFLINE_SESSION_TOKEN || !isOnline) return;
     try {
       const data = await posApi.getMyPackage();
       // Both are kept: `packageFeatures` is what the existing feature guards read, and
       // `packageInfo` carries the billing state and sector contract the guards do not need.
-      set({ packageFeatures: data?.features ?? null, packageInfo: data ?? null });
+      if (data) {
+        apply(data);
+        void saveSetting(cacheKey, data).catch(() => {});
+      }
     } catch (err) {
-      // SuperAdmin has no tenant to resolve this against (404) — that's expected, not an error.
-      set({ packageFeatures: null, packageInfo: null });
+      if (!isApiUnavailable(err) && get().currentUser === currentUser) set({ packageFeatures: null, packageInfo: null });
     }
   },
 
@@ -537,31 +552,37 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   loadBranchTax: async (branchId) => {
     const cacheKey = `branchTax:${branchId}`;
-    const apply = (tax: BranchTax) => set({ branchTax: tax, taxMode: tax.pricesIncludeTax ? 'Inclusive' : 'Exclusive' });
+    const apply = (tax: BranchTax) => {
+      if (get().selectedBranch?.id === branchId) set({ branchTax: tax, taxMode: tax.pricesIncludeTax ? 'Inclusive' : 'Exclusive' });
+    };
+    const cached = await getSetting(cacheKey).catch(() => null) as BranchTax | null;
+    if (cached) apply(cached);
+    if (!get().isOnline || get().token === OFFLINE_SESSION_TOKEN) return;
     try {
       const tax = await posApi.getBranchTax(branchId);
       apply(tax);
       // Kept on the device, so a till opened offline still charges the right tax.
-      saveSetting(cacheKey, tax).catch(() => { /* optional */ });
-    } catch {
-      const cached = await getSetting(cacheKey).catch(() => null);
-      if (cached) apply(cached as BranchTax);
-    }
+      await saveSetting(cacheKey, tax);
+    } catch { /* keep the last known rates */ }
   },
 
   loadTenantSettings: async () => {
     const { selectedTenant } = get();
     if (!selectedTenant?.id) return;
     const cacheKey = `tenantSettings:${selectedTenant.id}`;
+    const apply = (settings: TenantSettings) => {
+      if (get().selectedTenant?.id === selectedTenant.id) set({ tenantSettings: settings });
+    };
+    const cached = await getSetting(cacheKey).catch(() => null);
+    if (cached) apply(cached);
+    if (!get().isOnline || get().token === OFFLINE_SESSION_TOKEN) return;
     try {
       const settings = await posApi.getTenantSettings(selectedTenant.id);
-      set({ tenantSettings: settings });
+      apply(settings);
       // Kept on the device, so a till opened offline still charges the right tax.
       saveSetting(cacheKey, settings).catch(() => { /* optional */ });
     } catch (err) {
       console.error('Failed to load tenant settings:', err);
-      const cached = await getSetting(cacheKey).catch(() => null);
-      if (cached) set({ tenantSettings: cached });
     }
   },
 
@@ -581,6 +602,8 @@ export const usePosStore = create<PosState>((set, get) => ({
       selectedTenant: selected,
       branches,
       selectedBranch: activeBranch,
+      branchTax: activeBranch?.id === get().selectedBranch?.id ? get().branchTax : null,
+      tenantSettings: selected?.id === get().selectedTenant?.id ? get().tenantSettings : null,
       activePackage: selected?.tier || 'Professional',
       isInstalled: tenants.length > 0,
       deploymentMode: mode
@@ -594,14 +617,15 @@ export const usePosStore = create<PosState>((set, get) => ({
       selectedTenant: tenant,
       branches,
       selectedBranch: activeBranch,
+      branchTax: activeBranch?.id === get().selectedBranch?.id ? get().branchTax : null,
+      tenantSettings: tenant.id === get().selectedTenant?.id ? get().tenantSettings : null,
       activePackage: tenant.tier
     });
   },
 
-  selectBranch: (branch) => set({ selectedBranch: branch }),
+  selectBranch: (branch) => set({ selectedBranch: branch, branchTax: branch.id === get().selectedBranch?.id ? get().branchTax : null }),
   setActivePackage: (tier) => set({ activePackage: tier }),
   setIsOnline: (online) => set({ isOnline: online }),
-  setOfflinePendingCount: (count) => set({ offlinePendingCount: count }),
 
   addToCart: (product, modifiers = [], notes = '', unit) => {
     const { cart } = get();
@@ -734,8 +758,7 @@ export const usePosStore = create<PosState>((set, get) => ({
 
   refreshOfflineCount: async () => {
     try {
-      const unsynced = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
-      const count = unsynced.length;
+      const count = await offlineDb.offlineOrders.where('isSynced').equals(0).count();
       set({ offlinePendingCount: count });
       return count;
     } catch {
@@ -743,76 +766,36 @@ export const usePosStore = create<PosState>((set, get) => ({
     }
   },
 
-  autoSyncOnReconnect: async () => {
-    const { isSyncing, isOnline } = get();
-    if (isSyncing || !isOnline) return 0;
-
-    const pendingCount = await get().refreshOfflineCount();
-    if (pendingCount === 0) return 0;
-
-    set({ isSyncing: true, lastSyncResult: 'Syncing offline orders...' });
-
-    try {
-      const offlineOrders = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
-      if (offlineOrders.length === 0) {
-        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: '' });
-        return 0;
-      }
-
-      const result = await sendOfflineSales(offlineOrders);
-
-      if (!result.error) {
-        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${result.synced} orders` });
-        return result.synced;
-      } else {
-        // Update retry count on the orders still waiting
-        for (const order of result.unsent) {
-          if (order.id) {
-            const retries = (order.syncRetries || 0) + 1;
-            await offlineDb.offlineOrders.update(order.id, {
-              syncRetries: retries,
-              lastSyncError: result.error
-            });
-          }
-        }
-        set({ offlinePendingCount: result.unsent.length, isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
-        return result.synced;
-      }
-    } catch (err) {
-      console.error('Auto-sync failed:', err);
-      set({ isSyncing: false, lastSyncResult: 'Sync failed' });
-      return 0;
-    }
-  },
-
   syncPendingOrders: async () => {
-    const { isSyncing, isOnline } = get();
-    if (isSyncing || !isOnline) return 0;
+    const { isSyncing, isOnline, currentUser, token } = get();
+    if (isSyncing || !isOnline || !currentUser || !token || token === OFFLINE_SESSION_TOKEN) return 0;
 
-    set({ isSyncing: true });
+    const server = getApiServer();
+    const canContinue = () => get().isOnline && get().currentUser === currentUser && getApiServer() === server;
+    set({ isSyncing: true, lastSyncResult: '' });
     try {
-      const offlineOrders = await offlineDb.offlineOrders.where('isSynced').equals(0).toArray();
-      if (offlineOrders.length === 0) {
-        set({ offlinePendingCount: 0, isSyncing: false });
-        return 0;
-      }
+      const pending = await offlineDb.offlineOrders.where('isSynced').equals(0).sortBy('createdAt');
+      const branchIds = new Set([currentUser.branchId, ...get().branches.filter(b => b.tenantId === currentUser.tenantId).map(b => b.id)]);
+      const sales = pending.filter(sale =>
+        (!sale.apiServer || sale.apiServer === server) &&
+        (sale.tenantId ? sale.tenantId === currentUser.tenantId : branchIds.has(sale.orderData.branchId))
+      );
+      if (!sales.length) return 0;
 
-      const result = await sendOfflineSales(offlineOrders);
-
-      if (!result.error) {
-        set({ offlinePendingCount: 0, isSyncing: false, lastSyncResult: `Synced ${result.synced} orders` });
-        return result.synced;
-      } else {
-        set({ offlinePendingCount: result.unsent.length, isSyncing: false, lastSyncResult: `Sync failed: ${result.error}` });
-        return result.synced;
-      }
+      set({ lastSyncResult: 'Syncing offline orders…' });
+      const result = await sendOfflineSales(sales, canContinue);
+      if (result.disconnected && canContinue()) set({ isOnline: false });
+      set({ lastSyncResult: result.error ? `Sales still pending: ${result.error}` : `Synced ${result.synced} orders` });
+      return result.synced;
     } catch (err) {
       console.error('Failed to sync offline orders:', err);
-      set({ isSyncing: false, lastSyncResult: 'Sync failed' });
+      set({ lastSyncResult: 'Could not update the offline sales queue.' });
       return 0;
+    } finally {
+      await get().refreshOfflineCount();
+      set({ isSyncing: false });
     }
   },
-
   getEffectiveTaxRate: () => {
     const { paymentMethod, tenantSettings, cashTaxRatePercent, cardTaxRatePercent, branchTax } = get();
     // The branch's own rates, as the server resolves them (one rate, cash/card, or its province's).

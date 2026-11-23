@@ -6115,35 +6115,48 @@ api.MapPost("/sync/batch-orders", async (
     // How old an offline sale may be and still reach the kitchen screen.
     var offlineKitchenTicketWindow = TimeSpan.FromMinutes(15);
 
+    var scopes = new Dictionary<Guid, (Guid? TenantId, Guid? BranchId, IResult? Error)>();
+    foreach (var branchId in ordersList.Select(o => o.BranchId).Distinct().OrderBy(id => id))
+    {
+        var scope = await ResolveScopeAsync(http, db, null, branchId);
+        scopes.Add(branchId, scope);
+    }
+
+    // Share the checkout lock so a timed-out checkout and its offline replay cannot both create a sale.
+    foreach (var branchId in scopes.Values.Where(s => s.Error == null && s.BranchId.HasValue)
+        .Select(s => s.BranchId!.Value).Distinct().OrderBy(id => id))
+        await LockDrawerAsync(db, branchId);
+
     foreach (var dto in ordersList)
     {
-        var (scopedTenantId, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+        var (scopedTenantId, scopedBranchId, scopeError) = scopes[dto.BranchId];
         if (scopeError != null || scopedBranchId == null)
         {
-            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Branch not accessible for this user." });
+            syncedResults.Add(new { clientLocalId = dto.ClientLocalId, orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Branch not accessible for this user." });
             continue;
         }
 
         var branch = await db.Branches.Include(b => b.Tenant).FirstOrDefaultAsync(b => b.Id == scopedBranchId.Value && b.TenantId == scopedTenantId!.Value);
         if (branch == null || !branch.CanSell || !await TerminalBelongsToBranchAsync(db, dto.TerminalId, branch.Id))
         {
-            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Selling outlet or terminal is invalid." });
+            syncedResults.Add(new { clientLocalId = dto.ClientLocalId, orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = "Selling outlet or terminal is invalid." });
             continue;
         }
 
         // Idempotency. Checked before anything is created, and backed by a unique index on
         // (TenantId, ClientLocalId) so two concurrent syncs of the same batch cannot both win.
-        if (!string.IsNullOrWhiteSpace(dto.ClientLocalId))
+        var clientLocalId = string.IsNullOrWhiteSpace(dto.ClientLocalId) ? null : dto.ClientLocalId.Trim();
+        if (clientLocalId != null)
         {
-            var existing = await db.Orders
-                .Where(o => o.TenantId == branch.TenantId && o.ClientLocalId == dto.ClientLocalId)
-                .Select(o => new { o.Id, o.OrderNumber })
+            var existing = createdOrders.FirstOrDefault(o => o.TenantId == branch.TenantId && o.ClientLocalId == clientLocalId)
+                ?? await db.Orders.AsNoTracking()
+                .Where(o => o.TenantId == branch.TenantId && o.ClientLocalId == clientLocalId)
                 .FirstOrDefaultAsync();
             if (existing != null)
             {
                 // Report success, not an error: the device's goal (this sale is on the server)
                 // is satisfied, and it needs to hear that so it stops retrying.
-                syncedResults.Add(new { orderId = (Guid?)existing.Id, orderNumber = existing.OrderNumber, status = "AlreadySynced", reason = (string?)null });
+                syncedResults.Add(new { clientLocalId = dto.ClientLocalId, orderId = (Guid?)existing.Id, orderNumber = existing.OrderNumber, status = "AlreadySynced", reason = (string?)null });
                 continue;
             }
         }
@@ -6169,7 +6182,7 @@ api.MapPost("/sync/batch-orders", async (
             CashierName = dto.CashierName ?? "Counter 1 Cashier",
             CreatedByRole = dto.CreatedByRole ?? "Cashier (Offline Sync)",
             CreatedAt = DateTime.UtcNow,
-            ClientLocalId = string.IsNullOrWhiteSpace(dto.ClientLocalId) ? null : dto.ClientLocalId.Trim(),
+            ClientLocalId = clientLocalId,
             IsOfflineOrigin = true,
             // When the sale actually happened. Reports and Z-readings should use this, not the
             // moment connectivity came back — otherwise a Tuesday outage lands in Wednesday's books.
@@ -6179,7 +6192,7 @@ api.MapPost("/sync/batch-orders", async (
         var priced = await PriceOrderAsync(db, branch, dto, order.Id, actingUser, enforceAvailability: false);
         if (priced.Error != null)
         {
-            syncedResults.Add(new { orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = priced.Error });
+            syncedResults.Add(new { clientLocalId = dto.ClientLocalId, orderId = (Guid?)null, orderNumber = (string?)null, status = "Rejected", reason = priced.Error });
             continue;
         }
 
@@ -6308,7 +6321,6 @@ api.MapPost("/sync/batch-orders", async (
 
         if (dto.IsPaid)
         {
-            await LockDrawerAsync(db, branch.Id);
             await RecordOrderCashAsync(db, order, dto.TerminalId, order.CapturedAt);
         }
 
@@ -6320,7 +6332,7 @@ api.MapPost("/sync/batch-orders", async (
 
         db.Orders.Add(order);
         createdOrders.Add(order);
-        syncedResults.Add(new { orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced", totalPKR = order.TotalPKR });
+        syncedResults.Add(new { clientLocalId = dto.ClientLocalId, orderId = order.Id, orderNumber = order.OrderNumber, status = "Synced", totalPKR = order.TotalPKR });
     }
 
     await db.SaveChangesAsync();

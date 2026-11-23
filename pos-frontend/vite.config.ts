@@ -47,27 +47,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        runtimeCaching: [
-          {
-            // Path-based, not origin-based: matches the API whether it's same-origin
-            // (a reverse-proxied /api path) or a separate origin (VITE_API_BASE_URL
-            // pointing at api.yourdomain.com) — the dev-only localhost:5288 literal
-            // this replaced meant offline caching silently did nothing once deployed.
-            urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              networkTimeoutSeconds: 5,
-              expiration: {
-                maxEntries: 200,
-                maxAgeSeconds: 60 * 60 * 24
-              },
-              cacheableResponse: {
-                statuses: [0, 200]
-              }
-            }
-          }
-        ],
+        // API data needed at the till is saved in IndexedDB with its branch or user scope.
+        // In particular, a readiness probe must always reach the actual server.
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api/]
       }

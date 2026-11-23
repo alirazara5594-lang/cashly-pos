@@ -741,6 +741,7 @@ export interface Order {
   tenantId: string;
   branchId: string;
   orderNumber: string;
+  pendingSync?: boolean;
   orderType: OrderType;
   status: OrderStatus;
   tableNumber?: string;

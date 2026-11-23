@@ -1,12 +1,15 @@
 import Dexie, { type Table } from 'dexie';
 import type { Product, Category, Tenant, Branch, DiningTable, AppUser } from '../types';
+import type { CreateOrderPayload } from './api';
 
 export interface OfflineOrder {
   id?: number;
   localId: string;
-  orderData: any;
+  orderData: CreateOrderPayload;
   createdAt: string;
-  isSynced: boolean;
+  isSynced: 0 | 1;
+  tenantId?: string;
+  apiServer?: string;
   syncRetries?: number;
   lastSyncError?: string;
 }
@@ -43,25 +46,37 @@ export class CashlyOfflineDatabase extends Dexie {
 
 export const offlineDb = new CashlyOfflineDatabase();
 
-// Helper: Cache full catalog (products + categories) for offline use
-export async function cacheCatalog(tenantId: string, categories: Category[], products: Product[]) {
-  await offlineDb.categories.where('tenantId').equals(tenantId).delete();
-  await offlineDb.products.where('tenantId').equals(tenantId).delete();
-  await offlineDb.categories.bulkPut(categories);
-  await offlineDb.products.bulkPut(products);
+interface CachedCatalog {
+  categories: Category[];
+  products: Product[];
 }
 
-// Helper: Get cached catalog
-export async function getCachedCatalog(tenantId: string) {
-  const categories = await offlineDb.categories.where('tenantId').equals(tenantId).toArray();
-  const products = await offlineDb.products.where('tenantId').equals(tenantId).toArray();
-  return { categories, products };
+function catalogKey(tenantId: string, branchId: string, apiServer: string) {
+  return `catalog:${apiServer}:${tenantId}:${branchId}`;
+}
+
+export async function cacheCatalog(tenantId: string, branchId: string, apiServer: string, catalog: CachedCatalog) {
+  await saveSetting(catalogKey(tenantId, branchId, apiServer), catalog);
+}
+
+export async function getCachedCatalog(tenantId: string, branchId: string, apiServer: string): Promise<CachedCatalog | undefined> {
+  return getSetting(catalogKey(tenantId, branchId, apiServer));
+}
+
+export async function queueOfflineSale(sale: OfflineOrder) {
+  await offlineDb.transaction('rw', offlineDb.offlineOrders, async () => {
+    if (!await offlineDb.offlineOrders.where('localId').equals(sale.localId).first()) {
+      await offlineDb.offlineOrders.add(sale);
+    }
+  });
 }
 
 // Helper: Cache dining tables for a branch
-export async function cacheDiningTables(tables: DiningTable[]) {
-  await offlineDb.diningTables.clear();
-  await offlineDb.diningTables.bulkPut(tables);
+export async function cacheDiningTables(branchId: string, tables: DiningTable[]) {
+  await offlineDb.transaction('rw', offlineDb.diningTables, async () => {
+    await offlineDb.diningTables.where('branchId').equals(branchId).delete();
+    await offlineDb.diningTables.bulkPut(tables);
+  });
 }
 
 // Helper: Get cached dining tables

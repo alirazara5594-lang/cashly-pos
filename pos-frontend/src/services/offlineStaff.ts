@@ -10,9 +10,8 @@ import type { AuthPermissions, CurrentUser } from '../types';
  * their sales sync when it is back. Nobody else can: a PIN this till has not seen online in the
  * last 7 days needs the internet.
  *
- * A session made this way carries no server token, so the first request once the internet is back
- * is refused and the till asks for the PIN again — this time checked by the server, after which the
- * sales made in the meantime are sent.
+ * A session made this way carries no server token. Once Cashly is reachable again, the cashier
+ * signs in online before the till can send its queued sales.
  */
 
 const STAFF_KEY = 'cashly_offline_staff';

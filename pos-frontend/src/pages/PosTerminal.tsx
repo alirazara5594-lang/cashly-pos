@@ -30,9 +30,10 @@ import {
 
 import { usePosStore } from '../store/posStore';
 import { useSector } from '../hooks/useSector';
-import { posApi, getApiErrorMessage } from '../services/api';
-import { offlineDb, cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables } from '../services/offlineDb';
-import { getStoredTerminal } from '../services/deviceLicense';
+import { posApi, getApiErrorMessage, getApiServer, isApiUnavailable } from '../services/api';
+import { cacheCatalog, getCachedCatalog, cacheDiningTables, getCachedDiningTables, queueOfflineSale, getSetting, saveSetting } from '../services/offlineDb';
+import { getCachedStatus, getStoredTerminal, isActivated } from '../services/deviceLicense';
+import { OFFLINE_SESSION_TOKEN } from '../services/offlineStaff';
 import { CashDrawer } from '../components/CashDrawer';
 import type { Product, Category, PaymentMethod, OrderType, Order, Customer, ExpirySummary, PrescriptionInput } from '../types';
 import { daysUntil, formatDay } from '../utils/expiry';
@@ -49,7 +50,7 @@ import { getEmoji } from '../utils/productEmoji';
 /** A new id for one sale, prefixed with the till so two tills can never make the same one. */
 function newSaleId(): string {
   const terminalId = getStoredTerminal()?.id ?? 'unpaired';
-  return `${terminalId}:SALE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${terminalId}:SALE-${Date.now()}-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 }
 
 export const PosTerminal: React.FC = () => {
@@ -78,8 +79,11 @@ export const PosTerminal: React.FC = () => {
     resumeParkedBill,
     deleteParkedBill,
     parkedBills,
-    isOnline,
-    setOfflinePendingCount,
+    isOnline: apiConnected,
+    setIsOnline,
+    refreshOfflineCount,
+    currentUser,
+    token,
     paymentMethod,
     setPaymentMethod,
     taxMode,
@@ -88,6 +92,8 @@ export const PosTerminal: React.FC = () => {
     permissions,
     setCustomerInfo
   } = usePosStore();
+  const isOnline = apiConnected && token !== OFFLINE_SESSION_TOKEN;
+  const apiServer = getApiServer();
 
   // Only a business with table service has dine-in tables (hooks/useSector.ts); everywhere else
   // — a shop, a pharmacy — a counter sale is always an immediate "take it with you" transaction.
@@ -162,8 +168,7 @@ export const PosTerminal: React.FC = () => {
   const [isDiscountOverrideOpen, setIsDiscountOverrideOpen] = useState(false);
   const canGiveDiscounts = !!permissions?.canGiveDiscounts || !!discountOverride;
 
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [catalog, setCatalog] = useState<{ scope: string; categories: Category[]; products: Product[] } | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [barcodeInput, setBarcodeInput] = useState('');
@@ -182,12 +187,16 @@ export const PosTerminal: React.FC = () => {
   const barcodeInputRef = useRef<HTMLInputElement>(null);
   // The id of the sale being charged, kept while the cart stays the same: pressing Charge again
   // after the connection dropped sends the same id, and the server returns the sale it already saved.
-  const pendingSale = useRef<{ cart: string; id: string } | null>(null);
+  const pendingSale = useRef<{ cart: string; id: string; capturedAt: string } | null>(null);
+  const submitting = useRef(false);
 
   // A business whose stock has batches (a pharmacy, a grocery): per product counted here, what can
   // still be sold before expiry and what already has expired. Expired stock is never rung up; stock
   // within a month of expiry is flagged as it goes in the cart. Offline, the till keeps what it last knew.
   const branchId = selectedBranch?.id;
+  const scope = `${apiServer}:${selectedTenant?.id}:${branchId}`;
+  const categories = catalog?.scope === scope ? catalog.categories : [];
+  const products = catalog?.scope === scope ? catalog.products : [];
 
   // The tax this branch charges, as the server works it out (Tax Setup): its rates, whether prices
   // include tax, and the NTN / STRN for the receipt. Loaded again when the till comes back online.
@@ -198,16 +207,32 @@ export const PosTerminal: React.FC = () => {
   }, [branchId, isOnline, loadBranchTax]);
 
   const [expiryByProduct, setExpiryByProduct] = useState<Map<string, ExpirySummary>>(() => new Map());
+  const [expiryScope, setExpiryScope] = useState<string | null>(null);
   const [expiryRefresh, setExpiryRefresh] = useState(0);
   const [expiryNotice, setExpiryNotice] = useState<{ tone: 'block' | 'warn'; text: string } | null>(null);
   const noticeTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    if (!batchExpiry || !branchId || !isOnline) return;
+    if (!batchExpiry || !branchId) return;
     let cancelled = false;
-    const load = () => posApi.getExpirySummary(branchId)
-      .then(rows => { if (!cancelled) setExpiryByProduct(new Map(rows.map(r => [r.productId, r]))); })
-      .catch(() => { /* keeps what it last knew */ });
+    const cacheKey = `expiry:${scope}`;
+    const apply = (rows: ExpirySummary[]) => {
+      if (cancelled) return;
+      setExpiryByProduct(new Map(rows.map(r => [r.productId, r])));
+      setExpiryScope(scope);
+    };
+    const load = async () => {
+      const cached = await getSetting(cacheKey).catch(() => undefined) as ExpirySummary[] | undefined;
+      if (cached && !isOnline) apply(cached);
+      if (!isOnline) return;
+      try {
+        const rows = await posApi.getExpirySummary(branchId);
+        apply(rows);
+        await saveSetting(cacheKey, rows);
+      } catch {
+        if (cached) apply(cached);
+      }
+    };
     load();
     const revalidate = () => { if (!document.hidden) load(); };
     window.addEventListener('focus', revalidate);
@@ -223,7 +248,7 @@ export const PosTerminal: React.FC = () => {
       window.removeEventListener('focus', revalidate);
       document.removeEventListener('visibilitychange', revalidate);
     };
-  }, [batchExpiry, branchId, isOnline, expiryRefresh]);
+  }, [batchExpiry, branchId, scope, isOnline, expiryRefresh]);
 
   const showExpiryNotice = (tone: 'block' | 'warn', text: string) => {
     setExpiryNotice({ tone, text });
@@ -295,7 +320,7 @@ export const PosTerminal: React.FC = () => {
   useEffect(() => {
     const tenantId = selectedTenant?.id;
     const branchId = selectedBranch?.id;
-    if (!tenantId) return;
+    if (!tenantId || !branchId) return;
 
     let cancelled = false;
 
@@ -311,11 +336,8 @@ export const PosTerminal: React.FC = () => {
      */
     const loadCatalog = async () => {
       try {
-        const cached = await getCachedCatalog(tenantId);
-        if (!cancelled && cached.categories.length > 0) {
-          setCategories(cached.categories);
-          setProducts(cached.products);
-        }
+        const cached = await getCachedCatalog(tenantId, branchId, apiServer).catch(() => undefined);
+        if (!cancelled && cached) setCatalog({ scope, ...cached });
 
         if (!isOnline) return;
 
@@ -326,9 +348,9 @@ export const PosTerminal: React.FC = () => {
         ]);
         if (cancelled) return;
 
-        setCategories(cats);
-        setProducts(prods);
-        await cacheCatalog(tenantId, cats, prods);
+        const fresh = { categories: cats, products: prods };
+        setCatalog({ scope, ...fresh });
+        await cacheCatalog(tenantId, branchId, apiServer, fresh);
       } catch (err) {
         console.error('Failed to load catalog:', err);
       }
@@ -337,14 +359,13 @@ export const PosTerminal: React.FC = () => {
     const loadTables = async () => {
       if (!branchId) return;
       try {
+        const cachedTables = await getCachedDiningTables(branchId).catch(() => []);
+        if (!cancelled) setTables(cachedTables);
         if (isOnline) {
           const tbls = await posApi.getTables(branchId);
           if (cancelled) return;
           setTables(tbls);
-          await cacheDiningTables(tbls);
-        } else {
-          const cachedTables = await getCachedDiningTables(branchId);
-          if (!cancelled) setTables(cachedTables);
+          await cacheDiningTables(branchId, tbls);
         }
       } catch (err) {
         console.error('Failed to load tables:', err);
@@ -368,7 +389,7 @@ export const PosTerminal: React.FC = () => {
       window.removeEventListener('focus', revalidate);
       document.removeEventListener('visibilitychange', revalidate);
     };
-  }, [selectedTenant?.id, selectedBranch?.id, isOnline]);
+  }, [selectedTenant?.id, selectedBranch?.id, apiServer, scope, isOnline]);
 
   const handleBarcodeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -403,7 +424,8 @@ export const PosTerminal: React.FC = () => {
 
   /** `rxGiven`: the prescription just saved, when it is what opened the way to charging. */
   const handleCompleteSale = async (rxGiven?: PrescriptionInput) => {
-    if (cart.length === 0) return;
+    if (!cart.length || submitting.current) return;
+    if (paymentMethod === 'Cash' && cashTendered > 0 && cashTendered < grandTotal) return;
     // A prescription-only or controlled medicine is sold against a prescription — asked for here,
     // so it is taken even when the till is offline.
     const rx = rxGiven ?? prescription;
@@ -411,14 +433,12 @@ export const PosTerminal: React.FC = () => {
       setRxDialog({ charge: true });
       return;
     }
-    if (!selectedBranch?.id) {
+    if (!selectedBranch?.id || !selectedTenant?.id) {
       alert('Choose the branch this till sells at before charging.');
       return;
     }
-    setIsSubmitting(true);
-
     // Cash handed over (the server works out the change against its own total).
-    const amountPaid = paymentMethod === 'Cash' ? Math.max(cashTendered || 0, grandTotal) : grandTotal;
+    const amountPaid = paymentMethod === 'Cash' ? cashTendered || grandTotal : grandTotal;
     const terminal = getStoredTerminal();
     const orderPayload = {
       branchId: selectedBranch.id,
@@ -436,8 +456,8 @@ export const PosTerminal: React.FC = () => {
       amountPaidPKR: amountPaid,
       changeDuePKR: amountPaid - grandTotal,
       isPaid: true,
-      cashierName: 'Counter 1 Cashier',
-      createdByRole: 'Cashier',
+      cashierName: currentUser?.fullName,
+      createdByRole: currentUser?.role,
       // Set when a manager authorized a discount this cashier can't normally give.
       discountAuthorizedByUserId: discountOverride?.authorizedByUserId,
       // Optional CRM extras — omitted entirely when the cashier skips that section.
@@ -459,14 +479,29 @@ export const PosTerminal: React.FC = () => {
       prescription: rxNeeds.any && rx ? rx : undefined
     };
 
+    const cartKey = JSON.stringify([apiServer, orderPayload]);
+    if (pendingSale.current?.cart !== cartKey) {
+      pendingSale.current = { cart: cartKey, id: newSaleId(), capturedAt: new Date().toISOString() };
+    }
+    const { id: clientLocalId, capturedAt } = pendingSale.current;
+    submitting.current = true;
+    setIsSubmitting(true);
     try {
+      let res: Awaited<ReturnType<typeof posApi.createOrder>> | undefined;
       if (isOnline) {
-        // One id per sale: the same cart charged again reuses it; a changed cart is a new sale.
-        const cartKey = JSON.stringify(orderPayload);
-        if (pendingSale.current?.cart !== cartKey) pendingSale.current = { cart: cartKey, id: newSaleId() };
-        const res = await posApi.createOrder({ ...orderPayload, clientLocalId: pendingSale.current.id });
-        pendingSale.current = null;
+        try {
+          res = await posApi.createOrder({ ...orderPayload, clientLocalId });
+        } catch (err) {
+          if (!isApiUnavailable(err)) throw err;
+          setIsOnline(false);
+          if (paymentMethod !== 'Cash' || orderPayload.promoCode || orderPayload.giftCardCode) {
+            alert('Connection lost during checkout. Keep this bill and retry when Cashly reconnects. Check any payment already taken before charging again.');
+            return;
+          }
+        }
+      }
 
+      if (res) {
         // The server ignores client-sent money fields and recomputes tax/totals
         // from DB prices (and, with provincial tax on, from the branch's
         // jurisdiction). Always print what it returns — the local figures were
@@ -483,7 +518,7 @@ export const PosTerminal: React.FC = () => {
           orderNumber: res.orderNumber,
           orderType,
           status: 'InKitchen',
-          tableNumber: selectedTable,
+          tableNumber: orderPayload.tableNumber,
           customerName,
           customerPhone,
           deliveryAddress,
@@ -495,6 +530,7 @@ export const PosTerminal: React.FC = () => {
           amountPaidPKR: res.amountPaidPKR ?? (paymentMethod === 'Cash' ? (cashTendered || serverTotal) : serverTotal),
           changeDuePKR: res.changeDuePKR ?? (paymentMethod === 'Cash' ? Math.max(0, (cashTendered || serverTotal) - serverTotal) : 0),
           isPaid: true,
+          cashierName: orderPayload.cashierName,
           createdAt: res.createdAt ?? new Date().toISOString(),
           inKitchenAt: res.inKitchenAt ?? null,
           fiscalInvoiceNumber: res.fiscalInvoiceNumber ?? null,
@@ -507,40 +543,37 @@ export const PosTerminal: React.FC = () => {
         setCompletedOrder(newOrder);
         setExpiryRefresh(n => n + 1);
       } else {
-        const offlineId = `OFFLINE-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const capturedAt = new Date().toISOString();
-
-        // clientLocalId is the sale's identity for the rest of its life. The server has a
-        // unique index on it, so re-sending this batch after a dropped response records the
-        // sale once rather than twice. It has to be generated HERE, at the moment of sale, and
-        // never regenerated on retry — a fresh id on each attempt would defeat the whole point.
-        //
-        // Prefixed with the terminal so two tills that ring up at the same millisecond while
-        // both offline cannot collide.
-        const terminalId = getStoredTerminal()?.id ?? 'unpaired';
-        const clientLocalId = `${terminalId}:${offlineId}`;
-
-        await offlineDb.offlineOrders.add({
-          localId: offlineId,
-          // capturedAt is when the customer actually paid. Without it, a Tuesday outage lands
-          // in Wednesday's Z-report.
+        if (paymentMethod !== 'Cash' || orderPayload.promoCode || orderPayload.giftCardCode) {
+          alert('Offline checkout accepts cash without a promo code or gift card. Keep this bill to retry online, or update the payment.');
+          return;
+        }
+        if (!isActivated() || terminal?.type === 'BackOffice' || terminal?.branchId !== selectedBranch.id || !getCachedStatus().canSell) {
+          alert('Connect Cashly to verify this till before taking an offline payment.');
+          return;
+        }
+        if (catalog?.scope !== scope || !branchTax || (batchExpiry && expiryScope !== scope)) {
+          alert('This till needs its branch catalogue, tax and stock settings. Connect Cashly and open the till before taking offline payments.');
+          return;
+        }
+        await queueOfflineSale({
+          localId: clientLocalId,
           orderData: { ...orderPayload, clientLocalId, capturedAt },
+          apiServer,
+          tenantId: selectedTenant.id,
           createdAt: capturedAt,
-          isSynced: 0 as any,
+          isSynced: 0,
           syncRetries: 0
         });
-
-        const pendingCount = await offlineDb.offlineOrders.where('isSynced').equals(0).count();
-        setOfflinePendingCount(pendingCount);
+        void refreshOfflineCount();
 
         const newOrder: Order = {
-          id: offlineId,
+          id: clientLocalId,
           tenantId: selectedTenant?.id || '',
           branchId: selectedBranch?.id || '',
-          orderNumber: offlineId,
+          orderNumber: `OFFLINE-${clientLocalId.split(':SALE-')[1]}`,
           orderType,
           status: 'Completed',
-          tableNumber: selectedTable,
+          tableNumber: orderPayload.tableNumber,
           customerName,
           customerPhone,
           deliveryAddress,
@@ -552,7 +585,9 @@ export const PosTerminal: React.FC = () => {
           amountPaidPKR: amountPaid,
           changeDuePKR: amountPaid - grandTotal,
           isPaid: true,
-          createdAt: new Date().toISOString(),
+          cashierName: orderPayload.cashierName,
+          createdAt: capturedAt,
+          pendingSync: true,
           taxLines: cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).lines,
           items: [...cart]
         };
@@ -560,8 +595,10 @@ export const PosTerminal: React.FC = () => {
         setCompletedOrder(newOrder);
       }
 
+      pendingSale.current = null;
       setIsReceiptOpen(true);
       clearCart();
+      setCashTendered(0);
       // A manager override authorizes one bill only.
       setDiscountOverride(null);
       resetCheckoutExtras();
@@ -572,9 +609,10 @@ export const PosTerminal: React.FC = () => {
       if (refusal?.prescriptionRequired) {
         setRxDialog({ charge: true, error: getApiErrorMessage(err, 'This sale needs a prescription.') });
       } else {
-        alert(getApiErrorMessage(err, 'Failed to submit order. Please check network.'));
+        alert(getApiErrorMessage(err, 'Cashly could not save this sale. The bill is still open.'));
       }
     } finally {
+      submitting.current = false;
       setIsSubmitting(false);
     }
   };
@@ -1103,7 +1141,13 @@ export const PosTerminal: React.FC = () => {
                 </button>
               </div>
             )}
-            {/* How the customer pays: cash or card. */}
+            {!isOnline && (
+              <p className="text-xs font-semibold text-amber-800" role="status">
+                {catalog?.scope === scope && branchTax
+                  ? 'Offline · cash sales only'
+                  : 'Connect to Cashly to load this till’s branch data for offline sales.'}
+              </p>
+            )}
             {primaryMethods.length > 0 && (
               <div role="radiogroup" aria-label="Payment method" className={`grid gap-2 ${gridCols[primaryMethods.length]}`}>
                 {primaryMethods.map(({ key, label, icon: Icon }) => (
@@ -1111,8 +1155,9 @@ export const PosTerminal: React.FC = () => {
                     key={key}
                     role="radio"
                     aria-checked={paymentMethod === key}
+                    disabled={!isOnline && key !== 'Cash'}
                     onClick={() => setPaymentMethod(key as PaymentMethod)}
-                    className={`py-2.5 rounded-xl border text-sm font-bold transition flex items-center justify-center gap-2 ${
+                    className={`py-2.5 rounded-xl border text-sm font-bold transition flex items-center justify-center gap-2 disabled:opacity-40 ${
                       paymentMethod === key
                         ? 'bg-teal-600 border-teal-600 text-white shadow-md shadow-teal-600/25'
                         : 'bg-white border-slate-200 text-slate-700 hover:border-teal-300 hover:bg-teal-50/60'
@@ -1137,7 +1182,7 @@ export const PosTerminal: React.FC = () => {
                       inputMode="numeric"
                       aria-label="Cash received"
                       value={cashTendered || ''}
-                      onChange={(e) => setCashTendered(Number(e.target.value) || 0)}
+                      onChange={(e) => setCashTendered(Math.max(0, Number(e.target.value) || 0))}
                       placeholder="0"
                       className="flex-1 min-w-0 px-2 py-1.5 bg-transparent text-right text-sm font-bold text-slate-900 placeholder:text-slate-300 focus:outline-none"
                     />
@@ -1193,11 +1238,8 @@ export const PosTerminal: React.FC = () => {
                 <span className="hidden lg:inline">Print</span>
               </button>
               <button
-                onClick={() => {
-                  setCashTendered(grandTotal);
-                  handleCompleteSale();
-                }}
-                disabled={cart.length === 0 || isSubmitting}
+                onClick={() => void handleCompleteSale()}
+                disabled={cart.length === 0 || isSubmitting || (paymentMethod === 'Cash' && cashShort)}
                 className="flex-1 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-lg shadow-teal-600/25 transition disabled:opacity-40 flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (

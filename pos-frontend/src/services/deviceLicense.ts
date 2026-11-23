@@ -1,4 +1,4 @@
-import { posApi } from './api';
+import { isApiUnavailable, posApi } from './api';
 
 /**
  * Device-side half of the licensing scheme.
@@ -176,7 +176,7 @@ export async function heartbeat(): Promise<DeviceStatus> {
     const response = (err as { response?: { status?: number; data?: Record<string, unknown> } })?.response;
 
     // No response at all: we are offline. Keep the cached verdict and keep selling.
-    if (!response) return getCachedStatus();
+    if (!response || isApiUnavailable(err)) return getCachedStatus();
 
     const data = response.data ?? {};
     const state = (data.state as DeviceState) ?? 'Revoked';

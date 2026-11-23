@@ -9,16 +9,17 @@ import { RequireModule } from './components/RequireModule';
 import { RequireFeature } from './components/RequireFeature';
 import { RequireSector } from './components/RequireSector';
 import { usePosStore, normalizeRole } from './store/posStore';
-import { posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
+import { getApiServer, isApiReachable, posApi, registerAuthRedirect, registerBillingHandler } from './services/api';
 import { AccountStatusBanner } from './components/AccountStatusBanner';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
+import { getCachedStatus, heartbeat, isActivated, type DeviceStatus } from './services/deviceLicense';
 import { webNameFromPath } from './services/restaurantAddress';
 import { OFFLINE_SESSION_TOKEN } from './services/offlineStaff';
-import { offlineDb } from './services/offlineDb';
+import { getSetting, offlineDb, saveSetting } from './services/offlineDb';
 import { endSupportSession, getSupportSession } from './services/supportSession';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './components/Toast';
+import type { Tenant } from './types';
 
 // PosTerminal is the "/" landing route — loaded eagerly so the first screen after
 // login never shows a loading flash. Every other page is code-split: each becomes
@@ -84,11 +85,12 @@ function MainLayoutInner() {
   const {
     setTenants,
     theme,
+    isOnline,
     setIsOnline,
     refreshOfflineCount,
     checkInstallationStatus,
     canInitialize,
-    autoSyncOnReconnect,
+    syncPendingOrders,
     currentUser,
     token,
     logout,
@@ -101,7 +103,7 @@ function MainLayoutInner() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isCheckingSetup, setIsCheckingSetup] = useState(true);
-  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
+  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(() => isActivated() ? getCachedStatus() : null);
   /** Head office of a chain: back office only, no till anywhere. Resolved server-side. */
   // ERP-only when EITHER this machine was activated as a back-office workstation, or the
   // tenant's shape puts this session at a chain's head office. The device wins, which is how a
@@ -120,6 +122,7 @@ function MainLayoutInner() {
   const isPlatformSuperAdmin = normalizeRole(currentUser?.role) === 'SuperAdmin';
 
   const isAuthenticated = !!currentUser && !!token;
+  const offlineSession = token === OFFLINE_SESSION_TOKEN;
   /** The platform admin inside a restaurant ("View as customer"), when one is open. */
   const supportSession = isAuthenticated ? getSupportSession() : null;
 
@@ -160,6 +163,7 @@ function MainLayoutInner() {
       setDeviceStatus(null);
       return;
     }
+    if (!isOnline) return;
 
     let cancelled = false;
     const beat = async () => {
@@ -170,7 +174,7 @@ function MainLayoutInner() {
     beat();
     const timer = setInterval(beat, 60 * 60 * 1000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isOnline]);
 
   // Refresh module permissions whenever a session becomes active (e.g. after a
   // reload that restored the token from the session store). Sales made while the till was
@@ -180,69 +184,88 @@ function MainLayoutInner() {
     if (isAuthenticated) {
       loadMyModulePermissions();
       loadMyPackageFeatures();
-      if (token !== OFFLINE_SESSION_TOKEN) autoSyncOnReconnect();
     }
-  }, [isAuthenticated, currentUser?.id, token, loadMyModulePermissions, loadMyPackageFeatures, autoSyncOnReconnect]);
+  }, [isAuthenticated, isOnline, currentUser?.id, token, loadMyModulePermissions, loadMyPackageFeatures]);
 
   // Tenants / branches now require a bearer token, so they load only once a
   // session exists — not during the pre-login setup check.
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!currentUser || !isAuthenticated || isPlatformSuperAdmin) return;
+    const { tenantId } = currentUser;
+    if (!tenantId) return;
+    const cacheKey = `tenant:${getApiServer()}:${tenantId}`;
+    let cancelled = false;
     const loadTenantData = async () => {
-      try {
-        const tenants = await posApi.getTenants();
-        setTenants(tenants);
-        // Kept on the device, so a till opened while the internet is down still knows its
-        // restaurant and branch (and so its cached menu) — see offlineStaff.ts.
-        offlineDb.tenants.clear().then(() => offlineDb.tenants.bulkPut(tenants)).catch(() => { /* optional */ });
-      } catch (err) {
-        console.error('Failed to load tenant data:', err);
-        // Offline: the copy kept last time, and only this person's own business.
-        const tenantId = usePosStore.getState().currentUser?.tenantId;
-        const cached = tenantId ? await offlineDb.tenants.where('id').equals(tenantId).toArray().catch(() => []) : [];
-        if (cached.length > 0) setTenants(cached);
+      const cached = (await getSetting(cacheKey).catch(() => null) as Tenant | null)
+        ?? await offlineDb.tenants.get(tenantId).catch(() => undefined);
+      if (cancelled) return;
+      if (cached && usePosStore.getState().selectedTenant?.id !== tenantId) setTenants([cached]);
+      void usePosStore.getState().loadTenantSettings();
+      if (isOnline && !offlineSession) {
+        try {
+          const tenants = await posApi.getTenants();
+          if (cancelled) return;
+          setTenants(tenants);
+          const ownTenant = tenants.find(t => t.id === tenantId);
+          if (ownTenant) void saveSetting(cacheKey, ownTenant).catch(() => {});
+          void usePosStore.getState().loadTenantSettings();
+        } catch (err) {
+          console.error('Failed to load tenant data:', err);
+        }
+        if (cancelled) return;
+        const synced = await syncPendingOrders();
+        if (!cancelled && synced > 0) addToast(`Synced ${synced} offline sale${synced === 1 ? '' : 's'}`, 'success', 6000);
       }
-      await usePosStore.getState().loadTenantSettings();
     };
-    loadTenantData();
-  }, [isAuthenticated, currentUser?.id, setTenants]);
+    void loadTenantData();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, currentUser, isOnline, offlineSession, isPlatformSuperAdmin, setTenants, syncPendingOrders, addToast]);
 
   useEffect(() => {
+    let cancelled = false;
     const initializeData = async () => {
       try {
         // Public endpoint — must run before any login so first-run setup works.
-        await checkInstallationStatus();
-        await refreshOfflineCount();
+        await Promise.all([checkInstallationStatus(), refreshOfflineCount()]);
       } catch (err) {
         console.error('Failed to load initial data:', err);
       } finally {
-        setIsCheckingSetup(false);
+        if (!cancelled) setIsCheckingSetup(false);
       }
     };
 
-    initializeData();
+    void initializeData();
+    return () => { cancelled = true; };
+  }, [refreshOfflineCount, checkInstallationStatus]);
 
-    const handleOnline = async () => {
-      setIsOnline(true);
-      addToast('Internet connection restored', 'success');
-      const synced = await autoSyncOnReconnect();
-      if (synced > 0) {
-        addToast(`${synced} offline order${synced > 1 ? 's' : ''} synced successfully`, 'success', 6000);
-      }
+  useEffect(() => {
+    let disposed = false;
+    let probe: AbortController | undefined;
+    const check = async () => {
+      if (probe) return;
+      probe = new AbortController();
+      const timeout = window.setTimeout(() => probe?.abort(), 3000);
+      const server = getApiServer();
+      const reachable = await isApiReachable(probe.signal);
+      window.clearTimeout(timeout);
+      probe = undefined;
+      if (disposed || server !== getApiServer() || reachable === usePosStore.getState().isOnline) return;
+      setIsOnline(reachable);
     };
-    const handleOffline = () => {
-      setIsOnline(false);
-      addToast('Working offline — orders will sync when internet returns', 'info', 4000);
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
+    void check();
+    const timer = window.setInterval(check, 10000);
+    window.addEventListener('online', check);
+    window.addEventListener('offline', check);
+    window.addEventListener('focus', check);
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      disposed = true;
+      probe?.abort();
+      window.clearInterval(timer);
+      window.removeEventListener('online', check);
+      window.removeEventListener('offline', check);
+      window.removeEventListener('focus', check);
     };
-  }, [setIsOnline, refreshOfflineCount, checkInstallationStatus, autoSyncOnReconnect, addToast]);
+  }, [setIsOnline]);
 
   // A guest ordering from a table QR code or a pickup link: no installation check, no sign-in.
   if (location.pathname.startsWith('/order/')) {
@@ -337,6 +360,8 @@ function MainLayoutInner() {
     return <LoginGate />;
   }
 
+  if (offlineSession && location.pathname !== '/') return <Navigate to="/" replace />;
+
   // The platform admin owns no restaurant: a restaurant screen would ask the server for "this
   // restaurant", be refused with a 401, and sign them out. Any address other than the platform
   // screens goes to Tenant Management instead (View as customer is the way into a restaurant).
@@ -403,7 +428,13 @@ function MainLayoutInner() {
         <AccountStatusBanner packageInfo={packageInfo} deviceStatus={deviceStatus} />
 
         {/* Messages from Cashly to every business (or some), until closed. */}
-        {!supportSession && <AnnouncementBanner tenantId={currentUser?.tenantId && currentUser.tenantId !== '00000000-0000-0000-0000-000000000000' ? currentUser.tenantId : null} />}
+        {isOnline && !offlineSession && !supportSession && <AnnouncementBanner tenantId={currentUser?.tenantId && currentUser.tenantId !== '00000000-0000-0000-0000-000000000000' ? currentUser.tenantId : null} />}
+        {offlineSession && isOnline && (
+          <div className="flex items-center justify-between gap-3 bg-amber-50 px-4 py-2 text-sm text-amber-900" role="status">
+            Cashly is reachable. Sign in to send this till’s queued sales.
+            <button className="font-semibold underline" onClick={logout}>Sign in to sync</button>
+          </div>
+        )}
 
         <main className="flex-1 flex flex-col overflow-hidden">
           <Suspense fallback={<RouteLoadingFallback />}>

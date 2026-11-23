@@ -25,6 +25,7 @@ import { PlatformHeader } from './PlatformHeader';
 import { getSupportSession } from '../services/supportSession';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { posApi, getApiErrorMessage } from '../services/api';
+import { OFFLINE_SESSION_TOKEN } from '../services/offlineStaff';
 import type { MyBranch, TerminalOperatingMode } from '../types';
 import { tierLabel } from '../utils/tierLabel';
 
@@ -88,6 +89,9 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
     activePackage, 
     isOnline, 
     offlinePendingCount, 
+    isSyncing,
+    lastSyncResult,
+    token,
     selectTenant, 
     selectBranch, 
     setIsOnline, 
@@ -108,7 +112,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
   const [showTenantDropdown, setShowTenantDropdown] = useState(false);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
   // Password and 2-step sign-in for the person signed in (not the platform admin's own account).
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   // Not the platform admin's own account, and not a support session (it has no sign-in of its own).
@@ -121,19 +124,20 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   // cover, so what they ring up lands there. Owners and head office staff already see every
   // location and only change the view.
   const isPinned = !!currentUser?.branchId;
+  const offlineSession = token === OFFLINE_SESSION_TOKEN;
   const [pinnedBranches, setPinnedBranches] = useState<MyBranch[]>([]);
   const myBranches = isPinned ? pinnedBranches : [];
   const [switchError, setSwitchError] = useState('');
   const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
-    if (!isPinned) return;
+    if (!isPinned || !isOnline || offlineSession) return;
     let cancelled = false;
     posApi.getMyBranches()
       .then(rows => { if (!cancelled) setPinnedBranches(Array.isArray(rows) ? rows : []); })
       .catch(() => { if (!cancelled) setPinnedBranches([]); });
     return () => { cancelled = true; };
-  }, [isPinned, currentUser?.id, currentUser?.branchId]);
+  }, [isPinned, isOnline, offlineSession, currentUser?.id, currentUser?.branchId]);
 
   const handleSwitchBranch = async (branchId: string) => {
     if (branchId === currentUser?.branchId) {
@@ -170,12 +174,6 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   const handleModeSwitch = (mode: TerminalOperatingMode) => {
     setTerminalMode(mode);
     setShowModeDropdown(false);
-  };
-
-  const handleManualSync = async () => {
-    setIsSyncing(true);
-    await syncPendingOrders();
-    setIsSyncing(false);
   };
 
   // Somewhere else to switch to.
@@ -357,10 +355,10 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
         {offlinePendingCount > 0 && (
           <button
-            onClick={handleManualSync}
-            disabled={!isOnline || isSyncing}
+            onClick={() => void syncPendingOrders()}
+            disabled={!isOnline || offlineSession || isSyncing}
             className="h-9 inline-flex items-center gap-1.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 text-xs font-bold transition disabled:opacity-50 cursor-pointer"
-            title="Sales kept on this device, waiting to reach the cloud"
+            title={lastSyncResult || 'Sales kept on this device, waiting to reach Cashly'}
           >
             <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
             <span>Sync ({offlinePendingCount})</span>

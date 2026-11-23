@@ -24,8 +24,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   isOpen,
   onClose,
   branchName = 'Your Business POS',
-  branchAddress = 'Main Commercial Area, Sector F-7, Islamabad',
-  branchPhone = '051-111-222-333',
+  branchAddress,
+  branchPhone,
   legalName,
   ntn,
   strn,
@@ -57,7 +57,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         <div className="px-4 py-3 bg-slate-800/80 border-b border-slate-700 flex items-center justify-between">
           <div className="flex items-center gap-2 text-teal-400 font-bold text-sm">
             <CheckCircle className="w-4 h-4" />
-            <span>Order Completed Successfully</span>
+            <span>{order.pendingSync ? 'Cash sale saved on this till' : 'Order Completed Successfully'}</span>
           </div>
           <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700">
             <X className="w-4 h-4" />
@@ -68,8 +68,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         <div className="paper p-4 overflow-y-auto flex-1 bg-white text-black font-mono text-[11px] leading-tight select-all">
           <div className="text-center pb-2 border-b border-dashed border-gray-400">
             <div className="font-bold text-base tracking-wider uppercase">{branchName}</div>
-            <div className="text-[10px] text-gray-700 mt-0.5">{branchAddress}</div>
-            <div className="text-[10px] text-gray-700">Tel: {branchPhone}</div>
+            {branchAddress && <div className="text-[10px] text-gray-700 mt-0.5">{branchAddress}</div>}
+            {branchPhone && <div className="text-[10px] text-gray-700">Tel: {branchPhone}</div>}
             {legalName && legalName.trim().toLowerCase() !== branchName.trim().toLowerCase() && (
               <div className="text-[10px] text-gray-700 mt-0.5">{legalName}</div>
             )}
@@ -78,7 +78,9 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 {ntn && <>NTN: {ntn}</>}{ntn && strn && '  ·  '}{strn && <>STRN: {strn}</>}
               </div>
             )}
-            <div className="text-[9px] text-gray-500 mt-1 uppercase font-sans">** TAX INVOICE **</div>
+            <div className="text-[9px] text-gray-500 mt-1 uppercase font-sans">
+              {order.pendingSync ? 'Cash receipt · pending sync' : '** TAX INVOICE **'}
+            </div>
           </div>
 
           <div className="py-2 border-b border-dashed border-gray-400 text-[10px] space-y-0.5">
@@ -207,7 +209,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 {fiscalQrImage && <img src={fiscalQrImage} alt="Fiscal invoice QR code" className="w-24 h-24 mx-auto" />}
                 <div className="text-[8px] text-gray-500">Verify this invoice with the tax authority's app.</div>
               </div>
-            ) : (
+            ) : !order.pendingSync && (
               <div className="inline-block px-3 py-1 bg-gray-100 border border-gray-300 rounded text-[9px] tracking-widest font-mono">
                 POS-{order.orderNumber.replace(/[^0-9]/g, '')}
               </div>

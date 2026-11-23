@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { DemoPanel, FeaturesMenu, PricingMenu, PricingPanel, SupportMenu, SupportPanel, type LoginPanel } from './login/LoginPanels';
 import { ScaledPosScene } from './login/PosScene';
-import { posApi, getApiErrorMessage, getApiErrorStatus } from '../services/api';
+import { posApi, getApiErrorMessage, getApiErrorStatus, isApiUnavailable } from '../services/api';
 import { getCachedStatus, getDeviceFingerprint, getStoredLicense, getStoredTerminal, isActivated } from '../services/deviceLicense';
 import { useNavigate } from 'react-router-dom';
 import { OFFLINE_SESSION_TOKEN, forgetOfflineStaff, rememberForOffline, signInOffline } from '../services/offlineStaff';
@@ -250,10 +250,8 @@ export const LoginGate: React.FC = () => {
         try {
           result = await posApi.pinLogin(pinCode.trim(), license, getDeviceFingerprint());
         } catch (err) {
-          // The server answered (wrong PIN, device revoked…): handled below as usual.
-          if ((err as { response?: unknown }).response) throw err;
-          // No answer at all — the internet is down. Staff who signed in on this till in the last
-          // 7 days can still get in; their sales sync once it is back.
+          if (!isApiUnavailable(err)) throw err;
+          usePosStore.getState().setIsOnline(false);
           const offline = tillBranchId ? await signInOffline(pinCode.trim(), tillBranchId) : null;
           if (!offline?.ok) {
             setError(offline && !offline.ok ? offline.message : 'Sign-in failed — check your connection');
@@ -264,7 +262,8 @@ export const LoginGate: React.FC = () => {
           return;
         }
         const tillUser = result.user as SignedInUser;
-        if (tillBranchId) void rememberForOffline(tillUser, pinCode.trim(), tillBranchId);
+        usePosStore.getState().setIsOnline(true);
+        if (tillBranchId) await rememberForOffline(tillUser, pinCode.trim(), tillBranchId);
         await finish(tillUser, result.token, tillUser.permissions, tillBranchId);
         return;
       }
