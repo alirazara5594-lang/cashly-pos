@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Bike, 
   MapPin, 
@@ -11,7 +11,8 @@ import {
   FileText,
   Inbox
 } from 'lucide-react';
-import { posApi } from '../services/api';
+import { RiderManager } from '../components/RiderManager';
+import { posApi, getApiErrorMessage } from '../services/api';
 
 import { usePosStore } from '../store/posStore';
 import type { Order, Rider, RiderSettlementRecord } from '../types';
@@ -31,7 +32,18 @@ const LaneEmpty: React.FC<{ label: string }> = ({ label }) => (
 );
 
 export const DeliveryBoard: React.FC = () => {
-  const { selectedBranch } = usePosStore();
+  const branchId = usePosStore(state => state.selectedBranch?.id);
+  return branchId ? <BranchBoard key={branchId} branchId={branchId} /> : null;
+};
+
+const BranchBoard = ({ branchId }: { branchId: string }) => {
+  const role = usePosStore(state => state.currentUser?.role);
+  const canManage = ['OwnerAdmin', 'HqAdmin', 'BranchManager', 'SuperAdmin'].includes(role ?? '');
+  const canSettle = canManage || role === 'Accountant';
+  const [manageRiders, setManageRiders] = useState(false);
+  const [error, setError] = useState('');
+  const [settleError, setSettleError] = useState('');
+  const settlementRequest = useRef(0);
   const [board, setBoard] = useState<{
     inKitchen: Order[];
     readyForDispatch: Order[];
@@ -51,7 +63,7 @@ export const DeliveryBoard: React.FC = () => {
   // Rider COD Settlement Modal State
   const [isSettlementOpen, setIsSettlementOpen] = useState(false);
   const [selectedRiderForSettle, setSelectedRiderForSettle] = useState<string>('');
-  const [pendingCODData, setPendingCODData] = useState<any>(null);
+  const [pendingCODData, setPendingCODData] = useState<Awaited<ReturnType<typeof posApi.getRiderPendingCOD>> | null>(null);
   const [cashCollectedInput, setCashCollectedInput] = useState<number>(0);
   const [isSettling, setIsSettling] = useState(false);
   const [settlementSuccessMsg, setSettlementSuccessMsg] = useState<string | null>(null);
@@ -60,106 +72,100 @@ export const DeliveryBoard: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [settlements, setSettlements] = useState<RiderSettlementRecord[]>([]);
 
-  const fetchBoard = async () => {
-    if (!selectedBranch?.id) return;
+  const fetchBoard = useCallback(async () => {
     try {
-      const data = await posApi.getDeliveryBoard(selectedBranch.id);
+      const data = await posApi.getDeliveryBoard(branchId);
       setBoard(data);
-      const riderList = await posApi.getRiders(selectedBranch.id);
+      const riderList = await posApi.getRiders(branchId);
       setRiders(riderList);
     } catch (err) {
-      console.error(err);
+      setError(getApiErrorMessage(err, 'Could not complete the delivery board request.'));
     }
-  };
+  }, [branchId]);
 
   const fetchSettlements = async () => {
-    if (!selectedBranch?.id) return;
     try {
-      const data = await posApi.getDeliverySettlements(selectedBranch.id);
+      const data = await posApi.getDeliverySettlements(branchId);
       setSettlements(data);
     } catch (err) {
-      console.error(err);
+      setError(getApiErrorMessage(err, 'Could not complete the delivery board request.'));
     }
   };
 
   useEffect(() => {
-    fetchBoard();
-    const interval = setInterval(fetchBoard, 6000);
-    return () => clearInterval(interval);
-  }, [selectedBranch?.id]);
+    const first = window.setTimeout(fetchBoard, 0);
+    const interval = window.setInterval(fetchBoard, 6000);
+    return () => { window.clearTimeout(first); window.clearInterval(interval); };
+  }, [fetchBoard]);
 
   const handleAssignRider = async () => {
     if (!selectedOrderForAssign || !selectedRiderId) return;
+    setError('');
     try {
       await posApi.assignRider(selectedOrderForAssign.id, selectedRiderId);
       setSelectedOrderForAssign(null);
       setSelectedRiderId('');
       fetchBoard();
     } catch (err) {
-      console.error(err);
+      setError(getApiErrorMessage(err, 'Could not complete the delivery board request.'));
     }
   };
 
   const handleMarkDelivered = async (orderId: string) => {
+    setError('');
     try {
       await posApi.markDelivered(orderId);
       fetchBoard();
     } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const handleOpenSettlement = async (riderId?: string) => {
-    setIsSettlementOpen(true);
-    setSettlementSuccessMsg(null);
-    const targetRiderId = riderId || (riders.length > 0 ? riders[0].id : '');
-    setSelectedRiderForSettle(targetRiderId);
-
-    if (targetRiderId) {
-      try {
-        const data = await posApi.getRiderPendingCOD(targetRiderId);
-        setPendingCODData(data);
-        setCashCollectedInput(data.expectedCODPKR);
-      } catch (err) {
-        console.error(err);
-      }
+      setError(getApiErrorMessage(err, 'Could not complete the delivery board request.'));
     }
   };
 
   const handleRiderChangeForSettle = async (riderId: string) => {
+    const request = ++settlementRequest.current;
     setSelectedRiderForSettle(riderId);
+    setSettleError('');
+    setPendingCODData(null);
+    setCashCollectedInput(0);
+    if (!riderId) return;
     try {
       const data = await posApi.getRiderPendingCOD(riderId);
+      if (request !== settlementRequest.current) return;
       setPendingCODData(data);
       setCashCollectedInput(data.expectedCODPKR);
     } catch (err) {
-      console.error(err);
+      if (request === settlementRequest.current) setSettleError(getApiErrorMessage(err, 'Could not load rider receipts.'));
     }
   };
 
+  const handleOpenSettlement = () => {
+    setIsSettlementOpen(true);
+    setSettlementSuccessMsg(null);
+    void handleRiderChangeForSettle(riders[0]?.id ?? '');
+  };
+
   const handleConfirmSettlement = async () => {
-    if (!pendingCODData) return;
+    if (!pendingCODData?.orders.length || isSettling || selectedRiderForSettle !== pendingCODData.riderId) return;
     setIsSettling(true);
     try {
       const res = await posApi.settleRiderCOD({
         riderId: selectedRiderForSettle,
-        totalOrdersDelivered: pendingCODData.completedOrders,
-        expectedCODPKR: pendingCODData.expectedCODPKR,
-        cashCollectedPKR: cashCollectedInput,
-        settledBy: 'Manager'
+        orderIds: pendingCODData.orders.map(o => o.id),
+        cashCollectedPKR: cashCollectedInput
       });
-      setSettlementSuccessMsg(res.message);
+      setSettlementSuccessMsg(res.isReconciled ? res.message : res.message + ' with variance ' + res.variancePKR);
       setTimeout(() => {
         setIsSettlementOpen(false);
         fetchBoard();
       }, 2000);
     } catch (err) {
-      console.error(err);
+      setSettleError(getApiErrorMessage(err, 'Could not record the cash handover.'));
     } finally {
       setIsSettling(false);
     }
   };
 
+  const availableRiders = riders.filter(r => r.isAvailable && r.isActive);
   const expectedCOD = pendingCODData?.expectedCODPKR || 0;
   const variance = cashCollectedInput - expectedCOD;
 
@@ -181,9 +187,11 @@ export const DeliveryBoard: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {canManage && <button onClick={() => setManageRiders(true)}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold">Manage riders</button>}
           {/* View Settlement Logs */}
-          <button
+          {canSettle && <button
             onClick={() => {
               fetchSettlements();
               setIsHistoryOpen(true);
@@ -192,16 +200,16 @@ export const DeliveryBoard: React.FC = () => {
           >
             <FileText className="w-4 h-4 text-blue-500" />
             <span>Settlement History</span>
-          </button>
+          </button>}
 
           {/* Settle Rider COD Action Button */}
-          <button
-            onClick={() => handleOpenSettlement()}
+          {canSettle && <button
+            onClick={handleOpenSettlement}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
           >
             <DollarSign className="w-4 h-4" />
             <span>Rider COD Settlement</span>
-          </button>
+          </button>}
 
           <button
             onClick={fetchBoard}
@@ -213,6 +221,8 @@ export const DeliveryBoard: React.FC = () => {
         </div>
       </div>
 
+      {manageRiders && <RiderManager branchId={branchId} riders={riders} onSaved={fetchBoard} onClose={() => setManageRiders(false)} />}
+      {error && <p role="alert" className="rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p>}
       {/* 4-Stage Kanban Columns */}
       {/* content-start keeps the lanes at content height. Without it the grid's default
           align-content:stretch spreads the leftover page height across the row and four
@@ -300,8 +310,9 @@ export const DeliveryBoard: React.FC = () => {
 
                 <button
                   onClick={() => {
+                    setError('');
                     setSelectedOrderForAssign(order);
-                    setSelectedRiderId(riders.length > 0 ? riders[0].id : '');
+                    setSelectedRiderId(availableRiders[0]?.id ?? '');
                   }}
                   className="w-full py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-sm"
                 >
@@ -337,7 +348,7 @@ export const DeliveryBoard: React.FC = () => {
                       <span>{order.assignedRider?.name || 'Rider En Route'}</span>
                     </div>
                   </div>
-                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()} (COD)</span>
+                  <span className="text-xs font-bold text-teal-600">{order.totalPKR.toLocaleString()} {order.isPaid ? '(prepaid)' : order.paymentMethod === 'Cash' ? '(COD)' : '(unpaid)'}</span>
                 </div>
 
                 <div className="text-xs text-slate-700">
@@ -347,11 +358,12 @@ export const DeliveryBoard: React.FC = () => {
                 </div>
 
                 <button
+                  disabled={!order.isPaid && order.paymentMethod !== 'Cash'}
                   onClick={() => handleMarkDelivered(order.id)}
                   className="w-full py-2 rounded-lg bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-sm"
                 >
                   <CheckCircle className="w-3.5 h-3.5" />
-                  <span>Mark Delivered & Paid</span>
+                  <span>{order.isPaid ? 'Mark delivered' : order.paymentMethod === 'Cash' ? 'Confirm cash collected & delivered' : 'Awaiting payment'}</span>
                 </button>
               </div>
             ))}
@@ -399,16 +411,18 @@ export const DeliveryBoard: React.FC = () => {
               </button>
             </div>
 
+            {error && <p role="alert" className="text-xs text-rose-700">{error}</p>}
             <div className="text-xs text-slate-700 space-y-1">
               <div>Order: <strong>{selectedOrderForAssign.orderNumber}</strong></div>
               <div>Customer: {selectedOrderForAssign.customerName}</div>
-              <div>COD Amount: <strong className="text-teal-600">{selectedOrderForAssign.totalPKR.toLocaleString()}</strong></div>
+              <div>{selectedOrderForAssign.isPaid ? 'Prepaid' : 'Amount due'}: <strong className="text-teal-600">{selectedOrderForAssign.totalPKR.toLocaleString()}</strong></div>
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-500 mb-1.5">Select Active Rider</label>
               <div className="space-y-1.5">
-                {riders.map(r => (
+                {!availableRiders.length && <p className="text-xs text-slate-500">No riders available for dispatch.</p>}
+                {availableRiders.map(r => (
                   <button
                     key={r.id}
                     onClick={() => setSelectedRiderId(r.id)}
@@ -459,7 +473,7 @@ export const DeliveryBoard: React.FC = () => {
               <div className="p-4 rounded-xl bg-teal-50 border border-teal-200 text-center text-teal-600 space-y-1">
                 <CheckCircle className="w-8 h-8 text-teal-500 mx-auto" />
                 <div className="font-bold text-sm">{settlementSuccessMsg}</div>
-                <div className="text-xs text-slate-500">Shift cash successfully balanced and recorded.</div>
+
               </div>
             ) : (
               <>
@@ -467,6 +481,7 @@ export const DeliveryBoard: React.FC = () => {
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1">Select Rider for End-of-Shift Settle</label>
                   <select
+                    disabled={isSettling}
                     value={selectedRiderForSettle}
                     onChange={(e) => handleRiderChangeForSettle(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
@@ -477,6 +492,10 @@ export const DeliveryBoard: React.FC = () => {
                   </select>
                 </div>
 
+                {settleError && <p role="alert" className="text-xs text-rose-700">{settleError}</p>}
+                {pendingCODData?.historicalReview?.length ? <p className="text-xs text-amber-800">
+                  Compare these older receipts with settlement history before collecting any cash: {pendingCODData.historicalReview.join(', ')}
+                </p> : null}
                 {/* COD Figures */}
                 {pendingCODData && (
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
@@ -495,7 +514,7 @@ export const DeliveryBoard: React.FC = () => {
                       </label>
                       <input
                         type="number"
-                        value={cashCollectedInput || ''}
+                        min="0" step="0.01" value={cashCollectedInput}
                         onChange={(e) => setCashCollectedInput(Number(e.target.value) || 0)}
                         className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-right font-bold text-slate-900 text-sm focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
                       />
@@ -519,7 +538,7 @@ export const DeliveryBoard: React.FC = () => {
 
                 <button
                   onClick={handleConfirmSettlement}
-                  disabled={isSettling}
+                  disabled={isSettling || !pendingCODData?.orders.length || cashCollectedInput < 0}
                   className="w-full py-3 rounded-xl bg-teal-500 hover:bg-teal-600 text-white font-bold text-xs shadow-lg shadow-teal-500/25 transition"
                 >
                   {isSettling ? 'Reconciling...' : 'Confirm Reconciliation & Close Rider Shift'}

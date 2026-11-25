@@ -91,6 +91,11 @@ public class SyncReceiver : ISyncReceiver
         var ids = CollectGuids(records, "id");
         var existingIds = await ExistingIdsAsync(_db.Orders.IgnoreQueryFilters().Select(o => o.Id), ids, ct);
 
+        // Only a sale previously imported from this business host can gain a payment on replay.
+        // The host supplies its stock cost (zero when there was none) on every imported sale.
+        var imported = await _db.Orders.IgnoreQueryFilters().Where(o => ids.Contains(o.Id) &&
+            o.TenantId == tenantId && o.HostReportedStockCostPKR != null && o.Status != OrderStatus.Cancelled)
+            .ToDictionaryAsync(o => o.Id, ct);
         var clientLocalIds = records
             .Select(r => Str(r, "clientLocalId"))
             .Where(s => !string.IsNullOrWhiteSpace(s))
@@ -141,7 +146,34 @@ public class SyncReceiver : ISyncReceiver
             var id = GuidOf(rec, "id");
             if (id == null) { reasons.Add("order with no id"); continue; }
 
-            if (existingIds.Contains(id.Value)) { duplicates++; continue; }
+            if (existingIds.Contains(id.Value))
+            {
+                if (imported.TryGetValue(id.Value, out var saved) && GuidOf(rec, "branchId") == saved.BranchId &&
+                    saved.ClientLocalId == Str(rec, "clientLocalId") && saved.TotalPKR == Dec(rec, "totalPKR") &&
+                    Bool(rec, "isPaid"))
+                {
+                    var missingCodPayment = saved.OrderType is (OrderType.Delivery or OrderType.CallOrder) &&
+                        saved.IsPaid && saved.PaidAt == null && saved.AmountPaidPKR == 0 && saved.TotalPKR > 0;
+                    if ((!saved.IsPaid || missingCodPayment) && Date(rec, "paidAt") is DateTime paidAt)
+                    {
+                        saved.IsPaid = true;
+                        saved.PaidAt = paidAt;
+                        saved.PaymentMethod = EnumOf(rec, "paymentMethod", saved.PaymentMethod);
+                        saved.AmountPaidPKR = Dec(rec, "amountPaidPKR");
+                        saved.ChangeDuePKR = Dec(rec, "changeDuePKR");
+                        saved.CashShiftId = GuidOf(rec, "cashShiftId");
+                        saved.JournalPending = true;
+                    }
+                    if (saved.IsPaid && saved.CompletedAt == null &&
+                        EnumOf(rec, "status", OrderStatus.New) == OrderStatus.Completed && Date(rec, "completedAt") is DateTime completedAt)
+                    {
+                        saved.Status = OrderStatus.Completed;
+                        saved.CompletedAt = completedAt;
+                    }
+                }
+                duplicates++;
+                continue;
+            }
 
             var clientLocalId = Str(rec, "clientLocalId")?.Trim();
             if (!string.IsNullOrWhiteSpace(clientLocalId) && existingClientIds.Contains(clientLocalId))

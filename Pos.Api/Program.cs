@@ -1681,6 +1681,7 @@ using (var scope = app.Services.CreateScope())
         ("Registration agreement", EnsureRegistrationSchemaAsync),
         ("Branch host enrollment", EnsureHostEnrollmentSchemaAsync),
         ("Terminal cash drawers", EnsureCashDrawerSchemaAsync),
+        ("Rider cash handovers", EnsureRiderCashSchemaAsync),
         ("Partial purchase receipts", EnsurePurchaseReceiptSchemaAsync),
         ("Demo videos", EnsureDemoVideosSchemaAsync),
         ("AI photos", EnsureAiPhotosSchemaAsync),
@@ -2050,6 +2051,25 @@ static Task EnsureCashDrawerSchemaAsync(AppDbContext db) => db.Database.ExecuteS
     CREATE INDEX IF NOT EXISTS ""IX_Orders_CashShiftId"" ON ""Orders"" (""CashShiftId"") WHERE ""CashShiftId"" IS NOT NULL;
     CREATE INDEX IF NOT EXISTS ""IX_Orders_JournalRetryAt"" ON ""Orders"" (""JournalRetryAt"") WHERE ""JournalPending"";
 ");
+
+static Task EnsureRiderCashSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync("""
+    ALTER TABLE "Riders" ADD COLUMN IF NOT EXISTS "IsActive" boolean NOT NULL DEFAULT true;
+    ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "RiderCashCollectedPKR" numeric;
+    ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "RiderSettlementId" uuid;
+    ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "LegacyCodNeedsReview" boolean NOT NULL DEFAULT false;
+    CREATE INDEX IF NOT EXISTS "IX_Orders_UnsettledRiderCash" ON "Orders" ("AssignedRiderId")
+        WHERE "RiderCashCollectedPKR" IS NOT NULL AND "RiderSettlementId" IS NULL;
+    UPDATE "Orders" o SET "Status" = 2, "ReadyAt" = NULL WHERE o."Status" = 3
+        AND EXISTS (SELECT 1 FROM "KitchenTickets" k WHERE k."OrderId" = o."Id" AND k."Status" NOT IN ('Ready', 'Completed'));
+    -- Historical handovers stored totals only. Exclude ambiguous receipts from new collections.
+    UPDATE "Orders" o SET "PaidAt" = o."CompletedAt", "AmountPaidPKR" = o."TotalPKR",
+        "RiderCashCollectedPKR" = o."TotalPKR",
+        "LegacyCodNeedsReview" = EXISTS (SELECT 1 FROM "RiderSettlements" s
+            WHERE s."RiderId" = o."AssignedRiderId" AND s."SettledAt" >= COALESCE(o."OutForDeliveryAt", o."CreatedAt"))
+    WHERE o."Status" = 5 AND o."OrderType" IN (3, 4) AND o."PaymentMethod" = 1
+        AND o."IsPaid" AND o."PaidAt" IS NULL AND o."AmountPaidPKR" = 0 AND o."TotalPKR" > 0
+        AND o."AssignedRiderId" IS NOT NULL AND o."CompletedAt" IS NOT NULL;
+    """);
 
 static Task EnsurePurchaseReceiptSchemaAsync(AppDbContext db) => db.Database.ExecuteSqlRawAsync(@"
     ALTER TABLE ""PurchaseOrderItems"" ADD COLUMN IF NOT EXISTS ""QuantityReceived"" numeric NOT NULL DEFAULT 0;
@@ -6289,6 +6309,8 @@ api.MapPost("/sync/batch-orders", async (
         var sentToKitchen = routesToKitchen && DateTime.UtcNow - order.CapturedAt!.Value <= offlineKitchenTicketWindow;
         if (sentToKitchen)
         {
+            order.Status = OrderStatus.InKitchen;
+            order.InKitchenAt ??= order.CreatedAt;
             var stationGroups = order.Items.GroupBy(i => i.Station);
             int ticketIndex = 1;
             foreach (var group in stationGroups)
@@ -6303,6 +6325,11 @@ api.MapPost("/sync/batch-orders", async (
                     CreatedAt = DateTime.UtcNow
                 });
             }
+        }
+        else if (!routesToKitchen && order.OrderType is (OrderType.Delivery or OrderType.CallOrder))
+        {
+            order.Status = OrderStatus.ReadyForDispatch;
+            order.ReadyAt = order.CreatedAt;
         }
         else if (order.IsPaid && order.OrderType != OrderType.Delivery && order.OrderType != OrderType.CallOrder)
         {
@@ -7618,6 +7645,17 @@ static async Task<(IResult? Error, Order? Order, ServerPricedOrder? Priced)> Cre
         }
     }
 
+    if (order.KitchenTickets.Count > 0)
+    {
+        order.Status = OrderStatus.InKitchen;
+        order.InKitchenAt ??= order.CreatedAt;
+    }
+    else if (order.OrderType is OrderType.Delivery or OrderType.CallOrder)
+    {
+        order.Status = OrderStatus.ReadyForDispatch;
+        order.ReadyAt = DateTime.UtcNow;
+    }
+
     // A table is held by a bill still open on it. A dine-in sale paid at once (at the counter) closes
     // its bill there and then, as settling a tab does, so it does not hold the table.
     if (!string.IsNullOrEmpty(dto.TableNumber) && !dto.IsPaid)
@@ -7767,8 +7805,11 @@ api.MapPost("/orders/{id:guid}/settle", async (AppDbContext db, HttpContext http
     order.PaymentMethod = dto.PaymentMethod;
     order.AmountPaidPKR = paid;
     order.ChangeDuePKR = dto.PaymentMethod == PaymentMethod.Cash ? Math.Max(0, paid - order.TotalPKR) : 0;
-    order.Status = OrderStatus.Completed;
-    order.CompletedAt = DateTime.UtcNow;
+    if (order.OrderType is not (OrderType.Delivery or OrderType.CallOrder))
+    {
+        order.Status = OrderStatus.Completed;
+        order.CompletedAt = DateTime.UtcNow;
+    }
     if (actingUser != null) order.CashierName = actingUser.FullName;
 
     if (!await TerminalBelongsToBranchAsync(db, dto.TerminalId, order.BranchId))
@@ -8448,19 +8489,34 @@ api.MapGet("/kitchen/tickets", async (AppDbContext db, HttpContext http, Guid br
 
 api.MapPost("/kitchen/tickets/{id}/status", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver waResolver, Guid id, [Microsoft.AspNetCore.Mvc.FromBody] UpdateTicketStatusDto dto) =>
 {
+    var orderId = await db.KitchenTickets.Where(k => k.Id == id).Select(k => (Guid?)k.OrderId).FirstOrDefaultAsync();
+    if (orderId == null) return Results.NotFound();
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, orderId.Value);
     var ticket = await db.KitchenTickets.Include(k => k.Order).FirstOrDefaultAsync(k => k.Id == id);
-    if (ticket == null) return Results.NotFound();
+    if (ticket?.Order == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, ticket.BranchId);
     if (scopeError != null) return scopeError;
+    if (dto.Status is not ("Cooking" or "Ready" or "Completed"))
+        return Results.BadRequest(new { message = "Unknown kitchen ticket status." });
+    if (ticket.Status == dto.Status) return Results.Ok(ticket);
+    if (ticket.Order.Status == OrderStatus.Cancelled || ticket.Status == "Completed" ||
+        (ticket.Status == "Ready" && dto.Status != "Completed") ||
+        (dto.Status == "Completed" && ticket.Status != "Ready"))
+        return Results.Conflict(new { message = "Refresh the kitchen display before changing this ticket." });
 
     ticket.Status = dto.Status;
-    var justBecameReady = dto.Status == "Ready" && ticket.Order != null && ticket.Order.Status != OrderStatus.ReadyForDispatch;
-    if (dto.Status == "Ready" && ticket.Order != null)
+    var justBecameReady = (dto.Status is "Ready" or "Completed") &&
+        ticket.Order.Status is (OrderStatus.InKitchen or OrderStatus.New) &&
+        !await db.KitchenTickets.AnyAsync(k => k.OrderId == ticket.OrderId && k.Id != id &&
+            k.Status != "Ready" && k.Status != "Completed");
+    if (justBecameReady)
     {
         ticket.Order.Status = OrderStatus.ReadyForDispatch;
         ticket.Order.ReadyAt ??= DateTime.UtcNow;
     }
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
 
     if (justBecameReady && ticket.Order != null)
     {
@@ -8494,31 +8550,65 @@ api.MapGet("/delivery/board", async (AppDbContext db, HttpContext http, Guid bra
 
 api.MapPost("/delivery/assign-rider", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] AssignRiderDto dto) =>
 {
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, dto.OrderId);
     var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == dto.OrderId);
     if (order == null) return Results.NotFound(new { message = "Order not found" });
     var (_, scopedBranchId, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
     if (scopeError != null) return scopeError;
-    var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId && r.BranchId == scopedBranchId!.Value);
+    if (order.OrderType is not (OrderType.Delivery or OrderType.CallOrder))
+        return Results.BadRequest(new { message = "Only delivery orders can be dispatched." });
+    if (order.Status == OrderStatus.OutForDelivery && order.AssignedRiderId == dto.RiderId)
+        return Results.Ok(new { message = "Already dispatched", order });
+    if (order.Status != OrderStatus.ReadyForDispatch || await db.KitchenTickets.AnyAsync(k =>
+        k.OrderId == order.Id && k.Status != "Ready" && k.Status != "Completed"))
+        return Results.Conflict(new { message = "All kitchen stations must finish before dispatch." });
+    await LockDrawerAsync(db, order.BranchId);
+    var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId && r.BranchId == scopedBranchId!.Value && r.IsActive);
     if (rider == null) return Results.NotFound(new { message = "Rider not found" });
+    if (!rider.IsAvailable) return Results.Conflict(new { message = "This rider is already on a delivery." });
     order.AssignedRiderId = rider.Id;
     order.Status = OrderStatus.OutForDelivery;
     order.OutForDeliveryAt = DateTime.UtcNow;
     rider.IsAvailable = false;
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
     return Results.Ok(new { message = $"Order assigned to {rider.Name}", order });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
 api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http, Pos.Api.Services.IWhatsAppSenderResolver waResolver, Guid orderId) =>
 {
-    var order = await db.Orders.Include(o => o.AssignedRider).FirstOrDefaultAsync(o => o.Id == orderId);
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockOrderAsync(db, orderId);
+    var order = await db.Orders.FirstOrDefaultAsync(o => o.Id == orderId);
     if (order == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, order.BranchId);
     if (scopeError != null) return scopeError;
+    if (order.AssignedRiderId == null || order.OrderType is not (OrderType.Delivery or OrderType.CallOrder))
+        return Results.Conflict(new { message = "Dispatch this delivery to a rider first." });
+    if (order.Status == OrderStatus.Completed && order.IsPaid) return Results.Ok(order);
+    if (order.Status != OrderStatus.OutForDelivery)
+        return Results.Conflict(new { message = "Only a dispatched delivery can be completed." });
+    if (!order.IsPaid && order.PaymentMethod != PaymentMethod.Cash)
+        return Results.Conflict(new { message = "Confirm the electronic payment before completing this delivery." });
+    await LockDrawerAsync(db, order.BranchId);
+    await db.Entry(order).Reference(o => o.AssignedRider).LoadAsync();
     order.Status = OrderStatus.Completed;
     order.CompletedAt = DateTime.UtcNow;
-    order.IsPaid = true;
-    if (order.AssignedRider != null) order.AssignedRider.IsAvailable = true;
+    if (!order.IsPaid)
+    {
+        order.IsPaid = true;
+        order.PaidAt = order.CompletedAt;
+        order.AmountPaidPKR = order.TotalPKR;
+        order.ChangeDuePKR = 0;
+        order.RiderCashCollectedPKR = order.TotalPKR;
+        order.JournalPending = true;
+    }
+    if (order.AssignedRider != null)
+        order.AssignedRider.IsAvailable = !await db.Orders.AnyAsync(o => o.Id != order.Id &&
+            o.AssignedRiderId == order.AssignedRiderId && o.Status == OrderStatus.OutForDelivery);
     await db.SaveChangesAsync();
+    await tx.CommitAsync();
 
     // Cash on delivery is paid HERE, not at checkout, so this is where the sale reaches the books.
     await PostSaleJournalIfNeededAsync(db, order);
@@ -8534,6 +8624,50 @@ api.MapPost("/delivery/mark-delivered", async (AppDbContext db, HttpContext http
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
 // --- Riders ---
+static bool CanManageRiders(AppUser? user) =>
+    user?.Role is UserRole.OwnerAdmin or UserRole.HqAdmin or UserRole.BranchManager or UserRole.SuperAdmin;
+
+static async Task<IResult> SaveRiderAsync(AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor,
+    Guid? id, CreateRiderDto dto)
+{
+    var (_, branchId, error) = await ResolveScopeAsync(http, db, null, dto.BranchId);
+    if (error != null) return error;
+    if (!CanManageRiders(await accessor.GetCurrentUserAsync(http))) return Results.Forbid();
+    var name = dto.Name?.Trim();
+    var phone = dto.Phone?.Trim();
+    if (string.IsNullOrEmpty(name) || name.Length > 100 || string.IsNullOrEmpty(phone) || phone.Length > 40 ||
+        dto.VehicleNumber?.Trim().Length > 60)
+        return Results.BadRequest(new { message = "Enter a rider name and phone number. Check the field lengths." });
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, branchId!.Value);
+    var rider = id == null ? new Rider { BranchId = branchId.Value } :
+        await db.Riders.FirstOrDefaultAsync(r => r.Id == id && r.BranchId == branchId.Value);
+    if (rider == null) return Results.NotFound();
+    if (!dto.IsActive && !rider.IsAvailable)
+        return Results.Conflict(new { message = "Complete this rider's active deliveries before deactivating them." });
+    if (await db.Riders.AnyAsync(r => r.BranchId == branchId.Value && r.Id != rider.Id && r.Phone == phone))
+        return Results.Conflict(new { message = "A rider with this phone number already exists at this branch." });
+    rider.Name = name;
+    rider.Phone = phone;
+    rider.VehicleNumber = dto.VehicleNumber?.Trim() ?? "";
+    rider.IsActive = dto.IsActive;
+    if (id == null) db.Riders.Add(rider);
+    await db.SaveChangesAsync();
+    await tx.CommitAsync();
+    return id == null ? Results.Created($"/api/riders/{rider.Id}", rider) : Results.Ok(rider);
+}
+
+api.MapPost("/riders", (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, CreateRiderDto dto) =>
+    SaveRiderAsync(db, http, accessor, null, dto))
+    .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
+api.MapPut("/riders/{id:guid}", (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, Guid id, CreateRiderDto dto) =>
+    SaveRiderAsync(db, http, accessor, id, dto))
+    .AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
+
+static IQueryable<Order> PendingRiderCash(AppDbContext db, Rider rider) =>
+    db.Orders.Where(o => o.BranchId == rider.BranchId && o.AssignedRiderId == rider.Id &&
+        o.RiderCashCollectedPKR > 0 && o.RiderSettlementId == null && !o.LegacyCodNeedsReview);
+
 api.MapGet("/riders", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
     var (_, scopedBranchId, error) = await ResolveScopeAsync(http, db, null, branchId);
@@ -8547,39 +8681,61 @@ api.MapGet("/riders/{id}/pending-cod", async (AppDbContext db, HttpContext http,
     if (rider == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, rider.BranchId);
     if (scopeError != null) return scopeError;
-    var activeOrders = await db.Orders
-        .Where(o => o.AssignedRiderId == id && o.PaymentMethod == PaymentMethod.Cash && o.CreatedAt.Date == DateTime.UtcNow.Date)
-        .ToListAsync();
+    var receipts = await PendingRiderCash(db, rider).OrderBy(o => o.CompletedAt)
+        .Select(o => new { o.Id, o.OrderNumber, o.TotalPKR, o.RiderCashCollectedPKR, o.Status, o.CustomerName, o.DeliveryAddress }).ToListAsync();
+    var inTransit = await db.Orders.CountAsync(o => o.AssignedRiderId == id && o.Status == OrderStatus.OutForDelivery);
+    var historical = await db.Orders.Where(o => o.AssignedRiderId == id && o.LegacyCodNeedsReview)
+        .Select(o => o.OrderNumber).ToListAsync();
     return Results.Ok(new
     {
         riderId = rider.Id, riderName = rider.Name, phone = rider.Phone, vehicle = rider.VehicleNumber,
-        totalOrders = activeOrders.Count,
-        completedOrders = activeOrders.Count(o => o.Status == OrderStatus.Completed),
-        pendingOrders = activeOrders.Count(o => o.Status == OrderStatus.OutForDelivery),
-        expectedCODPKR = activeOrders.Sum(o => o.TotalPKR),
-        orders = activeOrders.Select(o => new { o.Id, o.OrderNumber, o.TotalPKR, o.Status, o.CustomerName, o.DeliveryAddress })
+        totalOrders = receipts.Count + inTransit, completedOrders = receipts.Count, pendingOrders = inTransit,
+        expectedCODPKR = receipts.Sum(o => o.RiderCashCollectedPKR), orders = receipts, historicalReview = historical
     });
-});
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
-api.MapPost("/riders/settle", async (AppDbContext db, HttpContext http, [Microsoft.AspNetCore.Mvc.FromBody] SettleRiderDto dto) =>
+api.MapPost("/riders/settle", async (AppDbContext db, HttpContext http, Pos.Api.Middlewares.ICurrentUserAccessor accessor, SettleRiderDto dto) =>
 {
-    var rider = await db.Riders.FirstOrDefaultAsync(r => r.Id == dto.RiderId);
+    var rider = await db.Riders.AsNoTracking().FirstOrDefaultAsync(r => r.Id == dto.RiderId);
     if (rider == null) return Results.NotFound();
     var (_, _, scopeError) = await ResolveScopeAsync(http, db, null, rider.BranchId);
     if (scopeError != null) return scopeError;
-    var variance = dto.CashCollectedPKR - dto.ExpectedCODPKR;
-    var settlement = new RiderSettlement
+    var actor = await accessor.GetCurrentUserAsync(http);
+    if (!CanManageRiders(actor) && actor?.Role != UserRole.Accountant) return Results.Forbid();
+    if (dto.CashCollectedPKR < 0 || dto.OrderIds is not { Count: > 0 } || dto.OrderIds.Distinct().Count() != dto.OrderIds.Count)
+        return Results.BadRequest(new { message = "Refresh the rider's receipts and enter the non-negative amount handed over." });
+
+    await using var tx = await db.Database.BeginTransactionAsync();
+    await LockDrawerAsync(db, rider.BranchId);
+    var receipts = await db.Orders.Where(o => o.AssignedRiderId == rider.Id && o.BranchId == rider.BranchId &&
+        dto.OrderIds.Contains(o.Id) && o.RiderCashCollectedPKR > 0 && !o.LegacyCodNeedsReview).ToListAsync();
+    if (receipts.Count != dto.OrderIds.Count) return Results.Conflict(new { message = "Some receipts are ineligible. Refresh the rider's receipts." });
+    var previousIds = receipts.Select(o => o.RiderSettlementId).Distinct().ToList();
+    RiderSettlement settlement;
+    if (previousIds.Count == 1 && previousIds[0] is Guid previous)
     {
-        BranchId = rider.BranchId, RiderId = rider.Id, ShiftDate = DateTime.UtcNow,
-        TotalOrdersDelivered = dto.TotalOrdersDelivered, TotalCODExpectedPKR = dto.ExpectedCODPKR,
-        TotalCashCollectedPKR = dto.CashCollectedPKR, ShortageSurplusPKR = variance,
-        SettledBy = dto.SettledBy ?? "Manager", SettledAt = DateTime.UtcNow
-    };
-    rider.IsAvailable = true;
-    db.RiderSettlements.Add(settlement);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { message = "Rider COD settled", settlementId = settlement.Id, variancePKR = variance, isReconciled = variance == 0 });
-});
+        settlement = await db.RiderSettlements.SingleAsync(s => s.Id == previous);
+        if (settlement.TotalOrdersDelivered != receipts.Count || settlement.TotalCashCollectedPKR != dto.CashCollectedPKR)
+            return Results.Conflict(new { message = "These receipts have already been settled." });
+    }
+    else
+    {
+        if (previousIds.Any(i => i != null)) return Results.Conflict(new { message = "Some receipts have already been settled. Refresh the list." });
+        var expected = receipts.Sum(o => o.RiderCashCollectedPKR!.Value);
+        settlement = new RiderSettlement
+        {
+            BranchId = rider.BranchId, RiderId = rider.Id, TotalOrdersDelivered = receipts.Count,
+            TotalCODExpectedPKR = expected, TotalCashCollectedPKR = dto.CashCollectedPKR,
+            ShortageSurplusPKR = dto.CashCollectedPKR - expected, SettledBy = actor!.FullName
+        };
+        db.RiderSettlements.Add(settlement);
+        foreach (var order in receipts) order.RiderSettlementId = settlement.Id;
+        await db.SaveChangesAsync();
+        await tx.CommitAsync();
+    }
+    return Results.Ok(new { message = "Rider cash handover recorded", settlementId = settlement.Id,
+        variancePKR = settlement.ShortageSurplusPKR, isReconciled = settlement.ShortageSurplusPKR == 0 });
+}).AddEndpointFilter(new Pos.Api.Middlewares.RequireFeatureFilter(nameof(SaaSPackageConfig.HasDeliveryCOD)));
 
 api.MapGet("/delivery/settlements", async (AppDbContext db, HttpContext http, Guid branchId) =>
 {
@@ -9608,8 +9764,9 @@ api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid
     var (startOfDay, endOfDay) = BusinessDayUtc(reportDate, zone);
 
     var orders = await db.Orders
-        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay && o.PaymentMethod == PaymentMethod.Cash)
-        .OrderBy(o => o.CreatedAt)
+        .Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled
+            && (o.PaidAt ?? o.CreatedAt) >= startOfDay && (o.PaidAt ?? o.CreatedAt) < endOfDay && o.PaymentMethod == PaymentMethod.Cash)
+        .OrderBy(o => o.PaidAt ?? o.CreatedAt)
         .ToListAsync();
     var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
 
@@ -9621,7 +9778,7 @@ api.MapGet("/reports/cash-sales", async (AppDbContext db, HttpContext http, Guid
         orders = orders.Select(o => new
         {
             o.Id, o.OrderNumber, o.TotalPKR, o.AmountPaidPKR, o.ChangeDuePKR,
-            o.TableNumber, o.CashierName, o.CreatedAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
+            o.TableNumber, o.CashierName, o.CreatedAt, o.PaidAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
         })
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
@@ -9637,9 +9794,10 @@ api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid
     var (startOfDay, endOfDay) = BusinessDayUtc(reportDate, zone);
 
     var orders = await db.Orders
-        .Where(o => branchIds.Contains(o.BranchId) && o.CreatedAt >= startOfDay && o.CreatedAt < endOfDay
+        .Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled
+            && (o.PaidAt ?? o.CreatedAt) >= startOfDay && (o.PaidAt ?? o.CreatedAt) < endOfDay
             && o.PaymentMethod != PaymentMethod.Cash)
-        .OrderBy(o => o.CreatedAt)
+        .OrderBy(o => o.PaidAt ?? o.CreatedAt)
         .ToListAsync();
     var branchNames = await db.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name);
 
@@ -9657,7 +9815,7 @@ api.MapGet("/reports/card-sales", async (AppDbContext db, HttpContext http, Guid
         orders = orders.Select(o => new
         {
             o.Id, o.OrderNumber, o.TotalPKR, o.PaymentMethod, o.AmountPaidPKR,
-            o.TableNumber, o.CashierName, o.CreatedAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
+            o.TableNumber, o.CashierName, o.CreatedAt, o.PaidAt, branchName = branchNames.GetValueOrDefault(o.BranchId)
         })
     });
 }).AddEndpointFilter(new Pos.Api.Middlewares.RequireModuleFilter("accounts", "view"));
@@ -10207,7 +10365,7 @@ api.MapPost("/inventory/stock-in", async (AppDbContext db, HttpContext http, Pos
     if (dto.BonusQuantity is < 0) return Results.BadRequest(new { message = "Bonus units cannot be negative." });
 
     if (!string.IsNullOrEmpty(dto.BatchNumber)) stock.BatchNumber = dto.BatchNumber;
-    if (dto.ExpiryDate.HasValue) stock.ExpiryDate = dto.ExpiryDate.Value;
+    if (dto.ExpiryDate.HasValue) stock.ExpiryDate = DateTime.SpecifyKind(dto.ExpiryDate.Value.Date, DateTimeKind.Utc);
 
     // The receipt's cost goes into THIS location's average cost. It used to overwrite the product's
     // company-wide cost, so one branch buying at a new price rewrote every branch's margins. A bonus
@@ -15806,14 +15964,20 @@ app.MapPost("/api/alerts/generate", async (AppDbContext db, HttpContext http) =>
 
 api.MapGet("/analytics/smart", async (AppDbContext db, HttpContext http, int? days) =>
 {
-    var tenantId = http.GetTenantId();
-    if (tenantId == null) return Results.Unauthorized();
+    var (tenantId, branchIds, scopeError) = await ReportLocationsAsync(http, db, null, true);
+    if (scopeError != null) return scopeError;
     var targetDays = days ?? 30;
-    var since = DateTime.UtcNow.AddDays(-targetDays);
-
-    var orders = await db.Orders
-        .Where(o => o.TenantId == tenantId.Value && o.CreatedAt >= since && o.IsPaid)
+    if (targetDays is < 1 or > 366) return Results.BadRequest(new { message = "Choose between 1 and 366 days." });
+    var zone = await TenantTimeZoneAsync(db, tenantId);
+    var today = BusinessToday(zone);
+    var firstDay = today.AddDays(1 - targetDays);
+    var since = BusinessDayUtc(firstDay, zone).StartUtc;
+    var until = BusinessDayUtc(today, zone).EndUtc;
+    var orders = await db.Orders.AsNoTracking().Include(o => o.Items)
+        .Where(o => branchIds.Contains(o.BranchId) && o.IsPaid && o.Status != OrderStatus.Cancelled &&
+            (o.PaidAt ?? o.CreatedAt) >= since && (o.PaidAt ?? o.CreatedAt) < until)
         .ToListAsync();
+    DateTime LocalPaidAt(Order order) => TimeZoneInfo.ConvertTimeFromUtc(order.PaidAt ?? order.CreatedAt, zone);
 
     // Best sellers
     var bestSellers = orders
@@ -15826,18 +15990,17 @@ api.MapGet("/analytics/smart", async (AppDbContext db, HttpContext http, int? da
 
     // Peak hours
     var hourlySales = orders
-        .GroupBy(o => o.CreatedAt.Hour)
+        .GroupBy(o => LocalPaidAt(o).Hour)
         .Select(g => new { hour = g.Key, orderCount = g.Count(), totalSales = g.Sum(o => o.TotalPKR) })
         .OrderBy(x => x.hour)
         .ToList();
 
-    // Revenue trend (last 7 days)
-    var last7Days = Enumerable.Range(0, 7).Select(i => DateTime.UtcNow.Date.AddDays(-i)).Reverse().ToList();
-    var revenueTrend = last7Days.Select(date => new
+    var salesByDay = orders.ToLookup(o => LocalPaidAt(o).Date);
+    var revenueTrend = Enumerable.Range(0, targetDays).Select(i =>
     {
-        date = date.ToString("MMM dd"),
-        orders = orders.Count(o => o.CreatedAt.Date == date),
-        revenue = orders.Where(o => o.CreatedAt.Date == date).Sum(o => o.TotalPKR)
+        var date = firstDay.AddDays(i);
+        var sales = salesByDay[date];
+        return new { date = date.ToString("yyyy-MM-dd"), orders = sales.Count(), revenue = sales.Sum(o => o.TotalPKR) };
     }).ToList();
 
     // Average order value
@@ -15856,8 +16019,8 @@ api.MapGet("/analytics/smart", async (AppDbContext db, HttpContext http, int? da
         .ToList();
 
     // Prediction: simple moving average for next 3 days
-    var last7DaysSales = last7Days.Select(date => orders.Where(o => o.CreatedAt.Date == date).Sum(o => o.TotalPKR)).ToList();
-    var avgDailySales = last7DaysSales.Count > 0 ? last7DaysSales.Average() : 0;
+    var recentSales = revenueTrend.TakeLast(7).Select(day => day.revenue).ToList();
+    var avgDailySales = recentSales.Average();
     var predictedNext3Days = avgDailySales * 3;
 
     return Results.Ok(new
@@ -15865,14 +16028,14 @@ api.MapGet("/analytics/smart", async (AppDbContext db, HttpContext http, int? da
         bestSellers,
         peakHours = hourlySales,
         revenueTrend,
-        avgOrderValue = Math.Round(avgOrderValue, 0),
+        avgOrderValue = Math.Round(avgOrderValue, 2),
         paymentBreakdown,
         orderTypeBreakdown,
         predictions = new
         {
-            avgDailySales = Math.Round(avgDailySales, 0),
-            predictedNext3Days = Math.Round(predictedNext3Days, 0),
-            trend = last7DaysSales.Count >= 2 && last7DaysSales.Last() > last7DaysSales.First() ? "growing" : "stable"
+            avgDailySales = Math.Round(avgDailySales, 2),
+            predictedNext3Days = Math.Round(predictedNext3Days, 2),
+            trend = recentSales.Last().CompareTo(recentSales.First()) switch { > 0 => "growing", < 0 => "declining", _ => "stable" }
         },
         summary = new
         {
@@ -19174,7 +19337,7 @@ public record CreateOrderItemDto(Guid ProductId, string ProductName, int Quantit
     SaleUnit? SaleUnit = null);
 public record UpdateTicketStatusDto(string Status);
 public record AssignRiderDto(Guid OrderId, Guid RiderId);
-public record SettleRiderDto(Guid RiderId, int TotalOrdersDelivered, decimal ExpectedCODPKR, decimal CashCollectedPKR, string? SettledBy);
+public record SettleRiderDto(Guid RiderId, decimal CashCollectedPKR, List<Guid>? OrderIds);
 public record UpdateBranchLimitsDto(Guid BranchId, int AllowedCounters, int AllowedOrderTabs, SubscriptionTier? Tier);
 public record CreateProductDto(Guid TenantId, Guid CategoryId, string Name, string? UrduName, string? SKU, string? Barcode, string? Description, decimal CostPricePKR, decimal SellingPricePKR, string? Unit, KitchenStation Station, string? ImageUrl, List<CreateProductModifierDto>? Modifiers,
     MedicineDetailsDto? Medicine = null, TaxTreatment? TaxTreatment = null, decimal? TaxRatePercent = null,
@@ -19235,7 +19398,7 @@ public record ConfirmEmailDto(string? Token);
 /// <summary>Restaurant is the web name when signing in at a restaurant's own address.</summary>
 public record EmailLoginDto(string? Email, string? Password, string? Restaurant = null);
 public record ChangeWebNameDto(string? WebName);
-public record CreateRiderDto(Guid BranchId, string Name, string Phone, string VehicleNumber);
+public record CreateRiderDto(Guid BranchId, string Name, string Phone, string? VehicleNumber, bool IsActive = true);
 public record CreateTransferOrderDto(Guid TenantId, Guid SourceBranchId, Guid DestinationBranchId, string? VehicleOrDriver, string? Notes, List<CreateTransferItemDto> Items);
 /// <summary>A line names a raw ingredient (IngredientId) or a finished product (ProductId).</summary>
 public record CreateTransferItemDto(Guid? IngredientId, string? IngredientName, decimal QuantityRequested, string? Unit, Guid? ProductId = null);

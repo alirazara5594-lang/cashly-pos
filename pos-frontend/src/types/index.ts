@@ -815,6 +815,7 @@ export interface Rider {
   phone: string;
   vehicleNumber: string;
   isAvailable: boolean;
+  isActive: boolean;
 }
 
 /** What a location IS: a selling branch, the head office, or a store room that never sells. */
@@ -2727,3 +2728,20 @@ export interface TenantOverview {
   recentLicenceEvents: { eventType: string; detail: string; createdAt: string; terminalId?: string | null }[];
 }
 
+
+export interface SmartAnalyticsData {
+  summary: {
+    totalRevenue: number;
+    totalOrders: number;
+    busiestHour: number;
+  };
+  avgOrderValue: number;
+  revenueTrend: { date: string; revenue: number; orders: number }[];
+  bestSellers: { productName: string; totalQty: number; totalRevenue: number }[];
+  peakHours: { hour: number; orderCount: number }[];
+  predictions: {
+    avgDailySales: number;
+    predictedNext3Days: number;
+    trend: 'growing' | 'stable' | 'declining';
+  };
+}

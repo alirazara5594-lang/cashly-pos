@@ -7,6 +7,8 @@ import { taxLineLabel } from '../utils/tax';
 interface ThermalReceiptModalProps {
   order: Order | null;
   isOpen: boolean;
+  unpaidBill?: boolean;
+  currency?: string;
   onClose: () => void;
   branchName?: string;
   branchAddress?: string;
@@ -23,6 +25,8 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
   order,
   isOpen,
   onClose,
+  unpaidBill = false,
+  currency,
   branchName = 'Your Business POS',
   branchAddress,
   branchPhone,
@@ -57,7 +61,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
         <div className="px-4 py-3 bg-slate-800/80 border-b border-slate-700 flex items-center justify-between">
           <div className="flex items-center gap-2 text-teal-400 font-bold text-sm">
             <CheckCircle className="w-4 h-4" />
-            <span>{order.pendingSync ? 'Cash sale saved on this till' : 'Order Completed Successfully'}</span>
+            <span>{unpaidBill ? 'Unpaid bill preview' : order.pendingSync ? 'Cash sale saved on this till' : 'Order Completed Successfully'}</span>
           </div>
           <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700">
             <X className="w-4 h-4" />
@@ -79,13 +83,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </div>
             )}
             <div className="text-[9px] text-gray-500 mt-1 uppercase font-sans">
-              {order.pendingSync ? 'Cash receipt · pending sync' : '** TAX INVOICE **'}
+              {unpaidBill ? 'UNPAID BILL · ESTIMATED TOTAL' : order.pendingSync ? 'Cash receipt · pending sync' : '** TAX INVOICE **'}
             </div>
           </div>
 
           <div className="py-2 border-b border-dashed border-gray-400 text-[10px] space-y-0.5">
             <div className="flex justify-between">
-              <span>Order #: <strong className="text-black">{order.orderNumber}</strong></span>
+              {order.orderNumber && <span>Order #: <strong className="text-black">{order.orderNumber}</strong></span>}
               <span>Type: <strong>{order.orderType}</strong></span>
             </div>
             <div className="flex justify-between">
@@ -169,13 +173,13 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
               </div>
             )}
             <div className="flex justify-between text-xs font-bold pt-1 border-t border-gray-300">
-              <span>TOTAL:</span>
+              <span>TOTAL {currency}</span>
               <span>{order.totalPKR.toLocaleString()}</span>
             </div>
           </div>
 
           {/* Payment Details */}
-          <div className="py-2 border-b border-dashed border-gray-400 text-[10px] space-y-0.5">
+          {!unpaidBill && <div className="py-2 border-b border-dashed border-gray-400 text-[10px] space-y-0.5">
             <div className="flex justify-between">
               <span>Payment Mode:</span>
               <span className="font-bold uppercase">{order.paymentMethod}</span>
@@ -197,8 +201,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 </div>
               </>
             )}
-          </div>
-
+          </div>}
 
           {/* Fiscal invoice (when the shop reports to the tax authority) & Footer */}
           <div className="pt-3 text-center space-y-1">
@@ -209,7 +212,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
                 {fiscalQrImage && <img src={fiscalQrImage} alt="Fiscal invoice QR code" className="w-24 h-24 mx-auto" />}
                 <div className="text-[8px] text-gray-500">Verify this invoice with the tax authority's app.</div>
               </div>
-            ) : !order.pendingSync && (
+            ) : !unpaidBill && !order.pendingSync && (
               <div className="inline-block px-3 py-1 bg-gray-100 border border-gray-300 rounded text-[9px] tracking-widest font-mono">
                 POS-{order.orderNumber.replace(/[^0-9]/g, '')}
               </div>
@@ -232,7 +235,7 @@ export const ThermalReceiptModal: React.FC<ThermalReceiptModalProps> = ({
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition shadow-lg shadow-teal-600/30"
           >
             <Printer className="w-3.5 h-3.5" />
-            <span>Print Receipt</span>
+            <span>{unpaidBill ? 'Print Bill' : 'Print Receipt'}</span>
           </button>
         </div>
       </div>

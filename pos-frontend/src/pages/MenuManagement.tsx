@@ -107,9 +107,11 @@ export const MenuManagement: React.FC = () => {
     currentUser,
     permissions,
     modulePermissions,
+    tenantSettings,
     branches
   } = usePosStore();
 
+  const currency = tenantSettings?.currencyCode || '';
   // Per-branch prices and availability only mean something with more than one place that sells.
   const hasSeveralSellingBranches = branches.filter(b => b.canSell !== false).length > 1;
   const [branchPriceProduct, setBranchPriceProduct] = useState<Product | null>(null);
@@ -596,8 +598,8 @@ export const MenuManagement: React.FC = () => {
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {kitchenRouting
-              ? 'Manage menu items, categories, kitchen routing, and prices in PKR.'
-              : `Manage your ${sells}, their categories and prices in PKR.`}
+              ? `Manage menu items, categories, kitchen routing, and prices${currency ? ' in ' + currency : ''}.`
+              : `Manage your ${sells}, their categories and prices${currency ? ' in ' + currency : ''}.`}
           </p>
         </div>
       </div>
@@ -755,8 +757,8 @@ export const MenuManagement: React.FC = () => {
                     <th className="pb-3">Category</th>
                     <th className="pb-3">Barcode / SKU</th>
                     {kitchenRouting && <th className="pb-3">Kitchen Station</th>}
-                    <th className="pb-3 text-right">Cost (PKR)</th>
-                    <th className="pb-3 text-right">Selling Price (PKR)</th>
+                    <th className="pb-3 text-right">Cost {currency}</th>
+                    <th className="pb-3 text-right">Selling Price {currency}</th>
                     {recipes && <th className="pb-3 text-right">Recipe</th>}
                   </tr>
                 </thead>
@@ -1435,7 +1437,7 @@ export const MenuManagement: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
-                    Cost Price <span className="text-slate-400 normal-case">(PKR{medicines && prodForm.medicine.packUnits > 1 ? ', per box' : ''})</span>
+                    Cost Price <span className="text-slate-400 normal-case">{currency}{medicines && prodForm.medicine.packUnits > 1 ? ', per box' : ''}</span>
                   </label>
                   <input
                     type="number"
@@ -1700,7 +1702,7 @@ export const MenuManagement: React.FC = () => {
                           </div>
                         </div>
                         <p className="text-[11px] text-slate-500">
-                          Sells as {packingPreview.map(o => `${o.label} Rs ${o.price.toLocaleString()}`).join(' · ')}
+                          Sells as {packingPreview.map(o => `${o.label} ${currency} ${o.price.toLocaleString()}`).join(' · ')}
                         </p>
                       </>
                     )}

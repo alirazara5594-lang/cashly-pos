@@ -1,24 +1,40 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Tablet, Send, Plus, Minus, Trash2, CheckCircle2, Utensils } from 'lucide-react';
-import { posApi } from '../services/api';
+import { posApi, getApiErrorStatus, getApiErrorMessage, type CreateOrderPayload } from '../services/api';
 import { usePosStore } from '../store/posStore';
 import { ProductCard } from '../components/ProductCard';
-import type { Product, Category, CartItem } from '../types';
+import { cartTax } from '../utils/tax';
+import type { Product, Category, CartItem, DiningTable } from '../types';
 
 export const OrderTab: React.FC = () => {
-  const { selectedBranch, selectedTenant } = usePosStore();
+  const { selectedBranch, selectedTenant, currentUser } = usePosStore();
+  if (!selectedBranch || !selectedTenant || !currentUser) return null;
+  const key = ['cashly-waiter', selectedTenant.id, selectedBranch.id, currentUser.id].join(':');
+  return <WaiterTicket key={key} storageKey={key} />;
+};
+
+const WaiterTicket = ({ storageKey }: { storageKey: string }) => {
+  const { selectedBranch, selectedTenant, currentUser, branchTax, tenantSettings, cashTaxRatePercent } = usePosStore();
+  const [pending, setPending] = useState<CreateOrderPayload | null>(() => {
+    const saved = sessionStorage.getItem(storageKey);
+    return saved ? JSON.parse(saved) : null;
+  });
+  const sending = useRef(false);
+  const [sendError, setSendError] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
-  const [tables, setTables] = useState<any[]>([]);
-  const [activeTable, setActiveTable] = useState<string>('T-1');
+  const [tables, setTables] = useState<DiningTable[]>([]);
+  const [activeTable, setActiveTable] = useState<string>(pending?.tableNumber ?? 'T-1');
   const [selectedFloor, setSelectedFloor] = useState<string>('all');
 
   // Tab Cart - uses local state for waiter mode isolation
-  const [tabCart, setTabCart] = useState<CartItem[]>([]);
+  const [tabCart, setTabCart] = useState<CartItem[]>(() => pending?.items.map(i => ({
+    ...i, station: i.station as CartItem['station'], totalPricePKR: i.unitPricePKR * i.quantity
+  })) ?? []);
   const [isSending, setIsSending] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
-  const [specialNote, setSpecialNote] = useState('');
+  const [specialNote, setSpecialNote] = useState(pending?.items[0]?.specialNotes ?? '');
 
   useEffect(() => {
     let cancelled = false;
@@ -67,10 +83,7 @@ export const OrderTab: React.FC = () => {
   const addToTabCart = (product: Product) => {
     const idx = tabCart.findIndex(i => i.productId === product.id);
     if (idx > -1) {
-      const updated = [...tabCart];
-      updated[idx].quantity += 1;
-      updated[idx].totalPricePKR = updated[idx].quantity * updated[idx].unitPricePKR;
-      setTabCart(updated);
+      updateTabQty(product.id, 1);
     } else {
       setTabCart([...tabCart, {
         productId: product.id,
@@ -78,6 +91,8 @@ export const OrderTab: React.FC = () => {
         quantity: 1,
         unitPricePKR: product.sellingPricePKR,
         totalPricePKR: product.sellingPricePKR,
+        taxTreatment: product.taxTreatment,
+        taxRatePercent: product.taxRatePercent,
         station: product.station,
         specialNotes: ''
       }]);
@@ -101,24 +116,29 @@ export const OrderTab: React.FC = () => {
   const totalTabPKR = tabCart.reduce((s, i) => s + i.totalPricePKR, 0);
 
   const handleSendOrderMode1 = async () => {
-    if (tabCart.length === 0) return;
+    if (!selectedBranch || !tabCart.length || sending.current) return;
+    sending.current = true;
     setIsSending(true);
-
+    setSendError('');
     try {
-      await posApi.createOrder({
-        branchId: selectedBranch?.id || 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+      const inclusive = branchTax?.pricesIncludeTax ?? false;
+      const { tax } = cartTax(tabCart, 0, branchTax?.cashRate ?? tenantSettings?.defaultTaxRate ?? cashTaxRatePercent,
+        inclusive, branchTax?.decimals ?? tenantSettings?.decimalPlaces ?? 0);
+      const payload: CreateOrderPayload = pending ?? {
+        clientLocalId: 'waiter:' + (crypto.randomUUID?.() ?? Date.now() + '-' + Math.random().toString(36).slice(2)),
+        branchId: selectedBranch.id,
         orderType: 'DineIn',
         tableNumber: activeTable,
         subTotalPKR: totalTabPKR,
         discountPKR: 0,
-        taxPKR: Math.round(totalTabPKR * 0.16),
-        totalPKR: totalTabPKR + Math.round(totalTabPKR * 0.16),
+        taxPKR: tax,
+        totalPKR: totalTabPKR + (inclusive ? 0 : tax),
         paymentMethod: 'Cash',
         amountPaidPKR: 0,
         changeDuePKR: 0,
         isPaid: false,
-        cashierName: 'Floor Waiter (Tab)',
-        createdByRole: 'WaiterTab',
+        cashierName: currentUser?.fullName,
+        createdByRole: currentUser?.role,
         items: tabCart.map(i => ({
           productId: i.productId,
           productName: i.productName,
@@ -128,16 +148,28 @@ export const OrderTab: React.FC = () => {
           specialNotes: specialNote || undefined,
           station: i.station
         }))
-      });
-
+      };
+      // Persist before submitting so even a reload replays the original ticket.
+      sessionStorage.setItem(storageKey, JSON.stringify(payload));
+      setPending(payload);
+      await posApi.createOrder(payload);
+      sessionStorage.removeItem(storageKey);
+      setPending(null);
       setShowSuccess(true);
       setTabCart([]);
       setSpecialNote('');
       setTimeout(() => setShowSuccess(false), 4000);
     } catch (err) {
-      console.error(err);
-      alert('Failed to send order to kitchen');
+      const status = getApiErrorStatus(err);
+      if (status === 400 || status === 422) {
+        sessionStorage.removeItem(storageKey);
+        setPending(null);
+        setSendError(getApiErrorMessage(err, 'Please check the order details.'));
+      } else {
+        setSendError('Kitchen confirmation is unavailable. Retry this same ticket.');
+      }
     } finally {
+      sending.current = false;
       setIsSending(false);
     }
   };
@@ -147,7 +179,7 @@ export const OrderTab: React.FC = () => {
   return (
     <div className="flex-1 flex flex-col md:flex-row h-[calc(100vh-53px)] overflow-hidden bg-slate-50 text-slate-900">
       {/* Left Menu Section */}
-      <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200">
+      <div inert={!!pending || isSending} className="flex-1 flex flex-col overflow-hidden border-r border-slate-200">
         {/* Table & Floor Selector Strip */}
         <div className="p-3 bg-white border-b border-slate-200 space-y-2">
           <div className="flex items-center justify-between">
@@ -184,7 +216,7 @@ export const OrderTab: React.FC = () => {
             {(tables.length > 0 
               ? (selectedFloor === 'all' ? tables : tables.filter(t => (t.section || 'Main Hall') === selectedFloor))
               : [{ tableNumber: 'T-1' }, { tableNumber: 'T-2' }, { tableNumber: 'T-3' }, { tableNumber: 'T-4' }]
-            ).map((t: any) => (
+            ).map((t: Pick<DiningTable, 'tableNumber'> & Partial<DiningTable>) => (
               <button
                 key={t.tableNumber}
                 onClick={() => setActiveTable(t.tableNumber)}
@@ -263,7 +295,7 @@ export const OrderTab: React.FC = () => {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        <div inert={!!pending || isSending} className="flex-1 overflow-y-auto p-3 space-y-2">
           {tabCart.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-1">
               <Utensils className="w-10 h-10 opacity-30" />
@@ -302,6 +334,7 @@ export const OrderTab: React.FC = () => {
             <input
               type="text"
               placeholder="e.g. Mild spice, less ice, serve starters first"
+              disabled={!!pending || isSending}
               value={specialNote}
               onChange={(e) => setSpecialNote(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
@@ -311,6 +344,7 @@ export const OrderTab: React.FC = () => {
             <span className="text-slate-500">Items Total:</span>
             <span className="text-base font-bold text-teal-600">{totalTabPKR.toLocaleString()}</span>
           </div>
+          {sendError && <p role="alert" className="text-xs text-rose-700">{sendError}</p>}
           <button
             onClick={handleSendOrderMode1}
             disabled={tabCart.length === 0 || isSending}
@@ -321,7 +355,7 @@ export const OrderTab: React.FC = () => {
             ) : (
               <>
                 <Send className="w-4 h-4" />
-                <span>Fire to Kitchen & Counter (Mode 1)</span>
+                <span>{pending ? 'Retry kitchen confirmation' : 'Fire to Kitchen & Counter (Mode 1)'}</span>
               </>
             )}
           </button>

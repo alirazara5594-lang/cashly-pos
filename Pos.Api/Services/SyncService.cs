@@ -93,6 +93,14 @@ public class SyncService : ISyncService
         {
             ct.ThrowIfCancellationRequested();
             var cursor = await GetCursorAsync(tenantId, entityType);
+            // Older hosts advanced this cursor on creation alone and skipped later payments.
+            if (entityType == "Order" && cursor.SnapshotVersion != "order-payment-v1")
+            {
+                cursor.LastSyncedAt = DateTime.UnixEpoch;
+                cursor.LastSyncedRecordId = null;
+                cursor.SnapshotVersion = "order-payment-v1";
+                await _db.SaveChangesAsync(ct);
+            }
 
             // Respect backoff: a host that has failed six times running should not try every tick.
             if (cursor.ConsecutiveFailures > 0 && cursor.NextAttemptAfter(cursor.LastAttemptAt ?? DateTime.UtcNow) > DateTime.UtcNow)
@@ -118,7 +126,7 @@ public class SyncService : ISyncService
 
         try
         {
-            (payload, newWatermark, lastId) = await CollectAsync(tenantId, entityType, cursor.LastSyncedAt, ct);
+            (payload, newWatermark, lastId) = await CollectAsync(tenantId, entityType, cursor.LastSyncedAt, cursor.LastSyncedRecordId, ct);
         }
         catch (Exception ex)
         {
@@ -240,19 +248,23 @@ public class SyncService : ISyncService
     /// wire format must not change just because a navigation property was added.
     /// </summary>
     private async Task<(List<object> Records, DateTime? Watermark, Guid? LastId)> CollectAsync(
-        Guid tenantId, string entityType, DateTime after, CancellationToken ct)
+        Guid tenantId, string entityType, DateTime after, Guid? afterId, CancellationToken ct)
     {
         switch (entityType)
         {
             case "Order":
             {
-                var rows = await _db.Orders.IgnoreQueryFilters().AsNoTracking()
-                    .Where(o => o.TenantId == tenantId && o.CreatedAt > after)
-                    .OrderBy(o => o.CreatedAt)
-                    .Take(BatchSize)
-                    .Include(o => o.Items)
-                    .ToListAsync(ct);
-                if (rows.Count == 0) return (new List<object>(), null, null);
+                // A waiter tab or a COD order may have reached HQ before anyone paid for it.
+                var page = await _db.Orders.IgnoreQueryFilters().AsNoTracking().Include(o => o.Items)
+                    .Where(o => o.TenantId == tenantId)
+                    .Select(o => new { Order = o, PaidOrCreated = o.PaidAt > o.CreatedAt ? o.PaidAt.Value : o.CreatedAt })
+                    .Select(x => new { x.Order, ChangedAt = x.Order.CompletedAt > x.PaidOrCreated
+                        ? x.Order.CompletedAt.Value : x.PaidOrCreated })
+                    .Where(x => x.ChangedAt > after || (x.ChangedAt == after && afterId.HasValue &&
+                        x.Order.Id.CompareTo(afterId.GetValueOrDefault()) > 0))
+                    .OrderBy(x => x.ChangedAt).ThenBy(x => x.Order.Id).Take(BatchSize).ToListAsync(ct);
+                if (page.Count == 0) return (new List<object>(), null, null);
+                var rows = page.Select(x => x.Order).ToList();
 
                 // A pharmacy's prescription goes with its sale, so head office's controlled-medicine
                 // register has it too. Its photo stays on this host.
@@ -299,7 +311,7 @@ public class SyncService : ISyncService
                         }
                         : null
                 }).ToList();
-                return (records, rows[^1].CreatedAt, rows[^1].Id);
+                return (records, page[^1].ChangedAt, rows[^1].Id);
             }
 
             case "Expense":

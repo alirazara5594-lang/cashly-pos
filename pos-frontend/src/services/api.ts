@@ -1,3 +1,4 @@
+import type { SmartAnalyticsData } from '../types';
 import axios from 'axios';
 import { authStorage } from './authStorage';
 import { OFFLINE_SESSION_TOKEN } from './offlineStaff';
@@ -937,6 +938,10 @@ export const posApi = {
     const res = await api.get<Rider[]>('/api/riders', { params: { branchId } });
     return res.data;
   },
+  saveRider: async (id: string | undefined, data: Pick<Rider, 'branchId' | 'name' | 'phone' | 'vehicleNumber' | 'isActive'>) => {
+    const result = id ? await api.put<Rider>('/api/riders/' + id, data) : await api.post<Rider>('/api/riders', data);
+    return result.data;
+  },
   getRiderPendingCOD: async (riderId: string) => {
     const res = await api.get<{
       riderId: string;
@@ -947,16 +952,15 @@ export const posApi = {
       completedOrders: number;
       pendingOrders: number;
       expectedCODPKR: number;
-      orders: any[];
+      orders: { id: string; orderNumber: string }[];
+      historicalReview: string[];
     }>(`/api/riders/${riderId}/pending-cod`);
     return res.data;
   },
   settleRiderCOD: async (data: {
     riderId: string;
-    totalOrdersDelivered: number;
-    expectedCODPKR: number;
+    orderIds: string[];
     cashCollectedPKR: number;
-    settledBy?: string;
   }) => {
     const res = await api.post('/api/riders/settle', data);
     return res.data;
@@ -1127,11 +1131,11 @@ export const posApi = {
   },
 
   // Reports - Cash & Card Sales
-  getCashSalesReport: async (branchId: string, date: string) => {
+  getCashSalesReport: async (branchId: string, date?: string) => {
     const res = await api.get('/api/reports/cash-sales', { params: { ...reportLocation(branchId), date } });
     return res.data;
   },
-  getCardSalesReport: async (branchId: string, date: string) => {
+  getCardSalesReport: async (branchId: string, date?: string) => {
     const res = await api.get('/api/reports/card-sales', { params: { ...reportLocation(branchId), date } });
     return res.data;
   },
@@ -2010,7 +2014,7 @@ export const posApi = {
     return res.data;
   },
   getSmartAnalytics: async (days?: number) => {
-    const res = await api.get('/api/analytics/smart', { params: { days } });
+    const res = await api.get<SmartAnalyticsData>('/api/analytics/smart', { params: { days } });
     return res.data;
   },
 

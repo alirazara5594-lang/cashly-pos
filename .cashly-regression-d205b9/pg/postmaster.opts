@@ -1,0 +1,1 @@
+C:/Program Files/PostgreSQL/18/bin/postgres.exe "-D" "D:\Project\cashly-pos\.cashly-regression-d205b9\pg" "-p" "55497" "-h" "127.0.0.1"

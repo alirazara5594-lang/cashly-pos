@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   BarChart3, 
   Printer, 
@@ -61,9 +61,8 @@ export const ReportsManagement: React.FC = () => {
   }, [location.state]);
 
   // Filtering Controls
-  // Today where the business is ("en-CA" is YYYY-MM-DD), not in UTC — after midnight in Pakistan,
-  // UTC is still on yesterday until 5 AM.
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toLocaleDateString('en-CA'));
+  // An omitted date asks the server for today in the business's time zone.
+  const [selectedDate, setSelectedDate] = useState('');
   const [selectedDaysRange, setSelectedDaysRange] = useState<number>(7);
   const [taxSearchQuery, setTaxSearchQuery] = useState('');
   const [taxFilterRate, setTaxFilterRate] = useState<'all' | 'cash' | 'card'>('all');
@@ -98,62 +97,79 @@ export const ReportsManagement: React.FC = () => {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportNeedsUpgrade, setReportNeedsUpgrade] = useState(false);
 
+  const reportDate = selectedDate || (activeTab === 'cashSales' ? cashSalesReport?.date :
+    activeTab === 'cardSales' ? cardSalesReport?.date : zReport?.period) || '';
+
+  const latestReport = useRef(0);
   const loadReportData = async () => {
+    const request = ++latestReport.current;
     if (!reportLocationId) return;
     setLoading(true);
     setReportError(null);
     setReportNeedsUpgrade(false);
     try {
       if (activeTab === 'zreport' || activeTab === 'cashTally') {
-        const data = await posApi.getZReport(reportLocationId, selectedDate);
+        const data = await posApi.getZReport(reportLocationId, selectedDate || undefined);
+        if (request !== latestReport.current) return;
         setZReport(data);
         if (data) {
-          setActualCashCounted(data.actualCashInDrawerPKR || data.expectedCashInDrawerPKR);
+          setActualCashCounted(data.actualCashInDrawerPKR ?? data.expectedCashInDrawerPKR);
         }
         // Auto-open Cash Tally modal when cashTally tab is selected
         if (activeTab === 'cashTally' && canCountCash && data?.shiftId) {
           setTimeout(() => {
+            if (request !== latestReport.current) return;
             setIsCashTallyOpen(true);
             loadCashTally(data.shiftId!);
           }, 300);
         }
       } else if (activeTab === 'tax') {
         const data = await posApi.getTaxAuditReport(reportLocationId, selectedDaysRange);
+        if (request !== latestReport.current) return;
         setTaxAudit(data);
         // The same days, by rate: items are taxed one by one (exempt, own rate), not a bill at a time.
         const since = new Date();
         since.setDate(since.getDate() - selectedDaysRange);
-        setTaxByRate(await posApi.getTaxByRate(reportLocationId, since.toLocaleDateString('en-CA'), new Date().toLocaleDateString('en-CA')).catch(() => null));
+        const byRate = await posApi.getTaxByRate(reportLocationId, since.toLocaleDateString('en-CA'), new Date().toLocaleDateString('en-CA')).catch(() => null);
+        if (request === latestReport.current) setTaxByRate(byRate);
       } else if (activeTab === 'categories') {
         const data = await posApi.getCategorySalesReport(reportLocationId, selectedDaysRange);
+        if (request !== latestReport.current) return;
         setCategorySales(data);
       } else if (activeTab === 'products') {
         const data = await posApi.getItemPerformanceReport(reportLocationId, selectedDaysRange);
+        if (request !== latestReport.current) return;
         setProductPerformance(data);
       } else if (activeTab === 'payments') {
         const data = await posApi.getPaymentMethodsReport(reportLocationId, selectedDaysRange);
+        if (request !== latestReport.current) return;
         setPaymentMethods(data);
       } else if (activeTab === 'multibranch' && selectedTenant?.id) {
         const data = await posApi.getConsolidatedFinancials(selectedTenant.id, selectedDaysRange);
+        if (request !== latestReport.current) return;
         setConsolidated(data);
       } else if (activeTab === 'cashSales') {
-        const data = await posApi.getCashSalesReport(reportLocationId, selectedDate);
+        const data = await posApi.getCashSalesReport(reportLocationId, selectedDate || undefined);
+        if (request !== latestReport.current) return;
         setCashSalesReport(data);
       } else if (activeTab === 'cardSales') {
-        const data = await posApi.getCardSalesReport(reportLocationId, selectedDate);
+        const data = await posApi.getCardSalesReport(reportLocationId, selectedDate || undefined);
+        if (request !== latestReport.current) return;
         setCardSalesReport(data);
       }
     } catch (err) {
+      if (request !== latestReport.current) return;
       setReportError(getApiErrorMessage(err, 'Failed to load this report.'));
       setReportNeedsUpgrade(isUpgradeRequired(err));
       console.error('Failed to load reports', err);
     } finally {
-      setLoading(false);
+      if (request === latestReport.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadReportData();
+    const first = window.setTimeout(loadReportData, 0);
+    return () => { window.clearTimeout(first); latestReport.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportLocationId, selectedTenant?.id, activeTab, selectedDate, selectedDaysRange]);
 
@@ -278,7 +294,7 @@ export const ReportsManagement: React.FC = () => {
                 <span className="text-xs text-slate-500 font-semibold">Shift Date:</span>
                 <input
                   type="date"
-                  value={selectedDate}
+                  value={reportDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
                   className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-teal-600 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 focus:outline-none"
                 />
@@ -601,7 +617,7 @@ export const ReportsManagement: React.FC = () => {
               </>
             ) : (
               <div className="p-12 text-center text-slate-500 bg-white rounded-2xl border border-slate-200">
-                No sales or till sessions for {reportLocationName || 'this location'} on {selectedDate}.
+                No sales or till sessions for {reportLocationName || 'this location'} on {reportDate}.
               </div>
             )}
           </div>
@@ -1103,7 +1119,7 @@ export const ReportsManagement: React.FC = () => {
                             <td className="p-3 text-right font-mono font-bold text-teal-600">{o.totalPKR.toLocaleString()}</td>
                             <td className="p-3 text-right font-mono text-slate-700">{o.amountPaidPKR.toLocaleString()}</td>
                             <td className="p-3 text-right font-mono text-amber-600">{o.changeDuePKR.toLocaleString()}</td>
-                            <td className="p-3 text-slate-500">{new Date(o.createdAt).toLocaleTimeString()}</td>
+                            <td className="p-3 text-slate-500">{new Date(o.paidAt ?? o.createdAt).toLocaleTimeString()}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1193,7 +1209,7 @@ export const ReportsManagement: React.FC = () => {
                               {allLocations && o.branchName && <span className="block text-[10px] text-slate-500">{o.branchName}</span>}
                             </td>
                             <td className="p-3 text-right font-mono font-bold text-blue-600">{o.totalPKR.toLocaleString()}</td>
-                            <td className="p-3 text-slate-500">{new Date(o.createdAt).toLocaleTimeString()}</td>
+                            <td className="p-3 text-slate-500">{new Date(o.paidAt ?? o.createdAt).toLocaleTimeString()}</td>
                           </tr>
                         ))}
                       </tbody>

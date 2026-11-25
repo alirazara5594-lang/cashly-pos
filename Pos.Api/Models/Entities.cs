@@ -678,6 +678,10 @@ public class Order
     public string? DeliveryAddress { get; set; }
     public Guid? AssignedRiderId { get; set; }
     public Rider? AssignedRider { get; set; }
+    // Cash collected at the door stays with the rider until a recorded handover.
+    public decimal? RiderCashCollectedPKR { get; set; }
+    public Guid? RiderSettlementId { get; set; }
+    public bool LegacyCodNeedsReview { get; set; }
 
     // Pricing in PKR
     public decimal SubTotalPKR { get; set; }
@@ -813,6 +817,7 @@ public class Rider
     public string Phone { get; set; } = string.Empty;
     public string VehicleNumber { get; set; } = string.Empty;
     public bool IsAvailable { get; set; } = true;
+    public bool IsActive { get; set; } = true;
 }
 
 public class RiderSettlement

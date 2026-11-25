@@ -1,0 +1,31 @@
+2026-11-25 05:35:50.447 PKT [27580] LOG:  starting PostgreSQL 18.4 on x86_64-windows, compiled by msvc-19.44.35227, 64-bit
+2026-11-25 05:35:50.449 PKT [27580] LOG:  listening on IPv4 address "127.0.0.1", port 55497
+2026-11-25 05:35:50.783 PKT [14636] LOG:  database system was shut down at 2026-11-25 05:35:47 PKT
+2026-11-25 05:35:50.814 PKT [27580] LOG:  database system is ready to accept connections
+2026-11-25 05:40:50.812 PKT [18888] LOG:  checkpoint starting: time
+2026-11-25 05:43:01.063 PKT [15528] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-11-25 05:43:01.064 PKT [2332] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-11-25 05:43:01.096 PKT [9260] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-11-25 05:43:01.727 PKT [27580] LOG:  received fast shutdown request
+2026-11-25 05:43:01.731 PKT [27580] LOG:  aborting any active transactions
+2026-11-25 05:43:01.902 PKT [27580] LOG:  background worker "logical replication launcher" (PID 22812) exited with exit code 1
+2026-11-25 05:43:05.187 PKT [18888] LOG:  checkpoint complete: wrote 1876 buffers (11.5%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 1 recycled; write=132.076 s, sync=2.264 s, total=134.386 s; sync files=1515, longest=0.090 s, average=0.002 s; distance=12440 kB, estimate=12440 kB; lsn=0/240F060, redo lsn=0/240CBA0
+2026-11-25 05:43:05.253 PKT [18888] LOG:  shutting down
+2026-11-25 05:43:05.255 PKT [18888] LOG:  checkpoint starting: shutdown immediate
+2026-11-25 05:43:05.287 PKT [18888] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.005 s, total=0.034 s; sync files=1, longest=0.005 s, average=0.005 s; distance=9 kB, estimate=11197 kB; lsn=0/240F0D8, redo lsn=0/240F0D8
+2026-11-25 05:43:05.658 PKT [27580] LOG:  database system is shut down
+2026-11-25 05:45:02.922 PKT [28352] LOG:  starting PostgreSQL 18.4 on x86_64-windows, compiled by msvc-19.44.35227, 64-bit
+2026-11-25 05:45:02.925 PKT [28352] LOG:  listening on IPv4 address "127.0.0.1", port 55497
+2026-11-25 05:45:03.201 PKT [12720] LOG:  database system was shut down at 2026-11-25 05:43:05 PKT
+2026-11-25 05:45:03.248 PKT [28352] LOG:  database system is ready to accept connections
+2026-11-25 05:46:46.583 PKT [12444] ERROR:  duplicate key value violates unique constraint "PK_Categories"
+2026-11-25 05:46:46.583 PKT [12444] DETAIL:  Key ("Id")=(21ec3326-e62a-47bf-94fd-54b480185bbd) already exists.
+2026-11-25 05:46:46.583 PKT [12444] STATEMENT:  INSERT INTO "Categories" ("Id", "Icon", "IsSample", "LocalName", "Name", "SortOrder", "TenantId")
+	VALUES ($1, $2, $3, $4, $5, $6, $7)
+2026-11-25 05:46:46.769 PKT [28400] ERROR:  duplicate key value violates unique constraint "PK_Categories"
+2026-11-25 05:46:46.769 PKT [28400] DETAIL:  Key ("Id")=(21ec3326-e62a-47bf-94fd-54b480185bbd) already exists.
+2026-11-25 05:46:46.769 PKT [28400] STATEMENT:  INSERT INTO "Categories" ("Id", "Icon", "IsSample", "LocalName", "Name", "SortOrder", "TenantId")
+	VALUES ($1, $2, $3, $4, $5, $6, $7)

@@ -177,6 +177,7 @@ export const PosTerminal: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cashTendered, setCashTendered] = useState<number>(0);
   const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
+  const [unpaidBill, setUnpaidBill] = useState<Order | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [showParkedModal, setShowParkedModal] = useState(false);
 
@@ -1231,6 +1232,15 @@ export const PosTerminal: React.FC = () => {
               </button>
               <button
                 disabled={cart.length === 0}
+                onClick={() => setUnpaidBill({
+                  id: '', orderNumber: '', tenantId: selectedTenant?.id ?? '', branchId: selectedBranch?.id ?? '',
+                  orderType, status: 'New', tableNumber: orderType === 'DineIn' ? selectedTable : undefined,
+                  customerName, customerPhone, deliveryAddress, cashierName: currentUser?.fullName,
+                  paymentMethod, isPaid: false, amountPaidPKR: 0, changeDuePKR: 0,
+                  createdAt: new Date().toISOString(), items: [...cart], subTotalPKR: subtotal,
+                  taxPKR: tax, discountPKR, totalPKR: grandTotal,
+                  taxLines: cartTax(cart, discountPKR, getEffectiveTaxRate(), taxMode === 'Inclusive', branchTax?.decimals ?? 0).lines
+                })}
                 title="Print the bill"
                 className="px-3 py-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold flex items-center justify-center gap-1.5 transition disabled:opacity-40"
               >
@@ -1463,9 +1473,11 @@ export const PosTerminal: React.FC = () => {
       )}
 
       <ThermalReceiptModal
-        order={completedOrder}
-        isOpen={isReceiptOpen}
-        onClose={() => setIsReceiptOpen(false)}
+        order={unpaidBill ?? completedOrder}
+        unpaidBill={!!unpaidBill}
+        currency={tenantSettings?.currencyCode}
+        isOpen={!!unpaidBill || isReceiptOpen}
+        onClose={() => { setUnpaidBill(null); setIsReceiptOpen(false); }}
         branchName={selectedBranch?.name || selectedTenant?.name}
         branchAddress={selectedBranch?.address}
         branchPhone={selectedBranch?.phone}

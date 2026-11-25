@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Brain,
   TrendingUp,
@@ -19,55 +19,35 @@ import {
 import { Link } from 'react-router-dom';
 import { posApi, getApiErrorMessage, isUpgradeRequired } from '../services/api';
 
-interface SmartAnalyticsData {
-  summary: {
-    totalRevenue: number;
-    totalOrders: number;
-    avgOrderValue: number;
-    busiestHour: string;
-  };
-  revenueTrend: { date: string; revenue: number; orders: number }[];
-  bestSellers: { name: string; quantity: number; revenue: number }[];
-  peakHours: { hour: number; count: number }[];
-  predictions: {
-    avgDailySales: number;
-    predictedNext3Days: number[];
-    trend: 'growing' | 'stable' | 'declining';
-  };
-}
+import type { SmartAnalyticsData } from '../types';
 
 export const SmartAnalytics: React.FC = () => {
-  const [data, setData] = useState<SmartAnalyticsData | null>(null);
   const [days, setDays] = useState(7);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [needsUpgrade, setNeedsUpgrade] = useState(false);
-
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    setNeedsUpgrade(false);
-    try {
-      const result = await posApi.getSmartAnalytics(days);
-      setData(result);
-    } catch (err) {
-      setError(getApiErrorMessage(err, 'Could not load smart analytics.'));
-      setNeedsUpgrade(isUpgradeRequired(err));
-      console.error(err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [days]);
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{
+    days: number; attempt: number; data?: SmartAnalyticsData; error?: string; needsUpgrade?: boolean;
+  } | null>(null);
+  const current = result?.days === days && result.attempt === attempt ? result : null;
+  const { data, error, needsUpgrade } = current ?? {};
+  const isLoading = !current;
+  const fetchData = () => setAttempt(n => n + 1);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    let active = true;
+    posApi.getSmartAnalytics(days).then(data => {
+      if (active) setResult({ days, attempt, data });
+    }).catch(err => {
+      if (active) setResult({ days, attempt, error: getApiErrorMessage(err, 'Could not load smart analytics.'),
+        needsUpgrade: isUpgradeRequired(err) });
+    });
+    return () => { active = false; };
+  }, [days, attempt]);
 
   const maxRevenue = data
     ? Math.max(...data.revenueTrend.map((d) => d.revenue), 1)
     : 1;
   const maxPeakHour = data
-    ? Math.max(...data.peakHours.map((h) => h.count), 1)
+    ? Math.max(...data.peakHours.map((h) => h.orderCount), 1)
     : 1;
 
   const trendIcon =
@@ -212,7 +192,7 @@ export const SmartAnalytics: React.FC = () => {
                     Avg Order Value
                   </div>
                   <div className="text-lg font-bold text-slate-900">
-                    {data.summary.avgOrderValue.toLocaleString()}
+                    {data.avgOrderValue.toLocaleString()}
                   </div>
                 </div>
               </div>
@@ -227,7 +207,7 @@ export const SmartAnalytics: React.FC = () => {
                     Busiest Hour
                   </div>
                   <div className="text-lg font-bold text-slate-900">
-                    {data.summary.busiestHour || 'N/A'}
+                    {data.summary.totalOrders ? String(data.summary.busiestHour).padStart(2, '0') + ':00' : '—'}
                   </div>
                 </div>
               </div>
@@ -241,22 +221,22 @@ export const SmartAnalytics: React.FC = () => {
                 <h2 className="text-sm font-bold text-slate-900">Revenue Trend</h2>
                 <span className="text-[10px] text-slate-500 ml-auto">Last {days} days</span>
               </div>
-              <div className="flex items-end gap-2 h-48">
+              <div className="flex items-end gap-2 h-48 overflow-x-auto">
                 {data.revenueTrend.map((d, i) => {
                   const height = maxRevenue > 0 ? (d.revenue / maxRevenue) * 100 : 0;
                   return (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div key={i} className="flex-1 min-w-8 flex flex-col items-center gap-1">
                       <span className="text-[9px] font-semibold text-slate-500">
                         {d.revenue > 0 ? `${(d.revenue / 1000).toFixed(1)}k` : '-'}
                       </span>
                       <div className="w-full flex justify-center">
                         <div
                           className="w-full max-w-[32px] rounded-t-lg bg-gradient-to-t from-teal-600 to-teal-400 transition-all duration-500"
-                          style={{ height: `${Math.max(height, 2)}%` }}
+                          style={{ height: Math.max(height * 1.3, 2) }}
                         />
                       </div>
                       <span className="text-[9px] text-slate-400">
-                        {new Date(d.date).toLocaleDateString('en', { day: 'numeric', month: 'short' })}
+                        {new Date(d.date + 'T00:00:00Z').toLocaleDateString('en', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
                       </span>
                     </div>
                   );
@@ -287,18 +267,8 @@ export const SmartAnalytics: React.FC = () => {
                   <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
                     Predicted Next 3 Days
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    {data.predictions.predictedNext3Days.map((val, i) => (
-                      <div
-                        key={i}
-                        className="flex-1 text-center p-2 rounded-lg bg-teal-50 border border-teal-200"
-                      >
-                        <div className="text-[9px] text-teal-600 font-bold">Day {i + 1}</div>
-                        <div className="text-xs font-bold text-slate-900 mt-0.5">
-                          {(val / 1000).toFixed(1)}k
-                        </div>
-                      </div>
-                    ))}
+                  <div className="text-xl font-bold text-slate-900 mt-1">
+                    {data.predictions.predictedNext3Days.toLocaleString()}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200">
@@ -354,13 +324,13 @@ export const SmartAnalytics: React.FC = () => {
                             )}
                           </td>
                           <td className="py-2 px-2 font-semibold text-slate-900 truncate max-w-[160px]">
-                            {item.name}
+                            {item.productName}
                           </td>
                           <td className="py-2 px-2 text-right text-slate-700 font-medium">
-                            {item.quantity}
+                            {item.totalQty}
                           </td>
                           <td className="py-2 px-2 text-right text-teal-600 font-bold">
-                            {item.revenue.toLocaleString()}
+                            {item.totalRevenue.toLocaleString()}
                           </td>
                         </tr>
                       );
@@ -386,7 +356,7 @@ export const SmartAnalytics: React.FC = () => {
               <div className="grid grid-cols-12 gap-1.5">
                 {Array.from({ length: 24 }, (_, i) => {
                   const entry = data.peakHours.find((h) => h.hour === i);
-                  const count = entry?.count || 0;
+                  const count = entry?.orderCount || 0;
                   const intensity = maxPeakHour > 0 ? count / maxPeakHour : 0;
                   return (
                     <div

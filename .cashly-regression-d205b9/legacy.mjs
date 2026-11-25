@@ -1,0 +1,6 @@
+import {readFile,writeFile} from 'node:fs/promises';import {execFileSync} from 'node:child_process';
+const base=new URL('.',import.meta.url);const {main}=JSON.parse(await readFile(new URL('fixtures.json',base)));const env=JSON.parse(await readFile(new URL('env.json',base)));const pw=(await readFile(new URL('db-secret.txt',base),'utf8')).trim();
+const r=await fetch(env.api+'/api/orders?branchId='+main.branch.id,{headers:{Authorization:'Bearer '+main.token}});const orders=await r.json();const cod=orders.find(o=>o.riderCashCollectedPKR>0);const tab=orders.find(o=>o.tableNumber===main.table.tableNumber);if(!cod||!tab)throw Error('missing fixtures');
+const sql='UPDATE "Orders" SET "PaidAt"=NULL, "AmountPaidPKR"=0,"RiderCashCollectedPKR"=NULL,"RiderSettlementId"=NULL WHERE "Id"=\''+cod.id+'\'; UPDATE "Orders" SET "Status"=3,"ReadyAt"=now() WHERE "Id"=\''+tab.id+'\';';
+execFileSync('C:/Program Files/PostgreSQL/18/bin/psql.exe',['-h','127.0.0.1','-p',String(env.pgPort),'-U','cashly_qa','-d','postgres','-v','ON_ERROR_STOP=1','-c',sql],{env:{...process.env,PGPASSWORD:pw},windowsHide:true});await writeFile(new URL('legacy.json',base),JSON.stringify({cod:cod.id,tab:tab.id,main:main.input}));console.log('Prepared two legacy rows in the isolated database.');
+await fetch(env.ui+'/__qa_stop',{method:'POST'});

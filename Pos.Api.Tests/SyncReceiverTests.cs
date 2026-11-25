@@ -97,6 +97,34 @@ public class SyncReceiverTests
     }
 
     [Fact]
+    public async Task Delivery_paid_after_its_first_push_updates_the_original_HQ_sale_once()
+    {
+        using var db = new TestDatabase();
+        db.SeedTenant();
+        var id = Guid.NewGuid();
+        var open = OrderRecord(db, id, db.SeedProduct());
+        foreach (var (key, value) in Record.Of(new { orderType = "Delivery", status = "InKitchen", isPaid = false,
+            amountPaidPKR = 0, changeDuePKR = 0, stockCostPKR = 0 }))
+            open[key] = value;
+        await db.Receiver.ReceiveAsync(db.TenantId, "Order", Record.Batch(open));
+
+        var paid = new Dictionary<string, JsonElement>(open);
+        foreach (var (key, value) in Record.Of(new { status = "Completed", isPaid = true, amountPaidPKR = 650,
+            paidAt = "2026-01-02T10:00:00Z", completedAt = "2026-01-02T10:00:00Z" }))
+            paid[key] = value;
+        await db.Receiver.ReceiveAsync(db.TenantId, "Order", Record.Batch(paid, open, paid));
+        var stored = await db.Db.Orders.AsNoTracking().Include(o => o.Items).SingleAsync();
+        Assert.Single(stored.Items);
+        Assert.True(stored.IsPaid);
+        Assert.True(stored.JournalPending);
+        Assert.Null(stored.CashShiftId);
+        Assert.Equal(650m, stored.AmountPaidPKR);
+        Assert.Equal(OrderStatus.Completed, stored.Status);
+        Assert.Equal(new DateTime(2026, 1, 2, 10, 0, 0), stored.PaidAt);
+        Assert.Equal(stored.PaidAt, stored.CompletedAt);
+    }
+
+    [Fact]
     public async Task A_sale_against_another_business_s_branch_is_rejected_not_stored()
     {
         using var db = new TestDatabase();
